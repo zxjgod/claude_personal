@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "filesystem": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+      "env": {},
+      "disabled": true
+    },
+    "github": {
+      "type": "http",
+      "url": "https://api.github.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${GITHUB_TOKEN}"
+      },
+      "disabled": true
+    }
+  }
+}

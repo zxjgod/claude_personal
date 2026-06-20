@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "sessionId": "2827118f-1cc2-4cd7-87c3-d77db931008c",
+  "createdAt": "2026-06-19T13:01:59.270Z",
+  "updatedAt": "2026-06-19T13:01:59.270Z",
+  "workspaceRoot": "C:\\Users\\20616\\Desktop\\claude_compare\\claude_personal\\sandbox\\.claude",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "say hi"
+        }
+      ]
+    }
+  ],
+  "messageCount": 1,
+  "completed": true
+}

@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "sessionId": "c98a0000-99f9-482e-89af-68c47311a95c",
+  "createdAt": "2026-06-19T12:56:41.635Z",
+  "updatedAt": "2026-06-19T12:56:41.635Z",
+  "workspaceRoot": "C:\\Users\\20616\\Desktop\\claude_compare\\claude_personal\\sandbox\\.claude",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "reply with exactly the word PONG and nothing else"
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": "PONG"
+    }
+  ],
+  "messageCount": 2,
+  "completed": false
+}

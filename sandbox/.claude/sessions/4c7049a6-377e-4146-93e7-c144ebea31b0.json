@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "sessionId": "4c7049a6-377e-4146-93e7-c144ebea31b0",
+  "createdAt": "2026-06-19T14:10:08.280Z",
+  "updatedAt": "2026-06-19T14:10:08.281Z",
+  "workspaceRoot": "C:\\Users\\20616\\Desktop\\claude_compare\\claude_personal\\sandbox\\.claude",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "请用一句中文回答：2+2 等于几？"
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": "2+2 等于 4。"
+    }
+  ],
+  "messageCount": 2,
+  "completed": true
+}

@@ -1,0 +1,159 @@
+// ============================================================
+// Tests: LLM Adapter stream parsing (usage timing)
+// ============================================================
+// Regression for two coupled bugs:
+//  1. Streamed responses carried no token usage (stream_options.include_usage
+//     was not requested) → usage stayed at 0.
+//  2. The `done` event was emitted on the finish_reason chunk, BEFORE the
+//     usage-only chunk (empty choices) arrives, so even real usage was lost.
+// We mock the OpenAI client to reproduce the real chunk ordering.
+// ============================================================
+
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+// Capture the params passed to chat.completions.create so we can assert
+// that include_usage was requested.
+const createSpy = vi.fn();
+
+vi.mock("openai", () => {
+  return {
+    default: class MockOpenAI {
+      chat = {
+        completions: {
+          create: createSpy,
+        },
+      };
+      constructor(_opts: unknown) {}
+    },
+  };
+});
+
+import { createModelCaller } from "../llm-adapter.js";
+import type { Message, ModelConfig, StreamEvent } from "../types.js";
+
+const config: ModelConfig = {
+  provider: "openai",
+  model: "gpt-4o",
+  apiKey: "test-key",
+};
+
+const messages: Message[] = [
+  { role: "user", content: [{ type: "text", text: "hi" }] },
+];
+
+/** Build an async-iterable stream mimicking OpenAI's chunk ordering: text
+ * chunks, then a finish_reason chunk, then a final usage-only chunk whose
+ * `choices` array is empty. */
+function makeStream(chunks: any[]): AsyncIterable<any> {
+  return {
+    async *[Symbol.asyncIterator]() {
+      for (const c of chunks) yield c;
+    },
+  };
+}
+
+beforeEach(() => {
+  createSpy.mockReset();
+});
+
+describe("openAICompatibleCaller", () => {
+  it("requests stream usage via stream_options.include_usage", async () => {
+    createSpy.mockResolvedValue(
+      makeStream([
+        { choices: [{ delta: { content: "hello" }, finish_reason: null }] },
+        { choices: [{ delta: {}, finish_reason: "stop" }] },
+        { choices: [], usage: { prompt_tokens: 12, completion_tokens: 7 } },
+      ]),
+    );
+
+    const caller = createModelCaller(config);
+    for await (const _e of caller(messages, [], "sys", config)) {
+      // drain
+    }
+
+    expect(createSpy).toHaveBeenCalledTimes(1);
+    const params = createSpy.mock.calls[0][0];
+    expect(params.stream).toBe(true);
+    expect(params.stream_options).toEqual({ include_usage: true });
+  });
+
+  it("captures usage from the final usage-only chunk after finish_reason", async () => {
+    createSpy.mockResolvedValue(
+      makeStream([
+        { choices: [{ delta: { content: "hi" }, finish_reason: null }] },
+        { choices: [{ delta: {}, finish_reason: "stop" }] },
+        // Usage arrives AFTER finish_reason, with empty choices.
+        { choices: [], usage: { prompt_tokens: 100, completion_tokens: 25 } },
+      ]),
+    );
+
+    const caller = createModelCaller(config);
+    const events: StreamEvent[] = [];
+    for await (const e of caller(messages, [], "sys", config)) {
+      events.push(e);
+    }
+
+    const done = events.find((e) => e.type === "done");
+    expect(done).toBeDefined();
+    expect((done as any).usage).toEqual({
+      input_tokens: 100,
+      output_tokens: 25,
+    });
+    // `done` must be the final event so usage is not lost.
+    expect(events[events.length - 1].type).toBe("done");
+  });
+
+  it("emits tool_use before done and parses arguments", async () => {
+    createSpy.mockResolvedValue(
+      makeStream([
+        {
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "call_1",
+                    function: { name: "read", arguments: '{"filePath":' },
+                  },
+                ],
+              },
+              finish_reason: null,
+            },
+          ],
+        },
+        {
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  { index: 0, function: { arguments: '"a.txt"}' } },
+                ],
+              },
+              finish_reason: null,
+            },
+          ],
+        },
+        { choices: [{ delta: {}, finish_reason: "tool_calls" }] },
+        { choices: [], usage: { prompt_tokens: 5, completion_tokens: 3 } },
+      ]),
+    );
+
+    const caller = createModelCaller(config);
+    const events: StreamEvent[] = [];
+    for await (const e of caller(messages, [], "sys", config)) {
+      events.push(e);
+    }
+
+    const toolUse = events.find((e) => e.type === "tool_use");
+    expect(toolUse).toBeDefined();
+    expect((toolUse as any).name).toBe("read");
+    expect((toolUse as any).input).toEqual({ filePath: "a.txt" });
+
+    const toolUseIdx = events.findIndex((e) => e.type === "tool_use");
+    const doneIdx = events.findIndex((e) => e.type === "done");
+    expect(toolUseIdx).toBeLessThan(doneIdx);
+    // Tool call must be emitted exactly once.
+    expect(events.filter((e) => e.type === "tool_use").length).toBe(1);
+  });
+});

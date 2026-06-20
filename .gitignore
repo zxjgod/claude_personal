@@ -1,0 +1,23 @@
+node_modules/
+dist/
+.env
+*.tsbuildinfo
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Logs
+*.log
+
+# Test coverage
+coverage/
+
+# Bundled reference materials (large files)
+reference/
+*.pdf
