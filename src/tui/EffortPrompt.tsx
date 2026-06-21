@@ -3,16 +3,19 @@
 // ============================================================
 // Mirrors Claude Code's /effort slider. Owns animation timing + key input;
 // the per-frame visuals live in effort-fx.ts (buildEffortFrame).
-//   • max       → rainbow flowing track + label
-//   • ultracode → purple energy burst (halo, expanding ring, particles,
-//                 edge glitch, breathing glow) — denser than max.
+//   • max       → official rainbow flow on track + label
+//   • ultracode → full-panel violet pixel gradient + vertical glitch jitter +
+//                 bloom glow + fade-in diffusion on entry.
 // ============================================================
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import type { Overlay } from "./store.js";
 import { buildEffortFrame, ORDER } from "./effort-fx.js";
 import { terminalColumns } from "./../terminal-width.js";
+
+// Frames of fade-in diffusion when switching INTO an animated tier.
+const FADE_FRAMES = 12;
 
 export function EffortPrompt({
   overlay,
@@ -21,15 +24,27 @@ export function EffortPrompt({
 }) {
   const [idx, setIdx] = useState(Math.max(0, ORDER.indexOf(overlay.current)));
   const [phase, setPhase] = useState(0);
+  // Frame counter since the active tier last changed (drives fade-in).
+  const [sinceSwitch, setSinceSwitch] = useState(0);
+  const prevIdx = useRef(idx);
 
   const active = ORDER[idx]!;
   const animated = active === "max" || active === "ultracode";
-  // Ultracode runs a brisker clock for a more intense, denser effect.
+  // Ultracode runs a brisker clock for a denser, more intense field.
   const stepMs = active === "ultracode" ? 70 : 110;
+
+  // Reset the fade counter whenever the selected tier changes.
+  if (prevIdx.current !== idx) {
+    prevIdx.current = idx;
+    if (sinceSwitch !== 0) setSinceSwitch(0);
+  }
 
   useEffect(() => {
     if (!animated) return;
-    const t = setInterval(() => setPhase((p) => p + (active === "ultracode" ? 9 : 6)), stepMs);
+    const t = setInterval(() => {
+      setPhase((p) => p + (active === "ultracode" ? 9 : 6));
+      setSinceSwitch((n) => Math.min(FADE_FRAMES, n + 1));
+    }, stepMs);
     return () => clearInterval(t);
   }, [animated, active, stepMs]);
 
@@ -44,7 +59,8 @@ export function EffortPrompt({
     }
   });
 
-  const lines = buildEffortFrame({ active, phase, cols: terminalColumns() });
+  const fade = active === "ultracode" ? Math.min(1, sinceSwitch / FADE_FRAMES) : 1;
+  const lines = buildEffortFrame({ active, phase, cols: terminalColumns(), fade });
 
   return (
     <Box flexDirection="column">

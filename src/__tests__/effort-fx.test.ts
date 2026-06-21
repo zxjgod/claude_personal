@@ -1,15 +1,15 @@
 // ============================================================
 // Tests: effort-fx frame builder (M13.7)
 // ============================================================
-// Asserts on the ANSI-stripped frame so structure/layout is verified
-// independent of color. Color presence is checked via raw ANSI codes.
+// Asserts on the ANSI-stripped frame so layout is verified independent of
+// color; color/background presence is checked via raw ANSI codes (chalk
+// forced to truecolor so it emits them off-TTY).
 
 import { describe, it, expect, beforeAll } from "vitest";
 import chalk from "chalk";
 import { buildEffortFrame, ORDER } from "../tui/effort-fx.js";
 import { stripAnsi } from "../terminal-width.js";
 
-// Force truecolor so color-based assertions are meaningful off-TTY (CI/vitest).
 beforeAll(() => {
   chalk.level = 3;
 });
@@ -24,53 +24,85 @@ describe("effort-fx buildEffortFrame", () => {
   });
 
   it("renders the reference layout for high", () => {
-    const f = buildEffortFrame({ active: "high", phase: 0, cols: 124 });
-    const text = plain(f);
+    const text = plain(buildEffortFrame({ active: "high", phase: 0, cols: 124 }));
     expect(text).toContain("Effort");
     expect(text).toContain("Faster");
     expect(text).toContain("Smarter");
     expect(text).toContain("low");
     expect(text).toContain("ultracode");
     expect(text).toContain("xhigh + workflows");
-    expect(text).toContain("▲"); // marker present
-    expect(text).toContain("┆"); // gradient/ultracode divider
+    expect(text).toContain("▲"); // ▲ marker
+    expect(text).toContain("┆"); // ┆ divider
     expect(text).toContain("Thorough reasoning");
-    expect(text).toContain("←/→ to adjust");
+    expect(text).toContain("to adjust");
   });
 
-  it("centers the track: left padding grows with terminal width", () => {
-    const narrow = buildEffortFrame({ active: "high", phase: 0, cols: 80 });
-    const wide = buildEffortFrame({ active: "high", phase: 0, cols: 160 });
-    const pad = (lines: string[]) => {
-      // The labels row contains "low ... ultracode"; measure its indent.
-      const row = lines.map(stripAnsi).find((l) => /low/.test(l) && /ultracode/.test(l))!;
-      return row.length - row.trimStart().length;
-    };
-    expect(pad(wide)).toBeGreaterThan(pad(narrow));
+  it("all tiers render the same number of rows (no vertical shift)", () => {
+    const counts = ORDER.map(
+      (lvl) => buildEffortFrame({ active: lvl, phase: 10, cols: 124 }).length,
+    );
+    expect(new Set(counts).size).toBe(1);
+  });
+
+  it("Faster aligns to the track start, Smarter to the track end", () => {
+    const f = buildEffortFrame({ active: "high", phase: 0, cols: 124 }).map(stripAnsi);
+    const endsRow = f[3]!; // Faster … Smarter
+    const trackRow = f[4]!; // slider track
+    const trackStart = trackRow.search(/\S/);
+    expect(endsRow.indexOf("Faster")).toBe(trackStart); // left-aligned
+    expect(endsRow.replace(/\s+$/, "").length).toBe(trackRow.replace(/\s+$/, "").length); // right
+  });
+
+  it("the marker is a single ▲ for every tier (no gap)", () => {
+    for (const lvl of ORDER) {
+      const trackRow = buildEffortFrame({ active: lvl, phase: 0, cols: 124 }).map(stripAnsi)[4]!;
+      expect((trackRow.match(/▲/g) || []).length).toBe(1);
+      expect(trackRow).not.toMatch(/✦▲|▲✦/); // no ✦ hugging ▲
+    }
   });
 
   it("max uses a rainbow track (many distinct truecolor codes)", () => {
-    const f = buildEffortFrame({ active: "max", phase: 50, cols: 124 });
-    const raw = f.join("");
+    const raw = buildEffortFrame({ active: "max", phase: 50, cols: 124 }).join("");
     const colors = new Set(raw.match(/38;2;\d+;\d+;\d+/g) ?? []);
-    // A rainbow spreads across the whole track → lots of unique colors.
     expect(colors.size).toBeGreaterThan(30);
   });
 
-  it("ultracode adds particle/ring rows and is purple-dominant", () => {
-    const f = buildEffortFrame({ active: "ultracode", phase: 40, cols: 124 });
-    const text = plain(f);
-    // Expanding ring bar uses heavy ━; particles drift around the panel.
-    expect(text).toContain("━");
-    expect(/[·˙°*✦⋆•∴❖]/.test(text)).toBe(true);
-    // More rows than the plain layout (particles above + ring + particles below).
-    const plainHigh = buildEffortFrame({ active: "high", phase: 0, cols: 124 });
-    expect(f.length).toBeGreaterThan(plainHigh.length);
+  it("ultracode paints a violet background field (settled = full panel)", () => {
+    const raw = buildEffortFrame({ active: "ultracode", phase: 8, cols: 124, fade: 1 }).join("");
+    const bgCount = (raw.match(/48;2;\d+;\d+;\d+/g) ?? []).length;
+    expect(bgCount).toBeGreaterThan(100); // a large filled field, not a thin band
+  });
+
+  it("ultracode background grows from the marker and reaches full width at fade=1", () => {
+    const bgCols = (fade: number) => {
+      const raw = buildEffortFrame({ active: "ultracode", phase: 8, cols: 100, fade }).join("");
+      return (raw.match(/48;2;\d+;\d+;\d+/g) ?? []).length;
+    };
+    // Early fade lights fewer cells than a settled (fade=1) field.
+    expect(bgCols(0.2)).toBeGreaterThan(0);
+    expect(bgCols(1)).toBeGreaterThan(bgCols(0.2));
+  });
+
+  it("ultracode violet is the cyber-violet hue (blue-dominant, not red)", () => {
+    const raw = buildEffortFrame({ active: "ultracode", phase: 40, cols: 124 }).join("");
+    const shades = (raw.match(/48;2;(\d+);(\d+);(\d+)/g) ?? []).map((s) =>
+      s.replace("48;2;", "").split(";").map(Number),
+    );
+    expect(shades.length).toBeGreaterThan(10);
+    // Indigo/violet → blue channel dominates green on average.
+    const avg = (i: number) => shades.reduce((a, s) => a + s[i]!, 0) / shades.length;
+    expect(avg(2)).toBeGreaterThan(avg(1)); // b > g
   });
 
   it("ultracode frames differ across phases (animation)", () => {
     const a = buildEffortFrame({ active: "ultracode", phase: 0, cols: 124 }).join("\n");
     const b = buildEffortFrame({ active: "ultracode", phase: 120, cols: 124 }).join("\n");
     expect(a).not.toBe(b);
+  });
+
+  it("ultracode fade-in: a partial fade lights fewer cells than settled", () => {
+    const cells = (fade: number) =>
+      (buildEffortFrame({ active: "ultracode", phase: 6, cols: 124, fade }).join("").match(/48;2;/g) ?? []).length;
+    expect(cells(0.15)).toBeLessThan(cells(1));
   });
 });

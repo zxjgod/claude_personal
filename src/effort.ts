@@ -72,12 +72,13 @@ export function gradientColorAt(fraction: number): string {
 
 /**
  * A cycling rainbow palette of `count` colors, shifted by `phase` degrees.
- * Animating `phase` over time produces the ultracode shimmer.
+ * Uses the official voice-waveform HSL params (s=0.7, l=0.6) so the max-tier
+ * flow matches Claude Code's rainbow. Animating `phase` makes it flow.
  */
 export function rainbowColors(count: number, phase = 0): string[] {
   const n = Math.max(1, count);
   return Array.from({ length: count }, (_, i) =>
-    hslToHex((i / n) * 360 + phase, 0.95, 0.62),
+    hslToHex((i / n) * 360 + phase, 0.7, 0.6),
   );
 }
 

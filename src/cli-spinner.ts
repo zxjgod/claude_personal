@@ -74,8 +74,8 @@ export const SPINNER_VERBS = [
   "Wrangling",
 ];
 
-// Spinner glyph frames (Windows-safe set), played forwards then backwards.
-const BASE_FRAMES = ["·", "✢", "*", "✶", "✻", "✽"];
+// Spinner glyph frames (official particle charset), played forwards then backwards.
+const BASE_FRAMES = ["·", "✢", "✳", "✶", "✻", "✽"];
 const SPINNER_FRAMES = [...BASE_FRAMES, ...[...BASE_FRAMES].reverse()];
 
 const TEARDROP_ASTERISK = "✻";

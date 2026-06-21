@@ -1,18 +1,21 @@
 // ============================================================
 // effort-fx — frame builder for the /effort slider (M13.7)
 // ============================================================
-// Pure functions that render one animation frame of the effort slider to an
-// array of ANSI strings (via chalk), so EffortPrompt only owns timing + input.
+// Pure functions that render one animation frame to an array of ANSI
+// strings (via chalk). EffortPrompt owns only timing + key input.
 //
-// Layout matches the official Claude Code slider: a full-width top divider,
-// a left-indented "Effort" title, then a horizontally CENTERED track with a
-// ▲ marker, a ┆ divider, and the ultracode tier.
+// Layout (identical row count for ALL tiers — no vertical shift):
+//   0 divider   1 "Effort"   2 blank   3 Faster…Smarter
+//   4 track     5 labels     6 sublabel  7 blank
+//   8 description   9 hint
 //
-// Two signature effects:
-//   • max       → rainbow flowing/shimmering track + labels
-//   • ultracode → purple energy burst: marker halo, an expanding ring along a
-//                 bottom bar, edge glitch jitter, drifting circuit particles,
-//                 a low-saturation purple wash, and breathing text glow.
+// Signature effects:
+//   • max       → official rainbow flow (hueToRgb sweep) on track + label
+//   • ultracode → full-panel dynamic violet pixel gradient, layered; vertical
+//                 block glitch jitter (column strips offset); a soft violet
+//                 bloom glow; and a fade-in diffusion when first switched to.
+//                 Painted as a BACKGROUND wash over rows 0–7, so no rows are
+//                 added and nothing shifts.
 // ============================================================
 
 import chalk from "chalk";
@@ -28,230 +31,228 @@ import {
 // --- Track geometry (track-local columns) ---
 const GRAD_START = 4;
 const STEP = 9;
-// Marker column for each gradient tier (low..max).
 const GRAD_MARKERS = EFFORT_GRADIENT.map((_, i) => GRAD_START + i * STEP); // 4,13,22,31,40
 const DIVIDER_COL = GRAD_MARKERS[GRAD_MARKERS.length - 1]! + 7; // 47
 const ULTRA_MARKER = DIVIDER_COL + 7; // 54
-const TRACK_WIDTH = ULTRA_MARKER + 9; // 63 (tail past the ultracode label)
+const TRACK_WIDTH = ULTRA_MARKER + 9; // 63
 
 const ORDER: EffortLevel[] = [...EFFORT_GRADIENT, "ultracode"];
 
-/** Marker column for a tier in track-local coordinates. */
+/** Marker column (track-local) for a tier. */
 function markerCol(level: EffortLevel): number {
   const gi = EFFORT_GRADIENT.indexOf(level as any);
   return gi >= 0 ? GRAD_MARKERS[gi]! : ULTRA_MARKER;
 }
 
-// --- Styled-cell buffer ---
+// --- Cell grid ---
 interface Cell {
   ch: string;
-  style?: (s: string) => string;
+  fg?: string;
+  bg?: string;
+  bold?: boolean;
+  dim?: boolean;
 }
-function blank(width: number): Cell[] {
+function row(width: number): Cell[] {
   return Array.from({ length: width }, () => ({ ch: " " }));
 }
-function place(cells: Cell[], col: number, text: string, style?: (s: string) => string): void {
+function put(cells: Cell[], col: number, text: string, attrs: Partial<Cell> = {}): void {
   for (let i = 0; i < text.length; i++) {
     const c = col + i;
-    if (c >= 0 && c < cells.length) cells[c] = { ch: text[i]!, style };
+    if (c >= 0 && c < cells.length) cells[c] = { ch: text[i]!, ...attrs };
   }
 }
-function render(cells: Cell[], leftPad: number): string {
-  const out = cells.map((c) => (c.style ? c.style(c.ch) : c.ch)).join("");
-  return " ".repeat(leftPad) + out;
+function paint(cell: Cell): string {
+  let c = chalk as any;
+  if (cell.bg) c = c.bgHex(cell.bg);
+  if (cell.fg) c = c.hex(cell.fg);
+  if (cell.bold) c = c.bold;
+  if (cell.dim) c = c.dim;
+  return c === chalk ? cell.ch : c(cell.ch);
+}
+function renderRow(cells: Cell[]): string {
+  return cells.map(paint).join("");
 }
 
-// --- Deterministic per-frame jitter (smooth drift, no chaos) ---
-function seeded(n: number): number {
-  const x = Math.sin(n * 12.9898) * 43758.5453;
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+
+// "Handsome" cyber-violet palette: electric indigo (≈258°) drifting toward
+// violet/magenta, higher saturation + a touch more lightness so it reads as a
+// neon pixel field rather than a flat purple. `hueShift` spreads the layers.
+function violet(light: number, hueShift = 0): string {
+  return hslToHex(258 + hueShift, 0.85, clamp(light, 0.07, 0.5));
+}
+
+/** Deterministic [0,1) hash for the glitch jitter (stable within a frame). */
+function hash(n: number): number {
+  const x = Math.sin(n * 127.1) * 43758.5453;
   return x - Math.floor(x);
 }
 
-const PARTICLES = ["·", "˙", "°", "*", "✦", "⋆", "•", "∴", "❖"];
-const GLITCH = ["▏", "╎", "┊", "░", "▒"];
-
-/** Purple shade that breathes with phase (low-saturation tech glow). */
-function purple(phase: number, offset = 0, light = 0.58): string {
-  const b = 0.5 + 0.5 * Math.sin((phase + offset) * (Math.PI / 180));
-  return hslToHex(272 + 18 * Math.sin(phase / 40), 0.52, light - 0.16 + 0.16 * b);
-}
-
 /**
- * Build one frame. `cols` is the terminal width used to center the track.
- * Returns an array of ready-to-print lines (ANSI included).
+ * Build one frame. `cols` centers the panel in the terminal.
+ * `fade` (0→1) is the entrance-diffusion progress for ultracode (1 = settled).
  */
 export function buildEffortFrame(opts: {
   active: EffortLevel;
   phase: number;
   cols: number;
+  fade?: number;
 }): string[] {
   const { active, phase, cols } = opts;
+  const fade = clamp(opts.fade ?? 1, 0, 1);
   const isMax = active === "max";
   const isUltra = active === "ultracode";
-  const leftPad = Math.max(4, Math.floor((cols - TRACK_WIDTH) / 2));
-  const lines: string[] = [];
 
-  // Top: full-width divider.
-  const divWidth = Math.max(40, Math.min(cols - 1, 124));
-  lines.push(isUltra ? chalk.hex(purple(phase, 0, 0.5))("─".repeat(divWidth)) : chalk.dim("─".repeat(divWidth)));
+  const canvasW = Math.min(Math.max(cols - 1, 60), 120);
+  const leftPad = Math.max(2, Math.floor((canvasW - TRACK_WIDTH) / 2));
+  // Lavender foreground so text stays readable on the purple wash.
+  const LAV = "#d8c8ee";
 
-  // Title (left-indented, like the reference).
-  const titleGlow = isUltra ? chalk.hex(purple(phase, 90)).bold : chalk.bold.cyan;
-  lines.push("  " + titleGlow("Effort"));
-  lines.push("");
+  // Rectangle bounds for the violet field. Left/right go FULL WIDTH (edge to
+  // edge); top/bottom span the divider row down to the blank before the text.
+  const rectL = 0;
+  const rectR = canvasW - 1;
+  const RECT_TOP = 0;
+  const RECT_BOTTOM = 7;
 
-  // Ultracode: a drifting circuit-particle row above the track.
-  if (isUltra) lines.push(particleRow(phase, leftPad, 1));
+  const grid: Cell[][] = [];
+  const newRow = () => {
+    const r = row(canvasW);
+    grid.push(r);
+    return r;
+  };
 
-  // Faster … Smarter ends, aligned to the gradient span.
-  const ends = blank(TRACK_WIDTH);
-  place(ends, GRAD_START, "Faster", chalk.dim);
-  place(ends, DIVIDER_COL - "Smarter".length, "Smarter", chalk.dim);
-  lines.push(render(ends, leftPad));
+  // 0 — divider. Full width for every tier (consistent); for ultracode the
+  //     purple wash below paints over its rectangle span as the pond's top edge.
+  const dv = newRow();
+  for (let c = 0; c < canvasW; c++) dv[c] = { ch: "─", fg: isUltra ? LAV : undefined, dim: !isUltra };
 
-  // Track row.
-  lines.push(trackRow(active, phase, leftPad, isMax, isUltra));
+  // 1 — title.
+  const tr = newRow();
+  put(tr, 2, "Effort", isUltra ? { fg: "#c9b6ee", bold: true } : { fg: "#36c6e0", bold: true });
 
-  // Labels row.
-  lines.push(labelRow(active, phase, leftPad, isMax, isUltra));
+  // 2 — blank.
+  newRow();
 
-  // ultracode sublabel, centered under the ultracode marker.
-  const sub = blank(TRACK_WIDTH);
-  const subText = "xhigh + workflows";
-  place(sub, ULTRA_MARKER - Math.floor(subText.length / 2), subText, isUltra ? chalk.hex(purple(phase, 140)) : chalk.dim);
-  lines.push(render(sub, leftPad));
+  // 3 — Faster … Smarter, aligned to the track ends.
+  const fr = newRow();
+  put(fr, leftPad, "Faster", { dim: !isUltra, fg: isUltra ? LAV : undefined });
+  put(fr, leftPad + TRACK_WIDTH - "Smarter".length, "Smarter", {
+    dim: !isUltra,
+    fg: isUltra ? LAV : undefined,
+  });
 
-  // Ultracode: expanding ring bar + lower particle row + bottom edge.
-  if (isUltra) {
-    lines.push("");
-    lines.push(ringBar(phase, leftPad));
-    lines.push(particleRow(phase + 180, leftPad, 2));
-  }
-
-  lines.push("");
-
-  // Description of the active tier.
-  const descStyle = isUltra ? chalk.hex(purple(phase, 60)).bold : isMax ? chalk.bold : chalk.bold.cyan;
-  lines.push("  " + descStyle(active) + chalk.dim(" — " + EFFORT_DESCRIPTIONS[active]));
-
-  lines.push("  " + chalk.dim("←/→ to adjust · Enter to confirm · Esc to cancel"));
-  return lines;
-}
-
-// --- Row builders ---
-
-function trackRow(active: EffortLevel, phase: number, leftPad: number, isMax: boolean, isUltra: boolean): string {
-  const cells = blank(TRACK_WIDTH);
-  const activeCol = markerCol(active);
-
+  // 4 — track.
+  const trk = newRow();
+  const rainbow = isMax ? rainbowColors(TRACK_WIDTH, phase) : null;
   for (let c = 0; c < TRACK_WIDTH; c++) {
+    const abs = leftPad + c;
     if (c === DIVIDER_COL) {
-      cells[c] = { ch: "┆", style: isUltra ? chalk.hex(purple(phase, c)) : chalk.dim };
+      trk[abs] = { ch: "┆", fg: isUltra ? LAV : undefined, dim: !isUltra && !isMax };
       continue;
     }
     const inGrad = c < DIVIDER_COL;
-    const frac = inGrad ? c / (DIVIDER_COL - 1) : (c - DIVIDER_COL) / (TRACK_WIDTH - DIVIDER_COL);
-    let style: (s: string) => string;
-    if (isUltra) {
-      // Whole track washed purple; brighter near the marker (halo).
-      const dist = Math.abs(c - ULTRA_MARKER);
-      const halo = dist <= 3 ? 0.72 - dist * 0.04 : 0.5;
-      style = chalk.hex(purple(phase, c * 6, halo));
-    } else if (isMax) {
-      const cols = rainbowColors(TRACK_WIDTH, phase);
-      style = chalk.hex(cols[c]!);
-    } else {
-      style = chalk.hex(gradientColorAt(inGrad ? frac : 1));
-    }
-    cells[c] = { ch: "─", style };
+    let fg: string;
+    if (isUltra) fg = LAV;
+    else if (rainbow) fg = rainbow[c]!;
+    else fg = gradientColorAt(inGrad ? c / (DIVIDER_COL - 1) : 1);
+    trk[abs] = { ch: "─", fg };
   }
+  // Single ▲ marker — identical placement for every tier (no gap).
+  const mAbs = leftPad + markerCol(active);
+  const mFg = isUltra ? "#f1e9ff" : rainbow ? rainbow[markerCol(active)]! : gradientColorAt(markerCol(active) / (DIVIDER_COL - 1));
+  trk[mAbs] = { ch: "▲", fg: mFg, bold: true };
 
-  // Marker ▲ on the active tier (halo ✦ around it for ultracode).
-  if (isUltra) {
-    place(cells, ULTRA_MARKER - 1, "✦", chalk.hex(purple(phase, 30, 0.78)));
-    place(cells, ULTRA_MARKER, "▲", chalk.hex(purple(phase, 0, 0.82)).bold);
-    place(cells, ULTRA_MARKER + 1, "✦", chalk.hex(purple(phase, 60, 0.78)));
-  } else if (isMax) {
-    place(cells, activeCol, "▲", chalk.hex(rainbowColors(TRACK_WIDTH, phase)[activeCol]!).bold);
-  } else {
-    place(cells, activeCol, "▲", chalk.hex(gradientColorAt(activeCol / (DIVIDER_COL - 1))).bold);
-  }
-  return render(cells, leftPad);
-}
-
-function labelRow(active: EffortLevel, phase: number, leftPad: number, isMax: boolean, isUltra: boolean): string {
-  const cells = blank(TRACK_WIDTH);
+  // 5 — labels.
+  const lr = newRow();
   EFFORT_GRADIENT.forEach((lvl, i) => {
-    const col = GRAD_MARKERS[i]! - Math.floor(lvl.length / 2);
+    const start = leftPad + GRAD_MARKERS[i]! - Math.floor(lvl.length / 2);
     const on = active === lvl;
-    let style: (s: string) => string;
     if (isMax && on) {
       const cols = rainbowColors(lvl.length, phase);
-      // Per-character rainbow for the active "max" label.
-      for (let k = 0; k < lvl.length; k++) place(cells, col + k, lvl[k]!, chalk.hex(cols[k]!).bold);
-      return;
-    }
-    style = on ? chalk.hex(gradientColorAt(GRAD_MARKERS[i]! / (DIVIDER_COL - 1))).bold : chalk.gray;
-    place(cells, col, lvl, style);
-  });
-
-  // ultracode label.
-  const ul = "ultracode";
-  const ucol = ULTRA_MARKER - Math.floor(ul.length / 2);
-  if (isUltra) {
-    const cols = rainbowColors(ul.length, phase * 1.5); // brisker shimmer
-    for (let k = 0; k < ul.length; k++) {
-      // Blend rainbow toward purple so it reads as a purple-tech glow.
-      const c = k % 2 === 0 ? cols[k]! : purple(phase, k * 30, 0.66);
-      place(cells, ucol + k, ul[k]!, chalk.hex(c).bold);
-    }
-  } else {
-    place(cells, ucol, ul, chalk.gray);
-  }
-  return render(cells, leftPad);
-}
-
-/** A drifting row of purple circuit particles around the panel (ultracode). */
-function particleRow(phase: number, leftPad: number, band: number): string {
-  const width = TRACK_WIDTH;
-  const cells = blank(width);
-  const count = 10;
-  for (let i = 0; i < count; i++) {
-    const r = seeded(i * 7.3 + band * 100);
-    // Slow horizontal drift with phase; wrap around the width.
-    const col = Math.floor((r * width + phase * (0.15 + 0.05 * (i % 3))) % width);
-    const twinkle = Math.sin((phase + i * 40) * (Math.PI / 180)) > -0.2;
-    if (!twinkle) continue;
-    const ch = PARTICLES[Math.floor(seeded(i + band) * PARTICLES.length)]!;
-    place(cells, col, ch, chalk.hex(purple(phase, i * 25, 0.5 + 0.2 * r)));
-  }
-  // Edge glitch jitter at both ends.
-  const g = GLITCH[Math.floor(seeded(phase) * GLITCH.length)]!;
-  if (seeded(phase + band) > 0.45) place(cells, 0, g, chalk.hex(purple(phase, 0, 0.4)));
-  if (seeded(phase + band + 9) > 0.45) place(cells, width - 1, g, chalk.hex(purple(phase, 90, 0.4)));
-  return render(cells, leftPad);
-}
-
-/** A ring of purple light expanding outward from center along a bottom bar. */
-function ringBar(phase: number, leftPad: number): string {
-  const width = TRACK_WIDTH;
-  const cells = blank(width);
-  const center = Math.floor(width / 2);
-  const radius = (phase / 6) % (width / 2 + 4); // expands, then resets
-  for (let c = 0; c < width; c++) {
-    const dist = Math.abs(c - center);
-    const onRing = Math.abs(dist - radius) < 1.5;
-    const inside = dist < radius;
-    if (onRing) {
-      cells[c] = { ch: "━", style: chalk.hex(purple(phase, c * 4, 0.8)).bold };
-    } else if (inside) {
-      cells[c] = { ch: "─", style: chalk.hex(purple(phase, c * 4, 0.46)) };
+      for (let k = 0; k < lvl.length; k++) put(lr, start + k, lvl[k]!, { fg: cols[k]!, bold: true });
     } else {
-      cells[c] = { ch: "─", style: chalk.hex(purple(phase, c, 0.3)) };
+      put(lr, start, lvl, on ? { fg: gradientColorAt(GRAD_MARKERS[i]! / (DIVIDER_COL - 1)), bold: true } : { fg: "#808080" });
+    }
+  });
+  const ul = "ultracode";
+  const ulStart = leftPad + ULTRA_MARKER - Math.floor(ul.length / 2);
+  if (isUltra) {
+    put(lr, ulStart, ul, { fg: "#eadcff", bold: true });
+  } else {
+    put(lr, ulStart, ul, { fg: "#808080" });
+  }
+
+  // 6 — sublabel.
+  const sr = newRow();
+  const sub = "xhigh + workflows";
+  put(sr, leftPad + ULTRA_MARKER - Math.floor(sub.length / 2), sub, isUltra ? { fg: LAV } : { dim: true });
+
+  // 7 — blank (bottom edge of the ripple rectangle).
+  newRow();
+
+  // 8 — description.
+  const dr = newRow();
+  put(dr, 2, active, isUltra ? { fg: "#c9b6ee", bold: true } : isMax ? { bold: true } : { fg: "#36c6e0", bold: true });
+  put(dr, 2 + active.length, " — " + EFFORT_DESCRIPTIONS[active], { dim: true });
+
+  // 9 — hint.
+  const hr = newRow();
+  put(hr, 2, "←/→ to adjust · Enter to confirm · Esc to cancel", { dim: true });
+
+  // --- Ultracode effect: full-panel violet pixel field as a BACKGROUND wash
+  //     over rows 0–7. Four layers per the spec:
+  //       (a) dynamic layered gradient  — diagonal violet bands drifting w/ phase
+  //       (b) vertical block glitch      — column strips jump up/down a row
+  //       (c) bloom glow                 — global breathing brightness (sin pulse)
+  //       (d) fade-in diffusion          — on entry, the field blooms outward
+  //                                        from centre (fade 0→1)
+  if (isUltra) {
+    // Diffusion radiates from the ▲ marker (track row 4, ultracode column).
+    const centerCol = leftPad + ULTRA_MARKER;
+    const centerRow = 4;
+    // Farthest reachable corner from the marker → full coverage at fade=1.
+    const maxDist = Math.max(
+      Math.hypot(centerCol - rectL, (centerRow - RECT_TOP) * 2.1),
+      Math.hypot(rectR - centerCol, (RECT_BOTTOM - centerRow) * 2.1),
+    );
+    // (c) bloom: ~2s breathing pulse, 0..1.
+    const bloom = (Math.sin(phase * 0.09) + 1) / 2;
+
+    for (let r = RECT_TOP; r <= RECT_BOTTOM; r++) {
+      const cells = grid[r]!;
+      // (b) glitch: each column strip gets a small vertical sample offset that
+      //     changes a few times a second — reads as a pixel-shift glitch.
+      for (let c = rectL; c <= rectR; c++) {
+        // (d) fade-in: cells within the diffusion radius are lit; radius grows
+        //     with `fade` from centre to the far corner.
+        const dx = c - centerCol;
+        const dy = (r - centerRow) * 2.1;
+        const dist = Math.hypot(dx, dy);
+        if (dist > maxDist * fade + 0.5) continue;
+
+        // glitch sample row: jump this strip up/down by 0/1 row occasionally.
+        const strip = Math.floor((c - rectL) / 2);
+        const jitter = hash(strip * 3.7 + Math.floor(phase / 6)) > 0.82
+          ? (hash(strip + Math.floor(phase / 6)) > 0.5 ? 1 : -1)
+          : 0;
+        const sr = r + jitter;
+
+        // (a) layered diagonal gradient: violet bands drift with phase.
+        const band = Math.sin((c * 0.16 + sr * 0.55 - phase * 0.11));
+        const layer = Math.sin((c * 0.05 - sr * 0.3 + phase * 0.06)); // slower second layer
+        // brightness: base + two gradient layers + bloom; dim near the edge so
+        // it reads as a bloom halo rather than a flat fill.
+        const edgeFalloff = 1 - 0.35 * (dist / maxDist);
+        const light =
+          (0.16 + 0.1 * band + 0.06 * layer + 0.09 * bloom) * edgeFalloff * (0.55 + 0.45 * fade);
+        const hueShift = 22 * band + 10 * layer; // magenta↔indigo across the field
+        cells[c] = { ...grid[r]![c]!, bg: violet(light, hueShift) };
+      }
     }
   }
-  return render(cells, leftPad);
+
+  return grid.map(renderRow);
 }
 
-/** Tier order for arrow-key navigation. */
 export { ORDER };
