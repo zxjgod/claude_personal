@@ -75,11 +75,11 @@ function renderRow(cells: Cell[]): string {
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
-// "Handsome" cyber-violet palette: electric indigo (≈258°) drifting toward
-// violet/magenta, higher saturation + a touch more lightness so it reads as a
-// neon pixel field rather than a flat purple. `hueShift` spreads the layers.
+// Vivid, "heavy" cyber-violet: electric indigo (≈262°) at high saturation so
+// the field reads as a rich neon violet rather than a washed grey-purple.
+// `light` drives ripple crests/troughs; `hueShift` spreads indigo↔magenta.
 function violet(light: number, hueShift = 0): string {
-  return hslToHex(258 + hueShift, 0.85, clamp(light, 0.07, 0.5));
+  return hslToHex(262 + hueShift, 0.95, clamp(light, 0.12, 0.62));
 }
 
 /** Deterministic [0,1) hash for the glitch jitter (stable within a frame). */
@@ -109,10 +109,11 @@ export function buildEffortFrame(opts: {
   const LAV = "#d8c8ee";
 
   // Rectangle bounds for the violet field. Left/right go FULL WIDTH (edge to
-  // edge); top/bottom span the divider row down to the blank before the text.
+  // edge). Top starts BELOW the divider white line (row 0), so the field's top
+  // edge sits under it; bottom is the blank row before the text.
   const rectL = 0;
   const rectR = canvasW - 1;
-  const RECT_TOP = 0;
+  const RECT_TOP = 1;
   const RECT_BOTTOM = 7;
 
   const grid: Cell[][] = [];
@@ -122,10 +123,10 @@ export function buildEffortFrame(opts: {
     return r;
   };
 
-  // 0 — divider. Full width for every tier (consistent); for ultracode the
-  //     purple wash below paints over its rectangle span as the pond's top edge.
+  // 0 — divider (white line). Full width, same dim style for every tier; the
+  //     ultracode violet field starts on the row below, so this stays clean.
   const dv = newRow();
-  for (let c = 0; c < canvasW; c++) dv[c] = { ch: "─", fg: isUltra ? LAV : undefined, dim: !isUltra };
+  for (let c = 0; c < canvasW; c++) dv[c] = { ch: "─", dim: true };
 
   // 1 — title.
   const tr = newRow();
@@ -201,52 +202,51 @@ export function buildEffortFrame(opts: {
   put(hr, 2, "←/→ to adjust · Enter to confirm · Esc to cancel", { dim: true });
 
   // --- Ultracode effect: full-panel violet pixel field as a BACKGROUND wash
-  //     over rows 0–7. Four layers per the spec:
-  //       (a) dynamic layered gradient  — diagonal violet bands drifting w/ phase
-  //       (b) vertical block glitch      — column strips jump up/down a row
-  //       (c) bloom glow                 — global breathing brightness (sin pulse)
-  //       (d) fade-in diffusion          — on entry, the field blooms outward
-  //                                        from centre (fade 0→1)
+  //     over rows 0–7, centred on the ▲ marker. Layers:
+  //       (1) fill diffusion  — a circle grows SLOWLY from ▲ to cover the rect
+  //       (2) radial ripples  — once filled, concentric rings expand outward
+  //                             from ▲ (sin of distance − time): the water wave
+  //       (3) vertical block glitch — column strips jump ±1 row occasionally
+  //       (4) bloom glow       — global breathing brightness
   if (isUltra) {
-    // Diffusion radiates from the ▲ marker (track row 4, ultracode column).
     const centerCol = leftPad + ULTRA_MARKER;
     const centerRow = 4;
-    // Farthest reachable corner from the marker → full coverage at fade=1.
     const maxDist = Math.max(
       Math.hypot(centerCol - rectL, (centerRow - RECT_TOP) * 2.1),
       Math.hypot(rectR - centerCol, (RECT_BOTTOM - centerRow) * 2.1),
     );
-    // (c) bloom: ~2s breathing pulse, 0..1.
-    const bloom = (Math.sin(phase * 0.09) + 1) / 2;
+    // (1) fill front grows slowly from the marker (eased), reaching full
+    //     coverage at fade=1. Slower start than before for a deliberate bloom.
+    const fillR = maxDist * (fade * fade); // ease-in → gentle at first
+    // (4) bloom: gentle global breathing.
+    const bloom = (Math.sin(phase * 0.08) + 1) / 2;
 
     for (let r = RECT_TOP; r <= RECT_BOTTOM; r++) {
       const cells = grid[r]!;
-      // (b) glitch: each column strip gets a small vertical sample offset that
-      //     changes a few times a second — reads as a pixel-shift glitch.
       for (let c = rectL; c <= rectR; c++) {
-        // (d) fade-in: cells within the diffusion radius are lit; radius grows
-        //     with `fade` from centre to the far corner.
-        const dx = c - centerCol;
-        const dy = (r - centerRow) * 2.1;
-        const dist = Math.hypot(dx, dy);
-        if (dist > maxDist * fade + 0.5) continue;
-
-        // glitch sample row: jump this strip up/down by 0/1 row occasionally.
+        // (3) glitch: sample this column strip from a row offset ±1 sometimes.
         const strip = Math.floor((c - rectL) / 2);
-        const jitter = hash(strip * 3.7 + Math.floor(phase / 6)) > 0.82
+        const jitter = hash(strip * 3.7 + Math.floor(phase / 6)) > 0.85
           ? (hash(strip + Math.floor(phase / 6)) > 0.5 ? 1 : -1)
           : 0;
         const sr = r + jitter;
 
-        // (a) layered diagonal gradient: violet bands drift with phase.
-        const band = Math.sin((c * 0.16 + sr * 0.55 - phase * 0.11));
-        const layer = Math.sin((c * 0.05 - sr * 0.3 + phase * 0.06)); // slower second layer
-        // brightness: base + two gradient layers + bloom; dim near the edge so
-        // it reads as a bloom halo rather than a flat fill.
-        const edgeFalloff = 1 - 0.35 * (dist / maxDist);
-        const light =
-          (0.16 + 0.1 * band + 0.06 * layer + 0.09 * bloom) * edgeFalloff * (0.55 + 0.45 * fade);
-        const hueShift = 22 * band + 10 * layer; // magenta↔indigo across the field
+        // Radial distance from the ▲ (aspect-corrected: chars ~2× tall).
+        const dx = c - centerCol;
+        const dy = (sr - centerRow) * 2.1;
+        const dist = Math.hypot(dx, dy);
+
+        // (1) not yet reached by the growing fill front → leave dark.
+        if (dist > fillR + 0.5) continue;
+
+        // (2) concentric ripple: rings of brightness expanding outward from ▲.
+        //     Slow drift (small phase coeff) so the waves roll out gently.
+        const ripple = Math.sin(dist * 0.24 - phase * 0.08);
+        // Soft edge so the fill front itself glows as it advances.
+        const front = Math.max(0, 1 - Math.abs(dist - fillR) / 3);
+        const base = 0.3 + 0.16 * ripple + 0.1 * bloom + 0.14 * front;
+        const light = base; // already vivid; violet() clamps to 0.12–0.62
+        const hueShift = 16 * ripple; // ring crests tilt toward magenta
         cells[c] = { ...grid[r]![c]!, bg: violet(light, hueShift) };
       }
     }

@@ -14,8 +14,9 @@ import type { Overlay } from "./store.js";
 import { buildEffortFrame, ORDER } from "./effort-fx.js";
 import { terminalColumns } from "./../terminal-width.js";
 
-// Frames of fade-in diffusion when switching INTO an animated tier.
-const FADE_FRAMES = 12;
+// Frames of fade-in diffusion when switching INTO ultracode. Larger = the
+// initial circle grows out from ▲ more slowly before the ripples take over.
+const FADE_FRAMES = 26;
 
 export function EffortPrompt({
   overlay,
