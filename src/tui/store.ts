@@ -10,6 +10,7 @@
 // ============================================================
 
 import type { ToolExecutionResult } from "./../types.js";
+import type { EffortLevel } from "./../effort.js";
 
 export type TranscriptItem =
   | { kind: "user"; id: number; text: string }
@@ -45,6 +46,11 @@ export type Overlay =
       options: Array<{ label: string; description?: string }>;
       multiSelect: boolean;
       resolve: (labels: string[] | null) => void;
+    }
+  | {
+      kind: "effort";
+      current: EffortLevel;
+      resolve: (level: EffortLevel | null) => void;
     };
 
 export interface StoreState {
@@ -241,6 +247,22 @@ export class TuiStore {
           resolve: (labels) => {
             this.set({ overlay: null });
             resolve(labels);
+          },
+        },
+      });
+    });
+  }
+
+  /** Open the interactive /effort slider; resolves with the chosen tier or null. */
+  askEffort(current: EffortLevel): Promise<EffortLevel | null> {
+    return new Promise((resolve) => {
+      this.set({
+        overlay: {
+          kind: "effort",
+          current,
+          resolve: (level) => {
+            this.set({ overlay: null });
+            resolve(level);
           },
         },
       });

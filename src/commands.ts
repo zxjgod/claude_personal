@@ -15,6 +15,13 @@ import type { PersistenceManager } from "./persistence.js";
 import type { SessionStats } from "./session-stats.js";
 import { formatUsd, formatDuration } from "./session-stats.js";
 import { listChanges, clearChanges } from "./change-tracker.js";
+import {
+  EFFORT_LEVELS,
+  EFFORT_DESCRIPTIONS,
+  getEffort,
+  parseEffort,
+  renderEffortSlider,
+} from "./effort.js";
 
 /** Source label for a tool listed by /tools. */
 export type ToolSource = "core" | "mcp";
@@ -235,6 +242,7 @@ const COMMANDS: SlashCommand[] = [
       console.log(`    Session:     ${chalk.cyan(ctx.sessionId.slice(0, 8) + "...")}`);
       console.log(`    Provider:    ${chalk.cyan(ctx.modelConfig.provider)}`);
       console.log(`    Model:       ${chalk.cyan(ctx.modelConfig.model)}`);
+      console.log(`    Effort:      ${chalk.cyan(getEffort(ctx.modelConfig.options))}`);
       console.log(`    Workspace:   ${chalk.cyan(ctx.workspaceRoot)}`);
       if (ctx.permissionMode) {
         console.log(`    Permissions: ${chalk.cyan(ctx.permissionMode)}`);
@@ -365,6 +373,7 @@ const COMMANDS: SlashCommand[] = [
       console.log(chalk.bold("  Config:"));
       console.log(`    Provider:    ${chalk.cyan(c.provider)}`);
       console.log(`    Model:       ${chalk.cyan(c.model)}`);
+      console.log(`    Effort:      ${chalk.cyan(getEffort(c.options))}`);
       console.log(`    Base URL:    ${chalk.cyan(c.baseURL ?? "(provider default)")}`);
       console.log(`    Max tokens:  ${chalk.cyan(c.maxTokens ?? "(default)")}`);
       console.log(`    Temperature: ${chalk.cyan(c.temperature ?? "(default)")}`);
@@ -449,6 +458,37 @@ const COMMANDS: SlashCommand[] = [
         console.log(chalk.gray("  Edit it to capture project context, then restart to load it."));
       } catch (e: any) {
         console.log(chalk.red(`  Could not write CLAUDE.md: ${e.message}`));
+      }
+    },
+  },
+  {
+    name: "effort",
+    description: "Reasoning effort slider (/effort opens the picker; /effort <level> sets it directly)",
+    run: (args, ctx) => {
+      const arg = args.trim().toLowerCase();
+      const options = (ctx.modelConfig.options ??= {});
+
+      // No arg → show the slider with the active tier highlighted.
+      if (!arg) {
+        console.log(renderEffortSlider(getEffort(options)));
+        console.log(chalk.gray(`  Set with /effort <level>. Levels: ${EFFORT_LEVELS.join(", ")}.`));
+        return;
+      }
+
+      const next = parseEffort(arg);
+      if (!next) {
+        console.log(chalk.yellow(`  Unknown effort: ${arg}. Levels: ${EFFORT_LEVELS.join(", ")}.`));
+        return;
+      }
+
+      const prev = getEffort(options);
+      options.effort = next;
+      console.log(renderEffortSlider(next));
+      if (next !== prev) {
+        console.log(chalk.gray(`  Effort: ${prev} → ${chalk.cyan(next)} (applies to the next turn).`));
+      }
+      if (next === "ultracode") {
+        console.log(chalk.gray(`  ${EFFORT_DESCRIPTIONS.ultracode}.`));
       }
     },
   },

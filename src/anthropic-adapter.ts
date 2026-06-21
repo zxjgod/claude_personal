@@ -16,6 +16,7 @@ import type {
   Tool,
 } from "./types.js";
 import { DYNAMIC_BOUNDARY } from "./system-prompt.js";
+import { anthropicEffort, getEffort } from "./effort.js";
 
 // --- Types kept intentionally local ---
 
@@ -241,7 +242,10 @@ export const anthropicCaller: ModelCaller = async function* (
     // caller uses a non-Claude provider because this adapter only runs for
     // provider="anthropic".
     thinking: config.options?.thinking ?? { type: "adaptive" },
-    output_config: config.options?.output_config ?? { effort: "high" },
+    // The /effort tier drives reasoning depth. An explicit output_config in
+    // options still wins; otherwise map the tier (default "high").
+    output_config:
+      config.options?.output_config ?? { effort: anthropicEffort(getEffort(config.options)) },
   } as any);
 
   stream.on("text", (text) => {

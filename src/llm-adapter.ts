@@ -5,6 +5,7 @@
 import OpenAI from "openai";
 import { anthropicCaller } from "./anthropic-adapter.js";
 import { isCloudGateway, resolveGateway } from "./cloud-gateway.js";
+import { getEffort, modelSupportsReasoningEffort, openaiReasoningEffort } from "./effort.js";
 import type {
   Message,
   ModelCaller,
@@ -123,6 +124,13 @@ async function* openAICompatibleCaller(
       ...messages.map(convertToOpenAIMessage),
     ];
 
+  // Reasoning effort (/effort). Only reasoning-capable models accept
+  // `reasoning_effort`; sending it to a plain chat model can 400 on strict
+  // providers, so gate it behind a model-capability check.
+  const reasoningEffort = modelSupportsReasoningEffort(config.provider, model)
+    ? openaiReasoningEffort(getEffort(config.options))
+    : undefined;
+
   const stream = await client.chat.completions.create({
     model,
     messages: requestMessages,
@@ -130,6 +138,7 @@ async function* openAICompatibleCaller(
     tool_choice: tools.length > 0 ? "auto" : undefined,
     max_tokens: config.maxTokens,
     temperature: config.temperature ?? 0.1,
+    ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
     stream: true,
     // Ask the provider to emit a final usage chunk. Without this, streamed
     // responses carry no token counts and usage stays at zero — breaking

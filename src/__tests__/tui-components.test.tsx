@@ -12,6 +12,7 @@ import { render } from "ink-testing-library";
 import { App } from "../tui/App.js";
 import { CompletedToolCard } from "../tui/ToolCard.js";
 import { PermissionPrompt, QuestionPrompt } from "../tui/Prompts.js";
+import { EffortPrompt } from "../tui/EffortPrompt.js";
 import { TuiStore } from "../tui/store.js";
 import type { ToolExecutionResult } from "../types.js";
 
@@ -118,5 +119,51 @@ describe("Prompts", () => {
     expect(frame).toContain("Which approach?");
     expect(frame).toContain("[ ]");
     expect(frame).toContain("first");
+  });
+});
+
+describe("EffortPrompt (M13.7)", () => {
+  it("renders the slider with track ends and the active tier", () => {
+    const overlay = {
+      kind: "effort" as const,
+      current: "high" as const,
+      resolve: () => {},
+    };
+    const { lastFrame } = render(<EffortPrompt overlay={overlay} />);
+    const frame = lastFrame()!;
+    expect(frame).toContain("Effort");
+    expect(frame).toContain("Faster");
+    expect(frame).toContain("Smarter");
+    expect(frame).toContain("ultracode");
+    expect(frame).toContain("Thorough reasoning");
+    expect(frame).toContain("adjust");
+  });
+
+  it("right-arrow advances toward max; left-arrow goes back", async () => {
+    const overlay = {
+      kind: "effort" as const,
+      current: "high" as const,
+      resolve: () => {},
+    };
+    const { stdin, lastFrame } = render(<EffortPrompt overlay={overlay} />);
+    stdin.write("[C"); // right arrow → xhigh
+    await new Promise((r) => setTimeout(r, 20));
+    expect(lastFrame()).toContain("Extra reasoning");
+  });
+
+  it("shows the ultracode sublabel and resolves on Enter", async () => {
+    let chosen: string | null = "unset";
+    const overlay = {
+      kind: "effort" as const,
+      current: "ultracode" as const,
+      resolve: (l: any) => {
+        chosen = l;
+      },
+    };
+    const { stdin, lastFrame } = render(<EffortPrompt overlay={overlay} />);
+    expect(lastFrame()).toContain("xhigh + workflows");
+    stdin.write("\r"); // Enter
+    await new Promise((r) => setTimeout(r, 20));
+    expect(chosen).toBe("ultracode");
   });
 });

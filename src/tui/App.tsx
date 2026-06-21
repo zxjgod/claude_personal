@@ -15,6 +15,7 @@ import { renderMarkdown } from "./../markdown.js";
 import type { TuiStore, TranscriptItem } from "./store.js";
 import { CompletedToolCard, ActiveToolCard } from "./ToolCard.js";
 import { PermissionPrompt, QuestionPrompt } from "./Prompts.js";
+import { EffortPrompt } from "./EffortPrompt.js";
 import { InputBox, type CommandInfo } from "./InputBox.js";
 
 const ORANGE = "#d77757";
@@ -109,8 +110,10 @@ export function App({
       {state.overlay ? (
         state.overlay.kind === "permission" ? (
           <PermissionPrompt overlay={state.overlay} />
-        ) : (
+        ) : state.overlay.kind === "question" ? (
           <QuestionPrompt overlay={state.overlay} />
+        ) : (
+          <EffortPrompt overlay={state.overlay} />
         )
       ) : (
         <InputBox commands={commands} disabled={state.busy} onSubmit={onSubmit} />

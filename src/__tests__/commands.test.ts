@@ -206,6 +206,37 @@ describe("handleSlashCommand", () => {
     expect(out).toContain("gpt-4o");
   });
 
+  it("/effort with no args shows the slider and default tier", async () => {
+    const ctx = makeCtx([]);
+    const r = await handleSlashCommand("/effort", ctx);
+    expect(r.handled).toBe(true);
+    const out = (console.log as any).mock.calls.flat().join("\n");
+    expect(out).toContain("Effort");
+    // Default tier is "high" when nothing is set.
+    expect(out).toContain("high");
+  });
+
+  it("/effort <level> sets modelConfig.options.effort", async () => {
+    const ctx = makeCtx([]);
+    await handleSlashCommand("/effort xhigh", ctx);
+    expect(ctx.modelConfig.options?.effort).toBe("xhigh");
+  });
+
+  it("/effort ultracode is accepted", async () => {
+    const ctx = makeCtx([]);
+    await handleSlashCommand("/effort ultracode", ctx);
+    expect(ctx.modelConfig.options?.effort).toBe("ultracode");
+  });
+
+  it("/effort rejects unknown levels without mutating config", async () => {
+    const ctx = makeCtx([]);
+    ctx.modelConfig.options = { effort: "high" };
+    await handleSlashCommand("/effort turbo", ctx);
+    expect(ctx.modelConfig.options?.effort).toBe("high");
+    const out = (console.log as any).mock.calls.flat().join("\n");
+    expect(out).toContain("Unknown effort");
+  });
+
   it("/diff lists session file changes", async () => {
     resetChangeTracker();
     const ctx = makeCtx([]);

@@ -14,6 +14,7 @@ import { agentLoop } from "./../agent-loop.js";
 import { handleSlashCommand } from "./../commands.js";
 import type { CommandContext } from "./../commands.js";
 import { expandFileRefs } from "./../file-refs.js";
+import { getEffort, EFFORT_DESCRIPTIONS } from "./../effort.js";
 import { App } from "./App.js";
 import { TuiStore } from "./store.js";
 import { printBanner } from "./banner.js";
@@ -231,6 +232,20 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
       store.addUserMessage(value);
 
       void (async () => {
+        // /effort with no args → open the interactive slider overlay (TUI).
+        // With an arg (e.g. /effort max) it falls through to the static handler.
+        if (/^\/effort\s*$/i.test(value)) {
+          const options = (deps.modelConfig.options ??= {});
+          const chosen = await store.askEffort(getEffort(options));
+          if (chosen) {
+            options.effort = chosen;
+            store.addNotice(
+              `  Effort: ${chosen} — ${EFFORT_DESCRIPTIONS[chosen]} (applies to the next turn)`,
+            );
+          }
+          return;
+        }
+
         // Slash commands run locally; capture their console output.
         if (value.startsWith("/")) {
           const lines = await captureConsole(async () => {

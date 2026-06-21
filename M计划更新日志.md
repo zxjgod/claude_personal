@@ -1074,15 +1074,63 @@ Use the task tool with subagent_name code-explorer to inspect README.md in the w
 
 ---
 
+# M13 — Slash 命令广度二期（进行中）
+
+## 13.7 `/effort` 推理强度滑块
+
+对齐官方 Claude Code 的 `/effort` 滑块：`low → medium → high → xhigh → max`（Faster ▶ Smarter）外加 `ultracode`（xhigh + workflows，倾向多代理编排）。参照 6 张官方效果图（`effor效果图/`）实现为**交互式覆盖层**，而非静态打印。
+
+新增 `src/effort.ts`：
+
+- `EFFORT_GRADIENT` / `EFFORT_LEVELS` / `DEFAULT_EFFORT`（默认 high）+ 每档一行说明，严格对照官方语义
+- `parseEffort`（大小写无关校验）/ `getEffort`（从 `options.effort` 读取，缺省回落 high）
+- `anthropicEffort`（透传 gradient，`ultracode → xhigh`）/ `openaiReasoningEffort`（≥high 截断为 high）
+- `modelSupportsReasoningEffort`（仅推理模型下发 `reasoning_effort`，避免对普通 chat 模型 400）
+- 色彩工具：`hslToHex` / `gradientColorAt`（冷青→暖红渐变）/ `rainbowColors`（按 phase 偏移的彩虹，驱动 ultracode 流动特效）
+
+新增 `src/tui/EffortPrompt.tsx` + `src/tui/effort-fx.ts`（交互式滑块覆盖层）：
+
+- **布局对齐官方终端样式**：顶部全宽分割线 + 左缩进 `Effort` 标题 + **水平居中**轨道（按终端宽度算 leftPad，不偏左右）；`Faster … Smarter` 两端 + `▲` 标记 + `┆` 分隔 + `low medium high xhigh max ┆ ultracode` + `xhigh + workflows` 副标签 + 底部 `←/→ adjust · Enter · Esc` 提示
+- `←/→` 切档（钳位不循环）、`1-6` 直选、Enter 确认、Esc 取消
+- **max 特效**：整条轨道彩虹流动 + "max" 标签逐字符彩虹闪烁
+- **ultracode 紫色能量爆发特效**（比 max 更浓）：游标 `✦▲✦` 淡紫脉冲光晕、底部环形紫光从中心向外扩散（`━` 进度条）、边缘故障像素抖动（`▒╎`）、四周漂浮闪烁的紫色电路粒子（`✦❖⋆*·`）、面板紫调柔光、标题/分割线呼吸微光；选中时 70ms 一帧（max 110ms）跑动画，离开即停
+- 帧构建抽到纯函数 `effort-fx.ts`（`buildEffortFrame` 返回 ANSI 字符串数组），EffortPrompt 只管计时+输入，便于单测
+
+接线：
+
+- TUI（run.tsx）：`/effort` 无参 → 打开交互式 overlay（store 新增 `effort` overlay + `askEffort`，App.tsx 渲染）；`/effort <level>` 仍走静态命令
+- 非 TTY（commands.ts）：保留静态滑块 `renderEffortSlider`（管道/CI 无法交互）
+- 写 `modelConfig.options.effort`，因 modelConfig 全程同一引用、agent loop 每轮重读，**下一轮即生效**
+- Anthropic 适配器：`output_config.effort` 由硬编码 "high" 改为按档映射（显式 output_config 仍优先）
+- OpenAI 兼容适配器：对推理模型注入 `reasoning_effort`
+- `/status` `/config` 同步显示当前 effort
+
+## 验收
+
+- `tsc --noEmit` 通过；`vitest run` → 39 文件 / **362 passed**（M12 为 332，新增 30：effort 模块 11 + commands 4 + EffortPrompt 组件 3 + effort-fx 帧构建 6 + 既有补充）
+- 渲染核对：6 档逐张渲染，布局居中对齐官方贴样；max 彩虹流动、ultracode 紫色能量特效（光晕/环形扩散/粒子/故障抖动/呼吸微光）均生效
+- 命令数 17 → **18**
+
+## 设计取舍
+
+- 帧构建做成纯函数模块：动画/输入与渲染解耦，特效可脱离 Ink 单测（强制 `chalk.level=3` 验证颜色）
+- 交互式 overlay 复用现有权限/提问菜单的同一套 store overlay 机制：零新增渲染管线
+- 特效动画仅在 max/ultracode 选中时 `setInterval`、离开 `clearInterval`：其余档位零开销，无常驻定时器
+- 终端无法做真实模糊/像素辉光，故用 ANSI truecolor 脉冲 + 漂浮粒子 + 环形扩散字符 + 紫调柔光近似「能量爆发」的仪式感
+- effort 存 `modelConfig.options.effort`；OpenAI 路径按模型能力 gate `reasoning_effort`（避免严格 provider 400）；`ultracode → xhigh`（官方定义 xhigh + workflows，workflows 属行为层）
+
+---
+
 # 最新项目状态
 
 | 指标 | 当前值 |
 |---|---|
-| 主线里程碑 | M1–M12 完成 |
-| 测试数量 | **332 passed** |
+| 主线里程碑 | M1–M12 完成；M13 进行中（13.7 ✅） |
+| 测试数量 | **362 passed** |
 | 渲染层 | 真 Ink (React 19) TUI + 非 TTY line fallback |
 | 核心工具 | **24 个**（含 5 个 Team 协作工具） |
-| Slash 命令 | 17 个 |
+| Slash 命令 | **18 个**（新增 /effort 推理强度滑块） |
+| 推理强度 | `/effort` low/medium/high/xhigh/max/ultracode，按 provider 映射 |
 | 多代理 | Team 有状态协作（create/send/list/get/stop + 轻量后台） |
 | MCP 传输 | stdio + http + sse + ws，含 OAuth 鉴权 |
 | 模型路由 | 多 provider + 云网关（Bedrock/Vertex，OpenAI 兼容面） |
@@ -1097,4 +1145,4 @@ Use the task tool with subagent_name code-explorer to inspect README.md in the w
 
 # 一句话总结
 
-M1–M12 全部完成：在 Ink TUI + 24 工具 + 17 命令 + Team 多代理 + 深度生态（MCP 四传输/OAuth/云网关/遥测）的基础上，最后补齐 QueryEngine 深度优化——snip 智能压缩、speculation 推测预取、prompt cache 命中观测、git/项目记忆自动注入。规划的 12 个里程碑收官；剩余差距主要是工具/命令的覆盖广度与官方 Bridge 远程会话等产品级生态。
+M1–M12 全部完成；M13 命令广度二期启动，首个任务 `/effort` 推理强度滑块落地——对齐官方 6 档（low→max + ultracode），切档下一轮即生效，Anthropic 走 output_config.effort、OpenAI 推理模型走 reasoning_effort，命令数 17→18，测试 332→350 全绿。
