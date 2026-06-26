@@ -27,35 +27,6 @@ export class ToolRegistry {
   }
 
   /**
-   * Generate the "AVAILABLE TOOLS" section for system prompt
-   */
-  formatToolsForLLM(): string {
-    return this.getEnabledTools()
-      .map(
-        (t) =>
-          `${t.name} — ${t.promptDescription}\n  Parameters: ${JSON.stringify(t.inputSchema.properties)}`,
-      )
-      .join("\n\n");
-  }
-
-  /**
-   * Convert to OpenAI function calling format
-   */
-  formatToolsForOpenAI(): Array<{
-    type: "function";
-    function: { name: string; description: string; parameters: object };
-  }> {
-    return this.getEnabledTools().map((t) => ({
-      type: "function" as const,
-      function: {
-        name: t.name,
-        description: t.promptDescription,
-        parameters: t.inputSchema,
-      },
-    }));
-  }
-
-  /**
    * Get the count of enabled tools
    */
   get enabledCount(): number {

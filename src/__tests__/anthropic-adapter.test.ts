@@ -145,6 +145,51 @@ describe("convertMessagesToAnthropic", () => {
     ]);
   });
 
+  it("degrades malformed tool-call arguments to an empty input instead of throwing", () => {
+    // Regression: a truncated/garbled arguments string (rare but possible
+    // mid-stream / after a provider hiccup) must not crash the adapter.
+    const messages: Message[] = [
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call_bad",
+            type: "function",
+            function: { name: "read", arguments: "{not valid json" },
+          },
+        ],
+      },
+    ];
+
+    const converted = convertMessagesToAnthropic(messages) as any[];
+    expect(converted).toHaveLength(1);
+    const block = converted[0].content[0];
+    expect(block.type).toBe("tool_use");
+    expect(block.id).toBe("call_bad");
+    expect(block.name).toBe("read");
+    expect(block.input).toEqual({});
+  });
+
+  it("treats empty tool-call arguments as an empty input", () => {
+    const messages: Message[] = [
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call_empty",
+            type: "function",
+            function: { name: "read", arguments: "" },
+          },
+        ],
+      },
+    ];
+
+    const converted = convertMessagesToAnthropic(messages) as any[];
+    expect(converted[0].content[0].input).toEqual({});
+  });
+
   it("converts tool results to user tool_result blocks", () => {
     const messages: Message[] = [
       {

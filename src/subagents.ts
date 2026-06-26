@@ -101,3 +101,33 @@ export function resolveSubagentTools(type: SubagentType, available: Tool[]): Too
     .map((name) => available.find((t) => t.name === name))
     .filter((t): t is Tool => t !== undefined);
 }
+
+// --- Core-tool injection (16.9) ---
+//
+// Sub-agent loops (Task / Team) need the core read/write/bash tools to resolve
+// a sub-agent type's toolNames against. Importing tools.ts directly from
+// task-tool.ts / team.ts created a cycle (tools.ts → TaskTool → tools.ts) that
+// was previously papered over with lazy dynamic import(). Instead, the CLI
+// injects the core tools once at startup via setCoreToolsForSubagents; the
+// sub-agent modules then read them from here with no import cycle. Tests that
+// build sub-agents without the CLI can call it too, or fall back to the lazy
+// import below.
+let _coreTools: Tool[] | null = null;
+
+/** Provide the core tool set used to resolve sub-agent tool names. */
+export function setCoreToolsForSubagents(tools: Tool[]): void {
+  _coreTools = tools;
+}
+
+/**
+ * The core tools available to sub-agents. Returns the injected set if the CLI
+ * provided one; otherwise lazily imports tools.ts as a fallback (kept so
+ * standalone tests/usage without CLI wiring still work).
+ */
+export async function getCoreToolsForSubagents(): Promise<Tool[]> {
+  if (_coreTools) return _coreTools;
+  const { ReadTool, GlobTool, GrepTool, BashTool, WriteTool, EditTool } =
+    await import("./tools.js");
+  _coreTools = [ReadTool, GlobTool, GrepTool, BashTool, WriteTool, EditTool];
+  return _coreTools;
+}

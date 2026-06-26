@@ -4,7 +4,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { exec, execSync } from "node:child_process";
+import { exec, execSync, execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import fg from "fast-glob";
 import type { Tool, ToolContext, ToolResult } from "./types.js";
@@ -30,8 +30,10 @@ import {
   AskUserQuestionTool,
 } from "./tools-m8-interactive.js";
 import { TEAM_TOOLS } from "./tools-team.js";
+import { M14_TOOLS } from "./tools-m9.js";
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 // --- Input type definitions for each tool ---
 
@@ -632,49 +634,142 @@ export const BashTool: Tool = createTool<BashInput>({
     required: ["command", "description"],
   },
   isReadOnly: false,
-  isConcurrencySafe: true,
+  isConcurrencySafe: false, // bash 命令之间有副作用依赖，不应并行；改走串行路径
 
   async call(input, context): Promise<ToolResult> {
     const timeout = input.timeout ?? 120_000;
+    const abortSignal = context.abortSignal;
 
-    try {
-      const { stdout, stderr } = await execAsync(input.command, {
-        cwd: context.workspaceRoot,
-        timeout,
-        maxBuffer: 10 * 1024 * 1024, // 10MB
-        shell: process.env.ComSpec || (process.platform === "win32" ? "cmd.exe" : "/bin/bash"),
-      });
+    // IMPORTANT: We deliberately do NOT use `exec`/`execAsync` here.
+    //
+    // On Windows, `exec(cmd, { shell: 'cmd.exe' })` spawns cmd.exe as the
+    // direct child, and the real command runs as a *grandchild* of cmd.exe.
+    // When `exec`'s `timeout` (or AbortSignal) fires, Node only kills the
+    // direct child (cmd.exe). The grandchild becomes an orphan that keeps
+    // holding the stdout/stderr pipe write-ends. Because the pipe never
+    // closes, the `execAsync` promise never settles — the agent loop hangs
+    // forever (UI spinner never stops), and Ctrl+C is ineffective.
+    //
+    // Fix: spawn the shell ourselves and, on timeout/abort, kill the ENTIRE
+    // process tree with `taskkill /T /F` (Windows) or a process-group signal
+    // (Unix). This guarantees the pipe closes and the promise always settles.
 
-      let output = "";
-      if (stdout) output += stdout;
-      if (stderr) output += (output ? "\n" : "") + stderr;
+    const child = spawn(input.command, [], {
+      cwd: context.workspaceRoot,
+      shell: process.env.ComSpec || (process.platform === "win32" ? "cmd.exe" : "/bin/bash"),
+      windowsHide: true,
+      // On Unix, give the child its own process group so we can signal the
+      // whole tree via process.kill(-pid). On Windows we use taskkill /T.
+      detached: process.platform !== "win32",
+    });
 
-      const truncated = output.length > 30_000;
-      if (truncated) {
-        output = output.slice(0, 30_000) + "\n[... result too long, truncated]";
+    let stdout = "";
+    let stderr = "";
+    let truncated = false;
+    const MAX_OUTPUT = 10 * 1024 * 1024; // 10MB cap on accumulated output
+    child.stdout?.on("data", (d: Buffer) => {
+      stdout += d.toString();
+      if (stdout.length > MAX_OUTPUT) {
+        truncated = true;
+        try { child.kill(); } catch { /* ignore */ }
       }
-
-      return {
-        content: output || "(no output)",
-        truncated,
-        metadata: { exitCode: 0 },
-      };
-    } catch (error: any) {
-      let output = "";
-      if (error.stdout) output += error.stdout;
-      if (error.stderr) output += (output ? "\n" : "") + error.stderr;
-
-      const truncated = output.length > 30_000;
-      if (truncated) {
-        output = output.slice(0, 30_000) + "\n[... result too long, truncated]";
+    });
+    child.stderr?.on("data", (d: Buffer) => {
+      stderr += d.toString();
+      if (stderr.length > MAX_OUTPUT) {
+        truncated = true;
+        try { child.kill(); } catch { /* ignore */ }
       }
+    });
 
+    // Kill the entire process tree (parent + all descendants). This is the
+    // only reliable way on Windows to also terminate grandchild processes
+    // that the shell spawned — `child.kill()` would only kill cmd.exe and
+    // leave orphans holding the pipes, re-introducing the original deadlock.
+    const killTree = () => {
+      if (child.pid === undefined) return;
+      try {
+        if (process.platform === "win32") {
+          // /T = kill tree, /F = force
+          spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+            windowsHide: true,
+            stdio: "ignore",
+          }).unref();
+        } else {
+          process.kill(-child.pid, "SIGKILL");
+        }
+      } catch {
+        // Process may already be gone — ignore.
+      }
+    };
+
+    let timedOut = false;
+    const timer = timeout > 0
+      ? setTimeout(() => {
+          timedOut = true;
+          killTree();
+        }, timeout)
+      : null;
+    let aborted = false;
+    const onAbort = () => {
+      aborted = true;
+      killTree();
+    };
+    if (abortSignal) {
+      if (abortSignal.aborted) {
+        aborted = true;
+        killTree();
+      } else {
+        abortSignal.addEventListener("abort", onAbort, { once: true });
+      }
+    }
+
+    const exitCode: number | null = await new Promise<number | null>((resolve) => {
+      child.on("error", () => resolve(-1));
+      // 'close' fires after stdio streams are closed (process tree killed),
+      // which is what we need so the captured stdout/stderr are complete.
+      child.on("close", (code) => resolve(code));
+    });
+
+    if (timer) clearTimeout(timer);
+    if (abortSignal) abortSignal.removeEventListener("abort", onAbort);
+
+    // Aborted (Ctrl+C) takes precedence over timeout.
+    if (aborted) {
       return {
-        content: output || error.message,
-        truncated,
-        metadata: { exitCode: error.code || 1 },
+        content: "Command aborted.",
+        metadata: { exitCode: -1, aborted: true },
       };
     }
+
+    let output = "";
+    if (stdout) output += stdout;
+    if (stderr) output += (output ? "\n" : "") + stderr;
+
+    const outTruncated = truncated || output.length > 30_000;
+    if (output.length > 30_000) {
+      output = output.slice(0, 30_000) + "\n[... result too long, truncated]";
+    }
+
+    // timedOut is set by our killTree timer. We cannot rely on exitCode === null
+    // here: on Windows `taskkill /T /F` makes the shell exit with code 1 (a real
+    // number), so the kill is indistinguishable from a genuine non-zero exit by
+    // code alone. The explicit flag is the only reliable signal that WE killed it
+    // for running too long.
+    if (timedOut) {
+      return {
+        content: output || `Command timed out after ${timeout}ms.`,
+        truncated: outTruncated,
+        error: `Command timed out after ${timeout}ms`,
+        metadata: { exitCode: -1, timedOut: true },
+      };
+    }
+
+    return {
+      content: output || "(no output)",
+      truncated: outTruncated,
+      metadata: { exitCode },
+    };
   },
 
   async checkPermissions(input, context) {
@@ -795,22 +890,33 @@ export const GrepTool: Tool = createTool<GrepInput>({
 
     // Try ripgrep first, fall back to Node.js
     try {
-      let cmd = `rg --line-number --no-heading --color never `;
-
+      // Build the rg invocation as an argv array passed to execFile rather
+      // than a shell-quoted string. The old code used Unix single-quotes
+      // (`--glob '*.ts'`, `'${pattern}'`) which are not valid quoting under
+      // cmd.exe — the project's primary shell on Windows — so the main rg
+      // path was effectively broken there and silently fell back. execFile
+      // passes args verbatim with no shell, so the same argv works on every
+      // platform and there is no injection surface to worry about.
+      const argv = [
+        "rg",
+        "--line-number",
+        "--no-heading",
+        "--color",
+        "never",
+        "--glob",
+        "!node_modules",
+        "--glob",
+        "!.git",
+      ];
       if (input.include) {
-        cmd += `--glob '${input.include}' `;
+        argv.push("--glob", input.include);
       }
+      argv.push(input.pattern, searchDir);
 
-      // Ignore common directories
-      cmd += `--glob '!node_modules' --glob '!.git' `;
-
-      // Escape the pattern for shell
-      const escaped = input.pattern.replace(/'/g, "'\\''");
-      cmd += `'${escaped}' '${searchDir}'`;
-
-      const { stdout } = await execAsync(cmd, {
+      const { stdout } = await execFileAsync(argv[0]!, argv.slice(1), {
         timeout: 30_000,
         maxBuffer: 10 * 1024 * 1024,
+        signal: context.abortSignal, // Ctrl+C 中断时杀死 ripgrep 子进程
       });
 
       const lines = stdout.trim().split("\n").filter(Boolean);
@@ -827,6 +933,10 @@ export const GrepTool: Tool = createTool<GrepInput>({
         metadata: { linesRead: Math.min(lines.length, MAX_RESULTS) },
       };
     } catch (error: any) {
+      // 中断时 ripgrep 子进程被杀
+      if (error.name === "AbortError" || context.abortSignal?.aborted) {
+        return { content: "Search aborted.", metadata: { aborted: true } };
+      }
       // rg not found or error — fall back
       if (error.code === 1 && error.stdout === "") {
         return { content: "No matches found." };
@@ -946,23 +1056,56 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+/**
+ * Build a unified-diff-style summary of the change using a real LCS over
+ * lines. The previous implementation judged each line by set membership
+ * (`!newLines.includes(line)`), which silently dropped moved or duplicated
+ * lines and produced misleading output that could fool the model about what
+ * actually changed. The LCS-based approach emits `-`/`+` hunks that reflect
+ * the true per-line edit, so moved blocks show as a delete+insert pair and
+ * duplicates are counted individually.
+ */
 function generateSimpleDiff(oldStr: string, newStr: string): string {
   const oldLines = oldStr.split("\n");
   const newLines = newStr.split("\n");
 
-  let diff = "";
-  for (const line of oldLines) {
-    if (!newLines.includes(line)) {
-      diff += `- ${line}\n`;
-    }
-  }
-  for (const line of newLines) {
-    if (!oldLines.includes(line)) {
-      diff += `+ ${line}\n`;
+  // Longest common subsequence table (lines as atoms).
+  const m = oldLines.length;
+  const n = newLines.length;
+  // dp[i][j] = LCS length of oldLines[i:] and newLines[j:].
+  const dp: number[][] = Array.from({ length: m + 1 }, () =>
+    new Array<number>(n + 1).fill(0),
+  );
+  for (let i = m - 1; i >= 0; i--) {
+    for (let j = n - 1; j >= 0; j--) {
+      dp[i][j] =
+        oldLines[i] === newLines[j]
+          ? dp[i + 1][j + 1] + 1
+          : Math.max(dp[i + 1][j], dp[i][j + 1]);
     }
   }
 
-  return diff || "(whitespace-only change)";
+  // Walk the table emitting `-` (removed), `+` (added), and unchanged lines
+  // skipped. Group consecutive +/- into hunks so the output reads like a diff.
+  const out: string[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < m && j < n) {
+    if (oldLines[i] === newLines[j]) {
+      i++;
+      j++;
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      out.push(`- ${oldLines[i]}`);
+      i++;
+    } else {
+      out.push(`+ ${newLines[j]}`);
+      j++;
+    }
+  }
+  while (i < m) out.push(`- ${oldLines[i++]}`);
+  while (j < n) out.push(`+ ${newLines[j++]}`);
+
+  return out.join("\n") || "(whitespace-only change)";
 }
 
 /**
@@ -1032,4 +1175,5 @@ export const CORE_TOOLS: Tool[] = [
   ExitPlanModeTool,
   AskUserQuestionTool,
   ...TEAM_TOOLS,
+  ...M14_TOOLS,
 ];

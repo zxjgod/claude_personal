@@ -18,7 +18,7 @@ import {
   ExitPlanModeTool,
   AskUserQuestionTool,
 } from "../tools-m8-interactive.js";
-import { parseTscOutput, filterByFile, formatDiagnostics } from "../lsp.js";
+import { parseTscOutput, filterByFile, formatDiagnostics } from "../lsp-legacy.js";
 import { markRead, resetReadTracker } from "../read-tracker.js";
 import type { Tool, ToolContext, UserQuestion } from "../types.js";
 

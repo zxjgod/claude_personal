@@ -8,6 +8,8 @@ import {
   listSubagentNames,
   registerSubagentType,
   resolveSubagentTools,
+  setCoreToolsForSubagents,
+  getCoreToolsForSubagents,
 } from "../subagents.js";
 import type { Tool } from "../types.js";
 
@@ -67,5 +69,14 @@ describe("subagent registry", () => {
 
   it("returns undefined for unknown types", () => {
     expect(getSubagentType("nope")).toBeUndefined();
+  });
+
+  // 16.9: core tools are injected (CLI) or lazily imported (fallback) rather
+  // than each sub-agent module dynamically importing tools.ts.
+  it("setCoreToolsForSubagents injects the tool set read by getCoreToolsForSubagents", async () => {
+    const injected = [fakeTool("read"), fakeTool("bash")];
+    setCoreToolsForSubagents(injected);
+    const got = await getCoreToolsForSubagents();
+    expect(got).toBe(injected);
   });
 });

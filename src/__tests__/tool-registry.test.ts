@@ -74,28 +74,6 @@ describe("ToolRegistry", () => {
     const registry = new ToolRegistry();
     expect(registry.getTool("unknown")).toBeUndefined();
   });
-
-  it("should format tools for OpenAI", () => {
-    const registry = new ToolRegistry();
-    const tool = createTool({
-      name: "read",
-      description: "Read files",
-      promptDescription: "Read a file from disk",
-      inputSchema: {
-        type: "object",
-        properties: { filePath: { type: "string", description: "Path" } },
-        required: ["filePath"],
-      },
-      isReadOnly: true,
-      isConcurrencySafe: true,
-      call: async () => ({ content: "ok" }),
-    });
-    registry.register(tool);
-    const formatted = registry.formatToolsForOpenAI();
-    expect(formatted).toHaveLength(1);
-    expect(formatted[0].type).toBe("function");
-    expect(formatted[0].function.name).toBe("read");
-  });
 });
 
 describe("createTool", () => {

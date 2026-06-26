@@ -35,6 +35,15 @@ export interface SessionMeta {
 
 export class PersistenceManager {
   private sessionsDir: string;
+  /**
+   * Save serialization queue. `save()` does a read-modify-write (load existing
+   * to preserve `createdAt`, then write), so concurrent saves from the TUI's
+   * onSave + the loop's auto-save + an interrupting cleanup would race: the
+   * second load reads stale data and the first write is clobbered, losing the
+   * latest messages. Chaining every save onto a single Promise chain makes the
+   * read-modify-write critical section effectively atomic.
+   */
+  private saveChain: Promise<void> = Promise.resolve();
 
   constructor(workspaceRoot: string) {
     this.sessionsDir = path.join(workspaceRoot, ".claude", "sessions");
@@ -62,45 +71,82 @@ export class PersistenceManager {
   }
 
   /**
-   * Save a session to disk
+   * Save a session to disk.
+   *
+   * Writes are serialized via `saveChain` so concurrent callers (TUI onSave,
+   * loop auto-save, cleanup-on-exit) don't interleave their read-modify-write
+   * and clobber each other. The actual file write is atomic: we write to a
+   * sibling temp file then rename, so a crash mid-write never leaves a
+   * truncated/partial session file (which would make the session unresumable).
+   * Returns a Promise that resolves once THIS save has flushed.
    */
   async save(
     sessionId: string,
     messages: Message[],
     options?: { completed?: boolean },
   ): Promise<void> {
-    this.ensureDir();
+    // Chain onto the tail of any in-flight save. Each link captures its own
+    // sessionId/messages snapshot, so the serialized writes stay independent.
+    const next = this.saveChain.then(() =>
+      this.saveSerialized(sessionId, messages, options),
+    );
+    // Swallow rejection on the chain itself so a failing save doesn't poison
+    // subsequent ones; the caller still sees the rejection via `next`.
+    this.saveChain = next.catch(() => undefined);
+    return next;
+  }
 
-    const filePath = this.sessionPath(sessionId);
-    const now = new Date().toISOString();
+  private saveSerialized(
+    sessionId: string,
+    messages: Message[],
+    options: { completed?: boolean } | undefined,
+  ): Promise<void> {
+    return new Promise((resolve, reject) => {
+      try {
+        this.ensureDir();
 
-    let data: SessionData;
+        const filePath = this.sessionPath(sessionId);
+        const now = new Date().toISOString();
 
-    // Try to load existing session to preserve createdAt
-    const existing = this.loadSync(sessionId);
-    if (existing) {
-      data = {
-        ...existing,
-        updatedAt: now,
-        messages,
-        messageCount: messages.length,
-        completed: options?.completed ?? existing.completed,
-      };
-    } else {
-      data = {
-        version: 1,
-        sessionId,
-        createdAt: now,
-        updatedAt: now,
-        workspaceRoot: path.dirname(this.sessionsDir),
-        messages,
-        messageCount: messages.length,
-        completed: options?.completed ?? false,
-      };
-    }
+        let data: SessionData;
 
-    const json = JSON.stringify(data, null, 2);
-    fs.writeFileSync(filePath, json, "utf-8");
+        // Try to load existing session to preserve createdAt
+        const existing = this.loadSync(sessionId);
+        if (existing) {
+          data = {
+            ...existing,
+            updatedAt: now,
+            messages,
+            messageCount: messages.length,
+            completed: options?.completed ?? existing.completed,
+          };
+        } else {
+          data = {
+            version: 1,
+            sessionId,
+            createdAt: now,
+            updatedAt: now,
+            workspaceRoot: path.dirname(this.sessionsDir),
+            messages,
+            messageCount: messages.length,
+            completed: options?.completed ?? false,
+          };
+        }
+
+        const json = JSON.stringify(data, null, 2);
+
+        // Atomic write: temp file + rename. A direct writeFileSync can leave a
+        // truncated file if the process is killed (Ctrl+C / OOM) mid-write;
+        // rename is atomic on the same filesystem, so readers always see either
+        // the old or the new complete file, never a partial one.
+        const tmpPath = `${filePath}.${process.pid}.tmp`;
+        fs.writeFileSync(tmpPath, json, "utf-8");
+        fs.renameSync(tmpPath, filePath);
+        resolve();
+      } catch (error) {
+        reject(error);
+      }
+    });
   }
 
   /**
@@ -126,7 +172,12 @@ export class PersistenceManager {
 
       return data;
     } catch (error: any) {
+      // Missing file is expected (first save / new session) — not an error.
       if (error.code === "ENOENT") return null;
+      // A corrupt or partially-written session file should not crash the
+      // caller (e.g. a save that re-reads to preserve createdAt). Treat it as
+      // "no existing session" so a fresh one is written instead of throwing.
+      if (error instanceof SyntaxError) return null;
       throw error;
     }
   }
@@ -164,7 +215,11 @@ export class PersistenceManager {
       );
 
       return sessions;
-    } catch {
+    } catch (error) {
+      // Directory missing or unreadable: surface as a warning so it isn't
+      // silently lost, but still return [] so callers (e.g. --resume listing)
+      // degrade gracefully instead of crashing.
+      console.warn("persistence: failed to list sessions:", error);
       return [];
     }
   }

@@ -16,12 +16,19 @@ import type { SessionStats } from "./session-stats.js";
 import { formatUsd, formatDuration } from "./session-stats.js";
 import { listChanges, clearChanges } from "./change-tracker.js";
 import {
+  gatherDiffSummary,
+  suggestCommitSubject,
+  type GitDiffSummary,
+} from "./git-context.js";
+import { listSubagentNames, getSubagentType } from "./subagents.js";
+import {
   EFFORT_LEVELS,
   EFFORT_DESCRIPTIONS,
   getEffort,
   parseEffort,
   renderEffortSlider,
 } from "./effort.js";
+import { listSkills, type SkillInfo } from "./skills.js";
 
 /** Source label for a tool listed by /tools. */
 export type ToolSource = "core" | "mcp";
@@ -53,6 +60,8 @@ export interface CommandContext {
   systemPrompt?: string;
   /** Number of connected MCP servers (for /status). */
   mcpServerCount?: number;
+  /** MCP manager for /mcp (server/tool/auth status). */
+  mcpManager?: import("./mcp.js").MCPManager;
 }
 
 export interface CommandResult {
@@ -492,9 +501,261 @@ const COMMANDS: SlashCommand[] = [
       }
     },
   },
+  {
+    name: "commit",
+    description: "Draft a commit message from the current git changes",
+    run: async (_args, ctx) => {
+      const summary = await gatherDiffSummary(ctx.workspaceRoot);
+      if (!summary) {
+        console.log(chalk.yellow("  Not a git repository (or git unavailable)."));
+        return;
+      }
+      if (summary.files.length === 0) {
+        console.log(chalk.gray("  No changes to commit (working tree clean vs HEAD)."));
+        return;
+      }
+      console.log("");
+      console.log(chalk.bold(`  Commit draft (${summary.branch}):`));
+      console.log("");
+      console.log(`    ${chalk.green(suggestCommitSubject(summary))}`);
+      console.log("");
+      console.log(chalk.bold("  Files:"));
+      for (const f of summary.files) {
+        const tag = f.status.includes("D")
+          ? chalk.red("deleted ")
+          : f.status.includes("A") || f.status === "??"
+            ? chalk.green("added   ")
+            : chalk.yellow("modified");
+        const stat =
+          f.insertions !== undefined && f.deletions !== undefined
+            ? chalk.gray(` +${f.insertions}/-${f.deletions}`)
+            : "";
+        console.log(`    ${tag} ${chalk.cyan(f.path)}${stat}`);
+      }
+      if (summary.truncated) console.log(chalk.gray("    … (list truncated)"));
+      console.log("");
+      console.log(chalk.gray("  Review, then run:  git add -A && git commit -e"));
+      console.log(chalk.gray("  (This is a draft — edit before committing.)"));
+    },
+  },
+  {
+    name: "pr",
+    description: "Draft a PR description from commits/changes vs upstream",
+    run: async (_args, ctx) => {
+      const summary = await gatherDiffSummary(ctx.workspaceRoot);
+      if (!summary) {
+        console.log(chalk.yellow("  Not a git repository (or git unavailable)."));
+        return;
+      }
+      if (summary.upstreamFiles.length === 0 && summary.branchCommits.length === 0) {
+        console.log(chalk.gray("  No upstream tracking branch or no commits ahead of it."));
+        console.log(chalk.gray("  Push your branch first, then /pr."));
+        return;
+      }
+      console.log("");
+      console.log(chalk.bold(`  PR draft — ${summary.branch}:`));
+      console.log("");
+      // Title: reuse the commit-subject heuristic on the upstream diff.
+      const upstreamSummary: GitDiffSummary = { ...summary, files: summary.upstreamFiles };
+      console.log(`    ${chalk.green(suggestCommitSubject(upstreamSummary))}`);
+      console.log("");
+      if (summary.branchCommits.length > 0) {
+        console.log(chalk.bold("  Commits on this branch:"));
+        for (const c of summary.branchCommits) console.log(`    - ${c}`);
+        console.log("");
+      }
+      console.log(chalk.bold("  Files changed vs upstream:"));
+      for (const f of summary.upstreamFiles) {
+        console.log(`    ${f.status.padEnd(2)} ${chalk.cyan(f.path)}`);
+      }
+      console.log("");
+      console.log(chalk.gray("  Body suggestion: summarize what changed and why, then"));
+      console.log(chalk.gray("  create with:  gh pr create --body-file <(echo ...)"));
+      console.log(chalk.gray("  (This is a draft — refine before posting.)"));
+    },
+  },
+  {
+    name: "agents",
+    description: "List available sub-agent roles and their tool set",
+    run: () => {
+      const names = listSubagentNames();
+      if (names.length === 0) {
+        console.log(chalk.gray("  No sub-agent roles registered."));
+        return;
+      }
+      console.log("");
+      console.log(chalk.bold("  Sub-agent roles:"));
+      for (const name of names) {
+        const type = getSubagentType(name);
+        if (!type) continue;
+        console.log("");
+        console.log(`    ${chalk.cyan(name)} — ${type.description}`);
+        console.log(chalk.gray(`      tools: ${type.toolNames.join(", ")}`));
+        if (type.maxTurns) console.log(chalk.gray(`      max turns: ${type.maxTurns}`));
+      }
+    },
+  },
+  {
+    name: "skills",
+    description: "List registered skills (loadable via the Skill tool)",
+    run: () => {
+      const skills = listSkills();
+      if (skills.length === 0) {
+        console.log(chalk.gray("  No skills registered yet."));
+        return;
+      }
+      console.log("");
+      console.log(chalk.bold(`  Skills (${skills.length}):`));
+      for (const s of skills) {
+        console.log(`    ${chalk.cyan(s.name.padEnd(20))} ${chalk.gray(s.description)}`);
+      }
+    },
+  },
+  {
+    name: "export",
+    description: "Export the current session to a markdown file (/export [path])",
+    run: (args, ctx) => {
+      const target = args.trim() || path.join(ctx.workspaceRoot, `session-${ctx.sessionId.slice(0, 8)}.md`);
+      const md = renderSessionMarkdown(ctx);
+      try {
+        fs.mkdirSync(path.dirname(target) || ".", { recursive: true });
+        fs.writeFileSync(target, md, "utf-8");
+        console.log(chalk.gray(`  Exported ${ctx.messages.length} messages → ${target}`));
+      } catch (e: any) {
+        console.log(chalk.red(`  Could not write ${target}: ${e.message}`));
+      }
+    },
+  },
+  {
+    name: "mcp",
+    description: "Show MCP server, tool, and auth status",
+    run: (_args, ctx) => {
+      if (!ctx.mcpManager) {
+        console.log(chalk.gray("  MCP manager is not available in this session."));
+        return;
+      }
+      const tools = ctx.mcpManager.getAllTools();
+      const count = ctx.mcpManager.serverCount;
+      console.log("");
+      console.log(chalk.bold(`  MCP (${count} server${count === 1 ? "" : "s"}):`));
+      if (count === 0) {
+        console.log(chalk.gray("  No MCP servers connected."));
+        return;
+      }
+      const mcpTools = tools.filter((t) => t.name.startsWith("mcp__"));
+      console.log(`    Servers: ${chalk.cyan(count)}   Tools: ${chalk.cyan(mcpTools.length)}`);
+      // Group tools by server: mcp__<server>__<tool>
+      const byServer = new Map<string, string[]>();
+      for (const t of mcpTools) {
+        const parts = t.name.split("__");
+        const server = parts[1] ?? "unknown";
+        const tool = parts.slice(2).join("__") || t.name;
+        if (!byServer.has(server)) byServer.set(server, []);
+        byServer.get(server)!.push(tool);
+      }
+      for (const [server, toolNames] of byServer) {
+        console.log(`    ${chalk.cyan(server)} — ${toolNames.length} tool(s)`);
+        for (const tn of toolNames.slice(0, 12)) console.log(chalk.gray(`        - ${tn}`));
+        if (toolNames.length > 12) console.log(chalk.gray(`        … +${toolNames.length - 12} more`));
+      }
+      console.log(chalk.gray("  Auth: tokens are persisted per-server via the OAuth provider."));
+    },
+  },
+  {
+    name: "theme",
+    description: "Show or set the color theme (/theme [dark|light])",
+    run: (args, ctx) => {
+      const arg = args.trim().toLowerCase();
+      const options = (ctx.modelConfig.options ??= {});
+      if (arg === "dark" || arg === "light") {
+        (options as Record<string, unknown>).theme = arg;
+        console.log(chalk.gray(`  Theme: ${arg}`));
+        console.log(chalk.gray("  (Theme applies to the TUI renderer; restart for full effect.)"));
+        return;
+      }
+      const current = (options.theme as string) ?? "dark";
+      console.log(`  Theme: ${chalk.cyan(current)}`);
+      console.log(chalk.gray("  Set with /theme dark or /theme light."));
+    },
+  },
+  {
+    name: "keybindings",
+    description: "Show the active keyboard shortcuts",
+    run: () => {
+      console.log("");
+      console.log(chalk.bold("  Keybindings:"));
+      const bindings: Array<[string, string]> = [
+        ["Enter", "Submit the current input"],
+        ["Ctrl+J", "Insert a newline (multi-line input)"],
+        ["Tab", "Accept the highlighted /command suggestion"],
+        ["↑ / ↓", "Move cursor between lines, or navigate command suggestions"],
+        ["← / →", "Move the cursor within the line"],
+        ["Ctrl+A / Ctrl+E", "Move cursor to start / end of the line"],
+        ["Home / End", "Same as Ctrl+A / Ctrl+E"],
+        ["Ctrl+R", "Toggle expansion of the last long tool card"],
+        ["Ctrl+C", "Interrupt the current turn (keeps the session)"],
+        ["PgUp / PgDn", "Scroll the transcript back / forward (End to resume)"],
+        ["/", "Open the full command palette"],
+        ["@<path>", "Inject a file's contents into the message"],
+      ];
+      for (const [k, desc] of bindings) {
+        console.log(`    ${chalk.cyan(k.padEnd(18))} ${chalk.gray(desc)}`);
+      }
+    },
+  },
 ];
 
 const COMMAND_MAP = new Map(COMMANDS.map((c) => [c.name, c]));
+
+/**
+ * Render the current session's messages as a readable markdown transcript
+ * (for /export). Pure and synchronous — only reads ctx.messages/sessionId.
+ */
+function renderSessionMarkdown(ctx: CommandContext): string {
+  const lines: string[] = [
+    `# Session ${ctx.sessionId}`,
+    "",
+    `Workspace: \`${ctx.workspaceRoot}\``,
+    `Model: ${ctx.modelConfig.model} (${ctx.modelConfig.provider})`,
+    `Exported: ${new Date().toISOString()}`,
+    `Messages: ${ctx.messages.length}`,
+    "",
+    "---",
+    "",
+  ];
+  for (const m of ctx.messages) {
+    if (m.role === "user") {
+      lines.push("## 👤 user", "");
+      for (const block of m.content) {
+        if (block.type === "text") lines.push(block.text);
+      }
+      lines.push("");
+    } else if (m.role === "assistant") {
+      lines.push("## ● assistant", "");
+      if (typeof m.content === "string" && m.content) lines.push(m.content);
+      if (m.tool_calls) {
+        for (const tc of m.tool_calls) {
+          lines.push(`\`\`\`tool:${tc.function.name}`);
+          lines.push(tc.function.arguments);
+          lines.push("```");
+          lines.push("");
+        }
+      }
+      lines.push("");
+    } else if (m.role === "tool") {
+      lines.push(`<details><summary>tool: ${m.name}</summary>`, "");
+      lines.push("```");
+      lines.push(m.content);
+      lines.push("```");
+      lines.push("</details>", "");
+    } else if (m.role === "system") {
+      lines.push("<details><summary>system</summary>", "");
+      lines.push(m.content);
+      lines.push("</details>", "");
+    }
+  }
+  return lines.join("\n");
+}
 
 /**
  * Scan a workspace and produce a starter CLAUDE.md. Best-effort: detects a

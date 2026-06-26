@@ -87,13 +87,16 @@ export class SessionStats {
 
   /**
    * Prompt-cache hit rate: cached input tokens / total input tokens (12.3).
-   * Returns null when there were no input tokens yet. `inputTokens` already
-   * includes cache_read + cache_creation (the adapter sums them), so the read
-   * fraction is a faithful hit rate.
+   * Returns null when there were no input tokens yet. With the unified usage
+   * accounting (16.5), `inputTokens` is the non-cached input from Anthropic
+   * (which excludes cache tokens) OR prompt_tokens from OpenAI (which
+   * includes cached). To get a faithful denominator across both providers we
+   * add cache_read back in, so the rate = cacheRead / (input + cacheRead).
    */
   get cacheHitRate(): number | null {
-    if (this.inputTokens === 0) return null;
-    return this.cacheReadTokens / this.inputTokens;
+    const denom = this.inputTokens + this.cacheReadTokens;
+    if (denom === 0) return null;
+    return this.cacheReadTokens / denom;
   }
 
   /** Record that `n` tools executed (default 1). */

@@ -106,6 +106,7 @@ async function* openAICompatibleCaller(
   tools: Tool[],
   systemPrompt: string,
   config: ModelConfig,
+  abortSignal?: AbortSignal,
 ): AsyncGenerator<StreamEvent> {
   const client = new OpenAI({
     apiKey: config.apiKey,
@@ -131,6 +132,15 @@ async function* openAICompatibleCaller(
     ? openaiReasoningEffort(getEffort(config.options))
     : undefined;
 
+  // Compose the caller's AbortSignal (Ctrl+C / turn abort) with a safety
+  // timeout so a hung provider stream can't pin the loop indefinitely. The
+  // OpenAI SDK forwards `signal` to fetch, aborting the in-flight request.
+  const STREAM_TIMEOUT_MS = 5 * 60 * 1000;
+  const timeoutSignal = AbortSignal.timeout(STREAM_TIMEOUT_MS);
+  const combinedSignal = abortSignal
+    ? AbortSignal.any([abortSignal, timeoutSignal])
+    : timeoutSignal;
+
   const stream = await client.chat.completions.create({
     model,
     messages: requestMessages,
@@ -144,7 +154,7 @@ async function* openAICompatibleCaller(
     // responses carry no token counts and usage stays at zero — breaking
     // both the CLI token display and the auto-compaction threshold.
     stream_options: { include_usage: true },
-  });
+  }, { signal: combinedSignal });
 
   // Parse streaming response
   const toolCallBuffers: Map<
@@ -152,7 +162,10 @@ async function* openAICompatibleCaller(
     { id: string; name: string; arguments: string }
   > = new Map();
 
-  let usage = { input_tokens: 0, output_tokens: 0 };
+  let usage: { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number } = {
+    input_tokens: 0,
+    output_tokens: 0,
+  };
   let finishReason = "stop";
   let toolCallsEmitted = false;
 
@@ -175,6 +188,7 @@ async function* openAICompatibleCaller(
   };
 
   for await (const chunk of stream) {
+    if (abortSignal?.aborted) break;
     const delta = chunk.choices[0]?.delta;
 
     // Text delta
@@ -201,10 +215,20 @@ async function* openAICompatibleCaller(
 
     // Usage — with stream_options.include_usage this arrives in a final
     // chunk whose `choices` array is empty, AFTER the finish_reason chunk.
+    // OpenAI's prompt_tokens is the total input billed for the call; when the
+    // provider serves a prompt-cache hit it reports `prompt_tokens_details.
+    // cached_tokens` separately. We keep input_tokens == prompt_tokens (the
+    // non-cached + cached total billed) and surface cached_tokens as
+    // cache_read so /cost and autoCompact see a cache breakdown consistent
+    // with the Anthropic path. (input_tokens here is NOT double-counted:
+    // prompt_tokens already includes cached tokens, so we do not add
+    // cache_read on top — unlike Anthropic where input_tokens excludes them.)
     if (chunk.usage) {
+      const cached = (chunk.usage as any).prompt_tokens_details?.cached_tokens ?? 0;
       usage = {
         input_tokens: chunk.usage.prompt_tokens || 0,
         output_tokens: chunk.usage.completion_tokens || 0,
+        cache_read_input_tokens: cached,
       };
     }
 
@@ -217,6 +241,12 @@ async function* openAICompatibleCaller(
   }
 
   // Stream drained — emit tool calls if finish_reason never fired, then done.
+  // If the caller aborted mid-stream, surface a recoverable error so the loop
+  // can stop cleanly instead of committing partial tool calls.
+  if (abortSignal?.aborted) {
+    yield { type: "error", error: new Error("Aborted") };
+    return;
+  }
   yield* emitToolCalls();
   yield { type: "done", usage, finish_reason: finishReason };
 }

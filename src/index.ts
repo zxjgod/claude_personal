@@ -116,8 +116,11 @@ export {
   checkPermission,
   checkDangerousPattern,
   isBlockedPath,
+  classifyPermissionRisk,
+  parseClassifierVerdict,
 } from "./permissions.js";
 export type { PermissionCheckOptions } from "./permissions.js";
+export type { ClassifierResult, PermissionClassifier } from "./types.js";
 
 // MCP
 export {

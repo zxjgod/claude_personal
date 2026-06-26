@@ -95,12 +95,47 @@ describe("openAICompatibleCaller", () => {
 
     const done = events.find((e) => e.type === "done");
     expect(done).toBeDefined();
-    expect((done as any).usage).toEqual({
+    expect((done as any).usage).toMatchObject({
       input_tokens: 100,
       output_tokens: 25,
     });
+    // No cache breakdown surfaced when the provider omits cached_tokens.
+    expect((done as any).usage.cache_read_input_tokens ?? 0).toBe(0);
     // `done` must be the final event so usage is not lost.
     expect(events[events.length - 1].type).toBe("done");
+  });
+
+  it("surfaces cached_tokens as cache_read_input_tokens (16.5)", async () => {
+    createSpy.mockResolvedValue(
+      makeStream([
+        { choices: [{ delta: { content: "hi" }, finish_reason: null }] },
+        { choices: [{ delta: {}, finish_reason: "stop" }] },
+        {
+          choices: [],
+          usage: {
+            prompt_tokens: 100,
+            completion_tokens: 25,
+            prompt_tokens_details: { cached_tokens: 60 },
+          },
+        },
+      ]),
+    );
+
+    const caller = createModelCaller(config);
+    const events: StreamEvent[] = [];
+    for await (const e of caller(messages, [], "sys", config)) {
+      events.push(e);
+    }
+
+    const done = events.find((e) => e.type === "done");
+    // prompt_tokens (100) already includes the 60 cached; we do NOT add
+    // cache_read on top, matching the OpenAI billing model and staying
+    // consistent with the Anthropic path's non-double-counting.
+    expect((done as any).usage).toMatchObject({
+      input_tokens: 100,
+      output_tokens: 25,
+      cache_read_input_tokens: 60,
+    });
   });
 
   it("emits tool_use before done and parses arguments", async () => {

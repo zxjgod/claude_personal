@@ -122,3 +122,88 @@ describe("autoCompact message safety", () => {
     expect(types).toContain("compacted");
   });
 });
+
+// ============================================================
+// Error recovery: context_length & 429 retry behavior
+// ============================================================
+// Regression for the bug where handleModelError returned plain "retry" for a
+// context_length error WITHOUT compressing, so the loop re-sent identical
+// oversized messages every turn → infinite retry. Also covers the missing
+// retry cap on sustained 429s.
+// ============================================================
+
+describe("handleModelError recovery behavior", () => {
+  it("compacts once on context_length error instead of looping forever", async () => {
+    // First call emits a context_length error; subsequent calls succeed.
+    let calls = 0;
+    const caller: ModelCaller = async function* (messages: Message[]) {
+      calls++;
+      if (calls === 1) {
+        const e = new Error("context_length_exceeded: maximum context length");
+        (e as any).status = 400;
+        yield { type: "error", error: e };
+        return;
+      }
+      // After the errored call, the loop compacts. The final successful
+      // retry call receives a history far smaller than the original 40
+      // tool-result pairs — proving compression actually ran (not just a
+      // verbatim retry that would loop forever).
+      if (calls >= 3) {
+        expect(messages.length).toBeLessThan(40);
+      }
+      yield { type: "text_delta", delta: "recovered" };
+      yield {
+        type: "done",
+        usage: { input_tokens: 1, output_tokens: 1 },
+        finish_reason: "stop",
+      };
+    };
+
+    const messages = buildHistoryEndingInToolResult(40);
+    const types: string[] = [];
+    for await (const event of agentLoop(messages, [], caller, testConfig, {
+      systemPrompt: "sys",
+      maxTurns: 5,
+      autoCompactThreshold: Number.POSITIVE_INFINITY, // disable proactive compaction
+    })) {
+      types.push(event.type);
+    }
+
+    // Bounded number of model calls (errored + summarization + retry), NOT an
+    // infinite loop of identical oversized retries.
+    expect(calls).toBeGreaterThan(1);
+    expect(calls).toBeLessThan(10);
+    // A compaction event was emitted in response to the error path.
+    expect(types).toContain("compacted");
+    // The loop completed successfully, not via an abort/error terminal.
+    expect(types).toContain("done");
+  });
+
+  it("aborts after the 429 retry budget is exhausted instead of looping forever", async () => {
+    // Always 429 — would loop forever without the cap.
+    let calls = 0;
+    const caller: ModelCaller = async function* () {
+      calls++;
+      const e: any = new Error("rate limited");
+      e.status = 429;
+      e.retryAfter = 1;
+      yield { type: "error", error: e };
+    };
+
+    const messages: Message[] = [
+      { role: "user", content: [{ type: "text", text: "hi" }] },
+    ];
+    const types: string[] = [];
+    for await (const event of agentLoop(messages, [], caller, testConfig, {
+      systemPrompt: "sys",
+      maxTurns: 50,
+    })) {
+      types.push(event.type);
+    }
+
+    // Cap is 3 retries → 4 total model calls, then abort.
+    expect(calls).toBe(4);
+    expect(types).toContain("error");
+    expect(types).not.toContain("done");
+  });
+});

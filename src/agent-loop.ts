@@ -24,6 +24,16 @@ import { SpeculationCache, predictReads } from "./speculation.js";
 // plan-mode blocking is still enforced inside checkPermission().
 const defaultAskUser: AskUserFn = async () => true;
 
+// Sentinel thrown so a pending Promise.race can be interrupted by an abort
+// without relying on every individual tool promise rejecting. Caught locally
+// in the parallel-tool path; never surfaces to callers.
+class AbortError extends Error {
+  constructor(message = "Aborted") {
+    super(message);
+    this.name = "AbortError";
+  }
+}
+
 // --- Agent Loop (Async Generator) ---
 
 export async function* agentLoop(
@@ -41,7 +51,11 @@ export async function* agentLoop(
     toolContext,
     askUser = defaultAskUser,
     hooks,
-    speculation = false,
+    // M15.2: speculation is ON by default. Safety profile — prefetch only runs
+    // read-only + concurrency-safe tools, cache entries are single-use, a miss
+    // is free (the real tool just runs), and it runs in the background. Disable
+    // via the CLI/TUI caller (--no-speculation / CCR_SPECULATION=0).
+    speculation = true,
   } = options;
 
   // Build the full ToolContext from caller-provided values, falling back to
@@ -53,14 +67,38 @@ export async function* agentLoop(
     modelConfig: toolContext?.modelConfig ?? modelConfig,
     onSubAgentProgress: toolContext?.onSubAgentProgress,
     askUserQuestion: toolContext?.askUserQuestion,
+    // M15.3: thread the LLM permission classifier (if the CLI enabled it) so
+    // flagged dangerous tool calls get a model-assessed risk hint / block.
+    permissionClassifier: toolContext?.permissionClassifier,
+    // Thread the parent's approver into the tool context so sub-agent tools
+    // (Task/Team) can forward it into their own sub-loops. Otherwise sub-agents
+    // would auto-approve everything via defaultAskUser — a safety gap.
+    askUser: toolContext?.askUser ?? askUser,
+    // Thread the turn's AbortSignal so tools (Bash/Grep/LSP) can cancel their
+    // subprocesses on Ctrl+C, not just the LLM stream.
+    abortSignal,
   };
 
   let turnCount = 0;
   let totalTokens = 0;
 
+  // Per-loop retry counters for recoverable model errors. Without a cap, a
+  // sustained 429 or an un-fixable context_length error loops forever
+  // (re-calling the model with the same oversized messages each turn).
+  let rateLimitRetries = 0;
+  let contextLengthRetries = 0;
+  const MAX_RATE_LIMIT_RETRIES = 3;
+  const MAX_CONTEXT_LENGTH_RETRIES = 3;
+
   // Speculative prefetch cache (12.2). Lives for this loop run; serves at most
   // one cached result per tool+input. No-op unless `speculation` is enabled.
   const specCache = new SpeculationCache(speculation);
+
+  // M15.2: Paths already Read this session. predictReads drops these before
+  // ranking, since the model won't re-Read a file it has already opened — so
+  // prefetching them is pure waste. Populated below as real Reads resolve
+  // (hit or miss), and threaded into predictReads.
+  const readFiles = new Set<string>();
 
   while (turnCount < maxTurns) {
     // Check for abort
@@ -84,7 +122,7 @@ export async function* agentLoop(
       // If still over threshold after snipping, fall back to full compaction.
       if (estimateTokens(messages) > autoCompactThreshold) {
         yield { type: "compacting" };
-        messages = await autoCompact(messages, callModel, modelConfig);
+        messages = await autoCompact(messages, callModel, modelConfig, abortSignal);
         yield { type: "compacted", summary: "Context compressed" };
       }
     }
@@ -95,6 +133,12 @@ export async function* agentLoop(
     let textBuffer = "";
     const toolCalls: ToolCall[] = [];
     let usage: { input_tokens: number; output_tokens: number } | null = null;
+    // What to do after the model stream ends. "retry" re-runs the while loop
+    // with the same (or compacted) messages; "abort" terminates the generator.
+    // Set by the error branch below; defaults to "proceed" to run tool calls.
+    let nextAction: "proceed" | "retry" | "abort" = "proceed";
+    let abortError: unknown = null;
+    let streamEnded = false;
 
     try {
       for await (const event of callModel(
@@ -102,6 +146,7 @@ export async function* agentLoop(
         tools,
         systemPrompt,
         modelConfig,
+        abortSignal,
       )) {
         switch (event.type) {
           case "text_delta":
@@ -130,27 +175,68 @@ export async function* agentLoop(
             usage = event.usage;
             totalTokens += usage.input_tokens + usage.output_tokens;
             yield { type: "usage", usage: event.usage };
+            streamEnded = true;
             break;
 
           case "error":
             // Handle recoverable errors
             const recovery = await handleModelError(
               event.error,
-              messages,
-              callModel,
-              modelConfig,
+              {
+                rateLimitRetries,
+                contextLengthRetries,
+                maxRateLimitRetries: MAX_RATE_LIMIT_RETRIES,
+                maxContextLengthRetries: MAX_CONTEXT_LENGTH_RETRIES,
+              },
             );
-            if (recovery === "retry") continue;
-            if (recovery === "abort") {
-              yield { type: "error", error: event.error };
-              return;
+            if (recovery === "retry") {
+              rateLimitRetries++;
+              nextAction = "retry";
+              streamEnded = true;
+              break;
             }
+            if (recovery === "compact_and_retry") {
+              contextLengthRetries++;
+              // Context too long: compress once before retrying, otherwise the
+              // next turn re-sends the same oversized messages and re-triggers
+              // the same error forever.
+              try {
+                messages = await autoCompact(messages, callModel, modelConfig, abortSignal);
+                yield {
+                  type: "compacted",
+                  summary: "Context compressed after context_length error",
+                };
+                nextAction = "retry";
+                streamEnded = true;
+              } catch {
+                nextAction = "abort";
+                abortError = event.error;
+                streamEnded = true;
+              }
+              break;
+            }
+            // "abort"
+            nextAction = "abort";
+            abortError = event.error;
+            streamEnded = true;
             break;
         }
+        // Once the stream has reached a terminal event (done / error), stop
+        // consuming further events — the error-recovery decision is final for
+        // this turn and must drive the loop's next action.
+        if (streamEnded) break;
       }
     } catch (error) {
       yield { type: "error", error };
       return;
+    }
+
+    if (nextAction === "abort") {
+      yield { type: "error", error: abortError };
+      return;
+    }
+    if (nextAction === "retry") {
+      continue; // restart the while loop: re-call the model
     }
 
     // === STEP 3: If no tool calls, we're done ===
@@ -166,6 +252,7 @@ export async function* agentLoop(
         type: "done",
         finishReason: "end_turn",
         turns: turnCount,
+        speculation: specCache.isEnabled ? specCache.getStats() : undefined,
       };
       return;
     }
@@ -190,6 +277,7 @@ export async function* agentLoop(
       abortSignal,
       hooks,
       specCache,
+      readFiles,
     )) {
       toolResults[done.index] = done.result;
       yield {
@@ -205,7 +293,7 @@ export async function* agentLoop(
       for (const r of toolResults) {
         if (r.result) {
           specCache.prefetch(
-            predictReads(r.toolName, r.result),
+            predictReads(r.toolName, r.result, {}, readFiles),
             tools,
             baseContext,
           );
@@ -248,6 +336,7 @@ export async function* agentLoop(
     finishReason: "max_turns",
     turns: turnCount,
     message: "Maximum turns reached. Continue?",
+    speculation: specCache.isEnabled ? specCache.getStats() : undefined,
   };
 }
 
@@ -272,6 +361,7 @@ async function* executeToolCalls(
   abortSignal?: AbortSignal,
   hooks?: HookRunner,
   specCache?: SpeculationCache,
+  readFiles?: Set<string>,
 ): AsyncGenerator<IndexedResult> {
   // Separate into parallel-safe and serial groups, preserving each call's
   // original index so the caller can restore call order.
@@ -294,15 +384,75 @@ async function* executeToolCalls(
     for (const { call, index } of parallelCalls) {
       pending.set(
         index,
-        executeSingleTool(call, tools, context, askUser, hooks, specCache).then(
+        executeSingleTool(call, tools, context, askUser, hooks, specCache, readFiles, abortSignal).then(
           (result) => ({ index, result }),
         ),
       );
     }
     while (pending.size > 0) {
-      const settled = await Promise.race(pending.values());
+      // Race the pending tools against the abort signal. Without this, a
+      // single tool whose promise never settles (e.g. a hung subprocess
+      // holding a pipe open) would block Promise.race forever — the abort
+      // check below could never run, Ctrl+C would be ignored, and the whole
+      // batch (plus the agent loop) would deadlock.
+      let settled: IndexedResult;
+      if (abortSignal) {
+        const abortPromise = new Promise<IndexedResult>((_, reject) => {
+          if (abortSignal.aborted) {
+            reject(new AbortError("Aborted"));
+          } else {
+            abortSignal.addEventListener(
+              "abort",
+              () => reject(new AbortError("Aborted")),
+              { once: true },
+            );
+          }
+        });
+        try {
+          settled = await Promise.race([
+            Promise.race(pending.values()),
+            abortPromise,
+          ]);
+        } catch {
+          // Aborted: surface aborted results for every still-pending call so
+          // the caller gets a complete result array and can move on.
+          for (const { call, index } of parallelCalls) {
+            if (pending.has(index)) {
+              pending.delete(index);
+              yield {
+                index,
+                result: {
+                  toolName: call.function.name,
+                  error: "Aborted",
+                  formatted: `Aborted before executing ${call.function.name}.`,
+                },
+              };
+            }
+          }
+          return;
+        }
+      } else {
+        settled = await Promise.race(pending.values());
+      }
       pending.delete(settled.index);
       yield settled;
+      // If the user aborted, short-circuit remaining parallel calls so we
+      // don't keep launching subprocesses / LSP work after Ctrl+C.
+      if (abortSignal?.aborted) {
+        for (const { call, index } of parallelCalls) {
+          if (pending.has(index)) {
+            pending.delete(index);
+            yield {
+              index,
+              result: {
+                toolName: call.function.name,
+                error: "Aborted",
+                formatted: `Aborted before executing ${call.function.name}.`,
+              },
+            };
+          }
+        }
+      }
     }
   }
 
@@ -319,7 +469,7 @@ async function* executeToolCalls(
       };
       continue;
     }
-    const result = await executeSingleTool(call, tools, context, askUser, hooks, specCache);
+    const result = await executeSingleTool(call, tools, context, askUser, hooks, specCache, readFiles, abortSignal);
     yield { index, result };
   }
 }
@@ -331,6 +481,8 @@ async function executeSingleTool(
   askUser: AskUserFn,
   hooks?: HookRunner,
   specCache?: SpeculationCache,
+  readFiles?: Set<string>,
+  abortSignal?: AbortSignal,
 ): Promise<ToolExecutionResult> {
   const tool = tools.find((t) => t.name === toolCall.function.name);
 
@@ -339,6 +491,15 @@ async function executeSingleTool(
       toolName: toolCall.function.name,
       error: `Unknown tool: ${toolCall.function.name}`,
       formatted: `Error: Tool "${toolCall.function.name}" is not available.`,
+    };
+  }
+
+  // Honor an abort that arrived while we were queued behind other calls.
+  if (abortSignal?.aborted) {
+    return {
+      toolName: tool.name,
+      error: "Aborted",
+      formatted: `Aborted before executing ${tool.name}.`,
     };
   }
 
@@ -369,8 +530,26 @@ async function executeSingleTool(
     }
 
     // === Permission check (before any side effect) ===
+    // Two layers:
+    //   (a) tool-level checkPermissions() — the tool's own hard policy. If it
+    //       returns {allowed:false} the call is refused outright (no prompt),
+    //       e.g. BashTool/WriteTool refuse dangerous patterns before the user
+    //       is even asked. Previously this method was dead code — tools
+    //       declared it but executeSingleTool never called it.
+    //   (b) system-level checkPermission() — mode + dangerous-pattern +
+    //       interactive askUser flow.
+    const toolLevel = await tool.checkPermissions(input, context);
+    if (!toolLevel.allowed) {
+      const reason = toolLevel.reason ?? `denied by ${tool.name} policy`;
+      return {
+        toolName: tool.name,
+        error: reason,
+        formatted: `权限被拒绝: ${reason}`,
+      };
+    }
     const permission = await checkPermission(tool, input, context, {
       askUser,
+      classifier: context.permissionClassifier,
     });
     if (!permission.allowed) {
       const reason = permission.reason ?? "denied by permission policy";
@@ -388,6 +567,12 @@ async function executeSingleTool(
       (await specCache?.take(tool.name, input)) ??
       (await tool.call(input, context));
     const duration = Date.now() - startTime;
+
+    // M15.2: Record this path as read so predictReads won't re-prefetch it.
+    // Tracked whether or not it was a spec hit — the model has the content now.
+    if (readFiles && tool.name.toLowerCase() === "read" && typeof input.filePath === "string") {
+      readFiles.add(input.filePath);
+    }
 
     // === PostToolUse hook (may rewrite the result) ===
     if (hooks) {
@@ -466,6 +651,7 @@ export async function autoCompact(
   messages: Message[],
   callModel: ModelCaller,
   modelConfig: ModelConfig,
+  abortSignal?: AbortSignal,
 ): Promise<Message[]> {
   const TAIL_SIZE = 20;
   // Find a safe split point. Slicing at a fixed offset can leave the tail
@@ -503,6 +689,7 @@ so the conversation can continue with a fresh context window.`;
     [],
     "You are a helpful assistant that summarizes conversations.",
     modelConfig,
+    abortSignal,
   )) {
     if (event.type === "text_delta") {
       chunks.push(event.delta);
@@ -522,33 +709,86 @@ so the conversation can continue with a fresh context window.`;
 
 // --- Error Recovery ---
 
+/**
+ * Decision returned by handleModelError.
+ * - "retry": wait then re-call the model with the same messages (429).
+ * - "compact_and_retry": compress context once, then re-call the model
+ *   (context_length exceeded). The loop performs the actual compression so it
+ *   can stream a `compacted` event and fall back to `abort` on failure.
+ * - "abort": unrecoverable (auth, unknown, or retry budget exhausted).
+ */
+type ModelErrorRecovery = "retry" | "compact_and_retry" | "abort";
+
+interface RecoveryState {
+  rateLimitRetries: number;
+  contextLengthRetries: number;
+  maxRateLimitRetries: number;
+  maxContextLengthRetries: number;
+}
+
 async function handleModelError(
   error: unknown,
-  _messages: Message[],
-  _callModel: ModelCaller,
-  _modelConfig: ModelConfig,
-): Promise<"retry" | "abort"> {
+  state: RecoveryState,
+): Promise<ModelErrorRecovery> {
   const err = error as any;
 
-  // Rate limit → wait and retry
+  // Rate limit → wait and retry (bounded). A sustained 429 without a cap
+  // would loop forever; once the budget is exhausted we abort so the user
+  // sees the error instead of an infinite spinner.
   if (err?.status === 429) {
+    if (state.rateLimitRetries >= state.maxRateLimitRetries) {
+      return "abort";
+    }
     const delay = err?.retryAfter || 5000;
     await sleep(delay);
     return "retry";
   }
 
-  // Context too long → compact and retry
+  // Context too long → compact once and retry (bounded). Returning plain
+  // "retry" here (as it did before) re-sends identical oversized messages and
+  // re-triggers the same error every turn → infinite loop.
   if (
     err?.status === 400 &&
     (err?.message?.includes("context_length") ||
       err?.message?.includes("maximum context"))
   ) {
-    return "retry";
+    if (state.contextLengthRetries >= state.maxContextLengthRetries) {
+      return "abort";
+    }
+    return "compact_and_retry";
   }
 
   // Auth error → abort
   if (err?.status === 401 || err?.status === 403) {
     return "abort";
+  }
+
+  // User-initiated abort (Ctrl+C / turn abort) → never retry. The adapters
+  // surface an "Aborted" error; retrying would silently ignore the user's
+  // intent to stop the turn.
+  const name = err?.name as string | undefined;
+  const msg = (err?.message as string | undefined) ?? "";
+  if (name === "AbortError" || msg === "Aborted" || msg.includes("aborted")) {
+    return "abort";
+  }
+
+  // Transient timeout / connection error → retry once (bounded by the
+  // rate-limit budget, since timeouts behave like rate limits from the
+  // loop's perspective: transient, worth one more attempt).
+  if (
+    name === "TimeoutError" ||
+    name === "ETIMEDOUT" ||
+    err?.code === "ETIMEDOUT" ||
+    err?.code === "ECONNRESET" ||
+    err?.code === "ECONNREFUSED" ||
+    msg.includes("timeout") ||
+    msg.includes("socket hang up")
+  ) {
+    if (state.rateLimitRetries >= state.maxRateLimitRetries) {
+      return "abort";
+    }
+    await sleep(2000);
+    return "retry";
   }
 
   // Unknown error → abort

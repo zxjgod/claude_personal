@@ -119,11 +119,22 @@ export function convertMessagesToAnthropic(messages: Message[]): AnthropicMessag
           content.push({ type: "text", text: msg.content });
         }
         for (const call of msg.tool_calls ?? []) {
+          // Tool-call arguments are model-generated JSON strings; a truncated or
+          // malformed payload (rare but possible mid-stream / after a provider
+          // hiccup) must not crash the whole adapter. Degrade to an empty input
+          // so the loop can surface a tool error instead of dying — mirrors the
+          // guarded parse in llm-adapter.ts.
+          let parsedInput: Record<string, unknown> = {};
+          try {
+            parsedInput = JSON.parse(call.function.arguments || "{}");
+          } catch {
+            parsedInput = {};
+          }
           content.push({
             type: "tool_use",
             id: call.id,
             name: call.function.name,
-            input: JSON.parse(call.function.arguments || "{}"),
+            input: parsedInput,
           });
         }
         out.push({
@@ -224,45 +235,81 @@ export const anthropicCaller: ModelCaller = async function* (
   tools: Tool[],
   systemPrompt: string,
   config: ModelConfig,
+  abortSignal?: AbortSignal,
 ): AsyncGenerator<StreamEvent> {
   const client = new Anthropic({
     apiKey: config.apiKey,
     baseURL: config.baseURL,
   });
 
-  const stream = client.messages.stream({
-    model: config.model || "claude-opus-4-8",
-    max_tokens: config.maxTokens ?? 16_000,
-    system: formatSystemForAnthropic(systemPrompt) as any,
-    messages: withMessageCacheBreakpoint(
-      convertMessagesToAnthropic(messages),
-    ) as any,
-    tools: tools.length > 0 ? (formatToolsForAnthropic(tools) as any) : undefined,
-    // Claude 4.8 benefits from adaptive thinking; harmlessly omitted when the
-    // caller uses a non-Claude provider because this adapter only runs for
-    // provider="anthropic".
-    thinking: config.options?.thinking ?? { type: "adaptive" },
-    // The /effort tier drives reasoning depth. An explicit output_config in
-    // options still wins; otherwise map the tier (default "high").
-    output_config:
-      config.options?.output_config ?? { effort: anthropicEffort(getEffort(config.options)) },
-  } as any);
+  // Compose the caller's AbortSignal (Ctrl+C / turn abort) with a safety
+  // timeout so a hung provider connection can't pin the loop forever. The
+  // stream timeout is generous (5 min) because Anthropic streams chunks; the
+  // signal also lets the SDK abort the in-flight HTTP request promptly.
+  const STREAM_TIMEOUT_MS = 5 * 60 * 1000;
+  const timeoutSignal = AbortSignal.timeout(STREAM_TIMEOUT_MS);
+  const combinedSignal = abortSignal
+    ? AbortSignal.any([abortSignal, timeoutSignal])
+    : timeoutSignal;
 
-  stream.on("text", (text) => {
-    void text;
-  });
+  const stream = client.messages.stream(
+    {
+      model: config.model || "claude-opus-4-8",
+      max_tokens: config.maxTokens ?? 16_000,
+      system: formatSystemForAnthropic(systemPrompt) as any,
+      messages: withMessageCacheBreakpoint(
+        convertMessagesToAnthropic(messages),
+      ) as any,
+      tools: tools.length > 0 ? (formatToolsForAnthropic(tools) as any) : undefined,
+      // Claude 4.8 benefits from adaptive thinking; harmlessly omitted when the
+      // caller uses a non-Claude provider because this adapter only runs for
+      // provider="anthropic".
+      thinking: config.options?.thinking ?? { type: "adaptive" },
+      // The /effort tier drives reasoning depth. An explicit output_config in
+      // options still wins; otherwise map the tier (default "high").
+      output_config:
+        config.options?.output_config ?? { effort: anthropicEffort(getEffort(config.options)) },
+    } as any,
+    { signal: combinedSignal },
+  );
 
-  for await (const event of stream) {
-    if (event.type === "content_block_delta") {
-      if (event.delta.type === "text_delta") {
-        yield { type: "text_delta", delta: event.delta.text };
-      }
-      // `input_json_delta` is accumulated by the SDK finalMessage helper;
-      // no partial tool input event is needed by the current agent loop.
+  // If the caller aborts (Ctrl+C), ask the SDK to stop the stream immediately
+  // rather than waiting for the next chunk. Without this the in-flight HTTP
+  // request keeps streaming until the provider finishes its turn.
+  const onAbort = () => {
+    try {
+      stream.controller.abort();
+    } catch {
+      /* already aborted / finalized */
     }
-  }
+  };
+  abortSignal?.addEventListener("abort", onAbort, { once: true });
 
-  const final = await stream.finalMessage();
+  try {
+    stream.on("text", (text) => {
+      void text;
+    });
+
+    for await (const event of stream) {
+      if (abortSignal?.aborted) break;
+      if (event.type === "content_block_delta") {
+        if (event.delta.type === "text_delta") {
+          yield { type: "text_delta", delta: event.delta.text };
+        }
+        // `input_json_delta` is accumulated by the SDK finalMessage helper;
+        // no partial tool input event is needed by the current agent loop.
+      }
+    }
+
+    if (abortSignal?.aborted) {
+      yield {
+        type: "error",
+        error: new Error("Aborted"),
+      };
+      return;
+    }
+
+    const final = await stream.finalMessage();
 
   for (const block of final.content as any[]) {
     if (block.type === "tool_use") {
@@ -275,20 +322,29 @@ export const anthropicCaller: ModelCaller = async function* (
     }
   }
 
+  // Anthropic's `input_tokens` already EXCLUDES cache tokens (those are billed
+  // and reported separately as cache_creation_input_tokens / cache_read_input_tokens).
+  // Previously we summed all three into `input_tokens`, double-counting cached
+  // content (the same segment was counted at creation AND at read), inflating
+  // /cost and autoCompact estimates, and diverging from the OpenAI path which
+  // only counts prompt_tokens. Now `input_tokens` mirrors Anthropic's own
+  // field (non-cached input only); the cache breakdown is carried alongside
+  // so /cost can show hit rate and the loop can estimate "live" context size
+  // as input + cache_read (the tokens actually occupying the context window).
+  const u = final.usage as any;
+  const cacheRead = u.cache_read_input_tokens ?? 0;
+  const cacheCreation = u.cache_creation_input_tokens ?? 0;
   yield {
     type: "done",
     usage: {
-      input_tokens:
-        (final.usage as any).input_tokens +
-        ((final.usage as any).cache_creation_input_tokens ?? 0) +
-        ((final.usage as any).cache_read_input_tokens ?? 0),
-      output_tokens: (final.usage as any).output_tokens ?? 0,
-      // 12.3: surface cache breakdown so the CLI can report hit rate.
-      cache_read_input_tokens:
-        (final.usage as any).cache_read_input_tokens ?? 0,
-      cache_creation_input_tokens:
-        (final.usage as any).cache_creation_input_tokens ?? 0,
+      input_tokens: u.input_tokens ?? 0,
+      output_tokens: u.output_tokens ?? 0,
+      cache_read_input_tokens: cacheRead,
+      cache_creation_input_tokens: cacheCreation,
     },
     finish_reason: final.stop_reason ?? "end_turn",
   };
+  } finally {
+    abortSignal?.removeEventListener("abort", onAbort);
+  }
 };

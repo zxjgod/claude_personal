@@ -163,6 +163,33 @@ describe("EditTool", () => {
     expect(content).toContain("const x = 42;");
   });
 
+  it("edit diff reflects moved/duplicated lines (LCS, not set membership)", async () => {
+    // 16.6: the old diff judged lines by set membership, so a moved line
+    // (present in both old and new) was invisible and a duplicate was counted
+    // once. The LCS diff must surface the actual edit.
+    const filePath = path.join(tmpDir, "moved.txt");
+    // Two identical lines then a unique line; swap their visual order by
+    // editing the unique line in place — the LCS should show a +/- pair for
+    // the changed line, not drop it.
+    fs.writeFileSync(filePath, "alpha\nbeta\ngamma");
+    await ReadTool.call({ filePath: "moved.txt" }, ctx);
+    const result = await EditTool.call(
+      {
+        filePath: "moved.txt",
+        old_string: "beta",
+        new_string: "beta-changed",
+      },
+      ctx,
+    );
+    expect(result.error).toBeUndefined();
+    // The changed line must appear as both a removal and an addition.
+    expect(result.content).toContain("- beta");
+    expect(result.content).toContain("+ beta-changed");
+    // Unchanged lines must NOT be marked as changed.
+    expect(result.content).not.toContain("- alpha");
+    expect(result.content).not.toContain("+ alpha");
+  });
+
   it("should reject non-unique matches", async () => {
     const filePath = path.join(tmpDir, "dup.txt");
     fs.writeFileSync(filePath, "log('a');\nlog('b');");
@@ -307,6 +334,25 @@ describe("GrepTool", () => {
     // Content check: may vary by platform (rg vs fallback)
     expect(typeof result.content).toBe("string");
     expect(result.content.length).toBeGreaterThan(0);
+  });
+
+  it("honors an include glob filter (no shell-quoting, cross-platform)", async () => {
+    // Regression for 16.4: the rg invocation used to be built as a shell
+    // string with single quotes (`--glob '*.ts'`), which break under cmd.exe
+    // on Windows. Now it uses execFile with an argv array, so an include glob
+    // containing characters like '*', '{' '}' must not corrupt the call.
+    fs.writeFileSync(path.join(tmpDir, "match.ts"), "needle here\n");
+    fs.writeFileSync(path.join(tmpDir, "skip.md"), "needle here\n");
+
+    const result = await GrepTool.call(
+      { pattern: "needle", include: "*.ts" },
+      ctx,
+    );
+
+    expect(result.error).toBeUndefined();
+    // Only the .ts file should match; the .md file is filtered out.
+    expect(result.content).toContain("match.ts");
+    expect(result.content).not.toContain("skip.md");
   });
 });
 

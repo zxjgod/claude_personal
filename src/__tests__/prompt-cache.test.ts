@@ -79,11 +79,13 @@ describe("withMessageCacheBreakpoint", () => {
 describe("SessionStats cache metrics", () => {
   it("accumulates cache read/creation and computes hit rate", () => {
     const s = new SessionStats();
-    // input_tokens already includes cache read+creation (adapter sums them).
-    s.addUsage(1000, 200, { read: 800, creation: 100 });
+    // 16.5: input_tokens is the NON-cached input (Anthropic excludes cache
+    // tokens; OpenAI prompt_tokens includes them but we surface cached_tokens
+    // separately and do not add it back). Hit rate = read / (input + read).
+    s.addUsage(200, 0, { read: 800, creation: 100 });
     expect(s.cacheReadTokens).toBe(800);
     expect(s.cacheCreationTokens).toBe(100);
-    expect(s.cacheHitRate).toBeCloseTo(0.8, 5);
+    expect(s.cacheHitRate).toBeCloseTo(800 / (200 + 800), 5);
   });
 
   it("hit rate is null with no input tokens", () => {
@@ -94,6 +96,7 @@ describe("SessionStats cache metrics", () => {
     const s = new SessionStats();
     s.addUsage(100, 50);
     expect(s.cacheReadTokens).toBe(0);
+    // input present, read 0 → hit rate 0, not null.
     expect(s.cacheHitRate).toBe(0);
   });
 });

@@ -29,18 +29,13 @@ CLI Entry --> Config/API Client --> System Prompt Builder --> Agent Loop --> Too
 
 ## Reference Material
 
-- `src/src/` — Claude Code decompiled source (reference implementation)
-- `.codebuddy/skills/claude-code-replica/` — Architecture & implementation guides
-  - `references/system-prompt.md` — System prompt design (6 sections)
-  - `references/tool-system.md` — Tool interface specification
-  - `references/agent-loop.md` — Main agent loop design
-  - `references/permission-system.md` — Permission modes & approval flow
-  - `references/llm-adapter.md` — Multi-provider LLM client
-  - `references/mcp-integration.md` — MCP support specification
-  - `references/message-format.md` — Message format conversion
-- `claude-code-2.1.88/` — Claude Code v2.1.88 npm package
-- `claude-code-main/` — Another Claude Code source version
-- `claude-code-0331-2016/` — Claude Code March 2026 version
+- `reference/` — Claude Code decompiled source (reference implementation, gitignored)
+- `Claude Code 源码架构深度分析.pdf` — architecture analysis (gitignored, kept at repo root)
+- `docs/` — project documentation
+  - `快速开始.md` — install / config / run / smoke-test flow
+  - `项目总览.md` — architecture, module list, completion status
+  - `项目评审报告.md` — source-level review with findings & fixes
+  - `archive/` — historical ROADMAPs, changelogs, comparison tables (numbers may be stale)
 
 ## Implementation Phases
 

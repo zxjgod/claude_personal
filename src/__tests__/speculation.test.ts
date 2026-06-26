@@ -6,6 +6,9 @@ import { describe, it, expect } from "vitest";
 import {
   predictReads,
   specKey,
+  rankPaths,
+  effectiveCap,
+  formatSpeculationLine,
   SpeculationCache,
 } from "../speculation.js";
 import type { Tool, ToolContext, ToolResult } from "../types.js";
@@ -61,7 +64,78 @@ describe("predictReads", () => {
   it("caps the number of predictions", () => {
     const many = Array.from({ length: 20 }, (_, i) => `f${i}.ts`).join("\n");
     const preds = predictReads("glob", { content: many }, { maxPrefetch: 3 });
-    expect(preds).toHaveLength(3);
+    // M15.2: cap scales DOWN with candidate count. 20 files, baseMax 3 →
+    // effectiveCap = round(3*6/(20+5)) = round(0.72) = 1, clamped to ≥1.
+    expect(preds).toHaveLength(1);
+    expect(preds[0]).toEqual({ toolName: "read", input: { filePath: "f0.ts" } });
+  });
+
+  it("ranks grep hits by multiplicity (multi-hit file first)", () => {
+    const preds = predictReads("grep", {
+      content: "src/a.ts:1: x\nsrc/b.ts:2: y\nsrc/a.ts:3: z",
+    });
+    // a.ts appears twice, b.ts once → a.ts ranked first despite being listed
+    // first anyway; the point is the ordering reflects multiplicity.
+    expect(preds.map((p) => p.input.filePath)).toEqual(["src/a.ts", "src/b.ts"]);
+  });
+});
+
+describe("rankPaths", () => {
+  it("tallies grep occurrences and breaks ties by first-seen order", () => {
+    const ranked = rankPaths("grep", ["b", "a", "a", "b", "a"]);
+    // a:3, b:2; a first.
+    expect(ranked.map((r) => r.path)).toEqual(["a", "b"]);
+    expect(ranked[0].score).toBe(3);
+    expect(ranked[1].score).toBe(2);
+  });
+
+  it("preserves glob input order (no multiplicity signal)", () => {
+    const ranked = rankPaths("glob", ["x", "y", "z"]);
+    expect(ranked.map((r) => r.path)).toEqual(["x", "y", "z"]);
+    expect(ranked[0].score).toBeGreaterThan(ranked[1].score);
+  });
+});
+
+describe("effectiveCap", () => {
+  it("returns 0 for an empty candidate set", () => {
+    expect(effectiveCap(0, 5)).toBe(0);
+  });
+
+  it("prefetches at least 1 for any non-empty set (the top file is cheap)", () => {
+    expect(effectiveCap(2, 5)).toBeGreaterThanOrEqual(1);
+    expect(effectiveCap(100, 5)).toBe(1);
+  });
+
+  it("never exceeds baseMax", () => {
+    expect(effectiveCap(1, 5)).toBeLessThanOrEqual(5);
+    expect(effectiveCap(2, 5)).toBeLessThanOrEqual(5);
+  });
+
+  it("scales down as the candidate set grows", () => {
+    expect(effectiveCap(5, 5)).toBe(3); // round(5*6/10)
+    expect(effectiveCap(20, 5)).toBe(1); // round(5*6/25)
+  });
+});
+
+describe("predictReads alreadyRead filter", () => {
+  it("drops paths already read this session", () => {
+    const preds = predictReads(
+      "glob",
+      { content: "a.ts\nb.ts" },
+      {},
+      new Set(["a.ts"]),
+    );
+    expect(preds.map((p) => p.input.filePath)).toEqual(["b.ts"]);
+  });
+
+  it("returns [] when every candidate was already read", () => {
+    const preds = predictReads(
+      "glob",
+      { content: "a.ts" },
+      {},
+      new Set(["a.ts"]),
+    );
+    expect(preds).toEqual([]);
   });
 });
 
@@ -108,5 +182,49 @@ describe("SpeculationCache", () => {
     const cache = new SpeculationCache(true);
     expect(await cache.take("read", { filePath: "never" })).toBeNull();
     expect(cache.misses).toBe(1);
+  });
+
+  it("getStats reports hits, prefetched, wasted, and hitRate (M15.2)", async () => {
+    const calls: string[] = [];
+    const tool = fakeReadTool(calls);
+    const cache = new SpeculationCache(true);
+    cache.prefetch(
+      [
+        { toolName: "read", input: { filePath: "hit.ts" } },
+        { toolName: "read", input: { filePath: "waste.ts" } },
+      ],
+      [tool],
+      ctx,
+    );
+    // Consume one; the other goes wasted.
+    await cache.take("read", { filePath: "hit.ts" });
+
+    const stats = cache.getStats();
+    expect(stats.prefetched).toBe(2);
+    expect(stats.hits).toBe(1);
+    expect(stats.wasted).toBe(1);
+    expect(stats.hitRate).toBe(0.5);
+  });
+
+  it("getStats hitRate is 0 when nothing was prefetched", () => {
+    const cache = new SpeculationCache(true);
+    const stats = cache.getStats();
+    expect(stats.prefetched).toBe(0);
+    expect(stats.hitRate).toBe(0);
+    expect(stats.wasted).toBe(0);
+  });
+});
+
+describe("formatSpeculationLine", () => {
+  it("formats H/P hits (RR%), W wasted", () => {
+    expect(
+      formatSpeculationLine({ hits: 3, misses: 2, prefetched: 5, wasted: 2, hitRate: 0.6 }),
+    ).toBe("[speculation: 3/5 hits (60%), 2 wasted]");
+  });
+
+  it("returns '' when nothing was prefetched", () => {
+    expect(
+      formatSpeculationLine({ hits: 0, misses: 0, prefetched: 0, wasted: 0, hitRate: 0 }),
+    ).toBe("");
   });
 });

@@ -162,4 +162,65 @@ describe("PersistenceManager", () => {
   it("should expose the sessions directory path", () => {
     expect(pm.directory).toBe(path.join(tmpDir, ".claude", "sessions"));
   });
+
+  // ------------------------------------------------------------------
+  // Stability hardening: atomic write + concurrent save serialization
+  // ------------------------------------------------------------------
+
+  it("serializes concurrent saves so the final state is the latest (no clobber)", async () => {
+    const sessionId = pm.generateId();
+
+    // Fire many concurrent saves against the same session, each with a
+    // different message count. The saveChain must serialize the
+    // read-modify-write so the final on-disk messageCount equals the largest,
+    // not whatever happened to win the race.
+    const saves: Promise<void>[] = [];
+    for (let i = 1; i <= 20; i++) {
+      const msgs: Message[] = Array.from(
+        { length: i },
+        (_, k) => ({ role: "user", content: [{ type: "text", text: `m${k}` }] }) as Message,
+      );
+      saves.push(pm.save(sessionId, msgs));
+    }
+    await Promise.all(saves);
+
+    const loaded = await pm.load(sessionId);
+    expect(loaded).not.toBeNull();
+    expect(loaded!.messageCount).toBe(20);
+  });
+
+  it("recovers from a corrupt session file (no crash, returns null)", async () => {
+    const sessionId = pm.generateId();
+    await pm.save(sessionId, [
+      { role: "user", content: [{ type: "text", text: "good" }] },
+    ]);
+
+    // Corrupt the file on disk to simulate a truncated/partial write.
+    const filePath = path.join(tmpDir, ".claude", "sessions", `${sessionId}.json`);
+    fs.writeFileSync(filePath, "{ this is not valid json", "utf-8");
+
+    // loadSync (via load) must NOT throw on a SyntaxError — it degrades to null.
+    const loaded = await pm.load(sessionId);
+    expect(loaded).toBeNull();
+
+    // And a subsequent save must succeed (treats corrupt file as "no existing
+    // session" and writes a fresh one), preserving the original sessionId.
+    await pm.save(sessionId, [
+      { role: "user", content: [{ type: "text", text: "recovered" }] },
+    ]);
+    const recovered = await pm.load(sessionId);
+    expect(recovered).not.toBeNull();
+    expect(recovered!.messageCount).toBe(1);
+  });
+
+  it("leaves no temp file behind after a successful save (atomic rename)", async () => {
+    const sessionId = pm.generateId();
+    await pm.save(sessionId, [
+      { role: "user", content: [{ type: "text", text: "atomic" }] },
+    ]);
+
+    const dirPath = path.join(tmpDir, ".claude", "sessions");
+    const leftovers = fs.readdirSync(dirPath).filter((f) => f.endsWith(".tmp"));
+    expect(leftovers).toEqual([]);
+  });
 });

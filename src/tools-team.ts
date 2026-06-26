@@ -31,6 +31,9 @@ function runCtx(context: ToolContext): TeamRunContext | { error: string } {
     sessionId: context.sessionId,
     permissionMode: context.permissionMode,
     onProgress: context.onSubAgentProgress,
+    // Forward the parent loop's approver into team agent sub-loops so their
+    // destructive tool calls prompt the user instead of auto-approving.
+    askUser: context.askUser,
   };
 }
 

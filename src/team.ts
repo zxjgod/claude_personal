@@ -14,10 +14,10 @@
 // naturally across send_message calls.
 // ============================================================
 
-import type { Message, ModelConfig, PermissionMode, SubAgentProgress } from "./types.js";
+import type { Message, ModelConfig, PermissionMode, SubAgentProgress, AskUserFn } from "./types.js";
 import { agentLoop } from "./agent-loop.js";
 import { createModelCaller } from "./llm-adapter.js";
-import { getSubagentType, resolveSubagentTools } from "./subagents.js";
+import { getSubagentType, resolveSubagentTools, getCoreToolsForSubagents } from "./subagents.js";
 
 const AGENT_MAX_TURNS = 10;
 const AGENT_COMPACT_THRESHOLD = 50_000;
@@ -45,6 +45,12 @@ export interface TeamRunContext {
   sessionId: string;
   permissionMode: PermissionMode;
   onProgress?: (event: SubAgentProgress) => void;
+  /**
+   * Parent loop's interactive approver, forwarded into each agent's sub-loop so
+   * a team agent's destructive tool calls (bash/write/edit) prompt the user
+   * instead of being auto-approved. Absent in tests.
+   */
+  askUser?: AskUserFn;
 }
 
 // sessionId -> (agentId -> agent)
@@ -137,17 +143,9 @@ export function resetTeams(): void {
   teams.clear();
 }
 
-// Lazy core-tool import to avoid a cycle (tools.ts → tools-team.ts → team.ts).
-let _coreTools: import("./types.js").Tool[] | null = null;
-async function getCoreTools(): Promise<import("./types.js").Tool[]> {
-  if (!_coreTools) {
-    const { ReadTool, GlobTool, GrepTool, BashTool, WriteTool, EditTool } = await import(
-      "./tools.js"
-    );
-    _coreTools = [ReadTool, GlobTool, GrepTool, BashTool, WriteTool, EditTool];
-  }
-  return _coreTools;
-}
+// Core tools for team-agent resolution come from the subagents registry (CLI
+// injects them at startup, 16.9), breaking the old tools.ts → tools-team.ts →
+// team.ts → tools.ts cycle that was patched with a lazy dynamic import.
 
 export interface TurnResult {
   output: string;
@@ -188,7 +186,7 @@ export async function runAgentTurn(
   let error: string | undefined;
 
   try {
-    const coreTools = await getCoreTools();
+    const coreTools = await getCoreToolsForSubagents();
     const tools = resolveSubagentTools(role, coreTools);
     const loop = agentLoop(agent.messages, tools, caller, ctx.modelConfig, {
       systemPrompt,
@@ -200,7 +198,11 @@ export async function runAgentTurn(
         sessionId: ctx.sessionId,
         permissionMode: ctx.permissionMode,
         modelConfig: ctx.modelConfig,
+        // Forward the parent's approver so this agent's destructive tools
+        // (bash/write/edit) prompt the user instead of auto-approving.
+        askUser: ctx.askUser,
       },
+      askUser: ctx.askUser,
     });
 
     for await (const event of loop) {

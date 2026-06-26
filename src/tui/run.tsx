@@ -20,11 +20,13 @@ import { TuiStore } from "./store.js";
 import { printBanner } from "./banner.js";
 import type { CommandInfo } from "./InputBox.js";
 import { formatCliError } from "./../cli-errors.js";
+import { formatSpeculationLine } from "./../speculation.js";
 import type {
   AskUserFn,
   Message,
   ModelCaller,
   ModelConfig,
+  PermissionClassifier,
   PermissionMode,
   Tool,
   UserQuestion,
@@ -45,6 +47,8 @@ export interface TuiDeps {
   makeCommandContext: () => CommandContext;
   alwaysAllow: Set<string>;
   permissionKey: (toolName: string, input: Record<string, unknown>) => string;
+  /** M15.3: optional LLM permission classifier (opt-in via CLI flag). */
+  permissionClassifier?: PermissionClassifier;
   onSave: () => void;
 }
 
@@ -68,6 +72,9 @@ async function runTurn(
       permissionMode: deps.permissionMode,
       modelConfig: deps.modelConfig,
       askUserQuestion,
+      // M15.3: thread the LLM permission classifier (when enabled) so flagged
+      // dangerous calls get a model-assessed risk hint/block in the TUI too.
+      permissionClassifier: deps.permissionClassifier,
       // Stream nested sub-agent (Task) activity into the transcript live, so
       // its Reads/Greps appear as they happen rather than dumping in a block
       // when the Task finishes.
@@ -147,6 +154,11 @@ async function runTurn(
           break;
         case "done":
           store.commitStreaming();
+          // M15.2: surface speculation cost/benefit (only if prefetched anything).
+          if (event.speculation) {
+            const line = formatSpeculationLine(event.speculation);
+            if (line) store.addNotice(line);
+          }
           deps.onSave();
           break;
       }
@@ -227,7 +239,19 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
       const value = raw.trim();
       if (!value) return;
       if (value.toLowerCase() === "exit" || value.toLowerCase() === "/exit") {
-        process.exit(0);
+        // Tear down resources before exiting. Previously this was a bare
+        // process.exit(0) that skipped onSave (session lost), MCP disconnect,
+        // and LSP dispose. onSave() flushes the session; Ink unmounts on exit.
+        try {
+          deps.onSave();
+        } catch {
+          /* best-effort: don't block exit on a save failure */
+        }
+        // Give the (synchronous) save a tick to flush, then exit. The CLI's
+        // top-level signal/cleanup handlers cover MCP/LSP teardown for the
+        // process, but a prompt exit here avoids orphaned stdio children.
+        setTimeout(() => process.exit(0), 50);
+        return;
       }
       store.addUserMessage(value);
 
@@ -273,7 +297,12 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
         } finally {
           process.removeListener("SIGINT", onSigint);
         }
-      })();
+      })().catch((err) => {
+        // Floating async IIFE — without this, an internal throw becomes an
+        // unhandled rejection that crashes the process with no UI feedback.
+        store.addNotice(`⎿ ${formatCliError(err)}`);
+        store.setBusy(false);
+      });
     },
     [store, deps, askUser, askUserQuestion],
   );
@@ -294,4 +323,3 @@ export function runTui(deps: TuiDeps): Promise<void> {
   const { waitUntilExit } = render(<Root store={store} deps={deps} />);
   return waitUntilExit() as Promise<void>;
 }
-

@@ -1086,15 +1086,26 @@ Use the task tool with subagent_name code-explorer to inspect README.md in the w
 - `parseEffort`（大小写无关校验）/ `getEffort`（从 `options.effort` 读取，缺省回落 high）
 - `anthropicEffort`（透传 gradient，`ultracode → xhigh`）/ `openaiReasoningEffort`（≥high 截断为 high）
 - `modelSupportsReasoningEffort`（仅推理模型下发 `reasoning_effort`，避免对普通 chat 模型 400）
-- 色彩工具：`hslToHex` / `gradientColorAt`（冷青→暖红渐变）/ `rainbowColors`（按 phase 偏移的彩虹，驱动 ultracode 流动特效）
+- 色彩工具：`hslToHex` / `gradientColorAt`（冷青→暖红渐变）/ `rainbowColors`（官方 voice-waveform HSL 参数 s=0.7/l=0.6，按 phase 偏移驱动 max 彩虹流动）
+
+新增 `src/tui/ParticleSpinner.tsx`（AI 思考转圈）：
+
+- 循环官方粒子字符集 `['·','✢','✳','✶','✻','✽']`（正放+倒放，120ms/帧），替换 TUI 原 ink-spinner 的 `dots`
+- CLI 行内 spinner（`cli-spinner.ts`）字符集对齐同集（原 `*` → `✳`）
 
 新增 `src/tui/EffortPrompt.tsx` + `src/tui/effort-fx.ts`（交互式滑块覆盖层）：
 
 - **布局对齐官方终端样式**：顶部全宽分割线 + 左缩进 `Effort` 标题 + **水平居中**轨道（按终端宽度算 leftPad，不偏左右）；`Faster … Smarter` 两端 + `▲` 标记 + `┆` 分隔 + `low medium high xhigh max ┆ ultracode` + `xhigh + workflows` 副标签 + 底部 `←/→ adjust · Enter · Esc` 提示
 - `←/→` 切档（钳位不循环）、`1-6` 直选、Enter 确认、Esc 取消
-- **max 特效**：整条轨道彩虹流动 + "max" 标签逐字符彩虹闪烁
-- **ultracode 紫色能量爆发特效**（比 max 更浓）：游标 `✦▲✦` 淡紫脉冲光晕、底部环形紫光从中心向外扩散（`━` 进度条）、边缘故障像素抖动（`▒╎`）、四周漂浮闪烁的紫色电路粒子（`✦❖⋆*·`）、面板紫调柔光、标题/分割线呼吸微光；选中时 70ms 一帧（max 110ms）跑动画，离开即停
-- 帧构建抽到纯函数 `effort-fx.ts`（`buildEffortFrame` 返回 ANSI 字符串数组），EffortPrompt 只管计时+输入，便于单测
+- **max 特效**：整条轨道彩虹流动 + "max" 标签逐字符彩虹闪烁（官方 hueToRgb 流光）
+- **ultracode 赛博紫像素场特效**（经多轮打磨，最终态）：
+  - 全屏紫调像素**分层渐变**背景（`bgHex`），矩形**左右顶格**全宽，上沿在 Effort 上方白线**下一行**（不越界），下沿到文字上方空行
+  - **以 `▲` 为圆心的同心圆水波**：`sin(dist·0.24 − phase·0.08)` —— 圆环放射状向外扩散（频率/速度均按反馈调缓）
+  - **切入淡入扩散**：进入时圆从 `▲` 缓慢长大铺满矩形（`fillR = maxDist·fade²` ease-in，`FADE_FRAMES=26`），铺满后持续放射同心圆波纹
+  - **竖条像素故障抖动**：列条按 hash 偶发 ±1 行偏移（赛博故障感）
+  - **bloom 呼吸光晕**：全局亮度 `(sin(phase·0.08)+1)/2`
+  - 配色 `violet()` = HSL 262°（电光靛紫）、饱和 0.95、亮度 0.12–0.62，鲜艳厚重（波峰约 rgb(154,58,250)）
+- 帧构建抽到纯函数 `effort-fx.ts`（`buildEffortFrame({active,phase,cols,fade})` 返回 ANSI 字符串数组），EffortPrompt 只管计时+输入+fade 计数，便于单测
 
 接线：
 
@@ -1107,17 +1118,87 @@ Use the task tool with subagent_name code-explorer to inspect README.md in the w
 
 ## 验收
 
-- `tsc --noEmit` 通过；`vitest run` → 39 文件 / **362 passed**（M12 为 332，新增 30：effort 模块 11 + commands 4 + EffortPrompt 组件 3 + effort-fx 帧构建 6 + 既有补充）
-- 渲染核对：6 档逐张渲染，布局居中对齐官方贴样；max 彩虹流动、ultracode 紫色能量特效（光晕/环形扩散/粒子/故障抖动/呼吸微光）均生效
+- `tsc --noEmit` 通过；`vitest run` → 39 文件 / **367 passed**（M12 为 332，新增 35：effort 模块 11 + commands 4 + EffortPrompt 组件 3 + effort-fx 帧构建 11 + 既有补充）
+- 渲染核对：6 档逐张渲染（亮度/背景字符图），布局居中对齐官方贴样；max 彩虹流动；ultracode 圆从 `▲` 扩散铺满 + 同心圆波纹 + 故障抖动 + bloom 均生效；矩形上沿不越界、文字行不下移、`▲` 无缺口
 - 命令数 17 → **18**
+
+## 迭代记录（按用户反馈逐轮收敛）
+
+1. 初版误做成静态 `console.log` → 改为 Ink 交互式 overlay
+2. ultracode 初版（能量爆发：粒子行/环形行/`✦▲✦`）会把文字挤下移、`▲` 有缺口 → 去掉多余行，行数与其它档一致、单 `▲`
+3. 按用户描述重做为「以 `▲` 为圆心的紫色水波扩散填满矩形」；spinner 换粒子集；max 用官方彩虹；矩形左右顶格、圆心移到 `▲`
+4. 紫色偏暗偏灰 → 提饱和到 0.95、改电光靛紫 262°，更鲜艳厚重
+5. 波纹方向错（斜向条带）→ 改为放射状同心圆 `sin(dist − phase)`
+6. 第二段波纹太快 → 速度系数调小（→ 0.08）
+7. 波纹频率太高 → 空间频率 `0.5 → 0.24`，环更稀疏
+8. 矩形上沿越界压住白线 → `RECT_TOP 0 → 1`，白线保持干净 dim 横线
 
 ## 设计取舍
 
 - 帧构建做成纯函数模块：动画/输入与渲染解耦，特效可脱离 Ink 单测（强制 `chalk.level=3` 验证颜色）
 - 交互式 overlay 复用现有权限/提问菜单的同一套 store overlay 机制：零新增渲染管线
 - 特效动画仅在 max/ultracode 选中时 `setInterval`、离开 `clearInterval`：其余档位零开销，无常驻定时器
-- 终端无法做真实模糊/像素辉光，故用 ANSI truecolor 脉冲 + 漂浮粒子 + 环形扩散字符 + 紫调柔光近似「能量爆发」的仪式感
+- ultracode 用「填充扩散 + 放射同心圆 + 像素故障 + bloom」分层叠加，全部画成**背景** wash（不增行、不移文字）；颜色走 ANSI truecolor
 - effort 存 `modelConfig.options.effort`；OpenAI 路径按模型能力 gate `reasoning_effort`（避免严格 provider 400）；`ultracode → xhigh`（官方定义 xhigh + workflows，workflows 属行为层）
+
+---
+
+# M17 — TUI 启动界面布局重做（2026-06-25）
+
+## 目标
+
+修复用户实测 `npm start` 的三个体感问题，对齐官方 Claude Code 启动界面观感：
+
+1. 输入框与上方 AI 回答相隔太远（ScrollBox 高度硬编码半屏，输入框另起一块，中间夹大段空白）
+2. 回答超出 ScrollBox 无法下滑回看（仅滚 LIVE_WINDOW=8 条，老历史进 `<Static>` 但 alt-buffer 无原生回滚）
+3. `/` 指令只显示前 8 条；输入框光标只能左右、多行无法上下换行
+
+参照 `reference/components/FullscreenLayout.tsx`、`reference/ink/components/ScrollBox.tsx`、`reference/ink/components/AlternateScreen.tsx`。本项目 ink7/react19 无自研 reconciler，不照搬官方 imperative ScrollBox，在现有纯 React state 版 ScrollBox 上做布局重排。
+
+## 17.1 全屏 alt-screen 进入/退出（src/tui/run.tsx）
+
+`runTui` 启动前 `process.stdout.write("\x1B[?1049h\x1B[2J\x1B[H")` 进 DEC 1049 alt buffer；`waitUntilExit().finally()` + `process.on("exit")` 双保险写 `\x1B[?1049l` 恢复主屏（含异常退出，stdout 已关时 try/catch 兜底）；`render(..., { exitOnCtrlC:false, patchConsole:false })`。banner 仍打印进 alt buffer（在 Ink 接管前）。
+
+## 17.2 根布局全屏贴底 + resize 监听（src/tui/App.tsx）
+
+- 根 `<Box flexDirection="column" height={rows}>` 钉到终端高度。
+- 新增 `useTerminalSize()`：`useSyncExternalStore` 订阅 `process.stdout` "resize"，返回 `(rows, cols)`，布局随窗口变化重渲染。
+- `scrollHeight = rows - inputRows - statusBarRows`；`inputRows = 3 + (下拉打开? DROPDOWN_VISIBLE : 0)`，`DROPDOWN_VISIBLE = min(8, max(3, rows-6))`；`statusBarRows = 2`。输入框紧贴 ScrollBox 底部，无空白。
+- InputBox 接收 `cols` prop，分隔线宽度随 resize（原模块级 `RULE_WIDTH` 常量改运行时 `Math.max(20, cols)`）。
+
+## 17.3 全量历史进 ScrollBox（取消 `<Static>`）
+
+alt buffer 无原生回滚，`<Static>` 失效。删除 `LIVE_WINDOW=8` 切分与 `Transcript` 的 `<Static>` 分支，**全部** transcript 进 ScrollBox `rows`，成为唯一滚动容器。ScrollBox 每次 render 仅 slice `h` 行渲染 O(h)，总量不影响；follow 贴底、browse 定位、PgUp/PgDn/Home/End 提供回看。`disableArrows` 改为 `!overlay`（InputBox 活跃即让出 ↑/↓，回看主推 PgUp/PgDn）。
+
+## 17.4 `/` 命令面板全部展开 + 分页（src/tui/InputBox.tsx）
+
+删 `MAX_SUGGESTIONS=8`，`suggestions` 全集过滤；`selected` 在全集循环；`startIndex = clamp(selected - floor(maxVisible/2), 0, len-maxVisible)` 窗口跟随（照搬 `reference/.../PromptInputFooterSuggestions.tsx:238`）；只渲染窗口内 `maxVisible=min(8,len)` 条；超窗显示 `(N/total) ↑↓ to browse` 计数；命令名列对齐 `nameWidth=floor(cols*0.3)`，用空格 padding 而非 `padEnd` slice 避免 ANSI/全宽错位。
+
+## 17.5 输入框多行 + 上下光标（src/tui/InputBox.tsx）
+
+- `Ctrl+J` 插 `\n`（Shift+Enter 多数终端不可靠，故选 Ctrl+J）。
+- 新增纯函数 `lineStart/lineEnd/moveVertical`：按 `\n` 分行，由 `cursor` 算 (row,col)，↑/↓ 同列移动并按目标行长 clamp；无下拉时接管 ↑/↓ 走光标，有下拉时仍走选择。
+- Ctrl+A/E 与 Home/End 改为行首/行尾（多行语义，非整 buffer 边缘）。
+- Backspace 在 `\n` 处自然并行（删换行符 join 行）。
+- `CursorText` 整串切含 `\n` 时 Ink 自然换行、inverse 光标贴字符。
+
+## 17.6 状态栏 / `/keybindings` 同步
+
+- StatusBar 改两行（提示行 + model/token 行），提示含 `↑↓ cursor/cmd · ←→ move · Ctrl+J newline · / commands · @path attach · PgUp/PgDn scroll`。
+- `src/commands.ts` `/keybindings` 表追加 Ctrl+J（换行）、PgUp/PgDn（滚动回看）、Home/End，并细化 ↑/↓ / ←/→ / Ctrl+A/E 描述。
+
+## 验收
+
+- `tsc --noEmit` 干净；`npm run build` 通过。
+- `vitest run` → **44 文件 / 458 用例全绿**（本轮净 +8：input-box +4 含多行光标/分页、tui-components +1 全屏贴底+全量面板、tui-scrollbox +2 大历史 follow/PgUp 回首条，外加 App 签名变更适配）。
+- 真机冒烟（piped `hi\r`）：启动进 alt screen、回答在滚动区、输入框贴底、退出恢复主屏，均正常。
+- 视觉冒烟（ink-testing-library 模拟 30 轮长会话 + 面板打开）：长历史 follow 贴底显示末轮、`/` 面板窗口化 + 计数 `(1/26)` 正常。
+
+## 设计取舍
+
+- 取消 `<Static>` 改全量 ScrollBox：长会话每次 slice O(h) 可接受；若实测卡顿再加窗口化（仅最近 N 条进 ScrollBox + 老历史落盘）。
+- alt screen 无原生滚轮，PgUp/PgDn 是主回看键（状态栏已明示）。
+- Ctrl+J 换行键可后续按用户偏好再调（如改 Shift+Enter 配合终端配置）。
 
 ---
 
@@ -1125,12 +1206,13 @@ Use the task tool with subagent_name code-explorer to inspect README.md in the w
 
 | 指标 | 当前值 |
 |---|---|
-| 主线里程碑 | M1–M12 完成；M13 进行中（13.7 ✅） |
-| 测试数量 | **362 passed** |
-| 渲染层 | 真 Ink (React 19) TUI + 非 TTY line fallback |
+| 主线里程碑 | M1–M16 完成；M17 ✅（TUI 启动界面布局重做） |
+| 测试数量 | **458 passed** |
+| 渲染层 | 真 Ink (React 19) TUI + 非 TTY line fallback；**全屏 alt-screen + 输入框贴底 + 全量历史 ScrollBox 回看**；思考转圈用粒子字符集 |
 | 核心工具 | **24 个**（含 5 个 Team 协作工具） |
-| Slash 命令 | **18 个**（新增 /effort 推理强度滑块） |
-| 推理强度 | `/effort` low/medium/high/xhigh/max/ultracode，按 provider 映射 |
+| Slash 命令 | **26 个** |
+| 推理强度 | `/effort` low/medium/high/xhigh/max/ultracode 交互滑块；max 彩虹流光、ultracode 赛博紫像素水波；按 provider 映射 |
+| 输入框 | 多行（Ctrl+J 换行）+ ↑/↓ 行间光标 + ←/→ 行内 + `/` 全命令面板分页 |
 | 多代理 | Team 有状态协作（create/send/list/get/stop + 轻量后台） |
 | MCP 传输 | stdio + http + sse + ws，含 OAuth 鉴权 |
 | 模型路由 | 多 provider + 云网关（Bedrock/Vertex，OpenAI 兼容面） |
@@ -1145,4 +1227,5 @@ Use the task tool with subagent_name code-explorer to inspect README.md in the w
 
 # 一句话总结
 
-M1–M12 全部完成；M13 命令广度二期启动，首个任务 `/effort` 推理强度滑块落地——对齐官方 6 档（low→max + ultracode），切档下一轮即生效，Anthropic 走 output_config.effort、OpenAI 推理模型走 reasoning_effort，命令数 17→18，测试 332→350 全绿。
+M17 TUI 启动界面布局重做落地——进 alt-screen 全屏、ScrollBox 占满终端剩余高度承载全量历史（取消 `<Static>`）、输入框紧贴最底无空白、`/` 面板显示全部 26 命令可分页、输入框支持多行（Ctrl+J 换行）+ ↑/↓ 行间光标；PgUp/PgDn 回看、状态栏与 `/keybindings` 同步；tsc 干净，测试 450→458 全绿，真机冒烟 OK。
+

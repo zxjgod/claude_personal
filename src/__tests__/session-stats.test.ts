@@ -71,4 +71,29 @@ describe("session-stats", () => {
     expect(formatDuration(12_000)).toBe("12s");
     expect(formatDuration(83_000)).toBe("1m 23s");
   });
+
+  // 16.5: cache hit rate uses input + cacheRead as the denominator so the
+  // same accounting works for both providers (Anthropic input excludes cache
+  // tokens; OpenAI prompt_tokens includes them but we surface cached_tokens
+  // separately and do not double-count).
+  it("cacheHitRate = cacheRead / (input + cacheRead)", () => {
+    const s = new SessionStats();
+    // Anthropic-style: non-cached input 100, cache read 400.
+    s.addUsage(100, 0, { read: 400 });
+    expect(s.cacheHitRate).toBeCloseTo(400 / 500);
+  });
+
+  it("cacheHitRate is null when nothing billed", () => {
+    const s = new SessionStats();
+    expect(s.cacheHitRate).toBeNull();
+  });
+
+  it("does not double-count cache creation into the hit-rate denominator", () => {
+    const s = new SessionStats();
+    // 100 fresh input + 300 cache creation + 200 cache read on a later call.
+    s.addUsage(100, 0, { creation: 300 });
+    s.addUsage(50, 0, { read: 200 });
+    // denominator = input(150) + cacheRead(200) = 350; creation is not added.
+    expect(s.cacheHitRate).toBeCloseTo(200 / 350);
+  });
 });

@@ -15,6 +15,7 @@ import {
   getSubagentType,
   listSubagentNames,
   resolveSubagentTools,
+  getCoreToolsForSubagents,
 } from "./subagents.js";
 
 // --- Constants ---
@@ -39,17 +40,10 @@ interface TaskInput {
   [key: string]: unknown;
 }
 
-// Lazy load sub-agent tools to break circular dependency with tools.ts.
-// tools.ts imports TaskTool -> task-tool.ts imports tools classes -> cycle!
-let _coreTools: Tool[] | null = null;
-async function getCoreTools(): Promise<Tool[]> {
-  if (!_coreTools) {
-    const { ReadTool, GlobTool, GrepTool, BashTool, WriteTool, EditTool } =
-      await import("./tools.js");
-    _coreTools = [ReadTool, GlobTool, GrepTool, BashTool, WriteTool, EditTool];
-  }
-  return _coreTools;
-}
+// Core tools for sub-agent resolution come from the subagents registry, which
+// the CLI injects once at startup (16.9). This avoids the old cycle where
+// task-tool.ts dynamically imported tools.ts (tools.ts → TaskTool → tools.ts).
+// A lazy fallback remains inside getCoreToolsForSubagents for standalone use.
 
 // --- Concurrency semaphore ---
 
@@ -163,7 +157,7 @@ export const TaskTool: Tool = createTool<TaskInput>({
 
     await acquireSlot();
     try {
-      const coreTools = await getCoreTools();
+      const coreTools = await getCoreToolsForSubagents();
       const subagentTools = resolveSubagentTools(subagentType, coreTools);
       const loop = agentLoop(
         subMessages,
@@ -180,7 +174,14 @@ export const TaskTool: Tool = createTool<TaskInput>({
             sessionId: context.sessionId,
             permissionMode: context.permissionMode,
             modelConfig: context.modelConfig,
+            // Forward the parent's interactive approver so the sub-agent's
+            // destructive tools (bash/write/edit) still prompt the user,
+            // instead of being auto-approved by the loop's default askUser.
+            askUser: context.askUser,
           },
+          // Also pass askUser at the LoopOptions level — the sub-loop's own
+          // permission checks (the ones NOT inside a nested tool) use this.
+          askUser: context.askUser,
         },
       );
 
@@ -257,8 +258,11 @@ export const TaskTool: Tool = createTool<TaskInput>({
   },
 
   async checkPermissions(_input, _context) {
+    // The `task` tool itself just spawns a sub-agent; the user explicitly
+    // requested it, so spawning needs no separate prompt. The sub-agent's
+    // own tool calls (bash/write/edit) are permission-checked inside the
+    // sub-loop, where the parent's askUser is forwarded so destructive
+    // actions still surface for confirmation.
     return { allowed: true };
-    // Sub-agent tool calls are themselves permission-checked inside the
-    // sub-loop; the user explicitly requested the sub-agent via `task`.
   },
 });

@@ -18,6 +18,9 @@ Desktop.ini
 # Test coverage
 coverage/
 
+# Local session state (runtime artifacts, not source)
+.claude/sessions/
+
 # Bundled reference materials (large files)
 reference/
 *.pdf

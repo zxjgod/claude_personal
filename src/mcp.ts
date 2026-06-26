@@ -15,7 +15,51 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { WebSocketClientTransport } from "@modelcontextprotocol/sdk/client/websocket.js";
 import { FileTokenOAuthProvider, type MCPOAuthConfig } from "./mcp-auth.js";
-import type { Tool, ToolResult } from "./types.js";
+import type { Tool, ToolResult, ToolContext, PermissionResult } from "./types.js";
+
+// --- Timeout helper ---
+//
+// MCP servers are external processes/services that can hang indefinitely (a
+// crashed stdio child, an unresponsive HTTP server, a network partition).
+// Without a timeout, `client.connect` / `listTools` / `callTool` would pin the
+// agent loop forever. This races the operation against a timer and rejects
+// with a TimeoutError so the caller can surface a tool error instead of
+// hanging. The original promise is left to settle on its own (the SDK has no
+// generic cancel); for stdio servers the child is reaped on disconnect.
+
+export class TimeoutError extends Error {
+  constructor(operation: string, ms: number) {
+    super(`MCP ${operation} timed out after ${ms}ms`);
+    this.name = "TimeoutError";
+  }
+}
+
+export async function withTimeout<T>(
+  operation: string,
+  promise: Promise<T>,
+  ms: number,
+): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new TimeoutError(operation, ms)),
+      ms,
+    );
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+// Conservative per-operation ceilings. A well-behaved MCP server should
+// respond far faster; these bound the worst case so a hung server degrades
+// to an error rather than freezing the session.
+const CONNECT_TIMEOUT_MS = 30_000;
+const LIST_TOOLS_TIMEOUT_MS = 20_000;
+const CALL_TOOL_TIMEOUT_MS = 60_000;
+
 
 // --- MCP Server Config ---
 
@@ -49,6 +93,12 @@ interface ServerEntry {
 
 export class MCPManager {
   private servers: Map<string, ServerEntry> = new Map();
+  /**
+   * 16.10: MCP tools whose first call the user already confirmed this session.
+   * Keyed by the synthetic tool name `mcp__<server>__<tool>`. Subsequent calls
+   * skip the prompt so a trusted tool doesn't nag every turn.
+   */
+  private confirmedMcpTools: Set<string> = new Set();
 
   /**
    * Load MCP configuration from a JSON file
@@ -116,7 +166,7 @@ export class MCPManager {
           { name: "claude-code-replica", version: "1.0.0" },
           { capabilities: {} as any },
         );
-        await client.connect(transport);
+        await withTimeout("connect(stdio)", client.connect(transport), CONNECT_TIMEOUT_MS);
       } else if (
         config.type === "http" ||
         config.type === "sse" ||
@@ -150,7 +200,7 @@ export class MCPManager {
         );
 
         try {
-          await client.connect(transport);
+          await withTimeout("connect(network)", client.connect(transport), CONNECT_TIMEOUT_MS);
         } catch (error: any) {
           // Unauthorized → run the one-shot interactive OAuth exchange, then
           // reconnect with a fresh transport carrying the new token.
@@ -167,7 +217,7 @@ export class MCPManager {
             );
             // finishAuth exchanges the code for tokens on the transport.
             await (reTransport as any).finishAuth(code);
-            await client.connect(reTransport);
+            await withTimeout("connect(network:reauth)", client.connect(reTransport), CONNECT_TIMEOUT_MS);
           } else {
             throw error;
           }
@@ -180,7 +230,11 @@ export class MCPManager {
       }
 
       // --- Discover tools ---
-      const toolsResult = await client.listTools();
+      const toolsResult = await withTimeout(
+        "listTools",
+        client.listTools(),
+        LIST_TOOLS_TIMEOUT_MS,
+      );
       const mcpTools: Tool[] = toolsResult.tools.map(
         (remoteTool: any) => {
           // Build input schema, ensuring it's a valid JSON Schema object
@@ -209,13 +263,25 @@ export class MCPManager {
             isEnabled: () => true,
             isReadOnly: () => false, // Conservative — assume destructive
             isConcurrencySafe: () => true, // Separate process, safe to run in parallel
+            // 16.10: MCP servers can execute arbitrary external actions (drop a
+            // DB, send mail), so trusting them sight-unseen is risky. We now
+            // require interactive approval in default mode for the FIRST call to
+            // each MCP tool, then remember the user's choice for the rest of the
+            // session. plan/bypass/acceptEdits still flow through the system-level
+            // checkPermission on top of this. The "always" choice is sticky so a
+            // confirmed tool stops prompting.
+            requiresApproval: () => true,
 
             async call(input: Record<string, unknown>): Promise<ToolResult> {
               try {
-                const result = await client.callTool({
-                  name: remoteTool.name,
-                  arguments: input,
-                });
+                const result = await withTimeout(
+                  `callTool(${toolName})`,
+                  client.callTool({
+                    name: remoteTool.name,
+                    arguments: input,
+                  }),
+                  CALL_TOOL_TIMEOUT_MS,
+                );
 
                 // Extract text content from result
                 const content = (result.content as any[])
@@ -237,8 +303,38 @@ export class MCPManager {
               return r.content;
             },
 
-            checkPermissions: async () => ({ allowed: true }),
-            // MCP tools auto-approved — user trusted the server
+            checkPermissions: async (
+              _input: Record<string, unknown>,
+              context: ToolContext,
+            ): Promise<PermissionResult> => {
+              // 16.10: prompt on the first call to each MCP tool per session,
+              // then honor the sticky "always" decision. In plan mode the
+              // system-level checkPermission hard-blocks anyway; here we only
+              // gate the default-mode first use. bypassPermissions/acceptEdits
+              // are likewise handled by the system level, so this returns
+              // allowed:true there and lets the loop proceed.
+              if (context.permissionMode === "bypassPermissions") {
+                return { allowed: true };
+              }
+              if (this.confirmedMcpTools.has(toolName)) {
+                return { allowed: true };
+              }
+              const allowed = context.askUser
+                ? await context.askUser(
+                    { name: toolName } as Tool,
+                    _input,
+                    `First call to MCP tool "${toolName}" — confirm to trust this server action`,
+                  )
+                : true;
+              if (allowed) {
+                this.confirmedMcpTools.add(toolName);
+                return { allowed: true };
+              }
+              return {
+                allowed: false,
+                reason: `MCP tool "${toolName}" not approved by user`,
+              };
+            },
           } as Tool;
         },
       );

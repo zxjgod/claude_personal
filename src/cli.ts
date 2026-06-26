@@ -14,6 +14,7 @@ import { agentLoop } from "./agent-loop.js";
 import { buildSystemPrompt } from "./system-prompt.js";
 import { ToolRegistry } from "./tool-registry.js";
 import { CORE_TOOLS } from "./tools.js";
+import { setCoreToolsForSubagents } from "./subagents.js";
 import { createToolSearchTool, createMcpResourceTools } from "./tools-m8.js";
 import { MCPManager, discoverMCPConfigs } from "./mcp.js";
 import { createModelCaller, resolveProviderConfig } from "./llm-adapter.js";
@@ -23,6 +24,7 @@ import { HookRegistry } from "./hooks.js";
 import { createCliInputReader } from "./cli-input.js";
 import { createRawInputReader, promptPermissionMenu, promptSelectMenu } from "./cli-interactive.js";
 import { Spinner } from "./cli-spinner.js";
+import { formatSpeculationLine } from "./speculation.js";
 import { formatCliError } from "./cli-errors.js";
 import {
   StreamingRenderer,
@@ -42,6 +44,7 @@ import type {
   AskUserFn,
   Message,
   ModelConfig,
+  PermissionClassifier,
   PermissionMode,
   Tool,
   UserQuestion,
@@ -60,7 +63,10 @@ function loadConfig(): ModelConfig {
     console.error(
       "Error: LLM_API_KEY is not set. Create a .env file or set the environment variable.",
     );
-    process.exit(1);
+    // No resources to clean up yet (persistence/mcp not constructed), but flush
+    // stdout/stderr before exiting so the message is not truncated on Windows.
+    process.exitCode = 1;
+    return {} as ModelConfig;
   }
 
   return resolveProviderConfig({
@@ -221,6 +227,10 @@ async function main() {
     toolRegistry.register(tool);
     toolSources.push({ tool, source: "core" });
   }
+  // 16.9: inject the core tool set into the subagents registry so sub-agent
+  // loops (Task/Team) resolve tool names without dynamically importing
+  // tools.ts (which would re-enter the tools.ts → TaskTool → tools.ts cycle).
+  setCoreToolsForSubagents(CORE_TOOLS);
 
   // MCP Setup
   const mcpManager = new MCPManager();
@@ -277,6 +287,26 @@ async function main() {
   // --- Model Caller ---
 
   const callModel = createModelCaller(modelConfig);
+
+  // M15.3: LLM-assisted permission classifier. OFF by default — enable with
+  // --llm-perm-classifier or CCR_PERM_CLASSIFIER=1. When enabled, tool calls
+  // the regex dangerous-pattern detector already flags get a model-assessed
+  // risk hint (or outright block) before the approval prompt. It never relaxes
+  // the prompt for ordinary tools, and degrades fail-safe (still prompts with
+  // the regex reason) on any API/timeout/unavailable error.
+  const llmPermClassifierEnabled =
+    process.argv.includes("--llm-perm-classifier") ||
+    process.env.CCR_PERM_CLASSIFIER === "1";
+  const permissionClassifier: PermissionClassifier | undefined =
+    llmPermClassifierEnabled
+      ? {
+          callModel,
+          modelConfig,
+          // Bound classifier latency so a slow/hung provider can't stall the
+          // approval flow; on timeout we defer to the regex reason.
+          timeoutMs: 4000,
+        }
+      : undefined;
 
   // --- Conversation ---
 
@@ -359,6 +389,7 @@ async function main() {
     permissionMode,
     systemPrompt,
     mcpServerCount: mcpManager.serverCount,
+    mcpManager,
   });
 
   // --- TUI path (9.1, 9.7) ---
@@ -381,8 +412,13 @@ async function main() {
       makeCommandContext,
       alwaysAllow,
       permissionKey,
+      // M15.3: opt-in LLM permission classifier, threaded into the TUI's
+      // agent loop the same way as the line-based REPL path.
+      permissionClassifier,
       onSave: () => {
-        persistence.save(sessionId!, messages).catch(() => {});
+        persistence.save(sessionId!, messages).catch((err) => {
+          console.error("Warning: TUI save failed:", formatCliError(err));
+        });
       },
     });
     await persistence.save(sessionId!, messages, { completed: true });
@@ -563,19 +599,25 @@ async function main() {
           permissionMode,
           modelConfig,
           askUserQuestion: askUserQuestionGuarded,
+          // Thread the approver into sub-agent (Task/Team) loops so their
+          // destructive tools prompt the user instead of auto-approving.
+          askUser: askUserGuarded,
           onSubAgentProgress: (event) => {
             spinner.stop();
             renderer.flush();
             renderSubAgentActivity(event);
           },
+          // M15.3: opt-in LLM permission classifier for flagged dangerous calls.
+          permissionClassifier,
         },
         askUser: askUserGuarded,
         abortSignal: controller.signal,
         hooks,
         // 12.2: opt-in speculative prefetch of likely follow-up Reads.
+        // M15.2: ON by default; --no-speculation / CCR_SPECULATION=0 disable.
         speculation:
-          process.argv.includes("--speculation") ||
-          process.env.CCR_SPECULATION === "1",
+          !process.argv.includes("--no-speculation") &&
+          process.env.CCR_SPECULATION !== "0",
       },
     );
 
@@ -627,8 +669,11 @@ async function main() {
           }
           sessionStats.addToolCalls(event.results.length);
           telemetry.record("tool_results", { count: event.results.length });
-          // Auto-save after tool execution
-          persistence.save(sessionId!, messages).catch(() => {});
+          // Auto-save after tool execution. Best-effort: a save failure is
+          // logged (not silently swallowed) but never blocks the turn.
+          persistence.save(sessionId!, messages).catch((err) => {
+            console.error("Warning: auto-save after tool calls failed:", formatCliError(err));
+          });
           spinner.start();
           break;
 
@@ -664,8 +709,16 @@ async function main() {
               ),
             );
           }
+          // M15.2: surface speculation cost/benefit (only if anything was
+          // prefetched — empty line otherwise).
+          if (event.speculation) {
+            const line = formatSpeculationLine(event.speculation);
+            if (line) console.log(chalk.gray(`  ${line}`));
+          }
           // Final assistant text was added to messages in the loop
-          persistence.save(sessionId!, messages).catch(() => {});
+          persistence.save(sessionId!, messages).catch((err) => {
+            console.error("Warning: end-of-turn save failed:", formatCliError(err));
+          });
           telemetry.record("turn", {
             inputTokens: turnInputTokens,
             outputTokens: turnOutputTokens,
@@ -691,17 +744,79 @@ async function main() {
     await new Promise<void>((resolve) => process.stdout.write("", () => resolve()));
   }
 
-  // Cleanup
-  closeInput();
-  telemetry.record("session_end", {
-    toolCalls: sessionStats.toolCalls,
+  // --- Cleanup ---
+  // Centralized resource teardown. Registered as the SIGINT/SIGTERM handler
+  // and also called on the normal + error exit paths so we never leak the
+  // long-lived tsserver LSP connection or leave MCP stdio children orphaned
+  // (previously a fatal error skipped all of this). Idempotent — safe to call
+  // multiple times.
+  let cleanedUp = false;
+  async function cleanup(): Promise<void> {
+    if (cleanedUp) return;
+    cleanedUp = true;
+    try {
+      closeInput();
+    } catch {
+      /* already closed */
+    }
+    try {
+      telemetry.record("session_end", { toolCalls: sessionStats.toolCalls });
+    } catch {
+      /* telemetry is best-effort */
+    }
+    try {
+      await persistence.save(sessionId!, messages, { completed: true });
+    } catch (err) {
+      console.error("Warning: failed to save session on exit:", formatCliError(err));
+    }
+    try {
+      await mcpManager.disconnectAll();
+    } catch {
+      /* MCP teardown is best-effort */
+    }
+    try {
+      const { disposeAllLspClients } = await import("./lsp.js");
+      await disposeAllLspClients();
+    } catch {
+      /* LSP teardown is best-effort */
+    }
+  }
+
+  // Top-level signal handlers. The per-turn SIGINT handler (installed inside
+  // the REPL loop) aborts just the current turn; these fire on a second Ctrl+C
+  // or SIGTERM and tear the whole process down cleanly.
+  const onFatalSignal = () => {
+    void cleanup().finally(() => {
+      console.log("\nInterrupted. Goodbye!");
+      process.exit(130);
+    });
+  };
+  process.on("SIGTERM", onFatalSignal);
+  // The REPL loop installs its own SIGINT handler for per-turn abort; this
+  // one is a safety net for signals arriving outside a turn.
+  process.on("SIGINT", () => {
+    // If we're between turns (no per-turn handler active), exit. The per-turn
+    // handler calls preventDefault-equivalent by aborting the controller; if
+    // it's installed it consumes the signal and this never runs.
+    onFatalSignal();
   });
-  await persistence.save(sessionId!, messages, { completed: true });
-  await mcpManager.disconnectAll();
-  console.log("\nGoodbye!");
+
+  // Catch-all for unhandled promise rejections and synchronous exceptions so a
+  // stray reject (e.g. a floating save) tears down resources instead of
+  // leaving the process in a half-dead state.
+  const onUnhandledRejection = (reason: unknown) => {
+    console.error("Unhandled rejection:", formatCliError(reason));
+    void cleanup().finally(() => process.exit(1));
+  };
+  process.on("unhandledRejection", onUnhandledRejection);
+  const onUncaughtException = (err: Error) => {
+    console.error("Uncaught exception:", formatCliError(err));
+    void cleanup().finally(() => process.exit(1));
+  };
+  process.on("uncaughtException", onUncaughtException);
 }
 
-main().catch((error) => {
+main().catch(async (error) => {
   console.error("Fatal error:", formatCliError(error));
   process.exit(1);
 });

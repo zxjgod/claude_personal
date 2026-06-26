@@ -239,3 +239,50 @@ describe("TaskTool", () => {
     expect(result.error).toContain("modelConfig");
   });
 });
+
+// --- Sub-agent permission forwarding (16.3) ---
+//
+// Regression: sub-agent loops previously used defaultAskUser (always true), so
+// a sub-agent's bash/write calls were auto-approved. Now the parent loop
+// threads its askUser through ToolContext.askUser into the sub-loop, so
+// destructive sub-agent tools still prompt. We verify the forwarding path by
+// mocking the model caller to emit a write tool call and asserting the parent
+// askUser is invoked.
+
+import { vi } from "vitest";
+import type { ModelConfig } from "../types.js";
+
+vi.mock("../llm-adapter.js", () => ({
+  createModelCaller: () =>
+    async function* () {
+      // Sub-agent's single turn: request a write, then we end.
+      yield { type: "tool_use", id: "c1", name: "write", input: { filePath: "x.txt", content: "y" } };
+      yield { type: "done", usage: { input_tokens: 1, output_tokens: 1 }, finish_reason: "tool_calls" };
+    },
+}));
+
+describe("TaskTool sub-agent permission forwarding", () => {
+  it("forwards the parent askUser so a sub-agent write prompts the user", async () => {
+    const parentAskUser = vi.fn().mockResolvedValue(false);
+    const ctxWithModel: ToolContext = {
+      workspaceRoot: tmpDir,
+      sessionId: "test-fwd",
+      permissionMode: "default",
+      modelConfig: { provider: "deepseek", model: "deepseek-chat", apiKey: "k" } as ModelConfig,
+      // Parent loop injects its approver here; TaskTool forwards it to the sub-loop.
+      askUser: parentAskUser,
+    };
+
+    const result = await TaskTool.call(
+      { description: "sub", prompt: "write a file", subagent_name: "general" },
+      ctxWithModel,
+    );
+
+    // The sub-agent requested a write — that's a destructive tool in default
+    // mode, so the forwarded parent askUser must have been consulted. Before
+    // the fix, defaultAskUser (always-true) would have run it unattended.
+    expect(parentAskUser).toHaveBeenCalled();
+    // User denied → the write was blocked; result reflects the sub-agent ran.
+    expect(result.error).toBeUndefined();
+  });
+});

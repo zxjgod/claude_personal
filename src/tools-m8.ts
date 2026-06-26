@@ -7,6 +7,7 @@
 // ============================================================
 
 import * as fs from "node:fs";
+import * as path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { Tool, ToolResult, ToolContext } from "./types.js";
@@ -18,7 +19,8 @@ import {
 } from "./tools.js";
 import { checkReadBeforeEdit, refreshRead } from "./read-tracker.js";
 import { recordChange } from "./change-tracker.js";
-import { parseTscOutput, filterByFile, formatDiagnostics } from "./lsp.js";
+import { parseTscOutput, filterByFile, formatDiagnostics } from "./lsp-legacy.js";
+import { getLspClient, filterByFile as lspFilterByFile, formatDiagnostics as lspFormatDiagnostics } from "./lsp.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -213,6 +215,29 @@ export const LspDiagnosticsTool: Tool = createTool<LspDiagnosticsInput>({
         error: "No tsconfig.json in workspace — lsp_diagnostics needs a TypeScript project.",
       };
     }
+
+    // --- Real LSP path (M14.5) -------------------------------------------------
+    // Try the long-lived tsserver connection first. Only the single-file
+    // case is supported over LSP here; whole-project diagnostics fall
+    // through to the tsc shell-out (tsserver drives diagnostics per open
+    // document). The Diagnostic shape is identical, so output is uniform.
+    if (typeof input.filePath === "string" && input.filePath) {
+      const resolved = `${cwd}/${input.filePath}`.replace(/\\/g, "/").replace(/\/+/g, "/");
+      const abs = input.filePath.startsWith(cwd) || path.isAbsolute(input.filePath)
+        ? input.filePath
+        : resolved;
+      const client = getLspClient(cwd);
+      if (client) {
+        try {
+          const diags = await client.getDiagnostics(abs, 15_000);
+          return { content: lspFormatDiagnostics(lspFilterByFile(diags, input.filePath)) };
+        } catch {
+          // Fall through to tsc on any LSP failure.
+        }
+      }
+    }
+
+    // --- tsc fallback ----------------------------------------------------------
     let output = "";
     try {
       const { stdout } = await execFileAsync(
