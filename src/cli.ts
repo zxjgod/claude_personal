@@ -38,6 +38,7 @@ import { COMMANDS } from "./commands.js";
 import type { ToolSource } from "./commands.js";
 import { SessionStats } from "./session-stats.js";
 import { PersistenceManager } from "./persistence.js";
+import { SessionTranscript } from "./session-transcript.js";
 import { Telemetry } from "./telemetry.js";
 import { gatherGitContext, formatGitContext } from "./git-context.js";
 import type {
@@ -163,6 +164,15 @@ async function main() {
 
   const messages: Message[] = [];
   const persistence = new PersistenceManager(workspaceRoot);
+  // M19.2: append-only event log (tool_use/tool_result/usage/…) alongside the
+  // session snapshot. Best-effort: every record call is wrapped so a write
+  // failure warns but never blocks the turn.
+  const transcript = new SessionTranscript(workspaceRoot);
+  const recordTranscript = (entry: Parameters<SessionTranscript["append"]>[1]) => {
+    transcript.append(sessionId!, entry).catch((err) => {
+      console.error("Warning: transcript append failed:", formatCliError(err));
+    });
+  };
   const sessionStats = new SessionStats();
 
   // Local telemetry (11.4) — disabled unless explicitly opted in. Local-only,
@@ -371,6 +381,9 @@ async function main() {
     return true;
   };
 
+  const goalHolder = { value: "" };
+  const editorModeHolder = { value: "default" } as { value: "default" | "vim" };
+
   const makeCommandContext = () => ({
     messages,
     modelConfig,
@@ -390,6 +403,9 @@ async function main() {
     systemPrompt,
     mcpServerCount: mcpManager.serverCount,
     mcpManager,
+    hooks,
+    goal: goalHolder,
+    editorMode: editorModeHolder,
   });
 
   // --- TUI path (9.1, 9.7) ---
@@ -558,6 +574,7 @@ async function main() {
       role: "user",
       content: [{ type: "text", text: contentText }],
     });
+    recordTranscript({ type: "user_prompt", text: contentText });
 
     // Per-turn abort handling: first Ctrl+C aborts the current turn and
     // returns to the prompt; a second (at the idle prompt) exits.
@@ -593,14 +610,18 @@ async function main() {
       }
     };
 
-    // Run agent loop
+    // Run agent loop. M18.12: append the session goal (if any) so the model
+    // keeps the objective in view this turn.
+    const turnSystemPrompt = goalHolder.value
+      ? `${systemPrompt}\n\n[SESSION GOAL]\nThe user set this objective for the session. Keep it in view and steer toward it:\n${goalHolder.value}`
+      : systemPrompt;
     const loop = agentLoop(
       messages,
       tools,
       callModel,
       modelConfig,
       {
-        systemPrompt,
+        systemPrompt: turnSystemPrompt,
         maxTurns: 50,
         toolContext: {
           workspaceRoot,
@@ -666,6 +687,12 @@ async function main() {
           spinner.stop();
           renderer.flush();
           renderToolStart(event.name, event.input);
+          recordTranscript({
+            type: "tool_use",
+            id: event.id,
+            name: event.name,
+            input: event.input,
+          });
           spinner.setMode("tool");
           spinner.start();
           break;
@@ -675,6 +702,13 @@ async function main() {
           renderer.flush();
           for (const result of event.results) {
             renderToolResult(result);
+            recordTranscript({
+              type: "tool_result",
+              name: result.toolName,
+              durationMs: result.durationMs,
+              error: result.error,
+              preview: SessionTranscript.preview(result.formatted),
+            });
           }
           sessionStats.addToolCalls(event.results.length);
           telemetry.record("tool_results", { count: event.results.length });
@@ -699,12 +733,20 @@ async function main() {
             read: event.usage.cache_read_input_tokens,
             creation: event.usage.cache_creation_input_tokens,
           });
+          recordTranscript({
+            type: "usage",
+            input: event.usage.input_tokens,
+            output: event.usage.output_tokens,
+            cacheRead: event.usage.cache_read_input_tokens,
+            cacheCreation: event.usage.cache_creation_input_tokens,
+          });
           spinner.update({ tokens: turnOutputTokens || Math.round(streamedChars / 4) });
           break;
 
         case "error":
           spinner.stop();
           renderer.flush();
+          recordTranscript({ type: "error", message: formatCliError(event.error) });
           console.error(`\n  ${chalk.red("⎿")} ${formatCliError(event.error)}`);
           break;
 
@@ -728,6 +770,11 @@ async function main() {
           persistence.save(sessionId!, messages).catch((err) => {
             console.error("Warning: end-of-turn save failed:", formatCliError(err));
           });
+          recordTranscript({
+            type: "done",
+            finishReason: event.finishReason,
+            turns: event.turns,
+          });
           telemetry.record("turn", {
             inputTokens: turnInputTokens,
             outputTokens: turnOutputTokens,
@@ -737,6 +784,7 @@ async function main() {
         case "aborted":
           spinner.stop();
           renderer.flush();
+          recordTranscript({ type: "aborted", reason: event.reason });
           console.log(`\n  ${chalk.dim("⎿")} Aborted: ${event.reason}`);
           break;
       }

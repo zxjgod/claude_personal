@@ -36,14 +36,21 @@ export function InputBox({
   commands,
   disabled,
   onSubmit,
+  editorMode,
 }: {
   commands: CommandInfo[];
   disabled: boolean;
   onSubmit: (value: string) => void;
+  /** M18.10: shared holder toggled by /vim. When "vim", input is modal. */
+  editorMode?: { value: "default" | "vim" };
 }) {
+  const vimActive = editorMode?.value === "vim";
   const [buffer, setBuffer] = useState("");
   const [cursor, setCursor] = useState(0);
   const [selected, setSelected] = useState(0);
+  // Vim sub-mode (only meaningful when vimActive). Starts in insert so typing
+  // works immediately after /vim on; Esc drops to normal.
+  const [vimMode, setVimMode] = useState<"normal" | "insert">("insert");
 
   const suggestions = buffer.startsWith("/")
     ? commands
@@ -59,6 +66,38 @@ export function InputBox({
 
   useInput(
     (input, key) => {
+      // --- Vim normal mode (M18.10): motions + mode switches, no text input ---
+      if (vimActive && vimMode === "normal") {
+        if (key.return) {
+          const value = buffer;
+          reset();
+          setVimMode("insert");
+          onSubmit(value);
+          return;
+        }
+        if (input === "i") { setVimMode("insert"); return; }
+        if (input === "a") { setCursor((c) => Math.min(buffer.length, c + 1)); setVimMode("insert"); return; }
+        if (input === "A") { setCursor(buffer.length); setVimMode("insert"); return; }
+        if (input === "0" || (key as { home?: boolean }).home) { setCursor(0); return; }
+        if (input === "$" || (key as { end?: boolean }).end) { setCursor(Math.max(0, buffer.length - 1)); return; }
+        if (input === "h" || key.leftArrow) { setCursor((c) => Math.max(0, c - 1)); return; }
+        if (input === "l" || key.rightArrow) { setCursor((c) => Math.min(buffer.length, c + 1)); return; }
+        if (input === "x") {
+          if (cursor < buffer.length) setBuffer((b) => b.slice(0, cursor) + b.slice(cursor + 1));
+          return;
+        }
+        if (input === "D") { setBuffer((b) => b.slice(0, cursor)); return; }
+        // Swallow everything else in normal mode (no stray text insertion).
+        return;
+      }
+
+      // --- Esc: drop to vim normal mode (only when vim is active) ---
+      if (key.escape && vimActive) {
+        setVimMode("normal");
+        setCursor((c) => Math.max(0, c - 1));
+        return;
+      }
+
       // --- Submit / completion ---
       if (key.return) {
         let value = buffer;
@@ -147,6 +186,11 @@ export function InputBox({
           matching the reference layout (not a rounded border). */}
       <Text color={disabled ? "gray" : ORANGE}>{"─".repeat(RULE_WIDTH)}</Text>
       <Box>
+        {vimActive ? (
+          <Text color={vimMode === "normal" ? "yellow" : "green"}>
+            {vimMode === "normal" ? "[N] " : "[I] "}
+          </Text>
+        ) : null}
         <Text color={disabled ? "gray" : ORANGE}>{"> "}</Text>
         <CursorText buffer={buffer} cursor={cursor} showCursor={!disabled} />
       </Box>

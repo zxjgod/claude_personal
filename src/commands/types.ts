@@ -42,6 +42,16 @@ export interface CommandContext {
   mcpServerCount?: number;
   /** MCP manager for /mcp (server/tool/auth status). */
   mcpManager?: import("../mcp.js").MCPManager;
+  /** Hook registry for /hooks (list registered PreToolUse/PostToolUse). */
+  hooks?: import("../hooks.js").HookRegistry;
+  /**
+   * Mutable session goal (for /goal). When set, the CLI injects it into the
+   * turn's system prompt so the model keeps the objective in view. Stored as a
+   * holder so a command can read and write the same reference the REPL reads.
+   */
+  goal?: { value: string };
+  /** Editor input mode (for /vim). Toggled between "default" and "vim". */
+  editorMode?: { value: "default" | "vim" };
 }
 
 export interface CommandResult {

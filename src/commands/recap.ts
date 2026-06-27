@@ -7,6 +7,7 @@
 // ============================================================
 import chalk from "chalk";
 import { listChanges } from "../change-tracker.js";
+import { MemoryStore } from "../memory-extract.js";
 import type { CommandResult, SlashCommand } from "./types.js";
 
 export const recapCommand: SlashCommand = {
@@ -19,11 +20,21 @@ export const recapCommand: SlashCommand = {
         ? changes.map((c) => `- ${c.kind} ${c.path} (×${c.edits})`).join("\n")
         : "- (no files changed this session)";
 
+    // M19.3: surface any durable memories so the recap can reference them.
+    const memories = new MemoryStore(ctx.workspaceRoot).list();
+    const memoryLines =
+      memories.length > 0
+        ? memories.slice(-10).map((m) => `- ${m.text}`).join("\n")
+        : "";
+
     const prompt = [
       `Summarize what was accomplished in this session, based on the conversation so far.`,
       ``,
       `Files changed this session:`,
       changedLines,
+      ...(memoryLines
+        ? [``, `Durable notes on record (for context):`, memoryLines]
+        : []),
       ``,
       `Produce a short recap with:`,
       `1. **What was asked** — the user's main goals this session.`,

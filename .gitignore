@@ -24,3 +24,5 @@ coverage/
 # Bundled reference materials (large files)
 reference/
 *.pdf
+
+claude-code-参考标准/

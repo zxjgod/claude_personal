@@ -1,12 +1,15 @@
-// /memory — view or append to CLAUDE.md
+// /memory — view or append to CLAUDE.md + view/extract durable memories
 import * as fs from "node:fs";
 import * as path from "node:path";
 import chalk from "chalk";
+import { listChanges } from "../change-tracker.js";
+import { MemoryStore, extractMemoriesHeuristic } from "../memory-extract.js";
 import type { SlashCommand } from "./types.js";
 
 export const memoryCommand: SlashCommand = {
   name: "memory",
-  description: "View or append to CLAUDE.md (/memory, /memory add <text>)",
+  description:
+    "View/append CLAUDE.md, view durable memories, or extract (/memory, /memory add <text>, /memory extract)",
   run: (args, ctx) => {
     const claudeMdPath = path.join(ctx.workspaceRoot, "CLAUDE.md");
     const trimmed = args.trim();
@@ -30,7 +33,40 @@ export const memoryCommand: SlashCommand = {
       return;
     }
 
-    // /memory — show current CLAUDE.md.
+    // /memory extract — heuristically pull durable facts/preferences from this
+    // session and append them to .claude/memories.jsonl (deduped).
+    if (trimmed.toLowerCase() === "extract") {
+      const store = new MemoryStore(ctx.workspaceRoot);
+      const candidates = extractMemoriesHeuristic(ctx.messages, listChanges(ctx.sessionId));
+      const written = store.append(candidates);
+      if (written.length === 0) {
+        console.log(
+          chalk.gray(
+            candidates.length === 0
+              ? "  Nothing durable found to remember this session."
+              : "  No new memories (all already stored).",
+          ),
+        );
+        return;
+      }
+      console.log(chalk.gray(`  Stored ${written.length} memorie(s) → ${store.path}`));
+      for (const m of written) console.log(`    ${chalk.green("+")} ${m.text}`);
+      return;
+    }
+
+    // /memory — show durable memories store + current CLAUDE.md.
+    const store = new MemoryStore(ctx.workspaceRoot);
+    const memories = store.list();
+    if (memories.length > 0) {
+      console.log("");
+      console.log(chalk.bold(`  Durable memories (${memories.length}) — ${store.path}:`));
+      for (const m of memories.slice(-15)) {
+        const tag = m.tags && m.tags.length ? chalk.gray(` [${m.tags.join(",")}]`) : "";
+        console.log(`    ${chalk.cyan("•")} ${m.text}${tag}`);
+      }
+      console.log(chalk.gray("  (Use /memory extract to capture more from this session.)"));
+    }
+
     try {
       const content = fs.readFileSync(claudeMdPath, "utf-8");
       console.log("");
@@ -38,7 +74,11 @@ export const memoryCommand: SlashCommand = {
       console.log("");
       for (const line of content.split("\n")) console.log(`  ${chalk.gray(line)}`);
     } catch {
-      console.log(chalk.gray("  No CLAUDE.md found. Use /init to create one, or /memory add <text>."));
+      if (memories.length === 0) {
+        console.log(
+          chalk.gray("  No CLAUDE.md found. Use /init to create one, or /memory add <text>."),
+        );
+      }
     }
   },
 };

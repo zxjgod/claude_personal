@@ -60,11 +60,13 @@ export function App({
   commands,
   onSubmit,
   expandedId,
+  editorMode,
 }: {
   store: TuiStore;
   commands: CommandInfo[];
   onSubmit: (value: string) => void;
   expandedId: number | null;
+  editorMode?: { value: "default" | "vim" };
 }) {
   const state = useSyncExternalStore(store.subscribe, store.getSnapshot);
 
@@ -116,7 +118,7 @@ export function App({
           <EffortPrompt overlay={state.overlay} />
         )
       ) : (
-        <InputBox commands={commands} disabled={state.busy} onSubmit={onSubmit} />
+        <InputBox commands={commands} disabled={state.busy} onSubmit={onSubmit} editorMode={editorMode} />
       )}
 
       {/* Status bar (single line — no duplicate hint above). */}

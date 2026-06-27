@@ -485,4 +485,135 @@ describe("handleSlashCommand", () => {
       expect(r.prompt).toBeUndefined();
     });
   });
+
+  // ---- M18 batch 2: /hooks /schedule /goal /vim + /context-/doctor enhancements ----
+
+  describe("/hooks (M18.13)", () => {
+    it("reports when no hook registry is present", async () => {
+      const ctx = makeCtx([]);
+      const r = await handleSlashCommand("/hooks", ctx);
+      expect(r.handled).toBe(true);
+      const out = (console.log as any).mock.calls.flat().join("\n");
+      expect(out).toContain("not available");
+    });
+
+    it("lists registered hooks with their matcher and phases", async () => {
+      const { HookRegistry } = await import("../hooks.js");
+      const reg = new HookRegistry();
+      reg.register({ matcher: "*", pre: () => {} });
+      reg.register({ matcher: "edit", post: () => {} });
+      const ctx = makeCtx([]);
+      ctx.hooks = reg;
+      await handleSlashCommand("/hooks", ctx);
+      const out = (console.log as any).mock.calls.flat().join("\n");
+      expect(out).toContain("2 registered");
+      expect(out).toContain("PreToolUse");
+      expect(out).toContain("edit");
+    });
+  });
+
+  describe("/schedule (M18.14)", () => {
+    it("reports no jobs when none are scheduled", async () => {
+      const { resetScheduledJobs } = await import("../tools-m9.js");
+      resetScheduledJobs();
+      const r = await handleSlashCommand("/schedule", makeCtx([]));
+      expect(r.handled).toBe(true);
+      const out = (console.log as any).mock.calls.flat().join("\n");
+      expect(out).toContain("Scheduled jobs (0)");
+    });
+
+    it("lists and cancels a scheduled job", async () => {
+      const { ScheduleCronTool, resetScheduledJobs, listScheduledJobs } = await import("../tools-m9.js");
+      resetScheduledJobs();
+      await ScheduleCronTool.call(
+        { cron: "5 9 * * 1", prompt: "weekly recap", recurring: true } as any,
+        { workspaceRoot: "/tmp/ws", sessionId: "s" } as any,
+      );
+      const [job] = listScheduledJobs();
+      expect(job).toBeTruthy();
+
+      await handleSlashCommand("/schedule", makeCtx([]));
+      const out = (console.log as any).mock.calls.flat().join("\n");
+      expect(out).toContain("weekly recap");
+
+      await handleSlashCommand(`/schedule cancel ${job.id}`, makeCtx([]));
+      expect(listScheduledJobs()).toHaveLength(0);
+    });
+  });
+
+  describe("/goal (M18.12)", () => {
+    it("sets, shows, and clears the session goal via the shared holder", async () => {
+      const ctx = makeCtx([]);
+      ctx.goal = { value: "" };
+      await handleSlashCommand("/goal ship the M18 commands", ctx);
+      expect(ctx.goal.value).toBe("ship the M18 commands");
+
+      await handleSlashCommand("/goal", ctx);
+      const out = (console.log as any).mock.calls.flat().join("\n");
+      expect(out).toContain("ship the M18 commands");
+
+      await handleSlashCommand("/goal clear", ctx);
+      expect(ctx.goal.value).toBe("");
+    });
+
+    it("notes when goals are unavailable", async () => {
+      const r = await handleSlashCommand("/goal whatever", makeCtx([]));
+      expect(r.handled).toBe(true);
+      const out = (console.log as any).mock.calls.flat().join("\n");
+      expect(out).toContain("not available");
+    });
+  });
+
+  describe("/vim (M18.10)", () => {
+    it("toggles the editor mode holder", async () => {
+      const ctx = makeCtx([]);
+      ctx.editorMode = { value: "default" };
+      await handleSlashCommand("/vim", ctx);
+      expect(ctx.editorMode.value).toBe("vim");
+      await handleSlashCommand("/vim", ctx);
+      expect(ctx.editorMode.value).toBe("default");
+    });
+
+    it("sets explicitly with on/off", async () => {
+      const ctx = makeCtx([]);
+      ctx.editorMode = { value: "default" };
+      await handleSlashCommand("/vim on", ctx);
+      expect(ctx.editorMode.value).toBe("vim");
+      await handleSlashCommand("/vim off", ctx);
+      expect(ctx.editorMode.value).toBe("default");
+    });
+
+    it("notes when vim mode is unavailable (non-TUI)", async () => {
+      const r = await handleSlashCommand("/vim", makeCtx([]));
+      expect(r.handled).toBe(true);
+      const out = (console.log as any).mock.calls.flat().join("\n");
+      expect(out).toContain("interactive TUI");
+    });
+  });
+
+  describe("/context compaction headroom (M18.8)", () => {
+    it("shows the compaction window bar", async () => {
+      const messages: Message[] = [
+        { role: "user", content: [{ type: "text", text: "x".repeat(40) }] },
+      ];
+      const ctx = makeCtx(messages);
+      ctx.systemPrompt = "y".repeat(80);
+      await handleSlashCommand("/context", ctx);
+      const out = (console.log as any).mock.calls.flat().join("\n");
+      expect(out).toContain("Compaction window");
+      expect(out).toContain("headroom");
+    });
+  });
+
+  describe("/doctor enhanced checks (M18.9)", () => {
+    it("includes git and MCP lines", async () => {
+      const ctx = makeCtx([]);
+      ctx.mcpManager = { serverCount: 0, getAllTools: () => [] } as any;
+      const r = await handleSlashCommand("/doctor", ctx);
+      expect(r.handled).toBe(true);
+      const out = (console.log as any).mock.calls.flat().join("\n");
+      expect(out).toContain("Git:");
+      expect(out).toContain("MCP:");
+    });
+  });
 });

@@ -91,4 +91,16 @@ export class HookRegistry {
   get size(): number {
     return this.hooks.length;
   }
+
+  /**
+   * Describe registered hooks for inspection (/hooks). Returns one entry per
+   * hook with its matcher and which phases it implements.
+   */
+  list(): Array<{ matcher: string; pre: boolean; post: boolean }> {
+    return this.hooks.map((h) => ({
+      matcher: h.matcher,
+      pre: Boolean(h.pre),
+      post: Boolean(h.post),
+    }));
+  }
 }

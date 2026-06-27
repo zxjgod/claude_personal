@@ -41,6 +41,10 @@ import { recapCommand } from "./recap.js";
 import { shareCommand } from "./share.js";
 import { rewindCommand } from "./rewind.js";
 import { onboardingCommand } from "./onboarding.js";
+import { hooksCommand } from "./hooks.js";
+import { scheduleCommand } from "./schedule.js";
+import { goalCommand } from "./goal.js";
+import { vimCommand } from "./vim.js";
 
 /** All built-in slash commands, in display order. */
 export const COMMANDS: SlashCommand[] = [
@@ -78,6 +82,10 @@ export const COMMANDS: SlashCommand[] = [
   shareCommand,
   rewindCommand,
   onboardingCommand,
+  hooksCommand,
+  scheduleCommand,
+  goalCommand,
+  vimCommand,
 ];
 
 // /help iterates COMMANDS at run time; bind it now that the array exists.

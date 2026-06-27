@@ -29,20 +29,20 @@
 
 | # | 命令 | B 来源 | 作用 | A 现状 | 估时 |
 |---|---|---|---|---|---|
-| 18.1 | `/branch` | commands/branch | 在当前对话点开分支（fork 当前 messages） | 🔴 无 | 0.5d |
-| 18.2 | `/fork` | commands/fork（subagent redesign） | 子代理分支重设计，与 branch 互补 | 🔴 无 | 0.5d |
-| 18.3 | `/review` | commands/review | 对当前 diff 做代码审查（调 model 读 change-tracker） | 🔴 无 | 0.5d |
-| 18.4 | `/recap` | commands/recap | 总结本会话做了什么（基于 transcript + change-tracker） | 🔴 无 | 0.5d |
-| 18.5 | `/share` | commands/share | 导出会话为可分享文本/markdown（增强现有 /export） | 🟡 /export 基础 | 0.5d |
-| 18.6 | `/rewind` | commands/rewind | 回退到某轮之前（基于 messages 快照） | 🔴 无 | 0.5d |
-| 18.7 | `/onboarding` | commands/onboarding | 首次使用引导（生成 CLAUDE.md + 检查 .env） | 🟡 /init 部分 | 0.5d |
-| 18.8 | `/context` 增强 | commands/context | 真实 token 计数（替代 ~4 字符估算）+ 压缩预览 | 🟡 估算版 | 0.5d |
-| 18.9 | `/doctor` 增强 | commands/doctor | 加 MCP 连通性、git、worktree、disk 检查 | 🟡 基础 | 0.5d |
-| 18.10 | `/vim` | commands/vim | vim 模式开关（InputBox 切换输入语义） | 🔴 无 | 1d |
-| 18.11 | `/theme` 增强 | commands/theme | 真主题切换（不只是粒子色） | 🟡 占位 | 0.5d |
-| 18.12 | `/tags` 或 `/goal` | commands/goal | 设定/查看本轮目标，注入 system prompt | 🔴 无 | 0.5d |
-| 18.13 | `/hooks` | commands/hooks | 查看/启停已注册 PreToolUse/PostToolUse | 🟡 hooks 已实现无命令 | 0.5d |
-| 18.14 | `/schedule` | commands/schedule | 查看/删除 ScheduleCron 注册的 jobs | 🟡 工具已实现无命令 | 0.5d |
+| 18.1 | `/branch` | commands/branch | 在当前对话点开分支（fork 当前 messages） | ✅ 完成 | 0.5d |
+| 18.2 | `/fork` | commands/fork（subagent redesign） | 子代理分支重设计，与 branch 互补 | ✅ 完成 | 0.5d |
+| 18.3 | `/review` | commands/review | 对当前 diff 做代码审查（调 model 读 change-tracker） | ✅ 完成 | 0.5d |
+| 18.4 | `/recap` | commands/recap | 总结本会话做了什么（基于 transcript + change-tracker） | ✅ 完成 | 0.5d |
+| 18.5 | `/share` | commands/share | 导出会话为可分享文本/markdown（增强现有 /export） | ✅ 完成 | 0.5d |
+| 18.6 | `/rewind` | commands/rewind | 回退到某轮之前（基于 messages 快照） | ✅ 完成 | 0.5d |
+| 18.7 | `/onboarding` | commands/onboarding | 首次使用引导（生成 CLAUDE.md + 检查 .env） | ✅ 完成 | 0.5d |
+| 18.8 | `/context` 增强 | commands/context | 真实 token 计数（替代 ~4 字符估算）+ 压缩预览 | ✅ 完成（压缩窗口进度条 + 真实估算口径对齐 agent-loop） | 0.5d |
+| 18.9 | `/doctor` 增强 | commands/doctor | 加 MCP 连通性、git、worktree、disk 检查 | ✅ 完成 | 0.5d |
+| 18.10 | `/vim` | commands/vim | vim 模式开关（InputBox 切换输入语义） | ✅ 完成（InputBox 模态编辑 + [N]/[I] 指示） | 1d |
+| 18.11 | `/theme` 增强 | commands/theme | 真主题切换（不只是粒子色） | 🟡 dark/light 已可用 | 0.5d |
+| 18.12 | `/tags` 或 `/goal` | commands/goal | 设定/查看本轮目标，注入 system prompt | ✅ 完成（注入 [SESSION GOAL]，CLI + TUI 双路径） | 0.5d |
+| 18.13 | `/hooks` | commands/hooks | 查看/启停已注册 PreToolUse/PostToolUse | ✅ 完成（查看，HookRegistry.list） | 0.5d |
+| 18.14 | `/schedule` | commands/schedule | 查看/删除 ScheduleCron 注册的 jobs | ✅ 完成（list / cancel / clear） | 0.5d |
 
 ### 结构重构（18.0）
 
@@ -56,6 +56,8 @@
 - 命令数 26 → **40**
 - `tsc --noEmit` 通过；`vitest run` 全绿（新增 ~14 命令各 1–2 用例）
 - `/help` 输出可读、分组
+
+> **进度（2026-06-27）**：18.0 结构重构 + 18.1–18.10、18.12–18.14 全部完成。命令数 37（注册表 COMMANDS）。18.11 `/theme` 仍为 dark/light 占位（未做完整主题引擎）。`tsc --noEmit` 通过；`vitest run --dir src` 全绿 **472 测试**（含新增 14 用例）。
 
 ---
 
@@ -73,6 +75,9 @@
 ### 验收
 
 - `tsc` 通过；新增 ~12 测试；总量 458 → ~470
+
+> **进度（2026-06-27）**：M19 完成。19.1 `SessionMemory`（重定位消息+元数据读写，行为字节级不变）；19.4 `PersistenceManager extends SessionMemory` 薄封装，`persistence.test.ts` 零改动通过；19.2 `SessionTranscript` append-only JSONL 事件流（`<id>.transcript.jsonl`，append/read/replay，容忍崩溃尾行），接入 CLI REPL 事件循环（user_prompt + tool_use/tool_result/usage/done/error/aborted，best-effort 不阻塞）；19.3 `extractMemoriesHeuristic`（离线规则）+ 可选 `extractMemoriesWithModel` + `MemoryStore`（`.claude/memories.jsonl`，去重），接入 `/memory`（列表 + `extract` 子命令）与 `/recap`（注入 durable notes）。决策：transcript 仅接 CLI（TUI 后续）、记忆按需+启发式抽取（退出不自动调模型）、存 `.claude/memories.jsonl`。`tsc --noEmit` 通过；`vitest run --dir src` 全绿 **488 测试**（新增 16 用例）。
+
 - 真机：长会话退出再 `/resume`，transcript 与 memory 均可恢复
 
 ---

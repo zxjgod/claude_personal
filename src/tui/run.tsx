@@ -63,8 +63,13 @@ async function runTurn(
   store.setBusy(true);
   store.setSpinner("thinking");
 
+  // M18.12: append the session goal (if set) to this turn's system prompt.
+  const goal = deps.makeCommandContext().goal?.value;
+  const turnSystemPrompt = goal
+    ? `${deps.systemPrompt}\n\n[SESSION GOAL]\nThe user set this objective for the session. Keep it in view and steer toward it:\n${goal}`
+    : deps.systemPrompt;
   const loop = agentLoop(deps.messages, deps.tools, deps.callModel, deps.modelConfig, {
-    systemPrompt: deps.systemPrompt,
+    systemPrompt: turnSystemPrompt,
     maxTurns: 50,
     toolContext: {
       workspaceRoot: deps.workspaceRoot,
@@ -321,7 +326,15 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
     [store, deps, askUser, askUserQuestion],
   );
 
-  return <App store={store} commands={deps.commands} onSubmit={onSubmit} expandedId={expandedId} />;
+  return (
+    <App
+      store={store}
+      commands={deps.commands}
+      onSubmit={onSubmit}
+      expandedId={expandedId}
+      editorMode={deps.makeCommandContext().editorMode}
+    />
+  );
 }
 
 /** Launch the Ink TUI. Resolves when the user exits. */
