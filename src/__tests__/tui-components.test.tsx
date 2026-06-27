@@ -13,6 +13,7 @@ import { App } from "../tui/App.js";
 import { CompletedToolCard } from "../tui/ToolCard.js";
 import { PermissionPrompt, QuestionPrompt } from "../tui/Prompts.js";
 import { EffortPrompt } from "../tui/EffortPrompt.js";
+import { SessionPicker, nextOffset } from "../tui/SessionPicker.js";
 import { TuiStore } from "../tui/store.js";
 import type { ToolExecutionResult } from "../types.js";
 
@@ -165,5 +166,91 @@ describe("EffortPrompt (M13.7)", () => {
     stdin.write("\r"); // Enter
     await new Promise((r) => setTimeout(r, 20));
     expect(chosen).toBe("ultracode");
+  });
+});
+
+describe("SessionPicker (/resume overlay)", () => {
+  const many = Array.from({ length: 20 }, (_, i) => ({
+    sessionId: `id${i.toString().padStart(2, "0")}`,
+    label: `id${i.toString().padStart(2, "0")} · ${i} msgs`,
+    preview: `preview ${i}`,
+  }));
+
+  it("renders the header, a row, and a more-below marker for a long list", () => {
+    const { lastFrame } = render(
+      <SessionPicker overlay={{ kind: "sessionPicker", sessions: many, resolve: () => {} }} />,
+    );
+    const frame = lastFrame()!;
+    expect(frame).toContain("Resume a session");
+    expect(frame).toContain("id00");
+    expect(frame).toContain("preview 0");
+    expect(frame).toMatch(/↓ \d+ more/); // rows hidden below the window
+    expect(frame).not.toContain("id19"); // beyond the visible window
+  });
+
+  it("resolves with the highlighted session id on Enter", async () => {
+    let chosen: string | null = "unset";
+    const { stdin } = render(
+      <SessionPicker
+        overlay={{
+          kind: "sessionPicker",
+          sessions: many,
+          resolve: (id) => {
+            chosen = id;
+          },
+        }}
+      />,
+    );
+    stdin.write("\r"); // Enter on the first (default-selected) row
+    await new Promise((r) => setTimeout(r, 20));
+    expect(chosen).toBe("id00");
+  });
+
+  it("cancels with null on Esc", async () => {
+    let chosen: string | null = "unset";
+    const { stdin } = render(
+      <SessionPicker
+        overlay={{
+          kind: "sessionPicker",
+          sessions: many,
+          resolve: (id) => {
+            chosen = id;
+          },
+        }}
+      />,
+    );
+    stdin.write(""); // Esc
+    await new Promise((r) => setTimeout(r, 20));
+    expect(chosen).toBeNull();
+  });
+});
+
+describe("nextOffset (scroll window keeps cursor visible)", () => {
+  const WINDOW = 8;
+
+  it("keeps the window fixed while the cursor stays inside it", () => {
+    expect(nextOffset(3, 0, WINDOW)).toBe(0);
+    expect(nextOffset(7, 0, WINDOW)).toBe(0);
+  });
+
+  it("slides down by one when the cursor steps past the bottom edge", () => {
+    expect(nextOffset(8, 0, WINDOW)).toBe(1);
+    expect(nextOffset(9, 1, WINDOW)).toBe(2);
+  });
+
+  it("pins to the cursor when it scrolls above the window", () => {
+    expect(nextOffset(2, 5, WINDOW)).toBe(2);
+  });
+
+  it("invariant: a full top-to-bottom-and-back walk never hides the cursor", () => {
+    const total = 30;
+    let offset = 0;
+    const check = (cursor: number) => {
+      offset = nextOffset(cursor, offset, WINDOW);
+      expect(cursor).toBeGreaterThanOrEqual(offset);
+      expect(cursor).toBeLessThan(offset + WINDOW);
+    };
+    for (let c = 0; c < total; c++) check(c);
+    for (let c = total - 1; c >= 0; c--) check(c);
   });
 });

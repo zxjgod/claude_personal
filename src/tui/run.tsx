@@ -16,7 +16,8 @@ import type { CommandContext } from "./../commands.js";
 import { expandFileRefs } from "./../file-refs.js";
 import { getEffort, EFFORT_DESCRIPTIONS } from "./../effort.js";
 import { App } from "./App.js";
-import { TuiStore } from "./store.js";
+import { TuiStore, type SessionPickerItem } from "./store.js";
+import { messagesToTranscript, firstUserPreview } from "./history-replay.js";
 import { printBanner } from "./banner.js";
 import type { CommandInfo } from "./InputBox.js";
 import { formatCliError } from "./../cli-errors.js";
@@ -209,6 +210,72 @@ async function captureConsole<T>(fn: () => Promise<T> | T): Promise<{ lines: str
 }
 
 /**
+ * Drive the interactive /resume flow: list saved sessions, let the user pick
+ * one from the scrollable overlay, then restore it. Restoration mutates the
+ * live `messages` array in place (via the shared CommandContext.resumeSession)
+ * and replays the prior conversation into the transcript — all without an LLM
+ * call, so it costs zero tokens. The picked session also becomes the save
+ * target for subsequent turns (resumeSession updates the REPL's sessionId).
+ */
+async function runResumePicker(store: TuiStore, deps: TuiDeps): Promise<void> {
+  const ctx = deps.makeCommandContext();
+  const persistence = ctx.persistence;
+  if (!persistence || !ctx.resumeSession) {
+    store.addNotice("  Session persistence is not available.");
+    return;
+  }
+
+  const metas = await persistence.listSessions();
+  if (metas.length === 0) {
+    store.addNotice("  No saved sessions to resume.");
+    return;
+  }
+
+  // Cap the picker so a huge history dir can't trigger hundreds of file reads
+  // (metas are already sorted most-recent-first).
+  const MAX_SHOWN = 50;
+  const shown = metas.slice(0, MAX_SHOWN);
+
+  const items: SessionPickerItem[] = [];
+  for (const meta of shown) {
+    // Load the full session only to surface a first-message preview; this is
+    // local JSON and bounded by MAX_SHOWN.
+    const data = await persistence.load(meta.sessionId);
+    const preview = data ? firstUserPreview(data.messages) : "";
+    const when = new Date(meta.updatedAt).toLocaleString();
+    const plural = meta.messageCount === 1 ? "msg" : "msgs";
+    items.push({
+      sessionId: meta.sessionId,
+      label: `${meta.sessionId.slice(0, 8)} · ${meta.messageCount} ${plural} · ${when} · ${meta.completed ? "done" : "open"}`,
+      preview: preview || undefined,
+      current: meta.sessionId === ctx.sessionId,
+    });
+  }
+
+  const chosen = await store.pickSession(items);
+  if (!chosen) {
+    store.addNotice("  Resume cancelled.");
+    return;
+  }
+
+  // Restore. resumeSession console.logs a one-liner; capture it so it doesn't
+  // corrupt the Ink frame, then surface our own notice instead.
+  const { result: ok } = await captureConsole(() => ctx.resumeSession!(chosen));
+  if (!ok) {
+    store.addNotice(`  Could not resume session ${chosen.slice(0, 8)}.`);
+    return;
+  }
+
+  // `messages` was mutated in place by resumeSession — replay it on screen so
+  // the restored conversation is visible and scrollable.
+  const transcript = messagesToTranscript(deps.messages);
+  store.addNotice(
+    `  ── Resumed ${chosen.slice(0, 8)} · ${deps.messages.length} messages restored (0 tokens) ──`,
+  );
+  store.loadTranscript(transcript);
+}
+
+/**
  * Root that wires the InputBox submit handler to slash-command dispatch and
  * the agent loop, and installs a process-level SIGINT handler that aborts the
  * current turn (9.6) without tearing down the session.
@@ -276,6 +343,15 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
               `  Effort: ${chosen} — ${EFFORT_DESCRIPTIONS[chosen]} (applies to the next turn)`,
             );
           }
+          return;
+        }
+
+        // /resume with no args → open the interactive session picker overlay.
+        // With an arg (e.g. /resume a1b2) it falls through to the static handler
+        // which resolves the prefix directly. Selecting a session replays its
+        // history into the transcript and costs no tokens (no LLM call).
+        if (/^\/resume\s*$/i.test(value)) {
+          await runResumePicker(store, deps);
           return;
         }
 

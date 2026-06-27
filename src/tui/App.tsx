@@ -15,6 +15,7 @@ import type { TuiStore, TranscriptItem } from "./store.js";
 import { CompletedToolCard, ActiveToolCard } from "./ToolCard.js";
 import { PermissionPrompt, QuestionPrompt } from "./Prompts.js";
 import { EffortPrompt } from "./EffortPrompt.js";
+import { SessionPicker } from "./SessionPicker.js";
 import { ParticleSpinner } from "./ParticleSpinner.js";
 import { InputBox, type CommandInfo } from "./InputBox.js";
 
@@ -114,6 +115,8 @@ export function App({
           <PermissionPrompt overlay={state.overlay} />
         ) : state.overlay.kind === "question" ? (
           <QuestionPrompt overlay={state.overlay} />
+        ) : state.overlay.kind === "sessionPicker" ? (
+          <SessionPicker overlay={state.overlay} />
         ) : (
           <EffortPrompt overlay={state.overlay} />
         )

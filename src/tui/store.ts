@@ -30,6 +30,21 @@ export interface ActiveTool {
   detail: string;
 }
 
+/**
+ * One row in the /resume session picker. Pre-formatted display data so the
+ * component stays dumb (no fs / Message conversion in React).
+ */
+export interface SessionPickerItem {
+  /** Full session id (returned by the picker on selection). */
+  sessionId: string;
+  /** One-line summary: short id · N msgs · timestamp · open/done. */
+  label: string;
+  /** Optional preview of the first user message. */
+  preview?: string;
+  /** True when this is the session currently loaded in the REPL. */
+  current?: boolean;
+}
+
 /** A pending interactive prompt the App should overlay. */
 export type Overlay =
   | {
@@ -51,6 +66,11 @@ export type Overlay =
       kind: "effort";
       current: EffortLevel;
       resolve: (level: EffortLevel | null) => void;
+    }
+  | {
+      kind: "sessionPicker";
+      sessions: SessionPickerItem[];
+      resolve: (sessionId: string | null) => void;
     };
 
 export interface StoreState {
@@ -122,6 +142,20 @@ export class TuiStore {
   private push(item: Omit<TranscriptItem, "id"> & { id?: number }): void {
     const withId = { ...item, id: this.nextId++ } as TranscriptItem;
     this.set({ transcript: [...this.state.transcript, withId] });
+  }
+
+  /**
+   * Append a batch of pre-built transcript items (no `id` yet) in one update.
+   * Used by /resume to replay a saved conversation into the live transcript:
+   * each item is stamped with a fresh id and the whole batch lands as a single
+   * re-render, so Ink's <Static> prints them once into scrollback (the user can
+   * then scroll up through the restored history). This touches no LLM and costs
+   * no tokens — it only re-renders already-known messages.
+   */
+  loadTranscript(items: Array<Omit<TranscriptItem, "id">>): void {
+    if (items.length === 0) return;
+    const withIds = items.map((it) => ({ ...it, id: this.nextId++ }) as TranscriptItem);
+    this.set({ transcript: [...this.state.transcript, ...withIds] });
   }
 
   // --- mutators used by the REPL orchestration ---
@@ -263,6 +297,26 @@ export class TuiStore {
           resolve: (level) => {
             this.set({ overlay: null });
             resolve(level);
+          },
+        },
+      });
+    });
+  }
+
+  /**
+   * Open the /resume session picker; resolves with the chosen session id, or
+   * null if the user cancelled (Esc). The overlay takes over input until the
+   * user selects or cancels — like the permission/question/effort overlays.
+   */
+  pickSession(sessions: SessionPickerItem[]): Promise<string | null> {
+    return new Promise((resolve) => {
+      this.set({
+        overlay: {
+          kind: "sessionPicker",
+          sessions,
+          resolve: (sessionId) => {
+            this.set({ overlay: null });
+            resolve(sessionId);
           },
         },
       });
