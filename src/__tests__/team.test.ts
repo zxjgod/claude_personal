@@ -6,7 +6,7 @@
 // history accumulation, status transitions, and the tool surface.
 // ============================================================
 
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock the model caller: yields one text chunk then done (no tool calls).
 vi.mock("../llm-adapter.js", () => ({
@@ -21,17 +21,17 @@ import {
   createAgents,
   getAgent,
   listAgents,
-  stopAgent,
-  runAgentTurn,
   resetTeams,
+  runAgentTurn,
+  stopAgent,
   type TeamRunContext,
 } from "../team.js";
 import {
-  TeamCreateTool,
   SendMessageTool,
-  TaskListTool,
   TaskGetTool,
+  TaskListTool,
   TaskStopTool,
+  TeamCreateTool,
 } from "../tools-team.js";
 import type { ModelConfig, ToolContext } from "../types.js";
 
@@ -59,7 +59,10 @@ beforeEach(() => resetTeams());
 
 describe("team manager state", () => {
   it("creates named agents with valid roles", () => {
-    const r = createAgents("team-sess", [{ role: "code-explorer", name: "Scout" }, { role: "general" }]);
+    const r = createAgents("team-sess", [
+      { role: "code-explorer", name: "Scout" },
+      { role: "general" },
+    ]);
     expect(r.created).toHaveLength(2);
     expect(getAgent("team-sess", "scout")).toBeDefined();
     expect(r.errors).toHaveLength(0);
@@ -144,7 +147,10 @@ describe("team tools", () => {
 
   it("send_message background returns immediately and task_get polls", async () => {
     await TeamCreateTool.call({ agents: [{ role: "general", name: "bg" }] }, ctx());
-    const r = await SendMessageTool.call({ agent_id: "bg", message: "go", background: true }, ctx());
+    const r = await SendMessageTool.call(
+      { agent_id: "bg", message: "go", background: true },
+      ctx(),
+    );
     expect(r.content).toContain("background");
     // Let the fire-and-forget turn settle.
     await new Promise((res) => setTimeout(res, 20));

@@ -13,12 +13,10 @@
 // ============================================================
 
 import * as fs from "node:fs";
-import * as path from "node:path";
-import * as os from "node:os";
 import * as http from "node:http";
-import type {
-  OAuthClientProvider,
-} from "@modelcontextprotocol/sdk/client/auth.js";
+import * as os from "node:os";
+import * as path from "node:path";
+import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import type {
   OAuthClientInformation,
   OAuthClientInformationFull,
@@ -114,9 +112,7 @@ export class FileTokenOAuthProvider implements OAuthClientProvider {
       redirect_uris: [this.redirectUrl],
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],
-      token_endpoint_auth_method: this.config.clientSecret
-        ? "client_secret_post"
-        : "none",
+      token_endpoint_auth_method: this.config.clientSecret ? "client_secret_post" : "none",
       scope: this.config.scopes?.join(" "),
     } as OAuthClientMetadata;
   }
@@ -153,9 +149,7 @@ export class FileTokenOAuthProvider implements OAuthClientProvider {
 
   codeVerifier(): string {
     if (!this.stored.codeVerifier) {
-      throw new Error(
-        `No PKCE code verifier saved for MCP server "${this.serverName}"`,
-      );
+      throw new Error(`No PKCE code verifier saved for MCP server "${this.serverName}"`);
     }
     return this.stored.codeVerifier;
   }

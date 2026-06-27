@@ -2,14 +2,14 @@
 // Tests: CLI renderer
 // ============================================================
 
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import chalk from "chalk";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  StreamingRenderer,
-  renderSubAgentActivity,
-  renderToolStart,
-  renderToolResult,
   renderPermissionPrompt,
+  renderSubAgentActivity,
+  renderToolResult,
+  renderToolStart,
+  StreamingRenderer,
 } from "../cli-renderer.js";
 import { renderMarkdown } from "../markdown.js";
 import type { ToolExecutionResult } from "../types.js";
@@ -30,9 +30,7 @@ function captureStdout(fn: () => void): string {
     out += String(chunk);
     return true;
   };
-  const stdoutSpy = vi
-    .spyOn(process.stdout, "write")
-    .mockImplementation(append as any);
+  const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(append as any);
   // console.log holds its own stream reference, so spy on it separately.
   const logSpy = vi
     .spyOn(console, "log")
@@ -107,9 +105,7 @@ describe("renderMarkdown", () => {
 
 describe("renderToolResult", () => {
   it("shows a branch glyph and folds long output", () => {
-    const longOutput = Array.from({ length: 30 }, (_, i) => `line ${i}`).join(
-      "\n",
-    );
+    const longOutput = Array.from({ length: 30 }, (_, i) => `line ${i}`).join("\n");
     const result: ToolExecutionResult = {
       toolName: "read",
       formatted: longOutput,
@@ -176,9 +172,7 @@ describe("renderSubAgentActivity", () => {
 
 describe("renderToolStart / renderPermissionPrompt", () => {
   it("renders the tool name (capitalized) and detail", () => {
-    const out = captureStdout(() =>
-      renderToolStart("bash", { command: "ls -la" }),
-    );
+    const out = captureStdout(() => renderToolStart("bash", { command: "ls -la" }));
     expect(out).toContain("Bash");
     expect(out).toContain("ls -la");
     expect(out).toContain("●");

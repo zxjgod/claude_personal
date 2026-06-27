@@ -8,22 +8,18 @@
 // so it doesn't corrupt the Ink frame.
 // ============================================================
 
-import React, { useState, useCallback } from "react";
 import { render } from "ink";
+import { useCallback, useState } from "react";
 import { agentLoop } from "./../agent-loop.js";
-import { handleSlashCommand } from "./../commands.js";
-import type { CommandContext } from "./../commands.js";
-import { expandFileRefs } from "./../file-refs.js";
-import { getEffort, EFFORT_DESCRIPTIONS } from "./../effort.js";
-import { App } from "./App.js";
-import { TuiStore, type SessionPickerItem } from "./store.js";
-import { messagesToTranscript, firstUserPreview } from "./history-replay.js";
-import { printBanner } from "./banner.js";
-import type { CommandInfo } from "./InputBox.js";
 import { formatCliError } from "./../cli-errors.js";
+import type { CommandContext } from "./../commands.js";
+import { handleSlashCommand } from "./../commands.js";
+import { EFFORT_DESCRIPTIONS, getEffort } from "./../effort.js";
+import { expandFileRefs } from "./../file-refs.js";
 import { formatSpeculationLine } from "./../speculation.js";
 import type {
   AskUserFn,
+  HookRunner,
   Message,
   ModelCaller,
   ModelConfig,
@@ -32,7 +28,11 @@ import type {
   Tool,
   UserQuestion,
 } from "./../types.js";
-import type { HookRunner } from "./../types.js";
+import { App } from "./App.js";
+import { printBanner } from "./banner.js";
+import { firstUserPreview, messagesToTranscript } from "./history-replay.js";
+import type { CommandInfo } from "./InputBox.js";
+import { type SessionPickerItem, TuiStore } from "./store.js";
 
 export interface TuiDeps {
   messages: Message[];
@@ -194,7 +194,9 @@ function truncate(value: string, max: number): string {
 }
 
 /** Capture console.log output produced while `fn` runs, returning the lines. */
-async function captureConsole<T>(fn: () => Promise<T> | T): Promise<{ lines: string[]; result: T }> {
+async function captureConsole<T>(
+  fn: () => Promise<T> | T,
+): Promise<{ lines: string[]; result: T }> {
   const lines: string[] = [];
   const orig = console.log;
   console.log = (...args: unknown[]) => {

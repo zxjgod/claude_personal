@@ -11,8 +11,8 @@
 //     it returns a clear "not available" result instead of hanging.
 // ============================================================
 
-import type { Tool, ToolResult, PermissionMode } from "./types.js";
 import { createTool } from "./tool-registry.js";
+import type { PermissionMode, Tool, ToolResult } from "./types.js";
 
 // --- 8.2 EnterPlanMode -------------------------------------------------------
 

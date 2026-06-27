@@ -5,10 +5,10 @@
 // color; color/background presence is checked via raw ANSI codes (chalk
 // forced to truecolor so it emits them off-TTY).
 
-import { describe, it, expect, beforeAll } from "vitest";
 import chalk from "chalk";
-import { buildEffortFrame, ORDER } from "../tui/effort-fx.js";
+import { beforeAll, describe, expect, it } from "vitest";
 import { stripAnsi } from "../terminal-width.js";
+import { buildEffortFrame, ORDER } from "../tui/effort-fx.js";
 
 beforeAll(() => {
   chalk.level = 3;
@@ -102,7 +102,11 @@ describe("effort-fx buildEffortFrame", () => {
 
   it("ultracode fade-in: a partial fade lights fewer cells than settled", () => {
     const cells = (fade: number) =>
-      (buildEffortFrame({ active: "ultracode", phase: 6, cols: 124, fade }).join("").match(/48;2;/g) ?? []).length;
+      (
+        buildEffortFrame({ active: "ultracode", phase: 6, cols: 124, fade })
+          .join("")
+          .match(/48;2;/g) ?? []
+      ).length;
     expect(cells(0.15)).toBeLessThan(cells(1));
   });
 });

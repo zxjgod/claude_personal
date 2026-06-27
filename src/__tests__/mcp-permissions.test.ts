@@ -8,7 +8,7 @@
 // sticky; bypassPermissions skips the prompt.
 // ============================================================
 
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { createTool } from "../tool-registry.js";
 import type { ToolContext } from "../types.js";
 
@@ -39,10 +39,7 @@ function mcpLikeTool(name: string, confirmed: Set<string>) {
   });
 }
 
-function ctx(
-  mode: ToolContext["permissionMode"],
-  askUser?: () => Promise<boolean>,
-): ToolContext {
+function ctx(mode: ToolContext["permissionMode"], askUser?: () => Promise<boolean>): ToolContext {
   return {
     workspaceRoot: "/tmp",
     sessionId: "s",
@@ -89,9 +86,7 @@ describe("MCP tool first-call approval (16.10)", () => {
       calls++;
       return true;
     };
-    expect(
-      (await tool.checkPermissions({}, ctx("bypassPermissions", askUser))).allowed,
-    ).toBe(true);
+    expect((await tool.checkPermissions({}, ctx("bypassPermissions", askUser))).allowed).toBe(true);
     expect(calls).toBe(0);
   });
 });

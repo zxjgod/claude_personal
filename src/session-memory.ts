@@ -14,9 +14,9 @@
 //   - corrupt / missing file degrades to null instead of throwing
 // ============================================================
 
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import * as crypto from "node:crypto";
 import type { Message } from "./types.js";
 
 // --- Types ---
@@ -96,9 +96,7 @@ export class SessionMemory {
   ): Promise<void> {
     // Chain onto the tail of any in-flight save. Each link captures its own
     // sessionId/messages snapshot, so the serialized writes stay independent.
-    const next = this.saveChain.then(() =>
-      this.saveSerialized(sessionId, messages, options),
-    );
+    const next = this.saveChain.then(() => this.saveSerialized(sessionId, messages, options));
     // Swallow rejection on the chain itself so a failing save doesn't poison
     // subsequent ones; the caller still sees the rejection via `next`.
     this.saveChain = next.catch(() => undefined);
@@ -218,10 +216,7 @@ export class SessionMemory {
       }
 
       // Sort by most recently updated first
-      sessions.sort(
-        (a, b) =>
-          new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
-      );
+      sessions.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
 
       return sessions;
     } catch (error) {

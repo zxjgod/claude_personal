@@ -25,7 +25,9 @@ export const costCommand: SlashCommand = {
     if (hit !== null && (s.cacheReadTokens > 0 || s.cacheCreationTokens > 0)) {
       console.log(
         `    Cache:        ${chalk.cyan((hit * 100).toFixed(1) + "%")} hit ` +
-          chalk.gray(`(${s.cacheReadTokens.toLocaleString()} read / ${s.cacheCreationTokens.toLocaleString()} written)`),
+          chalk.gray(
+            `(${s.cacheReadTokens.toLocaleString()} read / ${s.cacheCreationTokens.toLocaleString()} written)`,
+          ),
       );
     }
     if (cost === null) {
@@ -33,7 +35,9 @@ export const costCommand: SlashCommand = {
         chalk.gray(`    Est. cost:    unknown (no pricing for ${ctx.modelConfig.model})`),
       );
     } else {
-      console.log(`    Est. cost:    ${chalk.green(formatUsd(cost))} ${chalk.gray("(approximate)")}`);
+      console.log(
+        `    Est. cost:    ${chalk.green(formatUsd(cost))} ${chalk.gray("(approximate)")}`,
+      );
     }
   },
 };

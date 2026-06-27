@@ -6,44 +6,44 @@
 // keep working unchanged.
 // ============================================================
 
-import type { SlashCommand } from "./types.js";
-import { helpCommand, bindCommandList } from "./help.js";
-import { clearCommand } from "./clear.js";
-import { modelCommand } from "./model.js";
-import { compactCommand } from "./compact.js";
-import { tokensCommand } from "./tokens.js";
-import { doctorCommand } from "./doctor.js";
-import { sessionsCommand } from "./sessions.js";
-import { resumeCommand } from "./resume.js";
-import { permissionsCommand } from "./permissions.js";
-import { statusCommand } from "./status.js";
-import { costCommand } from "./cost.js";
-import { toolsCommand } from "./tools.js";
-import { contextCommand } from "./context.js";
-import { configCommand } from "./config.js";
-import { diffCommand } from "./diff.js";
-import { memoryCommand } from "./memory.js";
-import { initCommand } from "./init.js";
-import { effortCommand } from "./effort.js";
-import { commitCommand } from "./commit.js";
-import { prCommand } from "./pr.js";
 import { agentsCommand } from "./agents.js";
-import { skillsCommand } from "./skills.js";
-import { exportCommand } from "./export.js";
-import { mcpCommand } from "./mcp.js";
-import { themeCommand } from "./theme.js";
-import { keybindingsCommand } from "./keybindings.js";
 // M18 new commands
 import { branchCommand } from "./branch.js";
+import { clearCommand } from "./clear.js";
+import { commitCommand } from "./commit.js";
+import { compactCommand } from "./compact.js";
+import { configCommand } from "./config.js";
+import { contextCommand } from "./context.js";
+import { costCommand } from "./cost.js";
+import { diffCommand } from "./diff.js";
+import { doctorCommand } from "./doctor.js";
+import { effortCommand } from "./effort.js";
+import { exportCommand } from "./export.js";
 import { forkCommand } from "./fork.js";
-import { reviewCommand } from "./review.js";
-import { recapCommand } from "./recap.js";
-import { shareCommand } from "./share.js";
-import { rewindCommand } from "./rewind.js";
-import { onboardingCommand } from "./onboarding.js";
-import { hooksCommand } from "./hooks.js";
-import { scheduleCommand } from "./schedule.js";
 import { goalCommand } from "./goal.js";
+import { bindCommandList, helpCommand } from "./help.js";
+import { hooksCommand } from "./hooks.js";
+import { initCommand } from "./init.js";
+import { keybindingsCommand } from "./keybindings.js";
+import { mcpCommand } from "./mcp.js";
+import { memoryCommand } from "./memory.js";
+import { modelCommand } from "./model.js";
+import { onboardingCommand } from "./onboarding.js";
+import { permissionsCommand } from "./permissions.js";
+import { prCommand } from "./pr.js";
+import { recapCommand } from "./recap.js";
+import { resumeCommand } from "./resume.js";
+import { reviewCommand } from "./review.js";
+import { rewindCommand } from "./rewind.js";
+import { scheduleCommand } from "./schedule.js";
+import { sessionsCommand } from "./sessions.js";
+import { shareCommand } from "./share.js";
+import { skillsCommand } from "./skills.js";
+import { statusCommand } from "./status.js";
+import { themeCommand } from "./theme.js";
+import { tokensCommand } from "./tokens.js";
+import { toolsCommand } from "./tools.js";
+import type { SlashCommand } from "./types.js";
 import { vimCommand } from "./vim.js";
 
 /** All built-in slash commands, in display order. */

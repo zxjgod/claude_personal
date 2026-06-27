@@ -15,8 +15,7 @@ export const diffCommand: SlashCommand = {
     console.log("");
     console.log(chalk.bold(`  Files changed (${changes.length}):`));
     for (const ch of changes) {
-      const tag =
-        ch.kind === "created" ? chalk.green("created ") : chalk.yellow("modified");
+      const tag = ch.kind === "created" ? chalk.green("created ") : chalk.yellow("modified");
       const times = ch.edits > 1 ? chalk.gray(` ×${ch.edits}`) : "";
       console.log(`    ${tag} ${chalk.cyan(ch.path)}${times}`);
     }

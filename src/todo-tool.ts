@@ -6,8 +6,8 @@
 // each time (complete replacement).
 // ============================================================
 
-import type { Tool, ToolContext, ToolResult } from "./types.js";
 import { createTool } from "./tool-registry.js";
+import type { Tool, ToolResult } from "./types.js";
 
 // --- Types ---
 
@@ -53,8 +53,7 @@ function formatTodoList(todos: TodoItem[]): string {
 
 export const TodoTool: Tool = createTool<TodoInput>({
   name: "todo",
-  description:
-    "Create and update a structured task list for the current coding session",
+  description: "Create and update a structured task list for the current coding session",
   promptDescription:
     "Create and update a structured task list for your current coding session. " +
     "Send the FULL list as { todos: [...] } each time — any existing items not " +
@@ -66,8 +65,7 @@ export const TodoTool: Tool = createTool<TodoInput>({
     properties: {
       todos: {
         type: "array",
-        description:
-          "The COMPLETE todo list. Items not included will be removed.",
+        description: "The COMPLETE todo list. Items not included will be removed.",
       },
     },
     required: ["todos"],
@@ -86,9 +84,7 @@ export const TodoTool: Tool = createTool<TodoInput>({
           error: `Invalid todo item: missing "content" (string)`,
         };
       }
-      if (
-        !["pending", "in_progress", "completed"].includes(item.status)
-      ) {
+      if (!["pending", "in_progress", "completed"].includes(item.status)) {
         return {
           content: "",
           error: `Invalid status "${item.status}" for "${item.content}". Must be: pending | in_progress | completed`,

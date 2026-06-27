@@ -6,15 +6,14 @@
 // render without crashing and show the right content.
 // ============================================================
 
-import React from "react";
-import { describe, it, expect } from "vitest";
 import { render } from "ink-testing-library";
+import { describe, expect, it } from "vitest";
 import { App } from "../tui/App.js";
-import { CompletedToolCard } from "../tui/ToolCard.js";
-import { PermissionPrompt, QuestionPrompt } from "../tui/Prompts.js";
 import { EffortPrompt } from "../tui/EffortPrompt.js";
-import { SessionPicker, nextOffset } from "../tui/SessionPicker.js";
+import { PermissionPrompt, QuestionPrompt } from "../tui/Prompts.js";
+import { nextOffset, SessionPicker } from "../tui/SessionPicker.js";
 import { TuiStore } from "../tui/store.js";
+import { CompletedToolCard } from "../tui/ToolCard.js";
 import type { ToolExecutionResult } from "../types.js";
 
 const noopSubmit = () => {};

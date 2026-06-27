@@ -2,7 +2,7 @@
 // Tests: hooks (PreToolUse / PostToolUse)
 // ============================================================
 
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { HookRegistry } from "../hooks.js";
 import type { ToolResult } from "../types.js";
 
@@ -50,7 +50,7 @@ describe("HookRegistry — PreToolUse", () => {
       matcher: "*",
       pre: () => {
         secondRan = true;
-        return ;
+        return;
       },
     });
     const out = await reg.runPre({ toolName: "read", input: {} });

@@ -4,15 +4,7 @@
 // ============================================================
 
 import * as path from "node:path";
-import type {
-  ModelCaller,
-  ModelConfig,
-  Tool,
-  ToolContext,
-  ToolInput,
-  ClassifierResult,
-  PermissionClassifier,
-} from "./types.js";
+import type { ClassifierResult, PermissionClassifier, Tool, ToolContext } from "./types.js";
 
 // --- Dangerous Pattern Detection ---
 
@@ -33,10 +25,7 @@ export function checkDangerousPattern(
     // judged correctly, and an absolute path outside the root is rejected
     // (path.resolve discards the base when the second arg is absolute).
     const resolved = path.resolve(resolvedWorkspace, input.filePath as string);
-    if (
-      resolved !== resolvedWorkspace &&
-      !resolved.startsWith(resolvedWorkspace + path.sep)
-    ) {
+    if (resolved !== resolvedWorkspace && !resolved.startsWith(resolvedWorkspace + path.sep)) {
       return {
         dangerous: true,
         reason: `Path "${input.filePath}" is outside workspace "${workspaceRoot}"`,
@@ -182,7 +171,12 @@ Rules:
 
 /** Parse a single `VERDICT|reason` classifier line into a ClassifierResult. */
 export function parseClassifierVerdict(text: string): ClassifierResult {
-  const line = text.trim().split("\n").filter((l) => l.trim()).pop() ?? "";
+  const line =
+    text
+      .trim()
+      .split("\n")
+      .filter((l) => l.trim())
+      .pop() ?? "";
   const m = /^(BLOCK|CONFIRM|ALLOW)\s*\|(.*)$/i.exec(line);
   if (!m) {
     // Unparseable → defer to the regex path (fail-safe: still prompt).
@@ -215,9 +209,7 @@ export async function classifyPermissionRisk(
   const messages = [
     {
       role: "user" as const,
-      content: [
-        { type: "text" as const, text: `Classify this tool call:\n\n${action}` },
-      ],
+      content: [{ type: "text" as const, text: `Classify this tool call:\n\n${action}` }],
     },
   ];
 
@@ -233,12 +225,10 @@ export async function classifyPermissionRisk(
 
   try {
     let text = "";
-    for await (const event of callModel(
-      messages,
-      [],
-      CLASSIFIER_SYSTEM_PROMPT,
-      { ...modelConfig, temperature: 0 },
-    )) {
+    for await (const event of callModel(messages, [], CLASSIFIER_SYSTEM_PROMPT, {
+      ...modelConfig,
+      temperature: 0,
+    })) {
       if (timeoutController.signal.aborted) break;
       if (event.type === "text_delta") text += event.delta;
     }
@@ -257,10 +247,7 @@ export async function classifyPermissionRisk(
 }
 
 /** Render a tool call as a compact, classifier-readable description. */
-function formatActionForClassifier(
-  toolName: string,
-  input: Record<string, unknown>,
-): string {
+function formatActionForClassifier(toolName: string, input: Record<string, unknown>): string {
   if (toolName === "bash" && typeof input.command === "string") {
     return `bash: ${input.command}`;
   }
@@ -278,11 +265,7 @@ function formatActionForClassifier(
 
 export interface PermissionCheckOptions {
   /** Callback to prompt the user for permission */
-  askUser: (
-    tool: Tool,
-    input: Record<string, unknown>,
-    riskHint?: string,
-  ) => Promise<boolean>;
+  askUser: (tool: Tool, input: Record<string, unknown>, riskHint?: string) => Promise<boolean>;
   /**
    * Optional LLM-assisted risk classifier (M15.3). When present, invoked only
    * for tool calls the regex dangerous-pattern detector already flagged — it
@@ -333,19 +316,11 @@ export async function checkPermission(
   // the prompt — it can only block outright or annotate. On any failure
   // (no caller, no apiKey, parse error, API error, timeout) we fail SAFE:
   // fall back to the regex reason and still prompt, exactly as before.
-  const dangerousCheck = checkDangerousPattern(
-    tool.name,
-    input,
-    context.workspaceRoot,
-  );
+  const dangerousCheck = checkDangerousPattern(tool.name, input, context.workspaceRoot);
   if (dangerousCheck.dangerous) {
     let riskHint = dangerousCheck.reason;
     if (options.classifier) {
-      const classified = await classifyPermissionRisk(
-        tool.name,
-        input,
-        options.classifier,
-      );
+      const classified = await classifyPermissionRisk(tool.name, input, options.classifier);
       if (classified.block) {
         return {
           allowed: false,
@@ -357,9 +332,7 @@ export async function checkPermission(
       }
     }
     const allowed = await options.askUser(tool, input, riskHint);
-    return allowed
-      ? { allowed: true }
-      : { allowed: false, reason: riskHint };
+    return allowed ? { allowed: true } : { allowed: false, reason: riskHint };
   }
 
   // Step 6: acceptEdits — auto-approve file operations
@@ -370,15 +343,11 @@ export async function checkPermission(
   }
 
   // Step 7: Default — ask only for tools that require interactive approval
-  const needsApproval = tool.requiresApproval
-    ? tool.requiresApproval()
-    : !tool.isReadOnly();
+  const needsApproval = tool.requiresApproval ? tool.requiresApproval() : !tool.isReadOnly();
   if (!needsApproval) {
     return { allowed: true };
   }
 
   const allowed = await options.askUser(tool, input);
-  return allowed
-    ? { allowed: true }
-    : { allowed: false, reason: "User denied permission" };
+  return allowed ? { allowed: true } : { allowed: false, reason: "User denied permission" };
 }

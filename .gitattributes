@@ -1,0 +1,13 @@
+# Normalize line endings so the formatter (biome, lineEnding=lf) is consistent
+# across Windows/macOS/Linux and CI. Without this, core.autocrlf=true checks
+# out CRLF on Windows and biome flags every line.
+* text=auto eol=lf
+
+# Binary assets git should never touch.
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.woff binary
+*.woff2 binary

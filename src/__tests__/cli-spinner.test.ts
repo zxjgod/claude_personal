@@ -2,13 +2,13 @@
 // Tests: CLI spinner (thinking animation)
 // ============================================================
 
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
-  SPINNER_VERBS,
   computeGlimmerIndex,
   computeShimmerSegments,
   formatDuration,
   formatTokens,
+  SPINNER_VERBS,
   Spinner,
 } from "../cli-spinner.js";
 

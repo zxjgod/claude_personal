@@ -11,10 +11,7 @@ export function formatCliError(error: unknown): string {
   const status = anyErr?.status;
   const type = anyErr?.type || anyErr?.error?.type || anyErr?.error?.error?.type;
   const message =
-    anyErr?.error?.message ||
-    anyErr?.error?.error?.message ||
-    anyErr?.message ||
-    String(error);
+    anyErr?.error?.message || anyErr?.error?.error?.message || anyErr?.message || String(error);
 
   if (status === 401 || status === 403) {
     return `Authentication/permission error (${status}). Check LLM_API_KEY, provider, base URL, and account access. ${message}`;

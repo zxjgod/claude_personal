@@ -20,7 +20,10 @@ function recapOfMessages(messages: { role: string; content: any }[]): string {
   for (const m of messages.slice(-12)) {
     if (m.role === "user") {
       const t = Array.isArray(m.content)
-        ? m.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join(" ")
+        ? m.content
+            .filter((b: any) => b.type === "text")
+            .map((b: any) => b.text)
+            .join(" ")
         : String(m.content ?? "");
       if (t.trim()) turns.push(`User: ${t.trim().slice(0, 400)}`);
     } else if (m.role === "assistant") {

@@ -5,8 +5,8 @@
 // overlay's resolve() with the choice; the store clears the overlay.
 // ============================================================
 
-import React, { useState } from "react";
 import { Box, Text, useInput } from "ink";
+import { useState } from "react";
 import type { Overlay } from "./store.js";
 
 const CYAN = "cyan";
@@ -52,11 +52,7 @@ export function PermissionPrompt({
   );
 }
 
-export function QuestionPrompt({
-  overlay,
-}: {
-  overlay: Extract<Overlay, { kind: "question" }>;
-}) {
+export function QuestionPrompt({ overlay }: { overlay: Extract<Overlay, { kind: "question" }> }) {
   const { options, multiSelect } = overlay;
   const [cursor, setCursor] = useState(0);
   const [checked, setChecked] = useState<Set<number>>(new Set());

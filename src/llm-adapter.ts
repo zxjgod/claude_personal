@@ -6,20 +6,11 @@ import OpenAI from "openai";
 import { anthropicCaller } from "./anthropic-adapter.js";
 import { isCloudGateway, resolveGateway } from "./cloud-gateway.js";
 import { getEffort, modelSupportsReasoningEffort, openaiReasoningEffort } from "./effort.js";
-import type {
-  Message,
-  ModelCaller,
-  ModelConfig,
-  StreamEvent,
-  Tool,
-} from "./types.js";
+import type { Message, ModelCaller, ModelConfig, StreamEvent, Tool } from "./types.js";
 
 // --- Provider Default Configurations ---
 
-const PROVIDER_CONFIGS: Record<
-  string,
-  { baseURL: string; defaultModel: string }
-> = {
+const PROVIDER_CONFIGS: Record<string, { baseURL: string; defaultModel: string }> = {
   anthropic: {
     baseURL: "https://api.anthropic.com",
     defaultModel: "claude-opus-4-8",
@@ -52,9 +43,7 @@ const PROVIDER_CONFIGS: Record<
 
 // --- Message Conversion (Internal → OpenAI) ---
 
-function convertToOpenAIMessage(
-  msg: Message,
-): OpenAI.Chat.Completions.ChatCompletionMessageParam {
+function convertToOpenAIMessage(msg: Message): OpenAI.Chat.Completions.ChatCompletionMessageParam {
   switch (msg.role) {
     case "user":
       return {
@@ -111,19 +100,15 @@ async function* openAICompatibleCaller(
   const client = new OpenAI({
     apiKey: config.apiKey,
     baseURL:
-      config.baseURL ||
-      PROVIDER_CONFIGS[config.provider]?.baseURL ||
-      "https://api.openai.com/v1",
+      config.baseURL || PROVIDER_CONFIGS[config.provider]?.baseURL || "https://api.openai.com/v1",
   });
 
-  const model =
-    config.model || PROVIDER_CONFIGS[config.provider]?.defaultModel || "gpt-4o";
+  const model = config.model || PROVIDER_CONFIGS[config.provider]?.defaultModel || "gpt-4o";
 
-  const requestMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] =
-    [
-      { role: "system", content: systemPrompt },
-      ...messages.map(convertToOpenAIMessage),
-    ];
+  const requestMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+    { role: "system", content: systemPrompt },
+    ...messages.map(convertToOpenAIMessage),
+  ];
 
   // Reasoning effort (/effort). Only reasoning-capable models accept
   // `reasoning_effort`; sending it to a plain chat model can 400 on strict
@@ -141,26 +126,26 @@ async function* openAICompatibleCaller(
     ? AbortSignal.any([abortSignal, timeoutSignal])
     : timeoutSignal;
 
-  const stream = await client.chat.completions.create({
-    model,
-    messages: requestMessages,
-    tools: tools.length > 0 ? formatToolsForOpenAI(tools) : undefined,
-    tool_choice: tools.length > 0 ? "auto" : undefined,
-    max_tokens: config.maxTokens,
-    temperature: config.temperature ?? 0.1,
-    ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
-    stream: true,
-    // Ask the provider to emit a final usage chunk. Without this, streamed
-    // responses carry no token counts and usage stays at zero — breaking
-    // both the CLI token display and the auto-compaction threshold.
-    stream_options: { include_usage: true },
-  }, { signal: combinedSignal });
+  const stream = await client.chat.completions.create(
+    {
+      model,
+      messages: requestMessages,
+      tools: tools.length > 0 ? formatToolsForOpenAI(tools) : undefined,
+      tool_choice: tools.length > 0 ? "auto" : undefined,
+      max_tokens: config.maxTokens,
+      temperature: config.temperature ?? 0.1,
+      ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+      stream: true,
+      // Ask the provider to emit a final usage chunk. Without this, streamed
+      // responses carry no token counts and usage stays at zero — breaking
+      // both the CLI token display and the auto-compaction threshold.
+      stream_options: { include_usage: true },
+    },
+    { signal: combinedSignal },
+  );
 
   // Parse streaming response
-  const toolCallBuffers: Map<
-    number,
-    { id: string; name: string; arguments: string }
-  > = new Map();
+  const toolCallBuffers: Map<number, { id: string; name: string; arguments: string }> = new Map();
 
   let usage: { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number } = {
     input_tokens: 0,
@@ -179,9 +164,7 @@ async function* openAICompatibleCaller(
       } catch {
         yield {
           type: "error",
-          error: new Error(
-            `Failed to parse tool arguments for "${buf.name}"`,
-          ),
+          error: new Error(`Failed to parse tool arguments for "${buf.name}"`),
         };
       }
     }
@@ -285,8 +268,7 @@ export function isRateLimitError(error: any): boolean {
 export function isContextLengthError(error: any): boolean {
   return (
     error?.status === 400 &&
-    (error?.message?.includes("context_length") ||
-      error?.message?.includes("maximum context"))
+    (error?.message?.includes("context_length") || error?.message?.includes("maximum context"))
   );
 }
 

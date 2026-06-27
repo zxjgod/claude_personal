@@ -16,9 +16,7 @@ export interface CliInputReader {
   isClosed(): boolean;
 }
 
-export function createCliInputReader(
-  rl: readline.Interface,
-): CliInputReader {
+export function createCliInputReader(rl: readline.Interface): CliInputReader {
   let stdinClosed = false;
   const queue: string[] = [];
   const waiters: Array<(line: string | null) => void> = [];

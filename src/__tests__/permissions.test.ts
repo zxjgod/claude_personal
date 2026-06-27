@@ -2,12 +2,8 @@
 // Tests: Permission System
 // ============================================================
 
-import { describe, it, expect, vi } from "vitest";
-import {
-  checkPermission,
-  classifyPermissionRisk,
-  parseClassifierVerdict,
-} from "../permissions.js";
+import { describe, expect, it, vi } from "vitest";
+import { checkPermission, classifyPermissionRisk, parseClassifierVerdict } from "../permissions.js";
 import { createTool } from "../tool-registry.js";
 import type {
   Message,
@@ -49,12 +45,7 @@ describe("checkPermission", () => {
       call: async () => ({ content: "" }),
     });
 
-    const result = await checkPermission(
-      tool,
-      {},
-      makeContext(),
-      { askUser: alwaysDeny },
-    );
+    const result = await checkPermission(tool, {}, makeContext(), { askUser: alwaysDeny });
     expect(result.allowed).toBe(true);
   });
 
@@ -69,12 +60,7 @@ describe("checkPermission", () => {
       call: async () => ({ content: "" }),
     });
 
-    const result = await checkPermission(
-      tool,
-      {},
-      makeContext("plan"),
-      { askUser: alwaysAllow },
-    );
+    const result = await checkPermission(tool, {}, makeContext("plan"), { askUser: alwaysAllow });
     expect(result.allowed).toBe(false);
   });
 
@@ -171,12 +157,9 @@ describe("checkPermission", () => {
     });
 
     const askUser = vi.fn().mockResolvedValue(false);
-    const result = await checkPermission(
-      tool,
-      { command: "rm -rf /tmp/build" },
-      makeContext(),
-      { askUser },
-    );
+    const result = await checkPermission(tool, { command: "rm -rf /tmp/build" }, makeContext(), {
+      askUser,
+    });
     expect(askUser).toHaveBeenCalled();
     expect(result.allowed).toBe(false);
   });
@@ -281,30 +264,40 @@ describe("parseClassifierVerdict", () => {
   });
 
   it("takes the last VERDICT|reason line when the model adds preamble", () => {
-    expect(
-      parseClassifierVerdict("Looking at the command...\nBLOCK|rm -rf /"),
-    ).toEqual({ block: true, reason: "rm -rf /" });
+    expect(parseClassifierVerdict("Looking at the command...\nBLOCK|rm -rf /")).toEqual({
+      block: true,
+      reason: "rm -rf /",
+    });
   });
 });
 
 describe("classifyPermissionRisk", () => {
   it("defers when there is no API key (fail-safe)", async () => {
     const caller = makeTextCaller("BLOCK|should not happen");
-    const res = await classifyPermissionRisk("bash", { command: "rm -rf /" }, {
-      callModel: caller,
-      modelConfig: { ...classifierConfig, apiKey: "" },
-    });
+    const res = await classifyPermissionRisk(
+      "bash",
+      { command: "rm -rf /" },
+      {
+        callModel: caller,
+        modelConfig: { ...classifierConfig, apiKey: "" },
+      },
+    );
     expect(res).toEqual({ block: false, unavailable: true });
   });
 
   it("defers when the caller throws (fail-safe)", async () => {
+    // biome-ignore lint/correctness/useYield: deliberate mock — caller throws before yielding
     const caller: ModelCaller = async function* () {
       throw new Error("network down");
     };
-    const res = await classifyPermissionRisk("bash", { command: "rm -rf /" }, {
-      callModel: caller,
-      modelConfig: classifierConfig,
-    });
+    const res = await classifyPermissionRisk(
+      "bash",
+      { command: "rm -rf /" },
+      {
+        callModel: caller,
+        modelConfig: classifierConfig,
+      },
+    );
     expect(res).toEqual({ block: false, unavailable: true });
   });
 
@@ -337,18 +330,13 @@ describe("checkPermission + classifier integration", () => {
   it("classifier BLOCK refuses before prompting the user", async () => {
     const tool = bashTool();
     const askUser = vi.fn().mockResolvedValue(true);
-    const result = await checkPermission(
-      tool,
-      { command: "rm -rf /" },
-      makeContext(),
-      {
-        askUser,
-        classifier: {
-          callModel: makeTextCaller("BLOCK|rm -rf / is catastrophic"),
-          modelConfig: classifierConfig,
-        },
+    const result = await checkPermission(tool, { command: "rm -rf /" }, makeContext(), {
+      askUser,
+      classifier: {
+        callModel: makeTextCaller("BLOCK|rm -rf / is catastrophic"),
+        modelConfig: classifierConfig,
       },
-    );
+    });
     expect(result.allowed).toBe(false);
     expect(result.reason).toBe("rm -rf / is catastrophic");
     // BLOCK short-circuits — the user is never prompted.
@@ -358,18 +346,13 @@ describe("checkPermission + classifier integration", () => {
   it("classifier CONFIRM enriches the prompt reason but still asks", async () => {
     const tool = bashTool();
     const askUser = vi.fn().mockResolvedValue(false);
-    const result = await checkPermission(
-      tool,
-      { command: "rm -rf ./build" },
-      makeContext(),
-      {
-        askUser,
-        classifier: {
-          callModel: makeTextCaller("CONFIRM|deletes the build dir recursively"),
-          modelConfig: classifierConfig,
-        },
+    const result = await checkPermission(tool, { command: "rm -rf ./build" }, makeContext(), {
+      askUser,
+      classifier: {
+        callModel: makeTextCaller("CONFIRM|deletes the build dir recursively"),
+        modelConfig: classifierConfig,
       },
-    );
+    });
     expect(askUser).toHaveBeenCalledTimes(1);
     // The enriched model reason is what was shown to the user.
     expect(askUser.mock.calls[0]![2]).toBe("deletes the build dir recursively");
@@ -379,59 +362,40 @@ describe("checkPermission + classifier integration", () => {
   it("classifier ALLOW defers to the regex reason and still prompts", async () => {
     const tool = bashTool();
     const askUser = vi.fn().mockResolvedValue(true);
-    await checkPermission(
-      tool,
-      { command: "rm -rf node_modules" },
-      makeContext(),
-      {
-        askUser,
-        classifier: {
-          callModel: makeTextCaller("ALLOW|routine clean"),
-          modelConfig: classifierConfig,
-        },
+    await checkPermission(tool, { command: "rm -rf node_modules" }, makeContext(), {
+      askUser,
+      classifier: {
+        callModel: makeTextCaller("ALLOW|routine clean"),
+        modelConfig: classifierConfig,
       },
-    );
+    });
     expect(askUser).toHaveBeenCalledTimes(1);
     // ALLOW → no model annotation; the original regex reason is shown.
-    expect(askUser.mock.calls[0]![2]).toBe(
-      "Command includes recursive deletion (rm -r)",
-    );
+    expect(askUser.mock.calls[0]![2]).toBe("Command includes recursive deletion (rm -r)");
   });
 
   it("classifier unavailable (unparseable) falls back to the regex reason", async () => {
     const tool = bashTool();
     const askUser = vi.fn().mockResolvedValue(false);
-    await checkPermission(
-      tool,
-      { command: "rm -rf /tmp/x" },
-      makeContext(),
-      {
-        askUser,
-        classifier: {
-          callModel: makeTextCaller("hmm not sure"),
-          modelConfig: classifierConfig,
-        },
+    await checkPermission(tool, { command: "rm -rf /tmp/x" }, makeContext(), {
+      askUser,
+      classifier: {
+        callModel: makeTextCaller("hmm not sure"),
+        modelConfig: classifierConfig,
       },
-    );
+    });
     expect(askUser).toHaveBeenCalledTimes(1);
-    expect(askUser.mock.calls[0]![2]).toBe(
-      "Command includes recursive deletion (rm -r)",
-    );
+    expect(askUser.mock.calls[0]![2]).toBe("Command includes recursive deletion (rm -r)");
   });
 
   it("without a classifier, the dangerous-bash path is unchanged", async () => {
     const tool = bashTool();
     const askUser = vi.fn().mockResolvedValue(false);
-    const result = await checkPermission(
-      tool,
-      { command: "rm -rf /tmp/x" },
-      makeContext(),
-      { askUser },
-    );
+    const result = await checkPermission(tool, { command: "rm -rf /tmp/x" }, makeContext(), {
+      askUser,
+    });
     expect(askUser).toHaveBeenCalledTimes(1);
-    expect(askUser.mock.calls[0]![2]).toBe(
-      "Command includes recursive deletion (rm -r)",
-    );
+    expect(askUser.mock.calls[0]![2]).toBe("Command includes recursive deletion (rm -r)");
     expect(result.allowed).toBe(false);
   });
 });

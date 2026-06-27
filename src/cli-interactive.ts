@@ -13,7 +13,7 @@
 // ============================================================
 
 import chalk from "chalk";
-import { visualWidth, terminalColumns } from "./terminal-width.js";
+import { terminalColumns, visualWidth } from "./terminal-width.js";
 
 const CLAUDE_ORANGE = chalk.rgb(215, 119, 87);
 
@@ -109,9 +109,7 @@ interface WidgetState {
 function filterCommands(buffer: string, commands: CommandInfo[]): CommandInfo[] {
   if (!buffer.startsWith("/")) return [];
   const query = buffer.slice(1).split(/\s+/)[0]!.toLowerCase();
-  return commands
-    .filter((c) => c.name.toLowerCase().startsWith(query))
-    .slice(0, MAX_SUGGESTIONS);
+  return commands.filter((c) => c.name.toLowerCase().startsWith(query)).slice(0, MAX_SUGGESTIONS);
 }
 
 export function createRawInputReader(opts: {
@@ -123,7 +121,9 @@ export function createRawInputReader(opts: {
   const output = opts.output ?? process.stdout;
   let closed = false;
 
-  const renderWidget = (state: WidgetState): { lines: string[]; cursorRow: number; cursorCol: number } => {
+  const renderWidget = (
+    state: WidgetState,
+  ): { lines: string[]; cursorRow: number; cursorCol: number } => {
     const width = Math.min(terminalColumns() - 1, 100);
     const border = chalk.dim("─".repeat(width));
     const promptText = `${chalk.dim(">")} ${state.buffer}`;
@@ -131,10 +131,7 @@ export function createRawInputReader(opts: {
 
     // Dropdown for slash commands.
     if (state.suggestions.length > 0) {
-      const nameWidth = Math.max(
-        ...state.suggestions.map((s) => s.name.length + 1),
-        8,
-      );
+      const nameWidth = Math.max(...state.suggestions.map((s) => s.name.length + 1), 8);
       for (let i = 0; i < state.suggestions.length; i++) {
         const s = state.suggestions[i]!;
         const selected = i === state.selected;
@@ -270,9 +267,7 @@ export function createRawInputReader(opts: {
             // Ignore stray escape-sequence bytes / non-printables.
             if (key.sequence < " " && key.sequence !== "\t") return;
             state.buffer =
-              state.buffer.slice(0, state.cursor) +
-              key.sequence +
-              state.buffer.slice(state.cursor);
+              state.buffer.slice(0, state.cursor) + key.sequence + state.buffer.slice(state.cursor);
             state.cursor += key.sequence.length;
             repaint();
             return;

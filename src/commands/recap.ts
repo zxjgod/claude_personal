@@ -24,7 +24,10 @@ export const recapCommand: SlashCommand = {
     const memories = new MemoryStore(ctx.workspaceRoot).list();
     const memoryLines =
       memories.length > 0
-        ? memories.slice(-10).map((m) => `- ${m.text}`).join("\n")
+        ? memories
+            .slice(-10)
+            .map((m) => `- ${m.text}`)
+            .join("\n")
         : "";
 
     const prompt = [
@@ -32,9 +35,7 @@ export const recapCommand: SlashCommand = {
       ``,
       `Files changed this session:`,
       changedLines,
-      ...(memoryLines
-        ? [``, `Durable notes on record (for context):`, memoryLines]
-        : []),
+      ...(memoryLines ? [``, `Durable notes on record (for context):`, memoryLines] : []),
       ``,
       `Produce a short recap with:`,
       `1. **What was asked** — the user's main goals this session.`,
@@ -44,7 +45,9 @@ export const recapCommand: SlashCommand = {
       `Keep it tight (a few short paragraphs / bullets). Do not re-run any tools unless you genuinely need to re-read a file to answer accurately.`,
     ].join("\n");
 
-    console.log(chalk.gray(`  Recapping ${ctx.messages.length} messages, ${changes.length} file change(s)…`));
+    console.log(
+      chalk.gray(`  Recapping ${ctx.messages.length} messages, ${changes.length} file change(s)…`),
+    );
     return { handled: true, prompt };
   },
 };

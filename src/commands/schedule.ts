@@ -29,7 +29,9 @@ export const scheduleCommand: SlashCommand = {
         return;
       }
       const ok = removeScheduledJob(target);
-      console.log(ok ? chalk.gray(`  Cancelled job ${target}.`) : chalk.yellow(`  No job with id ${target}.`));
+      console.log(
+        ok ? chalk.gray(`  Cancelled job ${target}.`) : chalk.yellow(`  No job with id ${target}.`),
+      );
       return;
     }
 

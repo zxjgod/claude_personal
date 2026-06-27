@@ -63,9 +63,7 @@ export function resolveGateway(
 
   // vertex
   if (!opts.project) {
-    throw new Error(
-      "Vertex AI gateway requires a project id (set LLM_GATEWAY_PROJECT).",
-    );
+    throw new Error("Vertex AI gateway requires a project id (set LLM_GATEWAY_PROJECT).");
   }
   return {
     baseURL: `https://${region}-aiplatform.googleapis.com/v1/projects/${opts.project}/locations/${region}/endpoints/openapi`,

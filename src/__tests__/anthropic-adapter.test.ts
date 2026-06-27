@@ -2,14 +2,14 @@
 // Tests: Native Anthropic adapter
 // ============================================================
 
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   convertMessagesToAnthropic,
   formatSystemForAnthropic,
   formatToolsForAnthropic,
 } from "../anthropic-adapter.js";
-import { buildSystemPrompt, DYNAMIC_BOUNDARY } from "../system-prompt.js";
 import { createModelCaller } from "../llm-adapter.js";
+import { buildSystemPrompt, DYNAMIC_BOUNDARY } from "../system-prompt.js";
 import type { Message, ModelConfig, Tool } from "../types.js";
 
 const testTool: Tool = {

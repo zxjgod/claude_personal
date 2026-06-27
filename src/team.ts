@@ -14,10 +14,10 @@
 // naturally across send_message calls.
 // ============================================================
 
-import type { Message, ModelConfig, PermissionMode, SubAgentProgress, AskUserFn } from "./types.js";
 import { agentLoop } from "./agent-loop.js";
 import { createModelCaller } from "./llm-adapter.js";
-import { getSubagentType, resolveSubagentTools, getCoreToolsForSubagents } from "./subagents.js";
+import { getCoreToolsForSubagents, getSubagentType, resolveSubagentTools } from "./subagents.js";
+import type { AskUserFn, Message, ModelConfig, PermissionMode, SubAgentProgress } from "./types.js";
 
 const AGENT_MAX_TURNS = 10;
 const AGENT_COMPACT_THRESHOLD = 50_000;
@@ -179,7 +179,11 @@ export async function runAgentTurn(
   agent.abort = abort;
 
   const caller = createModelCaller(ctx.modelConfig);
-  const systemPrompt = [role.systemPrompt, "", `You are team member "${agent.id}" (role: ${agent.role}).`].join("\n");
+  const systemPrompt = [
+    role.systemPrompt,
+    "",
+    `You are team member "${agent.id}" (role: ${agent.role}).`,
+  ].join("\n");
 
   const chunks: string[] = [];
   let toolCalls = 0;
@@ -212,10 +216,19 @@ export async function runAgentTurn(
           break;
         case "tool_use":
           toolCalls++;
-          ctx.onProgress?.({ subagentName: agent.id, phase: "tool_use", toolName: event.name, input: event.input });
+          ctx.onProgress?.({
+            subagentName: agent.id,
+            phase: "tool_use",
+            toolName: event.name,
+            input: event.input,
+          });
           break;
         case "tool_results":
-          ctx.onProgress?.({ subagentName: agent.id, phase: "tool_results", results: event.results });
+          ctx.onProgress?.({
+            subagentName: agent.id,
+            phase: "tool_results",
+            results: event.results,
+          });
           break;
         case "done":
           ctx.onProgress?.({ subagentName: agent.id, phase: "done" });
@@ -245,4 +258,3 @@ export async function runAgentTurn(
 
   return { output, toolCalls, error };
 }
-

@@ -2,35 +2,28 @@
 // Core Tools — Read, Write, Edit, Bash, Glob, Grep
 // ============================================================
 
+import { exec, execFile, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { exec, execSync, execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import fg from "fast-glob";
-import type { Tool, ToolContext, ToolResult } from "./types.js";
-import { createTool } from "./tool-registry.js";
-import {
-  checkDangerousPattern,
-  isBlockedPath,
-} from "./permissions.js";
-import { TodoTool } from "./todo-tool.js";
-import { WebFetchTool } from "./web-fetch.js";
-import { WebSearchTool } from "./web-search.js";
-import { TaskTool } from "./task-tool.js";
-import {
-  markRead,
-  checkReadBeforeEdit,
-  refreshRead,
-} from "./read-tracker.js";
 import { recordChange } from "./change-tracker.js";
-import { NotebookEditTool, LspDiagnosticsTool } from "./tools-m8.js";
+import { checkDangerousPattern, isBlockedPath } from "./permissions.js";
+import { checkReadBeforeEdit, markRead, refreshRead } from "./read-tracker.js";
+import { TaskTool } from "./task-tool.js";
+import { TodoTool } from "./todo-tool.js";
+import { createTool } from "./tool-registry.js";
+import { LspDiagnosticsTool, NotebookEditTool } from "./tools-m8.js";
 import {
+  AskUserQuestionTool,
   EnterPlanModeTool,
   ExitPlanModeTool,
-  AskUserQuestionTool,
 } from "./tools-m8-interactive.js";
-import { TEAM_TOOLS } from "./tools-team.js";
 import { M14_TOOLS } from "./tools-m9.js";
+import { TEAM_TOOLS } from "./tools-team.js";
+import type { Tool, ToolResult } from "./types.js";
+import { WebFetchTool } from "./web-fetch.js";
+import { WebSearchTool } from "./web-search.js";
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -221,8 +214,7 @@ export const ReadTool: Tool = createTool<ReadInput>({
 export const WriteTool: Tool = createTool<WriteInput>({
   name: "write",
   description: "Create or overwrite a file",
-  promptDescription:
-    "Create or overwrite a file. Creates parent directories automatically.",
+  promptDescription: "Create or overwrite a file. Creates parent directories automatically.",
   inputSchema: {
     type: "object",
     properties: {
@@ -285,11 +277,7 @@ export const WriteTool: Tool = createTool<WriteInput>({
   },
 
   async checkPermissions(input, context) {
-    const danger = checkDangerousPattern(
-      "write",
-      input,
-      context.workspaceRoot,
-    );
+    const danger = checkDangerousPattern("write", input, context.workspaceRoot);
     if (danger.dangerous) {
       return { allowed: false, reason: danger.reason! };
     }
@@ -320,8 +308,7 @@ export const EditTool: Tool = createTool<EditInput>({
       },
       new_string: {
         type: "string",
-        description:
-          "The text to replace it with. Use empty string to delete.",
+        description: "The text to replace it with. Use empty string to delete.",
       },
       replace_all: {
         type: "boolean",
@@ -394,8 +381,7 @@ export const EditTool: Tool = createTool<EditInput>({
         newContent = spliceAll(content, oldStr, newStr);
       } else {
         const idx = content.indexOf(oldStr);
-        newContent =
-          content.slice(0, idx) + newStr + content.slice(idx + oldStr.length);
+        newContent = content.slice(0, idx) + newStr + content.slice(idx + oldStr.length);
       }
       fs.writeFileSync(filePath, newContent, "utf-8");
 
@@ -430,11 +416,7 @@ export const EditTool: Tool = createTool<EditInput>({
   },
 
   async checkPermissions(input, context) {
-    const danger = checkDangerousPattern(
-      "edit",
-      input,
-      context.workspaceRoot,
-    );
+    const danger = checkDangerousPattern("edit", input, context.workspaceRoot);
     if (danger.dangerous) {
       return { allowed: false, reason: danger.reason! };
     }
@@ -529,8 +511,7 @@ export const MultiEditTool: Tool = createTool<MultiEditInput>({
 
       // Apply edits in memory; bail out before writing if any fails.
       for (let i = 0; i < input.edits.length; i++) {
-        const { old_string: oldStr, new_string: newStr, replace_all } =
-          input.edits[i];
+        const { old_string: oldStr, new_string: newStr, replace_all } = input.edits[i];
 
         if (typeof oldStr !== "string" || typeof newStr !== "string") {
           return {
@@ -567,8 +548,7 @@ export const MultiEditTool: Tool = createTool<MultiEditInput>({
           working = spliceAll(working, oldStr, newStr);
         } else {
           const idx = working.indexOf(oldStr);
-          working =
-            working.slice(0, idx) + newStr + working.slice(idx + oldStr.length);
+          working = working.slice(0, idx) + newStr + working.slice(idx + oldStr.length);
         }
       }
 
@@ -671,14 +651,22 @@ export const BashTool: Tool = createTool<BashInput>({
       stdout += d.toString();
       if (stdout.length > MAX_OUTPUT) {
         truncated = true;
-        try { child.kill(); } catch { /* ignore */ }
+        try {
+          child.kill();
+        } catch {
+          /* ignore */
+        }
       }
     });
     child.stderr?.on("data", (d: Buffer) => {
       stderr += d.toString();
       if (stderr.length > MAX_OUTPUT) {
         truncated = true;
-        try { child.kill(); } catch { /* ignore */ }
+        try {
+          child.kill();
+        } catch {
+          /* ignore */
+        }
       }
     });
 
@@ -704,12 +692,13 @@ export const BashTool: Tool = createTool<BashInput>({
     };
 
     let timedOut = false;
-    const timer = timeout > 0
-      ? setTimeout(() => {
-          timedOut = true;
-          killTree();
-        }, timeout)
-      : null;
+    const timer =
+      timeout > 0
+        ? setTimeout(() => {
+            timedOut = true;
+            killTree();
+          }, timeout)
+        : null;
     let aborted = false;
     const onAbort = () => {
       aborted = true;
@@ -773,11 +762,7 @@ export const BashTool: Tool = createTool<BashInput>({
   },
 
   async checkPermissions(input, context) {
-    const danger = checkDangerousPattern(
-      "bash",
-      input,
-      context.workspaceRoot,
-    );
+    const danger = checkDangerousPattern("bash", input, context.workspaceRoot);
     if (danger.dangerous) {
       return { allowed: false, reason: danger.reason! };
     }
@@ -831,9 +816,7 @@ export const GlobTool: Tool = createTool<GlobInput>({
       resultFiles.sort();
 
       const content =
-        resultFiles.length === 0
-          ? "No files found matching pattern."
-          : resultFiles.join("\n");
+        resultFiles.length === 0 ? "No files found matching pattern." : resultFiles.join("\n");
 
       return {
         content,
@@ -1019,7 +1002,8 @@ export const GrepTool: Tool = createTool<GrepInput>({
 export function resolveInWorkspace(
   inputPath: string,
   workspaceRoot: string,
-): { ok: true; path: string } | { ok: false; error: string } {  const root = path.resolve(workspaceRoot);
+): { ok: true; path: string } | { ok: false; error: string } {
+  const root = path.resolve(workspaceRoot);
   const resolved = path.resolve(root, inputPath);
 
   if (resolved !== root && !resolved.startsWith(root + path.sep)) {
@@ -1073,15 +1057,11 @@ function generateSimpleDiff(oldStr: string, newStr: string): string {
   const m = oldLines.length;
   const n = newLines.length;
   // dp[i][j] = LCS length of oldLines[i:] and newLines[j:].
-  const dp: number[][] = Array.from({ length: m + 1 }, () =>
-    new Array<number>(n + 1).fill(0),
-  );
+  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array<number>(n + 1).fill(0));
   for (let i = m - 1; i >= 0; i--) {
     for (let j = n - 1; j >= 0; j--) {
       dp[i][j] =
-        oldLines[i] === newLines[j]
-          ? dp[i + 1][j + 1] + 1
-          : Math.max(dp[i + 1][j], dp[i][j + 1]);
+        oldLines[i] === newLines[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
     }
   }
 

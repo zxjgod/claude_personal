@@ -11,7 +11,7 @@
 
 import chalk from "chalk";
 import { renderMarkdown } from "./markdown.js";
-import { visualWidth, terminalColumns } from "./terminal-width.js";
+import { terminalColumns, visualWidth } from "./terminal-width.js";
 import type { SubAgentProgress, ToolExecutionResult } from "./types.js";
 
 // Windows-safe glyphs (see constants/figures.ts in the reference source).
@@ -91,9 +91,7 @@ export class StreamingRenderer {
 /** Prefix the first line of `text` with `head` and subsequent lines with `cont`. */
 function prefixFirstLine(text: string, head: string, cont: string): string {
   const lines = text.split("\n");
-  return lines
-    .map((line, i) => (i === 0 ? head + line : cont + line))
-    .join("\n");
+  return lines.map((line, i) => (i === 0 ? head + line : cont + line)).join("\n");
 }
 
 // --- Welcome screen ---
@@ -148,9 +146,7 @@ export function renderToolResult(result: ToolExecutionResult): void {
     typeof result.durationMs === "number" ? chalk.dim(` (${result.durationMs}ms)`) : "";
 
   if (result.error) {
-    process.stdout.write(
-      `  ${chalk.red(BRANCH)} ${chalk.red(result.error)}${duration}\n`,
-    );
+    process.stdout.write(`  ${chalk.red(BRANCH)} ${chalk.red(result.error)}${duration}\n`);
     return;
   }
 
@@ -182,9 +178,7 @@ export function renderSubAgentActivity(event: SubAgentProgress): void {
         );
       } else {
         const dur =
-          typeof result.durationMs === "number"
-            ? chalk.dim(` (${result.durationMs}ms)`)
-            : "";
+          typeof result.durationMs === "number" ? chalk.dim(` (${result.durationMs}ms)`) : "";
         process.stdout.write(`${prefix} ${chalk.dim(result.toolName + dur)}\n`);
       }
     }

@@ -2,11 +2,11 @@
 // Tests: New Tools (Todo, WebFetch, Task)
 // ============================================================
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
-import * as path from "node:path";
 import * as os from "node:os";
-import { TodoTool, getTodos, clearTodos } from "../todo-tool.js";
+import * as path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { clearTodos, getTodos, TodoTool } from "../todo-tool.js";
 import type { ToolContext } from "../types.js";
 
 let tmpDir: string;
@@ -58,9 +58,7 @@ describe("TodoTool", () => {
   it("should display activeForm for in_progress items", async () => {
     const result = await TodoTool.call(
       {
-        todos: [
-          { content: "Fix bug", status: "in_progress", activeForm: "Fixing bug #42" },
-        ],
+        todos: [{ content: "Fix bug", status: "in_progress", activeForm: "Fixing bug #42" }],
       },
       ctx,
     );
@@ -70,9 +68,7 @@ describe("TodoTool", () => {
   it("should reject invalid status values", async () => {
     const result = await TodoTool.call(
       {
-        todos: [
-          { content: "Bad item", status: "invalid_status", activeForm: "Test" },
-        ],
+        todos: [{ content: "Bad item", status: "invalid_status", activeForm: "Test" }],
       } as any,
       ctx,
     );
@@ -121,18 +117,12 @@ import { WebFetchTool } from "../web-fetch.js";
 
 describe("WebFetchTool", () => {
   it("should reject missing url", async () => {
-    const result = await WebFetchTool.call(
-      { url: "", fetchInfo: "test" },
-      ctx,
-    );
+    const result = await WebFetchTool.call({ url: "", fetchInfo: "test" }, ctx);
     expect(result.error).toContain("url is required");
   });
 
   it("should reject missing fetchInfo", async () => {
-    const result = await WebFetchTool.call(
-      { url: "https://example.com", fetchInfo: "" },
-      ctx,
-    );
+    const result = await WebFetchTool.call({ url: "https://example.com", fetchInfo: "" }, ctx);
     expect(result.error).toContain("fetchInfo is required");
   });
 
@@ -145,10 +135,7 @@ describe("WebFetchTool", () => {
   });
 
   it("should reject invalid URLs", async () => {
-    const result = await WebFetchTool.call(
-      { url: "not-a-valid-url!!!", fetchInfo: "test" },
-      ctx,
-    );
+    const result = await WebFetchTool.call({ url: "not-a-valid-url!!!", fetchInfo: "test" }, ctx);
     expect(result.error).toContain("Invalid URL");
   });
 
@@ -256,8 +243,17 @@ vi.mock("../llm-adapter.js", () => ({
   createModelCaller: () =>
     async function* () {
       // Sub-agent's single turn: request a write, then we end.
-      yield { type: "tool_use", id: "c1", name: "write", input: { filePath: "x.txt", content: "y" } };
-      yield { type: "done", usage: { input_tokens: 1, output_tokens: 1 }, finish_reason: "tool_calls" };
+      yield {
+        type: "tool_use",
+        id: "c1",
+        name: "write",
+        input: { filePath: "x.txt", content: "y" },
+      };
+      yield {
+        type: "done",
+        usage: { input_tokens: 1, output_tokens: 1 },
+        finish_reason: "tool_calls",
+      };
     },
 }));
 

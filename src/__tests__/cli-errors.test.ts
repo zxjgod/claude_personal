@@ -2,7 +2,7 @@
 // Tests: CLI error formatting
 // ============================================================
 
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { formatCliError } from "../cli-errors.js";
 
 describe("formatCliError", () => {
@@ -26,15 +26,13 @@ describe("formatCliError", () => {
   });
 
   it("formats context/token limit errors", () => {
-    expect(
-      formatCliError({ status: 400, message: "maximum context length exceeded" }),
-    ).toContain("Context/token limit");
+    expect(formatCliError({ status: 400, message: "maximum context length exceeded" })).toContain(
+      "Context/token limit",
+    );
   });
 
   it("formats server errors", () => {
-    expect(formatCliError({ status: 500, message: "oops" })).toContain(
-      "Provider server error",
-    );
+    expect(formatCliError({ status: 500, message: "oops" })).toContain("Provider server error");
   });
 
   it("falls back to Error.message", () => {

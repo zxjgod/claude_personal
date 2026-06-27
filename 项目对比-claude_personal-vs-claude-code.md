@@ -1,6 +1,6 @@
 # 项目对比：claude_personal vs claude-code (CCB)
 
-> 生成时间：2026-06-27
+> 生成时间：2026-06-27（M19 记忆服务化完成后于 2026-06-28 同步关键状态）
 > 对比对象：
 > - **A = claude_personal**（本地工作空间主项目，`claude-code-replica` v1.0.0）
 > - **B = claude-code**（子目录，`claude-code-best` / CCB v2.8.0，逆向 Anthropic 官方 Claude Code 的工程化项目）
@@ -69,7 +69,7 @@
 | **企业可观测性** | Sentry、Langfuse、GrowthBook、OpenTelemetry、analytics、telemetry 远程配置 | 🔴 仅本地 telemetry |
 | **工作流/自动化** | workflow-engine 包、jobs、schedule、tasks（DreamTask/LocalAgent/RemoteAgent…）、ultraplan、autoDream 记忆整理 | 🔴 仅 todo/task/team |
 | **生态扩展** | plugins（bundled）、skills（bundled + 学习 + 搜索）、dxt、marketplace、channels（飞书/Slack/微信） | 🔴 仅 skills 桩 |
-| **会话/记忆** | SessionMemory、sessionTranscript、extractMemories、MagicDocs、localVault、teamMemorySync、memdir | 🟡 仅 persistence 单点 |
+| **会话/记忆** | SessionMemory、sessionTranscript、extractMemories、MagicDocs、localVault、teamMemorySync、memdir | 🟢 记忆服务三件套已落地（SessionMemory 快照 + transcript 事件流 + extractMemories/`.claude/memories.jsonl`）；缺 MagicDocs/localVault/teamMemorySync 重型存储 |
 | **命令广度** | 120 命令（agents/artifacts/branch/bughunter/doctor/fork/goal/heapdump/onboarding/recap/rewind/share/teleport/vault…） | 🟡 18 命令 |
 | **原生能力** | NAPI 包（audio-capture / image-processor / color-diff / modifiers / url-handler）、sharp 图像 | 🔴 全无（纯 JS） |
 | **自更新/安装** | nativeInstaller、updateCCB、postinstall、ccb update | 🔴 无 |
@@ -84,7 +84,7 @@
 | 核心正确性 | 8.0 | 9.0 | B 经过多轮 production-test 与线上发布打磨 |
 | 功能广度 | 4.0 | 9.5 | B 命令/工具/provider/集成远超 A |
 | 工程化（CI/构建/发布） | 3.0 | 9.0 | B 有完整 CI、monorepo、npm 发布、bundle 校验 |
-| 测试覆盖 | 6.0 | 8.5 | B 319 测试 + production-test；A 43 测试 |
+| 测试覆盖 | 6.5 | 8.5 | B 319 测试 + production-test；A 488 测试（M19 后），缺集成/冒烟 |
 | 安全性 | 7.0 | 8.0 | B 多 policyLimits/MDM/secureStorage；A 有沙箱但子代理权限有缺口 |
 | 可维护性 | 8.0 | 7.0 | A 模块少、依赖少、易读懂；B 逆向代码有 stub/flag 债 |
 | 跨平台 | 6.0 | 8.5 | B 显式处理 powershell/shell/平台；A 刚修完 Windows bash 死循环 |
@@ -100,7 +100,7 @@
 1. **斜杠命令广度**：18 → 至少补到 ~40。优先移植 B 的 `branch / diff / resume(增强) / doctor / context / review / recap / share / fork / agents / skills / theme / vim`。A 的 `commands.ts` 单文件结构已到瓶颈，应像 B 一样拆成 `commands/<name>/` 目录。
 2. **工具补齐**：补 `Worktree`、`Skill`（真实现非桩）、`Cron/Schedule`、`REPL`、`PowerShell`（Windows 原生）。A 的 ROADMAP M14 已规划，应加速。
 3. **权限 LLM 分类器**：A 当前 4 mode + 静态黑名单，缺 B 的 LLM 动态分类器，子代理全放行是 P0 安全缺口。
-4. **会话/记忆服务化**：把 `persistence.ts` 拆成 `SessionMemory + sessionTranscript + extractMemories`，对齐 B 的记忆提取与 `/dream` 整理。
+4. ~~**会话/记忆服务化**：把 `persistence.ts` 拆成 `SessionMemory + sessionTranscript + extractMemories`，对齐 B 的记忆提取与 `/dream` 整理。~~ ✅ 已完成（M19，2026-06-28）：`session-memory.ts`（消息+元数据快照）/ `session-transcript.ts`（append-only 事件流）/ `memory-extract.ts`（启发式抽取 + `MemoryStore`），`persistence.ts` 改薄壳；`/memory extract` + `/recap` 复用；不引 B 的 `/dream`/memdir。
 
 ### P1 — 工程化对齐
 
@@ -137,7 +137,7 @@ B 总体领先，但 A 有几点更优，B 可参考：
 
 **A（claude_personal）应明确以 B（claude-code）为对齐基准**，但采取"选择性吸收"策略：
 
-- **机制层**：全面对齐 B 的核心 agent loop / 工具 / 权限 / 压缩 / 多 provider——A 已基本对齐，补 LLM 权限分类器与记忆服务化即可。
+- **机制层**：全面对齐 B 的核心 agent loop / 工具 / 权限 / 压缩 / 多 provider——A 已基本对齐，记忆服务化已完成（M19），剩补 LLM 权限分类器。
 - **广度层**：命令 18→40、工具补 Worktree/Skill/Cron/REPL，是短期内投入产出比最高的对齐方向。
 - **工程层**：补 CI、升级构建、加 pre-commit，从"个人项目"迈向"可发布项目"。
 - **定位层**：坚守"纯 TS / Node 可跑 / 易读 / 轻量"的差异化，**不照搬** B 的 Bun/NAPI/群控/远程/企业可观测性等重型特性——这些是 B 的护城河，但也是 A 不应进入的复杂度深水区。

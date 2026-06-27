@@ -2,13 +2,8 @@
 // Tests: change tracker (session file-mutation log)
 // ============================================================
 
-import { describe, it, expect, beforeEach } from "vitest";
-import {
-  recordChange,
-  listChanges,
-  clearChanges,
-  resetChangeTracker,
-} from "../change-tracker.js";
+import { beforeEach, describe, expect, it } from "vitest";
+import { clearChanges, listChanges, recordChange, resetChangeTracker } from "../change-tracker.js";
 
 beforeEach(() => {
   resetChangeTracker();

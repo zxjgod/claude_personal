@@ -14,10 +14,10 @@
 // tsserver process per workspace, with a teardown hook for the CLI.
 // ============================================================
 
-import { spawn, type ChildProcess } from "node:child_process";
-import * as path from "node:path";
+import { type ChildProcess, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import { createRequire } from "node:module";
+import * as path from "node:path";
 
 export interface Diagnostic {
   file: string;
@@ -29,7 +29,7 @@ export interface Diagnostic {
 }
 
 /** Re-export the old pure helpers so existing callers/tests keep working. */
-export { parseTscOutput, filterByFile, formatDiagnostics } from "./lsp-legacy.js";
+export { filterByFile, formatDiagnostics, parseTscOutput } from "./lsp-legacy.js";
 
 const require = createRequire(import.meta.url);
 
@@ -139,11 +139,7 @@ export class LspClient {
     await this.request("open", {
       file: abs,
       fileContent: text,
-      scriptKindName: abs.endsWith(".tsx")
-        ? "TSX"
-        : abs.endsWith(".ts")
-          ? "TS"
-          : "JS",
+      scriptKindName: abs.endsWith(".tsx") ? "TSX" : abs.endsWith(".ts") ? "TS" : "JS",
     }).catch(() => undefined);
 
     const [syntactic, semantic] = await Promise.all([

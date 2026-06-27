@@ -6,9 +6,9 @@
 // index.ts assembles. Behavior is unchanged from the pre-split commands.ts.
 // ============================================================
 
-import type { Message, ModelConfig, ModelCaller, Tool } from "../types.js";
 import type { PersistenceManager } from "../persistence.js";
 import type { SessionStats } from "../session-stats.js";
+import type { Message, ModelCaller, ModelConfig, Tool } from "../types.js";
 
 /** Source label for a tool listed by /tools. */
 export type ToolSource = "core" | "mcp";
@@ -77,5 +77,8 @@ export interface SlashCommand {
    * to ask the caller to inject a prompt into the agent loop; otherwise the
    * command is treated as fully handled. Mirrors B's `type: 'prompt'` commands.
    */
-  run: (args: string, ctx: CommandContext) => Promise<Partial<CommandResult> | void> | Partial<CommandResult> | void;
+  run: (
+    args: string,
+    ctx: CommandContext,
+  ) => Promise<Partial<CommandResult> | void> | Partial<CommandResult> | void;
 }

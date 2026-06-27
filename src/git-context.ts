@@ -33,11 +33,7 @@ interface GatherOptions {
   timeoutMs?: number;
 }
 
-async function git(
-  args: string[],
-  cwd: string,
-  timeoutMs: number,
-): Promise<string | null> {
+async function git(args: string[], cwd: string, timeoutMs: number): Promise<string | null> {
   try {
     const { stdout } = await execFileAsync("git", args, {
       cwd,
@@ -63,25 +59,13 @@ export async function gatherGitContext(
   const timeoutMs = options.timeoutMs ?? 3000;
 
   // Confirm this is a work tree first; bail fast otherwise.
-  const inside = await git(
-    ["rev-parse", "--is-inside-work-tree"],
-    workspaceRoot,
-    timeoutMs,
-  );
-  if (!inside || inside.trim() !== "true") return null;
+  const inside = await git(["rev-parse", "--is-inside-work-tree"], workspaceRoot, timeoutMs);
+  if (inside?.trim() !== "true") return null;
 
-  const branchRaw = await git(
-    ["rev-parse", "--abbrev-ref", "HEAD"],
-    workspaceRoot,
-    timeoutMs,
-  );
+  const branchRaw = await git(["rev-parse", "--abbrev-ref", "HEAD"], workspaceRoot, timeoutMs);
   const branch = branchRaw?.trim() || "(detached)";
 
-  const statusRaw = await git(
-    ["status", "--porcelain"],
-    workspaceRoot,
-    timeoutMs,
-  );
+  const statusRaw = await git(["status", "--porcelain"], workspaceRoot, timeoutMs);
   const allDirty = (statusRaw ?? "")
     .split("\n")
     .map((l) => l.trimEnd())
@@ -112,9 +96,7 @@ export function formatGitContext(ctx: GitContext): string {
   if (ctx.dirtyFiles.length === 0) {
     lines.push("Working tree: clean");
   } else {
-    lines.push(
-      `Uncommitted changes (${ctx.dirtyFiles.length}${ctx.dirtyTruncated ? "+" : ""}):`,
-    );
+    lines.push(`Uncommitted changes (${ctx.dirtyFiles.length}${ctx.dirtyTruncated ? "+" : ""}):`);
     for (const f of ctx.dirtyFiles) lines.push(`  ${f}`);
   }
 
@@ -171,7 +153,7 @@ export async function gatherDiffSummary(
   const timeoutMs = options.timeoutMs ?? 5000;
 
   const inside = await git(["rev-parse", "--is-inside-work-tree"], workspaceRoot, timeoutMs);
-  if (!inside || inside.trim() !== "true") return null;
+  if (inside?.trim() !== "true") return null;
 
   const branchRaw = await git(["rev-parse", "--abbrev-ref", "HEAD"], workspaceRoot, timeoutMs);
   const branch = branchRaw?.trim() || "(detached)";
@@ -191,7 +173,7 @@ export async function gatherDiffSummary(
 
   // Files changed vs HEAD (staged + unstaged combined).
   const headStatus = await git(["status", "--porcelain"], workspaceRoot, timeoutMs);
-  const headTruncated = ((headStatus ?? "").split("\n").filter(Boolean).length) > maxFiles;
+  const headTruncated = (headStatus ?? "").split("\n").filter(Boolean).length > maxFiles;
   const files = parsePorcelain(headStatus);
 
   // numstat for insertions/deletions (only works for tracked, non-binary).
@@ -223,7 +205,11 @@ export async function gatherDiffSummary(
   let branchCommits: string[] = [];
   if (upstreamRaw) {
     const upstream = upstreamRaw.trim();
-    const prStatus = await git(["diff", "--name-status", upstream + "...HEAD"], workspaceRoot, timeoutMs);
+    const prStatus = await git(
+      ["diff", "--name-status", upstream + "...HEAD"],
+      workspaceRoot,
+      timeoutMs,
+    );
     upstreamFiles = (prStatus ?? "")
       .split("\n")
       .map((l) => l.trim())
@@ -267,16 +253,10 @@ export function suggestCommitSubject(summary: GitDiffSummary): string {
   const hasAdd = summary.files.some((f) => f.status.includes("A") || f.status === "??");
   const hasDel = summary.files.some((f) => f.status.includes("D"));
   const hasMod = summary.files.some((f) => f.status.includes("M"));
-  const type = hasAdd && !hasMod && !hasDel
-    ? "feat"
-    : hasDel && !hasAdd
-      ? "chore"
-      : "refactor";
+  const type = hasAdd && !hasMod && !hasDel ? "feat" : hasDel && !hasAdd ? "chore" : "refactor";
 
   // Scope from the most common top-level directory of touched paths.
-  const dirs = summary.files
-    .map((f) => f.path.split("/")[0] || "")
-    .filter(Boolean);
+  const dirs = summary.files.map((f) => f.path.split("/")[0] || "").filter(Boolean);
   const counts = new Map<string, number>();
   for (const d of dirs) counts.set(d, (counts.get(d) ?? 0) + 1);
   let scope = "";

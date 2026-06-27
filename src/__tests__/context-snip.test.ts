@@ -2,8 +2,8 @@
 // Tests: context snip — importance-aware compression (12.1)
 // ============================================================
 
-import { describe, it, expect } from "vitest";
-import { snipContext, SNIP_MARKER } from "../context-snip.js";
+import { describe, expect, it } from "vitest";
+import { SNIP_MARKER, snipContext } from "../context-snip.js";
 import type { Message } from "../types.js";
 
 function toolMsg(content: string, name = "grep"): Message {
@@ -40,30 +40,21 @@ describe("snipContext", () => {
 
   it("leaves small tool results alone", () => {
     const small = "Z".repeat(100);
-    const messages: Message[] = [
-      toolMsg(small),
-      ...Array.from({ length: 12 }, () => userMsg("x")),
-    ];
+    const messages: Message[] = [toolMsg(small), ...Array.from({ length: 12 }, () => userMsg("x"))];
     const r = snipContext(messages, { minSnipChars: 2000 });
     expect(r.snippedCount).toBe(0);
   });
 
   it("never snips non-tool messages", () => {
     const big = "A".repeat(5000);
-    const messages: Message[] = [
-      userMsg(big),
-      ...Array.from({ length: 12 }, () => userMsg("x")),
-    ];
+    const messages: Message[] = [userMsg(big), ...Array.from({ length: 12 }, () => userMsg("x"))];
     const r = snipContext(messages);
     expect(r.snippedCount).toBe(0);
   });
 
   it("is idempotent — a second pass snips nothing new", () => {
     const big = "B".repeat(5000);
-    const messages: Message[] = [
-      toolMsg(big),
-      ...Array.from({ length: 12 }, () => userMsg("x")),
-    ];
+    const messages: Message[] = [toolMsg(big), ...Array.from({ length: 12 }, () => userMsg("x"))];
     const once = snipContext(messages);
     const twice = snipContext(once.messages);
     expect(once.snippedCount).toBe(1);
@@ -73,10 +64,7 @@ describe("snipContext", () => {
   it("does not mutate the input array or messages", () => {
     const big = "C".repeat(5000);
     const original = toolMsg(big);
-    const messages: Message[] = [
-      original,
-      ...Array.from({ length: 12 }, () => userMsg("x")),
-    ];
+    const messages: Message[] = [original, ...Array.from({ length: 12 }, () => userMsg("x"))];
     snipContext(messages);
     expect((original as any).content).toBe(big);
   });

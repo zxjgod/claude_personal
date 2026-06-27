@@ -2,6 +2,9 @@
 // Agent Loop — The heart of the system
 // ============================================================
 
+import { snipContext } from "./context-snip.js";
+import { checkPermission } from "./permissions.js";
+import { predictReads, SpeculationCache } from "./speculation.js";
 import type {
   AskUserFn,
   HookRunner,
@@ -15,9 +18,6 @@ import type {
   ToolContext,
   ToolExecutionResult,
 } from "./types.js";
-import { checkPermission } from "./permissions.js";
-import { snipContext } from "./context-snip.js";
-import { SpeculationCache, predictReads } from "./speculation.js";
 
 // Default approver used when the caller (CLI) does not supply one — e.g.
 // sub-agents and tests. Preserves backward-compatible "allow" behavior;
@@ -178,17 +178,14 @@ export async function* agentLoop(
             streamEnded = true;
             break;
 
-          case "error":
+          case "error": {
             // Handle recoverable errors
-            const recovery = await handleModelError(
-              event.error,
-              {
-                rateLimitRetries,
-                contextLengthRetries,
-                maxRateLimitRetries: MAX_RATE_LIMIT_RETRIES,
-                maxContextLengthRetries: MAX_CONTEXT_LENGTH_RETRIES,
-              },
-            );
+            const recovery = await handleModelError(event.error, {
+              rateLimitRetries,
+              contextLengthRetries,
+              maxRateLimitRetries: MAX_RATE_LIMIT_RETRIES,
+              maxContextLengthRetries: MAX_CONTEXT_LENGTH_RETRIES,
+            });
             if (recovery === "retry") {
               rateLimitRetries++;
               nextAction = "retry";
@@ -220,6 +217,7 @@ export async function* agentLoop(
             abortError = event.error;
             streamEnded = true;
             break;
+          }
         }
         // Once the stream has reached a terminal event (done / error), stop
         // consuming further events — the error-recovery decision is final for
@@ -292,11 +290,7 @@ export async function* agentLoop(
     if (specCache.isEnabled) {
       for (const r of toolResults) {
         if (r.result) {
-          specCache.prefetch(
-            predictReads(r.toolName, r.result, {}, readFiles),
-            tools,
-            baseContext,
-          );
+          specCache.prefetch(predictReads(r.toolName, r.result, {}, readFiles), tools, baseContext);
         }
       }
     }
@@ -370,7 +364,7 @@ async function* executeToolCalls(
 
   toolCalls.forEach((call, index) => {
     const tool = tools.find((t) => t.name === call.function.name);
-    if (tool && tool.isConcurrencySafe()) {
+    if (tool?.isConcurrencySafe()) {
       parallelCalls.push({ call, index });
     } else {
       serialCalls.push({ call, index });
@@ -384,9 +378,16 @@ async function* executeToolCalls(
     for (const { call, index } of parallelCalls) {
       pending.set(
         index,
-        executeSingleTool(call, tools, context, askUser, hooks, specCache, readFiles, abortSignal).then(
-          (result) => ({ index, result }),
-        ),
+        executeSingleTool(
+          call,
+          tools,
+          context,
+          askUser,
+          hooks,
+          specCache,
+          readFiles,
+          abortSignal,
+        ).then((result) => ({ index, result })),
       );
     }
     while (pending.size > 0) {
@@ -401,18 +402,13 @@ async function* executeToolCalls(
           if (abortSignal.aborted) {
             reject(new AbortError("Aborted"));
           } else {
-            abortSignal.addEventListener(
-              "abort",
-              () => reject(new AbortError("Aborted")),
-              { once: true },
-            );
+            abortSignal.addEventListener("abort", () => reject(new AbortError("Aborted")), {
+              once: true,
+            });
           }
         });
         try {
-          settled = await Promise.race([
-            Promise.race(pending.values()),
-            abortPromise,
-          ]);
+          settled = await Promise.race([Promise.race(pending.values()), abortPromise]);
         } catch {
           // Aborted: surface aborted results for every still-pending call so
           // the caller gets a complete result array and can move on.
@@ -469,7 +465,16 @@ async function* executeToolCalls(
       };
       continue;
     }
-    const result = await executeSingleTool(call, tools, context, askUser, hooks, specCache, readFiles, abortSignal);
+    const result = await executeSingleTool(
+      call,
+      tools,
+      context,
+      askUser,
+      hooks,
+      specCache,
+      readFiles,
+      abortSignal,
+    );
     yield { index, result };
   }
 }
@@ -563,9 +568,7 @@ async function executeSingleTool(
     const startTime = Date.now();
     // 12.2: Serve from the speculation cache if we prefetched this exact call.
     // The prefetch already ran the (read-only) tool, so this is a pure hit.
-    let result =
-      (await specCache?.take(tool.name, input)) ??
-      (await tool.call(input, context));
+    let result = (await specCache?.take(tool.name, input)) ?? (await tool.call(input, context));
     const duration = Date.now() - startTime;
 
     // M15.2: Record this path as read so predictReads won't re-prefetch it.
@@ -726,10 +729,7 @@ interface RecoveryState {
   maxContextLengthRetries: number;
 }
 
-async function handleModelError(
-  error: unknown,
-  state: RecoveryState,
-): Promise<ModelErrorRecovery> {
+async function handleModelError(error: unknown, state: RecoveryState): Promise<ModelErrorRecovery> {
   const err = error as any;
 
   // Rate limit → wait and retry (bounded). A sustained 429 without a cap
@@ -749,8 +749,7 @@ async function handleModelError(
   // re-triggers the same error every turn → infinite loop.
   if (
     err?.status === 400 &&
-    (err?.message?.includes("context_length") ||
-      err?.message?.includes("maximum context"))
+    (err?.message?.includes("context_length") || err?.message?.includes("maximum context"))
   ) {
     if (state.contextLengthRetries >= state.maxContextLengthRetries) {
       return "abort";

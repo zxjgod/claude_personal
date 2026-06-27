@@ -7,16 +7,16 @@
 // so a fan-out of task calls can't exhaust the model's rate limit.
 // ============================================================
 
-import type { Tool, ToolResult, Message } from "./types.js";
-import { createTool } from "./tool-registry.js";
 import { agentLoop } from "./agent-loop.js";
 import { createModelCaller } from "./llm-adapter.js";
 import {
+  getCoreToolsForSubagents,
   getSubagentType,
   listSubagentNames,
   resolveSubagentTools,
-  getCoreToolsForSubagents,
 } from "./subagents.js";
+import { createTool } from "./tool-registry.js";
+import type { Message, Tool, ToolResult } from "./types.js";
 
 // --- Constants ---
 
@@ -69,8 +69,7 @@ function releaseSlot(): void {
 
 export const TaskTool: Tool = createTool<TaskInput>({
   name: "task",
-  description:
-    "Launch a sub-agent to handle complex, multi-step tasks autonomously",
+  description: "Launch a sub-agent to handle complex, multi-step tasks autonomously",
   promptDescription:
     "Launch a sub-agent to handle complex, multi-step tasks. " +
     "Provide description (short summary), prompt (detailed instructions), and subagent_name. " +
@@ -127,8 +126,7 @@ export const TaskTool: Tool = createTool<TaskInput>({
     if (!context.modelConfig) {
       return {
         content: "",
-        error:
-          "Task tool requires modelConfig in context. The CLI must provide this.",
+        error: "Task tool requires modelConfig in context. The CLI must provide this.",
       };
     }
 
@@ -142,11 +140,7 @@ export const TaskTool: Tool = createTool<TaskInput>({
     ];
 
     const subCaller = createModelCaller(context.modelConfig);
-    const subSystemPrompt = [
-      subagentType.systemPrompt,
-      "",
-      `Your task: ${description}`,
-    ].join("\n");
+    const subSystemPrompt = [subagentType.systemPrompt, "", `Your task: ${description}`].join("\n");
 
     // --- Run sub-agent loop (under the concurrency cap) ---
 
@@ -159,31 +153,25 @@ export const TaskTool: Tool = createTool<TaskInput>({
     try {
       const coreTools = await getCoreToolsForSubagents();
       const subagentTools = resolveSubagentTools(subagentType, coreTools);
-      const loop = agentLoop(
-        subMessages,
-        subagentTools,
-        subCaller,
-        context.modelConfig,
-        {
-          systemPrompt: subSystemPrompt,
-          maxTurns: subagentType.maxTurns ?? SUBAGENT_MAX_TURNS,
-          autoCompactThreshold: SUBAGENT_COMPACT_THRESHOLD,
-          // Run sub-agent tools in the same workspace/session as the parent.
-          toolContext: {
-            workspaceRoot: context.workspaceRoot,
-            sessionId: context.sessionId,
-            permissionMode: context.permissionMode,
-            modelConfig: context.modelConfig,
-            // Forward the parent's interactive approver so the sub-agent's
-            // destructive tools (bash/write/edit) still prompt the user,
-            // instead of being auto-approved by the loop's default askUser.
-            askUser: context.askUser,
-          },
-          // Also pass askUser at the LoopOptions level — the sub-loop's own
-          // permission checks (the ones NOT inside a nested tool) use this.
+      const loop = agentLoop(subMessages, subagentTools, subCaller, context.modelConfig, {
+        systemPrompt: subSystemPrompt,
+        maxTurns: subagentType.maxTurns ?? SUBAGENT_MAX_TURNS,
+        autoCompactThreshold: SUBAGENT_COMPACT_THRESHOLD,
+        // Run sub-agent tools in the same workspace/session as the parent.
+        toolContext: {
+          workspaceRoot: context.workspaceRoot,
+          sessionId: context.sessionId,
+          permissionMode: context.permissionMode,
+          modelConfig: context.modelConfig,
+          // Forward the parent's interactive approver so the sub-agent's
+          // destructive tools (bash/write/edit) still prompt the user,
+          // instead of being auto-approved by the loop's default askUser.
           askUser: context.askUser,
         },
-      );
+        // Also pass askUser at the LoopOptions level — the sub-loop's own
+        // permission checks (the ones NOT inside a nested tool) use this.
+        askUser: context.askUser,
+      });
 
       for await (const event of loop) {
         switch (event.type) {

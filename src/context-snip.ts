@@ -48,10 +48,7 @@ const DEFAULTS: Required<SnipOptions> = {
  * mutates the input messages. Messages other than oversized old tool results
  * are passed through by reference.
  */
-export function snipContext(
-  messages: Message[],
-  options: SnipOptions = {},
-): SnipResult {
+export function snipContext(messages: Message[], options: SnipOptions = {}): SnipResult {
   const opts = { ...DEFAULTS, ...options };
   const cutoff = Math.max(0, messages.length - opts.keepRecent);
 

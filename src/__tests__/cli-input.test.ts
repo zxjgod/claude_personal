@@ -2,8 +2,8 @@
 // Tests: EOF-safe CLI input reader
 // ============================================================
 
-import { describe, it, expect } from "vitest";
 import { EventEmitter } from "node:events";
+import { describe, expect, it } from "vitest";
 import { createCliInputReader } from "../cli-input.js";
 
 class FakeReadline extends EventEmitter {

@@ -6,21 +6,21 @@
 // the workspace-resolution + read-tracker safeguards from tools.ts.
 // ============================================================
 
+import { execFile } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import type { Tool, ToolResult, ToolContext } from "./types.js";
-import { createTool } from "./tool-registry.js";
-import {
-  resolveInWorkspace,
-  relForDisplay,
-  statMtimeMs,
-} from "./tools.js";
-import { checkReadBeforeEdit, refreshRead } from "./read-tracker.js";
 import { recordChange } from "./change-tracker.js";
-import { parseTscOutput, filterByFile, formatDiagnostics } from "./lsp-legacy.js";
-import { getLspClient, filterByFile as lspFilterByFile, formatDiagnostics as lspFormatDiagnostics } from "./lsp.js";
+import {
+  getLspClient,
+  filterByFile as lspFilterByFile,
+  formatDiagnostics as lspFormatDiagnostics,
+} from "./lsp.js";
+import { filterByFile, formatDiagnostics, parseTscOutput } from "./lsp-legacy.js";
+import { checkReadBeforeEdit, refreshRead } from "./read-tracker.js";
+import { createTool } from "./tool-registry.js";
+import { relForDisplay, resolveInWorkspace, statMtimeMs } from "./tools.js";
+import type { Tool, ToolResult } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -123,7 +123,10 @@ export const NotebookEditTool: Tool = createTool<NotebookEditInput>({
 
       if (mode === "delete") {
         if (idx < 0 || idx >= nb.cells.length) {
-          return { content: "", error: `cellIndex ${idx} out of range (0..${nb.cells.length - 1})` };
+          return {
+            content: "",
+            error: `cellIndex ${idx} out of range (0..${nb.cells.length - 1})`,
+          };
         }
         nb.cells.splice(idx, 1);
       } else if (mode === "insert") {
@@ -145,7 +148,10 @@ export const NotebookEditTool: Tool = createTool<NotebookEditInput>({
       } else {
         // replace
         if (idx < 0 || idx >= nb.cells.length) {
-          return { content: "", error: `cellIndex ${idx} out of range (0..${nb.cells.length - 1})` };
+          return {
+            content: "",
+            error: `cellIndex ${idx} out of range (0..${nb.cells.length - 1})`,
+          };
         }
         if (typeof input.source !== "string") {
           return { content: "", error: "replace requires source" };
@@ -223,9 +229,10 @@ export const LspDiagnosticsTool: Tool = createTool<LspDiagnosticsInput>({
     // document). The Diagnostic shape is identical, so output is uniform.
     if (typeof input.filePath === "string" && input.filePath) {
       const resolved = `${cwd}/${input.filePath}`.replace(/\\/g, "/").replace(/\/+/g, "/");
-      const abs = input.filePath.startsWith(cwd) || path.isAbsolute(input.filePath)
-        ? input.filePath
-        : resolved;
+      const abs =
+        input.filePath.startsWith(cwd) || path.isAbsolute(input.filePath)
+          ? input.filePath
+          : resolved;
       const client = getLspClient(cwd);
       if (client) {
         try {
@@ -240,11 +247,12 @@ export const LspDiagnosticsTool: Tool = createTool<LspDiagnosticsInput>({
     // --- tsc fallback ----------------------------------------------------------
     let output = "";
     try {
-      const { stdout } = await execFileAsync(
-        "npx",
-        ["tsc", "--noEmit", "--pretty", "false"],
-        { cwd, timeout: 120_000, maxBuffer: 10 * 1024 * 1024, shell: process.platform === "win32" },
-      );
+      const { stdout } = await execFileAsync("npx", ["tsc", "--noEmit", "--pretty", "false"], {
+        cwd,
+        timeout: 120_000,
+        maxBuffer: 10 * 1024 * 1024,
+        shell: process.platform === "win32",
+      });
       output = stdout;
     } catch (error: any) {
       // tsc exits non-zero when diagnostics exist; its stdout still holds them.
@@ -292,15 +300,16 @@ export function createToolSearchTool(getTools: () => Tool[]): Tool {
     isConcurrencySafe: true,
 
     async call(input): Promise<ToolResult> {
-      const query = String(input.query || "").toLowerCase().trim();
+      const query = String(input.query || "")
+        .toLowerCase()
+        .trim();
       if (!query) return { content: "", error: "query is required" };
       const terms = query.split(/\s+/).filter(Boolean);
 
       const scored = getTools()
         .filter((t) => t.name !== "tool_search")
         .map((t) => {
-          const haystack =
-            `${t.name} ${t.description} ${t.promptDescription}`.toLowerCase();
+          const haystack = `${t.name} ${t.description} ${t.promptDescription}`.toLowerCase();
           let score = 0;
           for (const term of terms) {
             if (t.name.toLowerCase().includes(term)) score += 3;
@@ -350,7 +359,8 @@ export function createMcpResourceTools(provider: MCPResourceProvider): Tool[] {
         return { content: "No MCP resources available." };
       }
       const lines = resources.map(
-        (r) => `- [${r.server}] ${r.uri}${r.name ? ` (${r.name})` : ""}${r.mimeType ? ` <${r.mimeType}>` : ""}`,
+        (r) =>
+          `- [${r.server}] ${r.uri}${r.name ? ` (${r.name})` : ""}${r.mimeType ? ` <${r.mimeType}>` : ""}`,
       );
       return { content: `MCP resources (${resources.length}):\n${lines.join("\n")}` };
     },
@@ -363,8 +373,7 @@ export function createMcpResourceTools(provider: MCPResourceProvider): Tool[] {
   const readTool = createTool<ReadResourceInput>({
     name: "mcp_read_resource",
     description: "Read an MCP resource by URI",
-    promptDescription:
-      "Read the contents of an MCP resource by its uri (from mcp_list_resources).",
+    promptDescription: "Read the contents of an MCP resource by its uri (from mcp_list_resources).",
     inputSchema: {
       type: "object",
       properties: { uri: { type: "string", description: "Resource URI to read" } },
@@ -385,5 +394,3 @@ export function createMcpResourceTools(provider: MCPResourceProvider): Tool[] {
 
   return [listTool, readTool];
 }
-
-

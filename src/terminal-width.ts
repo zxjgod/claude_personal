@@ -93,9 +93,7 @@ export function visualWidth(input: string): number {
 }
 
 /** Iterate grapheme clusters with their visual widths. */
-export function* graphemes(
-  input: string,
-): Generator<{ segment: string; width: number }> {
+export function* graphemes(input: string): Generator<{ segment: string; width: number }> {
   const seg = getSegmenter();
   if (seg) {
     for (const { segment } of seg.segment(input)) {
@@ -129,9 +127,7 @@ export function padAligned(
 
 /** The terminal's column count, with a sensible fallback. */
 export function terminalColumns(): number {
-  return process.stdout.columns && process.stdout.columns > 0
-    ? process.stdout.columns
-    : 80;
+  return process.stdout.columns && process.stdout.columns > 0 ? process.stdout.columns : 80;
 }
 
 /** The terminal's row count, with a sensible fallback. */

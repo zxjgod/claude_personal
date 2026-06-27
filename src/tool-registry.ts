@@ -2,7 +2,7 @@
 // Tool Registry — Manages all available tools
 // ============================================================
 
-import type { Tool, ToolInput, ToolContext, ToolResult, PermissionResult } from "./types.js";
+import type { PermissionResult, Tool, ToolContext, ToolInput, ToolResult } from "./types.js";
 
 export class ToolRegistry {
   private tools: Map<string, Tool> = new Map();
@@ -48,15 +48,10 @@ export interface BaseToolConfig<T extends ToolInput = ToolInput> {
   isConcurrencySafe: boolean;
   call: (input: T, context: ToolContext) => Promise<ToolResult>;
   formatResult?: (result: ToolResult) => string;
-  checkPermissions?: (
-    input: T,
-    context: ToolContext,
-  ) => Promise<PermissionResult>;
+  checkPermissions?: (input: T, context: ToolContext) => Promise<PermissionResult>;
 }
 
-export function createTool<T extends ToolInput = ToolInput>(
-  config: BaseToolConfig<T>,
-): Tool<T> {
+export function createTool<T extends ToolInput = ToolInput>(config: BaseToolConfig<T>): Tool<T> {
   return {
     name: config.name,
     description: config.description,
@@ -73,15 +68,11 @@ export function createTool<T extends ToolInput = ToolInput>(
         if (result.error) {
           return `Error: ${result.error}`;
         }
-        const metadata = result.metadata
-          ? `\n[${result.metadata.durationMs ?? 0}ms]`
-          : "";
-        const truncated = result.truncated
-          ? "\n[... result too long, truncated]"
-          : "";
+        const metadata = result.metadata ? `\n[${result.metadata.durationMs ?? 0}ms]` : "";
+        const truncated = result.truncated ? "\n[... result too long, truncated]" : "";
         return result.content + metadata + truncated;
       }),
-    checkPermissions: config.checkPermissions ??
-      (async (): Promise<PermissionResult> => ({ allowed: true })),
+    checkPermissions:
+      config.checkPermissions ?? (async (): Promise<PermissionResult> => ({ allowed: true })),
   };
 }

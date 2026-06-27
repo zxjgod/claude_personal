@@ -8,15 +8,9 @@
 // ============================================================
 
 import Anthropic from "@anthropic-ai/sdk";
-import type {
-  Message,
-  ModelCaller,
-  ModelConfig,
-  StreamEvent,
-  Tool,
-} from "./types.js";
-import { DYNAMIC_BOUNDARY } from "./system-prompt.js";
 import { anthropicEffort, getEffort } from "./effort.js";
+import { DYNAMIC_BOUNDARY } from "./system-prompt.js";
+import type { Message, ModelCaller, ModelConfig, StreamEvent, Tool } from "./types.js";
 
 // --- Types kept intentionally local ---
 
@@ -213,9 +207,7 @@ export function formatToolsForAnthropic(tools: Tool[]): AnthropicTool[] {
  * conversation lets the growing message history be reused turn-over-turn.
  * Returns a shallow-copied message array; never mutates the input.
  */
-export function withMessageCacheBreakpoint(
-  messages: AnthropicMessage[],
-): AnthropicMessage[] {
+export function withMessageCacheBreakpoint(messages: AnthropicMessage[]): AnthropicMessage[] {
   if (messages.length === 0) return messages;
   const out = messages.slice();
   const last = out[out.length - 1];
@@ -257,9 +249,7 @@ export const anthropicCaller: ModelCaller = async function* (
       model: config.model || "claude-opus-4-8",
       max_tokens: config.maxTokens ?? 16_000,
       system: formatSystemForAnthropic(systemPrompt) as any,
-      messages: withMessageCacheBreakpoint(
-        convertMessagesToAnthropic(messages),
-      ) as any,
+      messages: withMessageCacheBreakpoint(convertMessagesToAnthropic(messages)) as any,
       tools: tools.length > 0 ? (formatToolsForAnthropic(tools) as any) : undefined,
       // Claude 4.8 benefits from adaptive thinking; harmlessly omitted when the
       // caller uses a non-Claude provider because this adapter only runs for
@@ -267,8 +257,9 @@ export const anthropicCaller: ModelCaller = async function* (
       thinking: config.options?.thinking ?? { type: "adaptive" },
       // The /effort tier drives reasoning depth. An explicit output_config in
       // options still wins; otherwise map the tier (default "high").
-      output_config:
-        config.options?.output_config ?? { effort: anthropicEffort(getEffort(config.options)) },
+      output_config: config.options?.output_config ?? {
+        effort: anthropicEffort(getEffort(config.options)),
+      },
     } as any,
     { signal: combinedSignal },
   );
@@ -311,39 +302,39 @@ export const anthropicCaller: ModelCaller = async function* (
 
     const final = await stream.finalMessage();
 
-  for (const block of final.content as any[]) {
-    if (block.type === "tool_use") {
-      yield {
-        type: "tool_use",
-        id: block.id,
-        name: block.name,
-        input: block.input ?? {},
-      };
+    for (const block of final.content as any[]) {
+      if (block.type === "tool_use") {
+        yield {
+          type: "tool_use",
+          id: block.id,
+          name: block.name,
+          input: block.input ?? {},
+        };
+      }
     }
-  }
 
-  // Anthropic's `input_tokens` already EXCLUDES cache tokens (those are billed
-  // and reported separately as cache_creation_input_tokens / cache_read_input_tokens).
-  // Previously we summed all three into `input_tokens`, double-counting cached
-  // content (the same segment was counted at creation AND at read), inflating
-  // /cost and autoCompact estimates, and diverging from the OpenAI path which
-  // only counts prompt_tokens. Now `input_tokens` mirrors Anthropic's own
-  // field (non-cached input only); the cache breakdown is carried alongside
-  // so /cost can show hit rate and the loop can estimate "live" context size
-  // as input + cache_read (the tokens actually occupying the context window).
-  const u = final.usage as any;
-  const cacheRead = u.cache_read_input_tokens ?? 0;
-  const cacheCreation = u.cache_creation_input_tokens ?? 0;
-  yield {
-    type: "done",
-    usage: {
-      input_tokens: u.input_tokens ?? 0,
-      output_tokens: u.output_tokens ?? 0,
-      cache_read_input_tokens: cacheRead,
-      cache_creation_input_tokens: cacheCreation,
-    },
-    finish_reason: final.stop_reason ?? "end_turn",
-  };
+    // Anthropic's `input_tokens` already EXCLUDES cache tokens (those are billed
+    // and reported separately as cache_creation_input_tokens / cache_read_input_tokens).
+    // Previously we summed all three into `input_tokens`, double-counting cached
+    // content (the same segment was counted at creation AND at read), inflating
+    // /cost and autoCompact estimates, and diverging from the OpenAI path which
+    // only counts prompt_tokens. Now `input_tokens` mirrors Anthropic's own
+    // field (non-cached input only); the cache breakdown is carried alongside
+    // so /cost can show hit rate and the loop can estimate "live" context size
+    // as input + cache_read (the tokens actually occupying the context window).
+    const u = final.usage as any;
+    const cacheRead = u.cache_read_input_tokens ?? 0;
+    const cacheCreation = u.cache_creation_input_tokens ?? 0;
+    yield {
+      type: "done",
+      usage: {
+        input_tokens: u.input_tokens ?? 0,
+        output_tokens: u.output_tokens ?? 0,
+        cache_read_input_tokens: cacheRead,
+        cache_creation_input_tokens: cacheCreation,
+      },
+      finish_reason: final.stop_reason ?? "end_turn",
+    };
   } finally {
     abortSignal?.removeEventListener("abort", onAbort);
   }

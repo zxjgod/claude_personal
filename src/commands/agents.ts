@@ -1,6 +1,6 @@
 // /agents — list available sub-agent roles and their tool set
 import chalk from "chalk";
-import { listSubagentNames, getSubagentType } from "../subagents.js";
+import { getSubagentType, listSubagentNames } from "../subagents.js";
 import type { SlashCommand } from "./types.js";
 
 export const agentsCommand: SlashCommand = {

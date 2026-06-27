@@ -18,7 +18,9 @@ export const helpCommand: SlashCommand = {
     for (const cmd of COMMANDS_REF) {
       console.log(`    ${chalk.cyan("/" + cmd.name).padEnd(20)} ${chalk.gray(cmd.description)}`);
     }
-    console.log(`    ${chalk.cyan("@<path>").padEnd(20)} ${chalk.gray("Inject a file's contents into your message")}`);
+    console.log(
+      `    ${chalk.cyan("@<path>").padEnd(20)} ${chalk.gray("Inject a file's contents into your message")}`,
+    );
     console.log(`    ${chalk.cyan("exit").padEnd(20)} ${chalk.gray("Quit")}`);
   },
 };

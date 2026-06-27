@@ -98,6 +98,8 @@
 - `npm run build` 用 esbuild，产物可 `node dist/cli.js` 启动
 - `npm run smoke` 一键冒烟通过
 
+> **进度（2026-06-28）**：M20 完成。20.5 引入 **Biome 2.5.1** 替换坏掉的 eslint(无 flat config)+prettier，规则"真 bug 留、风格洁癖关"，经用户确认**立即全量格式化**（重排 120 文件，净 −362 行）；20.3 构建升级 **esbuild 转译**（`bundle:false` 逐文件，99 文件 ~260ms，避开 Ink/React + `createRequire(import.meta.url)` 打包风险），类型检查独立为 `npm run typecheck`；20.4 **冒烟脚本** `scripts/smoke.mjs`（build→`--version`/`--help`→无 key 管道输入优雅退出，9/9 全过）+ cli 加 `--version/-V`/`--help/-h`（config 前早退出，免 key）+ 修无 key 限跛前行隐患；20.2 **husky + lint-staged**（pre-commit 对暂存跑 `biome check --write`，可修自动修、不可修拦截，端到端实测）；20.1 **GitHub Actions CI**（push/PR→main 跑 typecheck+biome+test+smoke，Node 20）；附 `.gitattributes` 强制源码 LF 根治 Windows CRLF 与 biome 冲突。`tsc --noEmit` 0 错；`biome check` 干净；`vitest run --dir src` **506 测试**全过；`npm run smoke` PASSED。详见 [更新日志 20260628-m20-engineering](../更新日志/20260628-m20-engineering.md)。
+
 ---
 
 ## 五、M21 — 测试广度（P1）

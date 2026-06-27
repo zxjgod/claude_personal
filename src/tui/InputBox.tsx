@@ -17,8 +17,8 @@
 // trailing-block cursor stayed stranded on the previous row).
 // ============================================================
 
-import React, { useState } from "react";
 import { Box, Text, useInput } from "ink";
+import { useState } from "react";
 import { terminalColumns } from "./../terminal-width.js";
 
 export interface CommandInfo {
@@ -58,6 +58,13 @@ export function InputBox({
         .slice(0, MAX_SUGGESTIONS)
     : [];
 
+  // `selected` is plain state that can outlive a shrinking filtered list:
+  // type "/", arrow down to a high index, then narrow the query and the list
+  // gets shorter while `selected` stays put — now pointing past the end.
+  // Clamp at every read site so Enter / Tab / render never deref undefined.
+  // (This was a latent crash: `suggestions[selected]!.name` on a stale index.)
+  const safeSelected = suggestions.length > 0 ? Math.min(selected, suggestions.length - 1) : 0;
+
   const reset = () => {
     setBuffer("");
     setCursor(0);
@@ -75,18 +82,44 @@ export function InputBox({
           onSubmit(value);
           return;
         }
-        if (input === "i") { setVimMode("insert"); return; }
-        if (input === "a") { setCursor((c) => Math.min(buffer.length, c + 1)); setVimMode("insert"); return; }
-        if (input === "A") { setCursor(buffer.length); setVimMode("insert"); return; }
-        if (input === "0" || (key as { home?: boolean }).home) { setCursor(0); return; }
-        if (input === "$" || (key as { end?: boolean }).end) { setCursor(Math.max(0, buffer.length - 1)); return; }
-        if (input === "h" || key.leftArrow) { setCursor((c) => Math.max(0, c - 1)); return; }
-        if (input === "l" || key.rightArrow) { setCursor((c) => Math.min(buffer.length, c + 1)); return; }
+        if (input === "i") {
+          setVimMode("insert");
+          return;
+        }
+        if (input === "a") {
+          setCursor((c) => Math.min(buffer.length, c + 1));
+          setVimMode("insert");
+          return;
+        }
+        if (input === "A") {
+          setCursor(buffer.length);
+          setVimMode("insert");
+          return;
+        }
+        if (input === "0" || (key as { home?: boolean }).home) {
+          setCursor(0);
+          return;
+        }
+        if (input === "$" || (key as { end?: boolean }).end) {
+          setCursor(Math.max(0, buffer.length - 1));
+          return;
+        }
+        if (input === "h" || key.leftArrow) {
+          setCursor((c) => Math.max(0, c - 1));
+          return;
+        }
+        if (input === "l" || key.rightArrow) {
+          setCursor((c) => Math.min(buffer.length, c + 1));
+          return;
+        }
         if (input === "x") {
           if (cursor < buffer.length) setBuffer((b) => b.slice(0, cursor) + b.slice(cursor + 1));
           return;
         }
-        if (input === "D") { setBuffer((b) => b.slice(0, cursor)); return; }
+        if (input === "D") {
+          setBuffer((b) => b.slice(0, cursor));
+          return;
+        }
         // Swallow everything else in normal mode (no stray text insertion).
         return;
       }
@@ -105,19 +138,15 @@ export function InputBox({
         // command *name* (no args typed yet), Enter runs the highlighted
         // command — so "/" + Enter selects e.g. /help instead of submitting a
         // bare "/" (which would be "Unknown command: /").
-        if (
-          suggestions.length > 0 &&
-          buffer.startsWith("/") &&
-          !buffer.trimEnd().includes(" ")
-        ) {
-          value = "/" + suggestions[selected]!.name;
+        if (suggestions.length > 0 && buffer.startsWith("/") && !buffer.trimEnd().includes(" ")) {
+          value = "/" + suggestions[safeSelected].name;
         }
         reset();
         onSubmit(value);
         return;
       }
       if (key.tab && suggestions.length > 0) {
-        const next = "/" + suggestions[selected]!.name + " ";
+        const next = "/" + suggestions[safeSelected].name + " ";
         setBuffer(next);
         setCursor(next.length);
         setSelected(0);
@@ -198,8 +227,8 @@ export function InputBox({
       {suggestions.length > 0 ? (
         <Box flexDirection="column">
           {suggestions.map((s, i) => (
-            <Text key={s.name} color={i === selected ? ORANGE : "cyan"}>
-              {i === selected ? "❯ " : "  "}/{s.name}
+            <Text key={s.name} color={i === safeSelected ? ORANGE : "cyan"}>
+              {i === safeSelected ? "❯ " : "  "}/{s.name}
               <Text dimColor> {s.description}</Text>
             </Text>
           ))}

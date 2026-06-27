@@ -8,16 +8,16 @@
 // question) takes over input when present; otherwise the InputBox is active.
 // ============================================================
 
-import React, { useSyncExternalStore } from "react";
-import { Box, Text, Static } from "ink";
+import { Box, Static, Text } from "ink";
+import { useSyncExternalStore } from "react";
 import { renderMarkdown } from "./../markdown.js";
-import type { TuiStore, TranscriptItem } from "./store.js";
-import { CompletedToolCard, ActiveToolCard } from "./ToolCard.js";
-import { PermissionPrompt, QuestionPrompt } from "./Prompts.js";
 import { EffortPrompt } from "./EffortPrompt.js";
-import { SessionPicker } from "./SessionPicker.js";
+import { type CommandInfo, InputBox } from "./InputBox.js";
 import { ParticleSpinner } from "./ParticleSpinner.js";
-import { InputBox, type CommandInfo } from "./InputBox.js";
+import { PermissionPrompt, QuestionPrompt } from "./Prompts.js";
+import { SessionPicker } from "./SessionPicker.js";
+import type { TranscriptItem, TuiStore } from "./store.js";
+import { ActiveToolCard, CompletedToolCard } from "./ToolCard.js";
 
 const ORANGE = "#d77757";
 
@@ -76,7 +76,10 @@ export function App({
       {/* Completed history — printed once, never repainted. */}
       <Static items={state.transcript}>
         {(item) => (
-          <Box key={item.id} marginBottom={item.kind === "assistant" || item.kind === "tool" ? 1 : 0}>
+          <Box
+            key={item.id}
+            marginBottom={item.kind === "assistant" || item.kind === "tool" ? 1 : 0}
+          >
             <TranscriptRow item={item} expanded={expandedId === item.id} />
           </Box>
         )}
@@ -121,7 +124,12 @@ export function App({
           <EffortPrompt overlay={state.overlay} />
         )
       ) : (
-        <InputBox commands={commands} disabled={state.busy} onSubmit={onSubmit} editorMode={editorMode} />
+        <InputBox
+          commands={commands}
+          disabled={state.busy}
+          onSubmit={onSubmit}
+          editorMode={editorMode}
+        />
       )}
 
       {/* Status bar (single line — no duplicate hint above). */}

@@ -8,8 +8,8 @@
 // TimeoutError when the timer wins, and never leaks the timer.
 // ============================================================
 
-import { describe, it, expect } from "vitest";
-import { withTimeout, TimeoutError } from "../mcp.js";
+import { describe, expect, it } from "vitest";
+import { TimeoutError, withTimeout } from "../mcp.js";
 
 describe("mcp withTimeout", () => {
   it("resolves with the operation's value when it finishes in time", async () => {
@@ -25,9 +25,7 @@ describe("mcp withTimeout", () => {
     const hanging = new Promise<string>(() => {
       // never resolves
     });
-    await expect(withTimeout("op", hanging, 30)).rejects.toBeInstanceOf(
-      TimeoutError,
-    );
+    await expect(withTimeout("op", hanging, 30)).rejects.toBeInstanceOf(TimeoutError);
   });
 
   it("the TimeoutError message names the operation and the deadline", async () => {
@@ -47,11 +45,7 @@ describe("mcp withTimeout", () => {
     // alive. We assert the operation resolves promptly AND that a follow-up
     // tight check doesn't observe a pending rejection from the raced timer.
     const start = Date.now();
-    await withTimeout(
-      "op",
-      new Promise((resolve) => setImmediate(resolve)),
-      5000,
-    );
+    await withTimeout("op", new Promise((resolve) => setImmediate(resolve)), 5000);
     // Resolved near-immediately; the 5s timer did not fire.
     expect(Date.now() - start).toBeLessThan(1000);
   });
@@ -60,8 +54,6 @@ describe("mcp withTimeout", () => {
     const boom = new Promise<string>((_, reject) =>
       setTimeout(() => reject(new Error("server crashed")), 5),
     );
-    await expect(withTimeout("op", boom, 1000)).rejects.toThrow(
-      "server crashed",
-    );
+    await expect(withTimeout("op", boom, 1000)).rejects.toThrow("server crashed");
   });
 });

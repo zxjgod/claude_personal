@@ -9,7 +9,7 @@
 // We mock the OpenAI client to reproduce the real chunk ordering.
 // ============================================================
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Capture the params passed to chat.completions.create so we can assert
 // that include_usage was requested.
@@ -23,7 +23,6 @@ vi.mock("openai", () => {
           create: createSpy,
         },
       };
-      constructor(_opts: unknown) {}
     },
   };
 });
@@ -37,9 +36,7 @@ const config: ModelConfig = {
   apiKey: "test-key",
 };
 
-const messages: Message[] = [
-  { role: "user", content: [{ type: "text", text: "hi" }] },
-];
+const messages: Message[] = [{ role: "user", content: [{ type: "text", text: "hi" }] }];
 
 /** Build an async-iterable stream mimicking OpenAI's chunk ordering: text
  * chunks, then a finish_reason chunk, then a final usage-only chunk whose
@@ -161,9 +158,7 @@ describe("openAICompatibleCaller", () => {
           choices: [
             {
               delta: {
-                tool_calls: [
-                  { index: 0, function: { arguments: '"a.txt"}' } },
-                ],
+                tool_calls: [{ index: 0, function: { arguments: '"a.txt"}' } }],
               },
               finish_reason: null,
             },

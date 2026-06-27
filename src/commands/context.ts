@@ -47,11 +47,21 @@ export const contextCommand: SlashCommand = {
 
     console.log("");
     console.log(chalk.bold("  Context (estimated tokens):"));
-    console.log(`    System prompt: ${chalk.cyan(sysTokens.toLocaleString().padStart(8))}  ${chalk.gray(pct(sysTokens))}`);
-    console.log(`    User msgs:     ${chalk.cyan(userTokens.toLocaleString().padStart(8))}  ${chalk.gray(pct(userTokens))}`);
-    console.log(`    Assistant:     ${chalk.cyan(assistantTokens.toLocaleString().padStart(8))}  ${chalk.gray(pct(assistantTokens))}`);
-    console.log(`    Tool results:  ${chalk.cyan(toolTokens.toLocaleString().padStart(8))}  ${chalk.gray(pct(toolTokens))}`);
-    console.log(`    ${chalk.bold("Total:")}         ${chalk.cyan(total.toLocaleString().padStart(8))}`);
+    console.log(
+      `    System prompt: ${chalk.cyan(sysTokens.toLocaleString().padStart(8))}  ${chalk.gray(pct(sysTokens))}`,
+    );
+    console.log(
+      `    User msgs:     ${chalk.cyan(userTokens.toLocaleString().padStart(8))}  ${chalk.gray(pct(userTokens))}`,
+    );
+    console.log(
+      `    Assistant:     ${chalk.cyan(assistantTokens.toLocaleString().padStart(8))}  ${chalk.gray(pct(assistantTokens))}`,
+    );
+    console.log(
+      `    Tool results:  ${chalk.cyan(toolTokens.toLocaleString().padStart(8))}  ${chalk.gray(pct(toolTokens))}`,
+    );
+    console.log(
+      `    ${chalk.bold("Total:")}         ${chalk.cyan(total.toLocaleString().padStart(8))}`,
+    );
 
     // --- Compaction headroom (18.8) ---
     const usedRatio = total / AUTO_COMPACT_THRESHOLD;
@@ -63,12 +73,20 @@ export const contextCommand: SlashCommand = {
 
     console.log("");
     console.log(chalk.bold("  Compaction window:"));
-    console.log(`    [${bar}] ${barColor(`${usedPct}%`)} of ${AUTO_COMPACT_THRESHOLD.toLocaleString()} tokens`);
+    console.log(
+      `    [${bar}] ${barColor(`${usedPct}%`)} of ${AUTO_COMPACT_THRESHOLD.toLocaleString()} tokens`,
+    );
     if (total > AUTO_COMPACT_THRESHOLD) {
-      console.log(chalk.yellow("    Over the threshold — the next turn will auto-compact. Run /compact to preview."));
+      console.log(
+        chalk.yellow(
+          "    Over the threshold — the next turn will auto-compact. Run /compact to preview.",
+        ),
+      );
     } else {
       const remaining = AUTO_COMPACT_THRESHOLD - total;
-      console.log(chalk.gray(`    ${remaining.toLocaleString()} tokens of headroom before auto-compaction.`));
+      console.log(
+        chalk.gray(`    ${remaining.toLocaleString()} tokens of headroom before auto-compaction.`),
+      );
     }
     console.log(chalk.gray(`    (~4 chars/token heuristic; ${ctx.messages.length} messages)`));
   },

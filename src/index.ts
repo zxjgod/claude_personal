@@ -2,96 +2,8 @@
 // Claude Code Replica — Main Exports
 // ============================================================
 
-// Types
-export type {
-  Message,
-  UserMessage,
-  AssistantMessage,
-  ToolResultMessage,
-  SystemMessage,
-  ContentBlock,
-  TextContent,
-  ImageContent,
-  ToolCall,
-  ToolInput,
-  ToolResult,
-  ToolResultMetadata,
-  ToolContext,
-  PermissionMode,
-  PermissionResult,
-  Tool,
-  ModelConfig,
-  StreamEvent,
-  LoopEvent,
-  ToolExecutionResult,
-  LoopOptions,
-  ModelCaller,
-} from "./types.js";
-
 // Agent Loop
 export { agentLoop, autoCompact } from "./agent-loop.js";
-
-// Slash Commands & File References
-export { handleSlashCommand, COMMANDS } from "./commands.js";
-export type { CommandContext, CommandResult, SlashCommand } from "./commands.js";
-export { expandFileRefs } from "./file-refs.js";
-export type { FileRefResult } from "./file-refs.js";
-
-// System Prompt
-export {
-  buildSystemPrompt,
-  rebuildDynamicSections,
-} from "./system-prompt.js";
-export type { SystemPromptOptions } from "./system-prompt.js";
-
-// Tools
-export {
-  ReadTool,
-  WriteTool,
-  EditTool,
-  MultiEditTool,
-  BashTool,
-  GlobTool,
-  GrepTool,
-  CORE_TOOLS,
-} from "./tools.js";
-export { TodoTool } from "./todo-tool.js";
-export { WebFetchTool } from "./web-fetch.js";
-export { WebSearchTool, parseSearchResults } from "./web-search.js";
-export { TaskTool } from "./task-tool.js";
-
-// Sub-agent Registry
-export {
-  registerSubagentType,
-  getSubagentType,
-  listSubagentNames,
-  resolveSubagentTools,
-} from "./subagents.js";
-export type { SubagentType } from "./subagents.js";
-
-// Hooks
-export { HookRegistry } from "./hooks.js";
-export type {
-  Hook,
-  PreToolUsePayload,
-  PreToolUseOutcome,
-  PostToolUsePayload,
-  PostToolUseOutcome,
-} from "./hooks.js";
-
-// Read Tracker (read-before-edit)
-export {
-  markRead,
-  checkReadBeforeEdit,
-  refreshRead,
-  resetReadTracker,
-} from "./read-tracker.js";
-export type { ReadCheck } from "./read-tracker.js";
-
-// Tool Registry
-export { ToolRegistry, createTool } from "./tool-registry.js";
-export type { BaseToolConfig } from "./tool-registry.js";
-
 // Anthropic Adapter
 export {
   anthropicCaller,
@@ -99,36 +11,112 @@ export {
   formatSystemForAnthropic,
   formatToolsForAnthropic,
 } from "./anthropic-adapter.js";
-
+export type { CommandContext, CommandResult, SlashCommand } from "./commands.js";
+// Slash Commands & File References
+export { COMMANDS, handleSlashCommand } from "./commands.js";
+export type { FileRefResult } from "./file-refs.js";
+export { expandFileRefs } from "./file-refs.js";
+export type {
+  Hook,
+  PostToolUseOutcome,
+  PostToolUsePayload,
+  PreToolUseOutcome,
+  PreToolUsePayload,
+} from "./hooks.js";
+// Hooks
+export { HookRegistry } from "./hooks.js";
 // LLM Adapter
 export {
   createModelCaller,
-  resolveProviderConfig,
-  isRateLimitError,
-  isContextLengthError,
   isAuthError,
+  isContextLengthError,
   isProviderError,
+  isRateLimitError,
   PROVIDER_CONFIGS,
+  resolveProviderConfig,
 } from "./llm-adapter.js";
-
-// Permissions
-export {
-  checkPermission,
-  checkDangerousPattern,
-  isBlockedPath,
-  classifyPermissionRisk,
-  parseClassifierVerdict,
-} from "./permissions.js";
-export type { PermissionCheckOptions } from "./permissions.js";
-export type { ClassifierResult, PermissionClassifier } from "./types.js";
-
+export type { MCPConfig, MCPServerConfig } from "./mcp.js";
 // MCP
 export {
-  MCPManager,
   discoverMCPConfigs,
+  MCPManager,
 } from "./mcp.js";
-export type { MCPServerConfig, MCPConfig } from "./mcp.js";
-
+export type { PermissionCheckOptions } from "./permissions.js";
+// Permissions
+export {
+  checkDangerousPattern,
+  checkPermission,
+  classifyPermissionRisk,
+  isBlockedPath,
+  parseClassifierVerdict,
+} from "./permissions.js";
+export type { SessionData, SessionMeta } from "./persistence.js";
 // Persistence
 export { PersistenceManager } from "./persistence.js";
-export type { SessionData, SessionMeta } from "./persistence.js";
+export type { ReadCheck } from "./read-tracker.js";
+// Read Tracker (read-before-edit)
+export {
+  checkReadBeforeEdit,
+  markRead,
+  refreshRead,
+  resetReadTracker,
+} from "./read-tracker.js";
+export type { SubagentType } from "./subagents.js";
+// Sub-agent Registry
+export {
+  getSubagentType,
+  listSubagentNames,
+  registerSubagentType,
+  resolveSubagentTools,
+} from "./subagents.js";
+export type { SystemPromptOptions } from "./system-prompt.js";
+// System Prompt
+export {
+  buildSystemPrompt,
+  rebuildDynamicSections,
+} from "./system-prompt.js";
+export { TaskTool } from "./task-tool.js";
+export { TodoTool } from "./todo-tool.js";
+export type { BaseToolConfig } from "./tool-registry.js";
+// Tool Registry
+export { createTool, ToolRegistry } from "./tool-registry.js";
+// Tools
+export {
+  BashTool,
+  CORE_TOOLS,
+  EditTool,
+  GlobTool,
+  GrepTool,
+  MultiEditTool,
+  ReadTool,
+  WriteTool,
+} from "./tools.js";
+// Types
+export type {
+  AssistantMessage,
+  ClassifierResult,
+  ContentBlock,
+  ImageContent,
+  LoopEvent,
+  LoopOptions,
+  Message,
+  ModelCaller,
+  ModelConfig,
+  PermissionClassifier,
+  PermissionMode,
+  PermissionResult,
+  StreamEvent,
+  SystemMessage,
+  TextContent,
+  Tool,
+  ToolCall,
+  ToolContext,
+  ToolExecutionResult,
+  ToolInput,
+  ToolResult,
+  ToolResultMessage,
+  ToolResultMetadata,
+  UserMessage,
+} from "./types.js";
+export { WebFetchTool } from "./web-fetch.js";
+export { parseSearchResults, WebSearchTool } from "./web-search.js";

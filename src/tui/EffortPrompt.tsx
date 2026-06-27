@@ -8,21 +8,17 @@
 //                 bloom glow + fade-in diffusion on entry.
 // ============================================================
 
-import React, { useEffect, useRef, useState } from "react";
 import { Box, Text, useInput } from "ink";
-import type { Overlay } from "./store.js";
-import { buildEffortFrame, ORDER } from "./effort-fx.js";
+import { useEffect, useRef, useState } from "react";
 import { terminalColumns } from "./../terminal-width.js";
+import { buildEffortFrame, ORDER } from "./effort-fx.js";
+import type { Overlay } from "./store.js";
 
 // Frames of fade-in diffusion when switching INTO ultracode. Larger = the
 // initial circle grows out from ▲ more slowly before the ripples take over.
 const FADE_FRAMES = 26;
 
-export function EffortPrompt({
-  overlay,
-}: {
-  overlay: Extract<Overlay, { kind: "effort" }>;
-}) {
+export function EffortPrompt({ overlay }: { overlay: Extract<Overlay, { kind: "effort" }> }) {
   const [idx, setIdx] = useState(Math.max(0, ORDER.indexOf(overlay.current)));
   const [phase, setPhase] = useState(0);
   // Frame counter since the active tier last changed (drives fade-in).

@@ -11,7 +11,7 @@
 
 import * as os from "node:os";
 import chalk from "chalk";
-import { visualWidth, terminalColumns, padAligned, graphemes } from "./../terminal-width.js";
+import { graphemes, padAligned, terminalColumns, visualWidth } from "./../terminal-width.js";
 
 const ORANGE = chalk.rgb(215, 119, 87);
 const ORANGE_DIM = chalk.rgb(150, 82, 60);
@@ -97,7 +97,10 @@ export function renderBannerLines(info: BannerInfo): string[] {
     note("• Concurrent sub-agent (Task) activity shown inline"),
     note("• Cursor editing in the input box (←/→, Home/End)"),
     note("• / + Enter runs the highlighted command"),
-    cell(`${chalk.cyan("/release-notes")} ${chalk.dim("for more")}`, visualWidth("/release-notes for more")),
+    cell(
+      `${chalk.cyan("/release-notes")} ${chalk.dim("for more")}`,
+      visualWidth("/release-notes for more"),
+    ),
   ];
 
   // --- Top border with the title embedded ---

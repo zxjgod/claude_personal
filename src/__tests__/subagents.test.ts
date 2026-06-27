@@ -2,14 +2,14 @@
 // Tests: sub-agent registry
 // ============================================================
 
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
+  getCoreToolsForSubagents,
   getSubagentType,
   listSubagentNames,
   registerSubagentType,
   resolveSubagentTools,
   setCoreToolsForSubagents,
-  getCoreToolsForSubagents,
 } from "../subagents.js";
 import type { Tool } from "../types.js";
 

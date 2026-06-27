@@ -8,12 +8,18 @@
     "ccr": "./dist/cli.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "node scripts/build.mjs",
+    "build:tsc": "tsc",
+    "typecheck": "tsc --noEmit",
     "start": "node dist/cli.js",
     "dev": "tsx src/cli.ts",
-    "test": "vitest",
-    "lint": "eslint src/",
-    "format": "prettier --write src/"
+    "test": "vitest run --dir src",
+    "test:watch": "vitest --dir src",
+    "lint": "biome lint src",
+    "format": "biome format --write src",
+    "check": "biome check src",
+    "smoke": "node scripts/smoke.mjs",
+    "prepare": "husky"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.105.0",
@@ -29,11 +35,13 @@
     "react": "^19.2.7"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.1",
     "@types/node": "^20.12.0",
     "@types/react": "^19.2.7",
-    "eslint": "^9.0.0",
+    "esbuild": "^0.28.1",
+    "husky": "^9.1.7",
     "ink-testing-library": "^4.0.0",
-    "prettier": "^3.2.0",
+    "lint-staged": "^17.0.8",
     "tsx": "^4.7.0",
     "typescript": "^5.4.0",
     "vitest": "^1.5.0"
@@ -46,5 +54,8 @@
     "cli",
     "agent"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "lint-staged": {
+    "*.{ts,tsx,mjs}": "biome check --write --no-errors-on-unmatched"
+  }
 }

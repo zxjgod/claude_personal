@@ -6,10 +6,10 @@
 // the captured authorization URL. The interactive callback server (network)
 // is not exercised here.
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FileTokenOAuthProvider } from "../mcp-auth.js";
 
 let dir: string;
@@ -40,10 +40,15 @@ describe("FileTokenOAuthProvider", () => {
   });
 
   it("prefers a statically configured client id", () => {
-    const p = new FileTokenOAuthProvider("srv", url, {
-      clientId: "static-id",
-      clientSecret: "sec",
-    }, dir);
+    const p = new FileTokenOAuthProvider(
+      "srv",
+      url,
+      {
+        clientId: "static-id",
+        clientSecret: "sec",
+      },
+      dir,
+    );
     expect(p.clientInformation()).toEqual({
       client_id: "static-id",
       client_secret: "sec",
@@ -78,13 +83,16 @@ describe("FileTokenOAuthProvider", () => {
   it("captures the authorization URL from redirectToAuthorization", async () => {
     const p = new FileTokenOAuthProvider("srv", url, {}, dir);
     // No URL captured yet → interactive flow refuses.
-    await expect(p.runInteractiveAuthorization()).rejects.toThrow(
-      /authorization URL/i,
-    );
+    await expect(p.runInteractiveAuthorization()).rejects.toThrow(/authorization URL/i);
     p.redirectToAuthorization(new URL("https://auth.example.com/authorize?x=1"));
     // We don't run the server here; just confirm the URL was stored by
     // checking a short-timeout run starts the wait (then times out fast).
-    const fast = new FileTokenOAuthProvider("srv2", url, { timeoutMs: 50, redirectPort: 40555 }, dir);
+    const fast = new FileTokenOAuthProvider(
+      "srv2",
+      url,
+      { timeoutMs: 50, redirectPort: 40555 },
+      dir,
+    );
     fast.redirectToAuthorization(new URL("https://auth.example.com/authorize?x=1"));
     await expect(fast.runInteractiveAuthorization()).rejects.toThrow(/timed out/i);
   });

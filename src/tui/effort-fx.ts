@@ -20,12 +20,12 @@
 
 import chalk from "chalk";
 import {
-  EFFORT_GRADIENT,
   EFFORT_DESCRIPTIONS,
-  gradientColorAt,
-  rainbowColors,
-  hslToHex,
+  EFFORT_GRADIENT,
   type EffortLevel,
+  gradientColorAt,
+  hslToHex,
+  rainbowColors,
 } from "./../effort.js";
 
 // --- Track geometry (track-local columns) ---
@@ -161,7 +161,11 @@ export function buildEffortFrame(opts: {
   }
   // Single ▲ marker — identical placement for every tier (no gap).
   const mAbs = leftPad + markerCol(active);
-  const mFg = isUltra ? "#f1e9ff" : rainbow ? rainbow[markerCol(active)]! : gradientColorAt(markerCol(active) / (DIVIDER_COL - 1));
+  const mFg = isUltra
+    ? "#f1e9ff"
+    : rainbow
+      ? rainbow[markerCol(active)]!
+      : gradientColorAt(markerCol(active) / (DIVIDER_COL - 1));
   trk[mAbs] = { ch: "▲", fg: mFg, bold: true };
 
   // 5 — labels.
@@ -171,9 +175,17 @@ export function buildEffortFrame(opts: {
     const on = active === lvl;
     if (isMax && on) {
       const cols = rainbowColors(lvl.length, phase);
-      for (let k = 0; k < lvl.length; k++) put(lr, start + k, lvl[k]!, { fg: cols[k]!, bold: true });
+      for (let k = 0; k < lvl.length; k++)
+        put(lr, start + k, lvl[k]!, { fg: cols[k]!, bold: true });
     } else {
-      put(lr, start, lvl, on ? { fg: gradientColorAt(GRAD_MARKERS[i]! / (DIVIDER_COL - 1)), bold: true } : { fg: "#808080" });
+      put(
+        lr,
+        start,
+        lvl,
+        on
+          ? { fg: gradientColorAt(GRAD_MARKERS[i]! / (DIVIDER_COL - 1)), bold: true }
+          : { fg: "#808080" },
+      );
     }
   });
   const ul = "ultracode";
@@ -187,14 +199,28 @@ export function buildEffortFrame(opts: {
   // 6 — sublabel.
   const sr = newRow();
   const sub = "xhigh + workflows";
-  put(sr, leftPad + ULTRA_MARKER - Math.floor(sub.length / 2), sub, isUltra ? { fg: LAV } : { dim: true });
+  put(
+    sr,
+    leftPad + ULTRA_MARKER - Math.floor(sub.length / 2),
+    sub,
+    isUltra ? { fg: LAV } : { dim: true },
+  );
 
   // 7 — blank (bottom edge of the ripple rectangle).
   newRow();
 
   // 8 — description.
   const dr = newRow();
-  put(dr, 2, active, isUltra ? { fg: "#c9b6ee", bold: true } : isMax ? { bold: true } : { fg: "#36c6e0", bold: true });
+  put(
+    dr,
+    2,
+    active,
+    isUltra
+      ? { fg: "#c9b6ee", bold: true }
+      : isMax
+        ? { bold: true }
+        : { fg: "#36c6e0", bold: true },
+  );
   put(dr, 2 + active.length, " — " + EFFORT_DESCRIPTIONS[active], { dim: true });
 
   // 9 — hint.
@@ -226,9 +252,12 @@ export function buildEffortFrame(opts: {
       for (let c = rectL; c <= rectR; c++) {
         // (3) glitch: sample this column strip from a row offset ±1 sometimes.
         const strip = Math.floor((c - rectL) / 2);
-        const jitter = hash(strip * 3.7 + Math.floor(phase / 6)) > 0.85
-          ? (hash(strip + Math.floor(phase / 6)) > 0.5 ? 1 : -1)
-          : 0;
+        const jitter =
+          hash(strip * 3.7 + Math.floor(phase / 6)) > 0.85
+            ? hash(strip + Math.floor(phase / 6)) > 0.5
+              ? 1
+              : -1
+            : 0;
         const sr = r + jitter;
 
         // Radial distance from the ▲ (aspect-corrected: chars ~2× tall).

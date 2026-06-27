@@ -9,8 +9,8 @@
 // testable. Components read snapshots via useSyncExternalStore.
 // ============================================================
 
-import type { ToolExecutionResult } from "./../types.js";
 import type { EffortLevel } from "./../effort.js";
+import type { ToolExecutionResult } from "./../types.js";
 
 export type TranscriptItem =
   | { kind: "user"; id: number; text: string }
@@ -247,7 +247,11 @@ export class TuiStore {
 
   // --- overlays (return promises the orchestration awaits) ---
 
-  askPermission(header: string, detail?: string, riskHint?: string): Promise<"yes" | "always" | "no"> {
+  askPermission(
+    header: string,
+    detail?: string,
+    riskHint?: string,
+  ): Promise<"yes" | "always" | "no"> {
     return new Promise((resolve) => {
       this.set({
         overlay: {

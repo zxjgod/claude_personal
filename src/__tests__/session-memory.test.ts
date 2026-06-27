@@ -4,12 +4,12 @@
 // Mirrors the persistence behavior on the relocated class to ensure the
 // message+metadata store keeps its byte-for-byte contract.
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
-import * as path from "node:path";
 import * as os from "node:os";
-import { SessionMemory } from "../session-memory.js";
+import * as path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { PersistenceManager } from "../persistence.js";
+import { SessionMemory } from "../session-memory.js";
 import type { Message } from "../types.js";
 
 let tmpDir: string;

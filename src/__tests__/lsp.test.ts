@@ -2,20 +2,12 @@
 // Tests: LSP real connection + legacy helpers (M14.5)
 // ============================================================
 
-import { describe, it, expect, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import {
-  getLspClient,
-  disposeAllLspClients,
-  clearLspClientCache,
-} from "../lsp.js";
-import {
-  parseTscOutput,
-  filterByFile,
-  formatDiagnostics,
-} from "../lsp-legacy.js";
+import { afterEach, describe, expect, it } from "vitest";
+import { clearLspClientCache, disposeAllLspClients, getLspClient } from "../lsp.js";
+import { filterByFile, formatDiagnostics, parseTscOutput } from "../lsp-legacy.js";
 
 afterEach(async () => {
   await disposeAllLspClients();
@@ -41,9 +33,7 @@ describe("lsp-legacy helpers", () => {
   });
 
   it("filters diagnostics by file substring", () => {
-    const diags = parseTscOutput(
-      "a/x.ts(1,1): error TS1: m\nb/y.ts(2,2): error TS2: n",
-    );
+    const diags = parseTscOutput("a/x.ts(1,1): error TS1: m\nb/y.ts(2,2): error TS2: n");
     expect(filterByFile(diags, "a/x")).toHaveLength(1);
   });
 
@@ -99,7 +89,9 @@ describe("LspClient (real tsserver)", () => {
       const errors = diags.filter((d) => d.severity === "error");
       expect(errors.length).toBeGreaterThan(0);
       // tsserver reports TS2322 for the number->string assignment.
-      expect(errors.some((d) => d.message.includes("string") || d.code.includes("2322"))).toBe(true);
+      expect(errors.some((d) => d.message.includes("string") || d.code.includes("2322"))).toBe(
+        true,
+      );
       await client.dispose();
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -119,7 +111,7 @@ describe("LspClient (real tsserver)", () => {
           },
         }),
       );
-      fs.writeFileSync(path.join(dir, "good.ts"), "const x: string = \"ok\";\n");
+      fs.writeFileSync(path.join(dir, "good.ts"), 'const x: string = "ok";\n');
       clearLspClientCache(dir);
       const client = getLspClient(dir)!;
       const diags = await client.getDiagnostics(path.join(dir, "good.ts"), 20_000);

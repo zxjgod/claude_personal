@@ -2,20 +2,20 @@
 // Tests: reasoning effort tiers (/effort)
 // ============================================================
 
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
+  anthropicEffort,
+  DEFAULT_EFFORT,
   EFFORT_GRADIENT,
   EFFORT_LEVELS,
-  DEFAULT_EFFORT,
-  parseEffort,
   getEffort,
-  anthropicEffort,
-  openaiReasoningEffort,
-  modelSupportsReasoningEffort,
-  renderEffortSlider,
-  hslToHex,
   gradientColorAt,
+  hslToHex,
+  modelSupportsReasoningEffort,
+  openaiReasoningEffort,
+  parseEffort,
   rainbowColors,
+  renderEffortSlider,
 } from "../effort.js";
 
 describe("effort tiers", () => {

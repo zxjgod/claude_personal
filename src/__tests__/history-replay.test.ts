@@ -2,8 +2,8 @@
 // Tests: /resume history replay (Message[] → transcript)
 // ============================================================
 
-import { describe, it, expect } from "vitest";
-import { messagesToTranscript, firstUserPreview } from "../tui/history-replay.js";
+import { describe, expect, it } from "vitest";
+import { firstUserPreview, messagesToTranscript } from "../tui/history-replay.js";
 import type { Message } from "../types.js";
 
 const sample: Message[] = [
@@ -49,9 +49,7 @@ describe("messagesToTranscript", () => {
       {
         role: "assistant",
         content: null,
-        tool_calls: [
-          { id: "c1", type: "function", function: { name: "grep", arguments: "{}" } },
-        ],
+        tool_calls: [{ id: "c1", type: "function", function: { name: "grep", arguments: "{}" } }],
       },
     ];
     const items = messagesToTranscript(msgs);
@@ -64,9 +62,7 @@ describe("messagesToTranscript", () => {
       {
         role: "assistant",
         content: null,
-        tool_calls: [
-          { id: "c9", type: "function", function: { name: "bash", arguments: "{}" } },
-        ],
+        tool_calls: [{ id: "c9", type: "function", function: { name: "bash", arguments: "{}" } }],
       },
     ];
     const [item] = messagesToTranscript(msgs);

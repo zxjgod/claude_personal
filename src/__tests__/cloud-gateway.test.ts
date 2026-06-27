@@ -2,11 +2,8 @@
 // Tests: cloud gateway routing (11.3)
 // ============================================================
 
-import { describe, it, expect } from "vitest";
-import {
-  isCloudGateway,
-  resolveGateway,
-} from "../cloud-gateway.js";
+import { describe, expect, it } from "vitest";
+import { isCloudGateway, resolveGateway } from "../cloud-gateway.js";
 import { resolveProviderConfig } from "../llm-adapter.js";
 
 describe("cloud-gateway", () => {

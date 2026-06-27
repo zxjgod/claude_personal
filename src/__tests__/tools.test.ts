@@ -2,18 +2,11 @@
 // Tests: Core Tools
 // ============================================================
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
-import * as path from "node:path";
 import * as os from "node:os";
-import {
-  ReadTool,
-  WriteTool,
-  EditTool,
-  BashTool,
-  GlobTool,
-  GrepTool,
-} from "../tools.js";
+import * as path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { BashTool, EditTool, GlobTool, GrepTool, ReadTool, WriteTool } from "../tools.js";
 import type { ToolContext } from "../types.js";
 
 let tmpDir: string;
@@ -39,10 +32,7 @@ describe("ReadTool", () => {
     const filePath = path.join(tmpDir, "test.txt");
     fs.writeFileSync(filePath, "line1\nline2\nline3");
 
-    const result = await ReadTool.call(
-      { filePath: "test.txt" },
-      ctx,
-    );
+    const result = await ReadTool.call({ filePath: "test.txt" }, ctx);
 
     expect(result.error).toBeUndefined();
     expect(result.content).toContain("   1: line1");
@@ -51,10 +41,7 @@ describe("ReadTool", () => {
   });
 
   it("should return error for non-existent file", async () => {
-    const result = await ReadTool.call(
-      { filePath: "nonexistent.txt" },
-      ctx,
-    );
+    const result = await ReadTool.call({ filePath: "nonexistent.txt" }, ctx);
     expect(result.error).toContain("not found");
   });
 
@@ -64,10 +51,7 @@ describe("ReadTool", () => {
     buf[50] = 0; // null byte
     fs.writeFileSync(filePath, buf);
 
-    const result = await ReadTool.call(
-      { filePath: "binary.bin" },
-      ctx,
-    );
+    const result = await ReadTool.call({ filePath: "binary.bin" }, ctx);
     expect(result.content).toContain("[Binary file:");
   });
 
@@ -76,10 +60,7 @@ describe("ReadTool", () => {
     const lines = Array.from({ length: 100 }, (_, i) => `line${i + 1}`);
     fs.writeFileSync(filePath, lines.join("\n"));
 
-    const result = await ReadTool.call(
-      { filePath: "lines.txt", offset: 10, limit: 5 },
-      ctx,
-    );
+    const result = await ReadTool.call({ filePath: "lines.txt", offset: 10, limit: 5 }, ctx);
 
     expect(result.content).toContain("line10");
     expect(result.content).toContain("line14");
@@ -90,10 +71,7 @@ describe("ReadTool", () => {
     const dirPath = path.join(tmpDir, "subdir");
     fs.mkdirSync(dirPath);
 
-    const result = await ReadTool.call(
-      { filePath: "subdir" },
-      ctx,
-    );
+    const result = await ReadTool.call({ filePath: "subdir" }, ctx);
     expect(result.error).toContain("directory");
   });
 });
@@ -102,10 +80,7 @@ describe("ReadTool", () => {
 
 describe("WriteTool", () => {
   it("should create a new file", async () => {
-    const result = await WriteTool.call(
-      { filePath: "newfile.txt", content: "hello world" },
-      ctx,
-    );
+    const result = await WriteTool.call({ filePath: "newfile.txt", content: "hello world" }, ctx);
     expect(result.error).toBeUndefined();
     expect(result.content).toContain("Created");
 
@@ -117,10 +92,7 @@ describe("WriteTool", () => {
     const filePath = path.join(tmpDir, "existing.txt");
     fs.writeFileSync(filePath, "old content");
 
-    const result = await WriteTool.call(
-      { filePath: "existing.txt", content: "new content" },
-      ctx,
-    );
+    const result = await WriteTool.call({ filePath: "existing.txt", content: "new content" }, ctx);
     expect(result.content).toContain("Updated");
 
     const content = fs.readFileSync(filePath, "utf-8");
@@ -267,10 +239,7 @@ describe("BashTool", () => {
   it("should execute simple commands", async () => {
     // Use platform-appropriate echo
     const cmd = IS_WINDOWS ? "echo hello" : "echo hello";
-    const result = await BashTool.call(
-      { command: cmd, description: "test echo" },
-      ctx,
-    );
+    const result = await BashTool.call({ command: cmd, description: "test echo" }, ctx);
     expect(result.error).toBeUndefined();
     expect(result.content).toContain("hello");
   });
@@ -278,10 +247,7 @@ describe("BashTool", () => {
   it("should capture stderr", async () => {
     // Use platform-appropriate stderr redirect
     const cmd = IS_WINDOWS ? "echo error 1>&2" : "echo error >&2";
-    const result = await BashTool.call(
-      { command: cmd, description: "stderr test" },
-      ctx,
-    );
+    const result = await BashTool.call({ command: cmd, description: "stderr test" }, ctx);
     expect(result.content).toContain("error");
   });
 });
@@ -294,10 +260,7 @@ describe("GlobTool", () => {
     fs.writeFileSync(path.join(tmpDir, "b.ts"), "");
     fs.writeFileSync(path.join(tmpDir, "c.js"), "");
 
-    const result = await GlobTool.call(
-      { pattern: "*.ts" },
-      ctx,
-    );
+    const result = await GlobTool.call({ pattern: "*.ts" }, ctx);
 
     expect(result.error).toBeUndefined();
     expect(result.content).toContain("a.ts");
@@ -306,10 +269,7 @@ describe("GlobTool", () => {
   });
 
   it("should report no matches", async () => {
-    const result = await GlobTool.call(
-      { pattern: "nonexistent*.xyz" },
-      ctx,
-    );
+    const result = await GlobTool.call({ pattern: "nonexistent*.xyz" }, ctx);
     expect(result.content).toContain("No files found");
   });
 });
@@ -318,15 +278,9 @@ describe("GlobTool", () => {
 
 describe("GrepTool", () => {
   it("should search file contents", async () => {
-    fs.writeFileSync(
-      path.join(tmpDir, "search-test.txt"),
-      "hello world\nfoo bar\nhello again",
-    );
+    fs.writeFileSync(path.join(tmpDir, "search-test.txt"), "hello world\nfoo bar\nhello again");
 
-    const result = await GrepTool.call(
-      { pattern: "hello" },
-      ctx,
-    );
+    const result = await GrepTool.call({ pattern: "hello" }, ctx);
 
     // GrepTool falls back to Node.js search if rg is unavailable.
     // Either way, the result should contain matches or report none found.
@@ -344,10 +298,7 @@ describe("GrepTool", () => {
     fs.writeFileSync(path.join(tmpDir, "match.ts"), "needle here\n");
     fs.writeFileSync(path.join(tmpDir, "skip.md"), "needle here\n");
 
-    const result = await GrepTool.call(
-      { pattern: "needle", include: "*.ts" },
-      ctx,
-    );
+    const result = await GrepTool.call({ pattern: "needle", include: "*.ts" }, ctx);
 
     expect(result.error).toBeUndefined();
     // Only the .ts file should match; the .md file is filtered out.
@@ -368,10 +319,7 @@ describe("workspace boundary", () => {
     try {
       fs.writeFileSync(path.join(sibling, "secret.txt"), "owned");
 
-      const result = await ReadTool.call(
-        { filePath: path.join(sibling, "secret.txt") },
-        ctx,
-      );
+      const result = await ReadTool.call({ filePath: path.join(sibling, "secret.txt") }, ctx);
       expect(result.error).toContain("outside workspace");
     } finally {
       fs.rmSync(sibling, { recursive: true, force: true });
@@ -386,19 +334,13 @@ describe("workspace boundary", () => {
   });
 
   it("rejects a parent traversal via ..", async () => {
-    const result = await WriteTool.call(
-      { filePath: "../escaped.txt", content: "x" },
-      ctx,
-    );
+    const result = await WriteTool.call({ filePath: "../escaped.txt", content: "x" }, ctx);
     expect(result.error).toContain("outside workspace");
     expect(fs.existsSync(path.join(tmpDir, "..", "escaped.txt"))).toBe(false);
   });
 
   it("still allows a normal path inside the workspace", async () => {
-    const result = await WriteTool.call(
-      { filePath: "ok/inside.txt", content: "fine" },
-      ctx,
-    );
+    const result = await WriteTool.call({ filePath: "ok/inside.txt", content: "fine" }, ctx);
     expect(result.error).toBeUndefined();
     expect(fs.existsSync(path.join(tmpDir, "ok", "inside.txt"))).toBe(true);
   });

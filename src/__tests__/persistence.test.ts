@@ -2,10 +2,10 @@
 // Tests: Persistence Manager
 // ============================================================
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
-import * as path from "node:path";
 import * as os from "node:os";
+import * as path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { PersistenceManager } from "../persistence.js";
 import type { Message } from "../types.js";
 
@@ -32,9 +32,7 @@ describe("PersistenceManager", () => {
 
   it("should create sessions directory on save", async () => {
     const sessionId = pm.generateId();
-    const messages: Message[] = [
-      { role: "user", content: [{ type: "text", text: "Hello" }] },
-    ];
+    const messages: Message[] = [{ role: "user", content: [{ type: "text", text: "Hello" }] }];
 
     await pm.save(sessionId, messages);
 
@@ -69,9 +67,7 @@ describe("PersistenceManager", () => {
 
   it("should track session metadata", async () => {
     const sessionId = pm.generateId();
-    await pm.save(sessionId, [
-      { role: "user", content: [{ type: "text", text: "Test" }] },
-    ]);
+    await pm.save(sessionId, [{ role: "user", content: [{ type: "text", text: "Test" }] }]);
 
     const loaded = await pm.load(sessionId);
     expect(loaded!.version).toBe(1);
@@ -84,11 +80,9 @@ describe("PersistenceManager", () => {
 
   it("should mark session as completed", async () => {
     const sessionId = pm.generateId();
-    await pm.save(
-      sessionId,
-      [{ role: "user", content: [{ type: "text", text: "Test" }] }],
-      { completed: true },
-    );
+    await pm.save(sessionId, [{ role: "user", content: [{ type: "text", text: "Test" }] }], {
+      completed: true,
+    });
 
     const loaded = await pm.load(sessionId);
     expect(loaded!.completed).toBe(true);
@@ -97,9 +91,7 @@ describe("PersistenceManager", () => {
   it("should update existing session on re-save", async () => {
     const sessionId = pm.generateId();
 
-    await pm.save(sessionId, [
-      { role: "user", content: [{ type: "text", text: "First" }] },
-    ]);
+    await pm.save(sessionId, [{ role: "user", content: [{ type: "text", text: "First" }] }]);
 
     const first = await pm.load(sessionId);
     const firstUpdated = first!.updatedAt;
@@ -122,14 +114,10 @@ describe("PersistenceManager", () => {
     const id1 = pm.generateId();
     const id2 = pm.generateId();
 
-    await pm.save(id1, [
-      { role: "user", content: [{ type: "text", text: "A" }] },
-    ]);
-    await pm.save(
-      id2,
-      [{ role: "user", content: [{ type: "text", text: "B" }] }],
-      { completed: true },
-    );
+    await pm.save(id1, [{ role: "user", content: [{ type: "text", text: "A" }] }]);
+    await pm.save(id2, [{ role: "user", content: [{ type: "text", text: "B" }] }], {
+      completed: true,
+    });
 
     const sessions = await pm.listSessions();
     expect(sessions).toHaveLength(2);
@@ -141,9 +129,7 @@ describe("PersistenceManager", () => {
 
   it("should delete a session", async () => {
     const sessionId = pm.generateId();
-    await pm.save(sessionId, [
-      { role: "user", content: [{ type: "text", text: "Delete me" }] },
-    ]);
+    await pm.save(sessionId, [{ role: "user", content: [{ type: "text", text: "Delete me" }] }]);
 
     expect(await pm.load(sessionId)).not.toBeNull();
     await pm.deleteSession(sessionId);
@@ -191,9 +177,7 @@ describe("PersistenceManager", () => {
 
   it("recovers from a corrupt session file (no crash, returns null)", async () => {
     const sessionId = pm.generateId();
-    await pm.save(sessionId, [
-      { role: "user", content: [{ type: "text", text: "good" }] },
-    ]);
+    await pm.save(sessionId, [{ role: "user", content: [{ type: "text", text: "good" }] }]);
 
     // Corrupt the file on disk to simulate a truncated/partial write.
     const filePath = path.join(tmpDir, ".claude", "sessions", `${sessionId}.json`);
@@ -205,9 +189,7 @@ describe("PersistenceManager", () => {
 
     // And a subsequent save must succeed (treats corrupt file as "no existing
     // session" and writes a fresh one), preserving the original sessionId.
-    await pm.save(sessionId, [
-      { role: "user", content: [{ type: "text", text: "recovered" }] },
-    ]);
+    await pm.save(sessionId, [{ role: "user", content: [{ type: "text", text: "recovered" }] }]);
     const recovered = await pm.load(sessionId);
     expect(recovered).not.toBeNull();
     expect(recovered!.messageCount).toBe(1);
@@ -215,9 +197,7 @@ describe("PersistenceManager", () => {
 
   it("leaves no temp file behind after a successful save (atomic rename)", async () => {
     const sessionId = pm.generateId();
-    await pm.save(sessionId, [
-      { role: "user", content: [{ type: "text", text: "atomic" }] },
-    ]);
+    await pm.save(sessionId, [{ role: "user", content: [{ type: "text", text: "atomic" }] }]);
 
     const dirPath = path.join(tmpDir, ".claude", "sessions");
     const leftovers = fs.readdirSync(dirPath).filter((f) => f.endsWith(".tmp"));

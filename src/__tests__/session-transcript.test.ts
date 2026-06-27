@@ -2,10 +2,10 @@
 // Tests: SessionTranscript (M19.2)
 // ============================================================
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
-import * as path from "node:path";
 import * as os from "node:os";
+import * as path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SessionTranscript } from "../session-transcript.js";
 
 let tmpDir: string;
@@ -51,7 +51,9 @@ describe("SessionTranscript", () => {
       "done",
     ]);
     expect(entries.map((e) => e.seq)).toEqual([0, 1, 2, 3, 4]);
-    entries.forEach((e) => expect(typeof e.ts).toBe("string"));
+    entries.forEach((e) => {
+      expect(typeof e.ts).toBe("string");
+    });
   });
 
   it("skips a malformed trailing line", async () => {

@@ -2,9 +2,8 @@
 // Tests: Tool Registry
 // ============================================================
 
-import { describe, it, expect } from "vitest";
-import { ToolRegistry, createTool } from "../tool-registry.js";
-import type { Tool } from "../types.js";
+import { describe, expect, it } from "vitest";
+import { createTool, ToolRegistry } from "../tool-registry.js";
 
 describe("ToolRegistry", () => {
   it("should register a tool", () => {

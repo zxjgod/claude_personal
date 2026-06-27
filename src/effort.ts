@@ -57,7 +57,10 @@ export function hslToHex(h: number, s: number, l: number): string {
   else if (hh < 240) [r, g, b] = [0, x, c];
   else if (hh < 300) [r, g, b] = [x, 0, c];
   else [r, g, b] = [c, 0, x];
-  const to = (v: number) => Math.round((v + m) * 255).toString(16).padStart(2, "0");
+  const to = (v: number) =>
+    Math.round((v + m) * 255)
+      .toString(16)
+      .padStart(2, "0");
   return `#${to(r)}${to(g)}${to(b)}`;
 }
 
@@ -77,11 +80,8 @@ export function gradientColorAt(fraction: number): string {
  */
 export function rainbowColors(count: number, phase = 0): string[] {
   const n = Math.max(1, count);
-  return Array.from({ length: count }, (_, i) =>
-    hslToHex((i / n) * 360 + phase, 0.7, 0.6),
-  );
+  return Array.from({ length: count }, (_, i) => hslToHex((i / n) * 360 + phase, 0.7, 0.6));
 }
-
 
 /** Read the active tier off a config's options bag (falls back to default). */
 export function getEffort(options?: Record<string, unknown>): EffortLevel {
@@ -135,16 +135,13 @@ export function renderEffortSlider(active: EffortLevel): string {
     const label = lvl === active ? chalk.cyan.bold(lvl) : chalk.gray(lvl);
     return label.padEnd(lvl === active ? 8 : 8);
   });
-  const ultra =
-    active === "ultracode" ? chalk.cyan.bold("ultracode") : chalk.gray("ultracode");
+  const ultra = active === "ultracode" ? chalk.cyan.bold("ultracode") : chalk.gray("ultracode");
 
   lines.push(`    ${chalk.dim("Faster")}${" ".repeat(28)}${chalk.dim("Smarter")}`);
   lines.push(`    ${cells.join("")}${chalk.dim("┆ ")}${ultra}`);
 
   // Marker row: a ▲ under the active gradient tier, or under ultracode.
-  const markerCells = EFFORT_GRADIENT.map((lvl) =>
-    (lvl === active ? "▲" : " ").padEnd(8),
-  );
+  const markerCells = EFFORT_GRADIENT.map((lvl) => (lvl === active ? "▲" : " ").padEnd(8));
   const ultraMarker = active === "ultracode" ? "▲" : "";
   lines.push(`    ${markerCells.join("")}${chalk.dim("  ")}${ultraMarker}`);
 

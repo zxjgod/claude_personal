@@ -159,9 +159,7 @@ export function buildSystemPrompt(options: SystemPromptOptions): string {
 
   // User context from CLAUDE.md
   if (options.claudeMdContent) {
-    dynamicSections.push(
-      `[PROJECT CONTEXT from CLAUDE.md]\n${options.claudeMdContent}`,
-    );
+    dynamicSections.push(`[PROJECT CONTEXT from CLAUDE.md]\n${options.claudeMdContent}`);
   }
 
   // Git status
@@ -185,10 +183,7 @@ export function buildSystemPrompt(options: SystemPromptOptions): string {
  */
 export function rebuildDynamicSections(
   currentPrompt: string,
-  dynamicOptions: Pick<
-    SystemPromptOptions,
-    "claudeMdContent" | "gitStatus" | "languagePreference"
-  >,
+  dynamicOptions: Pick<SystemPromptOptions, "claudeMdContent" | "gitStatus" | "languagePreference">,
 ): string {
   const boundaryIndex = currentPrompt.indexOf(DYNAMIC_BOUNDARY);
   if (boundaryIndex === -1) {
@@ -200,9 +195,7 @@ export function rebuildDynamicSections(
   const dynamicSections: string[] = [DYNAMIC_BOUNDARY];
 
   if (dynamicOptions.claudeMdContent) {
-    dynamicSections.push(
-      `[PROJECT CONTEXT from CLAUDE.md]\n${dynamicOptions.claudeMdContent}`,
-    );
+    dynamicSections.push(`[PROJECT CONTEXT from CLAUDE.md]\n${dynamicOptions.claudeMdContent}`);
   }
   if (dynamicOptions.gitStatus) {
     dynamicSections.push(`[GIT STATUS]\n${dynamicOptions.gitStatus}`);

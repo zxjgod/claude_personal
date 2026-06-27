@@ -58,7 +58,8 @@ export const exportCommand: SlashCommand = {
   name: "export",
   description: "Export the current session to a markdown file (/export [path])",
   run: (args, ctx) => {
-    const target = args.trim() || path.join(ctx.workspaceRoot, `session-${ctx.sessionId.slice(0, 8)}.md`);
+    const target =
+      args.trim() || path.join(ctx.workspaceRoot, `session-${ctx.sessionId.slice(0, 8)}.md`);
     const md = renderSessionMarkdown(ctx);
     try {
       fs.mkdirSync(path.dirname(target) || ".", { recursive: true });

@@ -12,12 +12,7 @@
 
 import chalk from "chalk";
 import { marked, type Token, type Tokens } from "marked";
-import {
-  visualWidth,
-  stripAnsi,
-  padAligned,
-  terminalColumns,
-} from "./terminal-width.js";
+import { padAligned, stripAnsi, terminalColumns, visualWidth } from "./terminal-width.js";
 
 const EOL = "\n";
 
@@ -71,8 +66,7 @@ function renderTable(token: Tokens.Table): string {
 
   const formatCell = (tokens: Token[] | undefined): string =>
     tokens?.map((t) => formatToken(t)).join("") ?? "";
-  const plainText = (tokens: Token[] | undefined): string =>
-    stripAnsi(formatCell(tokens));
+  const plainText = (tokens: Token[] | undefined): string => stripAnsi(formatCell(tokens));
   const minWidthOf = (tokens: Token[] | undefined): number => {
     const words = plainText(tokens)
       .split(/\s+/)
@@ -116,15 +110,10 @@ function renderTable(token: Tokens.Table): string {
     });
   } else {
     const scale = availableWidth / totalMin;
-    columnWidths = minWidths.map((w) =>
-      Math.max(Math.floor(w * scale), MIN_COLUMN_WIDTH),
-    );
+    columnWidths = minWidths.map((w) => Math.max(Math.floor(w * scale), MIN_COLUMN_WIDTH));
   }
 
-  const rowLines = (
-    cells: Array<{ tokens?: Token[] }>,
-    isHeader: boolean,
-  ): string[] => {
+  const rowLines = (cells: Array<{ tokens?: Token[] }>, isHeader: boolean): string[] => {
     const cellLines = cells.map((cell, col) =>
       wrapText(formatCell(cell.tokens), columnWidths[col]!),
     );
@@ -137,12 +126,9 @@ function renderTable(token: Tokens.Table): string {
         const lines = cellLines[col]!;
         const idx = lineIdx - offsets[col]!;
         let cellText = idx >= 0 && idx < lines.length ? lines[idx]! : "";
-        const align = isHeader ? "center" : token.align?.[col] ?? "left";
+        const align = isHeader ? "center" : (token.align?.[col] ?? "left");
         if (isHeader) cellText = chalk.bold.cyan(cellText);
-        line +=
-          " " +
-          padAligned(cellText, visualWidth(cellText), columnWidths[col]!, align) +
-          " │";
+        line += " " + padAligned(cellText, visualWidth(cellText), columnWidths[col]!, align) + " │";
       }
       result.push(line);
     }
@@ -167,17 +153,11 @@ function renderTable(token: Tokens.Table): string {
   const maxRowLines = (() => {
     let m = 1;
     for (let i = 0; i < token.header.length; i++) {
-      m = Math.max(
-        m,
-        wrapText(formatCell(token.header[i]!.tokens), columnWidths[i]!).length,
-      );
+      m = Math.max(m, wrapText(formatCell(token.header[i]!.tokens), columnWidths[i]!).length);
     }
     for (const row of token.rows) {
       for (let i = 0; i < row.length; i++) {
-        m = Math.max(
-          m,
-          wrapText(formatCell(row[i]?.tokens), columnWidths[i]!).length,
-        );
+        m = Math.max(m, wrapText(formatCell(row[i]?.tokens), columnWidths[i]!).length);
       }
     }
     return m;
@@ -214,9 +194,7 @@ function renderTable(token: Tokens.Table): string {
   });
   tableLines.push(borderLine("bottom"));
 
-  const maxLineWidth = Math.max(
-    ...tableLines.map((l) => visualWidth(stripAnsi(l))),
-  );
+  const maxLineWidth = Math.max(...tableLines.map((l) => visualWidth(stripAnsi(l))));
   if (maxLineWidth > terminalWidth - SAFETY_MARGIN) return verticalFormat();
   return tableLines.join(EOL);
 }
@@ -233,9 +211,7 @@ function formatToken(
 ): string {
   switch (token.type) {
     case "strong":
-      return chalk.bold(
-        (token.tokens ?? []).map((t) => formatToken(t, 0, null, parent)).join(""),
-      );
+      return chalk.bold((token.tokens ?? []).map((t) => formatToken(t, 0, null, parent)).join(""));
     case "em":
       return chalk.italic(
         (token.tokens ?? []).map((t) => formatToken(t, 0, null, parent)).join(""),
@@ -256,11 +232,7 @@ function formatToken(
       );
     }
     case "heading":
-      return (
-        chalk.bold.cyan(
-          (token.tokens ?? []).map((t) => formatToken(t)).join(""),
-        ) + EOL
-      );
+      return chalk.bold.cyan((token.tokens ?? []).map((t) => formatToken(t)).join("")) + EOL;
     case "hr":
       return chalk.dim("─".repeat(Math.min(terminalColumns() - 1, 60))) + EOL;
     case "blockquote": {
@@ -275,21 +247,13 @@ function formatToken(
       const list = token as Tokens.List;
       return list.items
         .map((item, index) =>
-          formatToken(
-            item,
-            listDepth,
-            list.ordered ? (list.start || 1) + index : null,
-            list,
-          ),
+          formatToken(item, listDepth, list.ordered ? (list.start || 1) + index : null, list),
         )
         .join("");
     }
     case "list_item": {
       const indent = "  ".repeat(listDepth);
-      const marker =
-        orderedNumber === null
-          ? chalk.dim("-")
-          : chalk.dim(`${orderedNumber}.`);
+      const marker = orderedNumber === null ? chalk.dim("-") : chalk.dim(`${orderedNumber}.`);
       const inner = (token.tokens ?? [])
         .map((t) => formatToken(t, listDepth + 1, orderedNumber, token))
         .join("")
@@ -297,10 +261,7 @@ function formatToken(
       return `${indent}${marker} ${inner}${EOL}`;
     }
     case "paragraph":
-      return (
-        (token.tokens ?? []).map((t) => formatToken(t, 0, null, token)).join("") +
-        EOL
-      );
+      return (token.tokens ?? []).map((t) => formatToken(t, 0, null, token)).join("") + EOL;
     case "text": {
       const txt = token as Tokens.Text;
       if (txt.tokens && txt.tokens.length > 0) {
@@ -344,4 +305,4 @@ export function renderMarkdown(content: string): string {
 }
 
 // Exported for tests.
-export { renderTable, formatToken };
+export { formatToken, renderTable };

@@ -2,7 +2,7 @@
 // Tests: TUI store (agent-loop ↔ React bridge)
 // ============================================================
 
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { TuiStore } from "../tui/store.js";
 import type { ToolExecutionResult } from "../types.js";
 
@@ -60,9 +60,7 @@ describe("TuiStore", () => {
     expect(store.getSnapshot().activeTools).toHaveLength(2);
     // Finish the second one first — the first must remain active.
     store.finishTool(fakeResult("grep"), "foo", "c2");
-    expect(store.getSnapshot().activeTools).toEqual([
-      { id: "c1", name: "read", detail: "a.ts" },
-    ]);
+    expect(store.getSnapshot().activeTools).toEqual([{ id: "c1", name: "read", detail: "a.ts" }]);
     store.finishTool(fakeResult("read"), "a.ts", "c1");
     expect(store.getSnapshot().activeTools).toEqual([]);
   });

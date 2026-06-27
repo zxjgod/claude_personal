@@ -33,12 +33,7 @@ export interface TelemetryOptions {
  * Returns { enabled:false } unless the user explicitly opted in.
  */
 export function resolveTelemetryOptions(workspaceRoot: string): TelemetryOptions {
-  const filePath = path.join(
-    workspaceRoot,
-    ".claude",
-    "telemetry",
-    "events.jsonl",
-  );
+  const filePath = path.join(workspaceRoot, ".claude", "telemetry", "events.jsonl");
 
   // Env toggle (highest priority, both on and off forms).
   const env = process.env.CCR_TELEMETRY ?? process.env.LLM_TELEMETRY;

@@ -8,18 +8,18 @@
 // fire-and-forget, then poll with task_get / task_list.
 // ============================================================
 
-import type { Tool, ToolResult, ToolContext } from "./types.js";
-import { createTool } from "./tool-registry.js";
 import { listSubagentNames } from "./subagents.js";
 import {
+  type AgentStatus,
   createAgents,
   getAgent,
   listAgents,
-  stopAgent,
   runAgentTurn,
+  stopAgent,
   type TeamRunContext,
-  type AgentStatus,
 } from "./team.js";
+import { createTool } from "./tool-registry.js";
+import type { Tool, ToolContext, ToolResult } from "./types.js";
 
 function runCtx(context: ToolContext): TeamRunContext | { error: string } {
   if (!context.modelConfig) {
@@ -224,7 +224,9 @@ export const TaskGetTool: Tool = createTool<TaskGetInput>({
     if (!agent) return { content: "", error: `No agent "${input.agent_id}"` };
     const head = `[${agent.id}] role=${agent.role} status=${agent.status} toolCalls=${agent.toolCalls}`;
     const err = agent.error ? `\nError: ${agent.error}` : "";
-    const body = agent.lastOutput ? `\n\n--- Last output ---\n${agent.lastOutput}` : "\n(no output yet)";
+    const body = agent.lastOutput
+      ? `\n\n--- Last output ---\n${agent.lastOutput}`
+      : "\n(no output yet)";
     return { content: head + err + body };
   },
 });

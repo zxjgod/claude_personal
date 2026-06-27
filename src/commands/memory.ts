@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import chalk from "chalk";
 import { listChanges } from "../change-tracker.js";
-import { MemoryStore, extractMemoriesHeuristic } from "../memory-extract.js";
+import { extractMemoriesHeuristic, MemoryStore } from "../memory-extract.js";
 import type { SlashCommand } from "./types.js";
 
 export const memoryCommand: SlashCommand = {
@@ -61,7 +61,7 @@ export const memoryCommand: SlashCommand = {
       console.log("");
       console.log(chalk.bold(`  Durable memories (${memories.length}) — ${store.path}:`));
       for (const m of memories.slice(-15)) {
-        const tag = m.tags && m.tags.length ? chalk.gray(` [${m.tags.join(",")}]`) : "";
+        const tag = m.tags?.length ? chalk.gray(` [${m.tags.join(",")}]`) : "";
         console.log(`    ${chalk.cyan("•")} ${m.text}${tag}`);
       }
       console.log(chalk.gray("  (Use /memory extract to capture more from this session.)"));

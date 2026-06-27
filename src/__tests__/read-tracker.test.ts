@@ -2,13 +2,8 @@
 // Tests: read tracker (read-before-edit)
 // ============================================================
 
-import { describe, it, expect, beforeEach } from "vitest";
-import {
-  markRead,
-  checkReadBeforeEdit,
-  refreshRead,
-  resetReadTracker,
-} from "../read-tracker.js";
+import { beforeEach, describe, expect, it } from "vitest";
+import { checkReadBeforeEdit, markRead, refreshRead, resetReadTracker } from "../read-tracker.js";
 
 beforeEach(() => resetReadTracker());
 

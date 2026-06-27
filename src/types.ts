@@ -4,11 +4,7 @@
 
 // --- Messages (Internal Format) ---
 
-export type Message =
-  | UserMessage
-  | AssistantMessage
-  | ToolResultMessage
-  | SystemMessage;
+export type Message = UserMessage | AssistantMessage | ToolResultMessage | SystemMessage;
 
 export interface UserMessage {
   role: "user";
@@ -155,15 +151,9 @@ export interface SubAgentProgress {
   results?: ToolExecutionResult[];
 }
 
-export type PermissionMode =
-  | "default"
-  | "acceptEdits"
-  | "bypassPermissions"
-  | "plan";
+export type PermissionMode = "default" | "acceptEdits" | "bypassPermissions" | "plan";
 
-export type PermissionResult =
-  | { allowed: true }
-  | { allowed: false; reason: string };
+export type PermissionResult = { allowed: true } | { allowed: false; reason: string };
 
 /**
  * Model-assessed risk classification of a flagged tool call (M15.3,
@@ -224,10 +214,7 @@ export interface Tool<T extends ToolInput = ToolInput> {
   /** Main execution */
   call(input: T, context: ToolContext): Promise<ToolResult>;
   /** Permission check */
-  checkPermissions(
-    input: T,
-    context: ToolContext,
-  ): Promise<PermissionResult>;
+  checkPermissions(input: T, context: ToolContext): Promise<PermissionResult>;
   /** Format result for LLM */
   formatResult(result: ToolResult): string;
 }
@@ -333,10 +320,7 @@ export interface LoopOptions {
 
 /** Structural type for the hook registry — see src/hooks.ts. */
 export interface HookRunner {
-  runPre(payload: {
-    toolName: string;
-    input: Record<string, unknown>;
-  }): Promise<{
+  runPre(payload: { toolName: string; input: Record<string, unknown> }): Promise<{
     block?: boolean;
     reason?: string;
     input?: Record<string, unknown>;

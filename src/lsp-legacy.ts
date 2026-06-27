@@ -40,14 +40,9 @@ export function parseTscOutput(output: string): Diagnostic[] {
 }
 
 /** Filter diagnostics to those whose file path contains `needle`. */
-export function filterByFile(
-  diagnostics: Diagnostic[],
-  needle: string,
-): Diagnostic[] {
+export function filterByFile(diagnostics: Diagnostic[], needle: string): Diagnostic[] {
   const norm = needle.replace(/\\/g, "/").toLowerCase();
-  return diagnostics.filter((d) =>
-    d.file.replace(/\\/g, "/").toLowerCase().includes(norm),
-  );
+  return diagnostics.filter((d) => d.file.replace(/\\/g, "/").toLowerCase().includes(norm));
 }
 
 /** Format diagnostics into a compact, model-friendly report. */
@@ -56,8 +51,7 @@ export function formatDiagnostics(diagnostics: Diagnostic[]): string {
   const lines = diagnostics
     .slice(0, 100)
     .map(
-      (d) =>
-        `${d.severity.toUpperCase()} ${d.file}:${d.line}:${d.column} ${d.code} — ${d.message}`,
+      (d) => `${d.severity.toUpperCase()} ${d.file}:${d.line}:${d.column} ${d.code} — ${d.message}`,
     );
   const more = diagnostics.length > 100 ? `\n… and ${diagnostics.length - 100} more` : "";
   const errors = diagnostics.filter((d) => d.severity === "error").length;

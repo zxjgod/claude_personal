@@ -2,25 +2,24 @@
 // Tests: M14 breadth tools (Worktree, Skill, Cron/Sleep, PowerShell)
 // ============================================================
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { execFileSync } from "node:child_process";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { registerSkill, resetSkills } from "../skills.js";
 import {
   EnterWorktreeTool,
   ExitWorktreeTool,
-  SkillTool,
-  ScheduleCronTool,
-  SleepTool,
-  PowerShellTool,
-  validateCron,
-  resetWorktrees,
-  resetScheduledJobs,
   listScheduledJobs,
-  getScheduledJob,
+  PowerShellTool,
+  resetScheduledJobs,
+  resetWorktrees,
+  ScheduleCronTool,
+  SkillTool,
+  SleepTool,
+  validateCron,
 } from "../tools-m9.js";
-import { resetSkills, registerSkill } from "../skills.js";
 import type { ToolContext } from "../types.js";
 
 let repo: string;
@@ -87,10 +86,7 @@ describe("EnterWorktree / ExitWorktree", () => {
     await EnterWorktreeTool.call({ name: "rm-1", baseRef: "head" }, ctx());
     const wt = path.join(repo, ".claude", "worktrees", "rm-1");
     fs.writeFileSync(path.join(wt, "a.txt"), "changed\n");
-    const r = await ExitWorktreeTool.call(
-      { action: "remove", discardChanges: true },
-      ctx(),
-    );
+    const r = await ExitWorktreeTool.call({ action: "remove", discardChanges: true }, ctx());
     expect(r.error).toBeUndefined();
     expect(r.content).toContain("deleted");
     expect(fs.existsSync(wt)).toBe(false);
@@ -105,7 +101,10 @@ describe("EnterWorktree / ExitWorktree", () => {
   it("errors when not a git repository", async () => {
     const plain = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-plain2-"));
     try {
-      const r = await EnterWorktreeTool.call({ name: "x", baseRef: "head" }, ctx({ workspaceRoot: plain }));
+      const r = await EnterWorktreeTool.call(
+        { name: "x", baseRef: "head" },
+        ctx({ workspaceRoot: plain }),
+      );
       expect(r.error).toContain("Not a git repository");
     } finally {
       fs.rmSync(plain, { recursive: true, force: true });
@@ -207,10 +206,7 @@ describe("Sleep", () => {
   });
 
   it("enqueues a prompt job when prompt is given", async () => {
-    const r = await SleepTool.call(
-      { delaySeconds: 120, reason: "wait", prompt: "resume" },
-      ctx(),
-    );
+    const r = await SleepTool.call({ delaySeconds: 120, reason: "wait", prompt: "resume" }, ctx());
     expect(r.content).toContain("120s");
     expect(r.content).toContain("Job ");
     expect(listScheduledJobs()).toHaveLength(1);
@@ -231,10 +227,7 @@ describe("PowerShellTool", () => {
     if (process.platform === "win32") return;
     const enabled = PowerShellTool.isEnabled();
     expect(enabled).toBe(false);
-    const r = await PowerShellTool.call(
-      { command: "Get-Date", description: "now" },
-      ctx(),
-    );
+    const r = await PowerShellTool.call({ command: "Get-Date", description: "now" }, ctx());
     expect(r.error).toContain("Windows");
   });
 

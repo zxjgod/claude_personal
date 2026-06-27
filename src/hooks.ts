@@ -37,8 +37,12 @@ export interface PostToolUseOutcome {
 export interface Hook {
   /** Tool name to match, or "*" for every tool. */
   matcher: string;
-  pre?: (payload: PreToolUsePayload) => Promise<PreToolUseOutcome | void> | PreToolUseOutcome | void;
-  post?: (payload: PostToolUsePayload) => Promise<PostToolUseOutcome | void> | PostToolUseOutcome | void;
+  pre?: (
+    payload: PreToolUsePayload,
+  ) => Promise<PreToolUseOutcome | void> | PreToolUseOutcome | void;
+  post?: (
+    payload: PostToolUsePayload,
+  ) => Promise<PostToolUseOutcome | void> | PostToolUseOutcome | void;
 }
 
 export class HookRegistry {

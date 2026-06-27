@@ -51,10 +51,7 @@ export function estimateCost(
 ): number | null {
   const price = lookupPricing(model);
   if (!price) return null;
-  return (
-    (inputTokens / 1_000_000) * price.input +
-    (outputTokens / 1_000_000) * price.output
-  );
+  return (inputTokens / 1_000_000) * price.input + (outputTokens / 1_000_000) * price.output;
 }
 
 export class SessionStats {

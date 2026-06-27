@@ -5,8 +5,8 @@
 // for the LLM to analyze based on a user's fetchInfo prompt.
 // ============================================================
 
-import type { Tool, ToolContext, ToolResult } from "./types.js";
 import { createTool } from "./tool-registry.js";
+import type { Tool, ToolResult } from "./types.js";
 
 // --- Constants ---
 
@@ -239,10 +239,7 @@ export const WebFetchTool: Tool = createTool<WebFetchInput>({
 
 // --- Helper: Read response body with size limit ---
 
-async function readLimited(
-  response: Response,
-  maxSize: number,
-): Promise<Uint8Array> {
+async function readLimited(response: Response, maxSize: number): Promise<Uint8Array> {
   const reader = response.body?.getReader();
   if (!reader) {
     throw new Error("Response body is not readable");

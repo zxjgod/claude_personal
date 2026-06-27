@@ -2,7 +2,7 @@
 // Tests: WebSearch result parsing
 // ============================================================
 
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { parseSearchResults } from "../web-search.js";
 
 const SAMPLE = `

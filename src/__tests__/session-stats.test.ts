@@ -2,13 +2,13 @@
 // Tests: session stats (token accumulation + cost estimation)
 // ============================================================
 
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
-  SessionStats,
   estimateCost,
-  lookupPricing,
-  formatUsd,
   formatDuration,
+  formatUsd,
+  lookupPricing,
+  SessionStats,
 } from "../session-stats.js";
 
 describe("session-stats", () => {

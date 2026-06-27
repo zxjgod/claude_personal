@@ -28,7 +28,9 @@ export const vimCommand: SlashCommand = {
       console.log(chalk.gray("  Vim mode: ") + chalk.cyan("on"));
       console.log(chalk.gray("  Esc → normal mode, i/a → insert, h/j/k/l move, x delete."));
     } else {
-      console.log(chalk.gray("  Vim mode: ") + chalk.cyan("off") + chalk.gray(" (default line editing)."));
+      console.log(
+        chalk.gray("  Vim mode: ") + chalk.cyan("off") + chalk.gray(" (default line editing)."),
+      );
     }
   },
 };

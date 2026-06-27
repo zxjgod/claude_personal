@@ -1,46 +1,45 @@
 #!/usr/bin/env node
+
 // ============================================================
 // Claude Code Replica — CLI Entry Point
 // ============================================================
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import * as crypto from "node:crypto";
 import * as readline from "node:readline";
-import dotenv from "dotenv";
 import chalk from "chalk";
+import dotenv from "dotenv";
 
 import { agentLoop } from "./agent-loop.js";
-import { buildSystemPrompt } from "./system-prompt.js";
-import { ToolRegistry } from "./tool-registry.js";
-import { CORE_TOOLS } from "./tools.js";
-import { setCoreToolsForSubagents } from "./subagents.js";
-import { createToolSearchTool, createMcpResourceTools } from "./tools-m8.js";
-import { MCPManager, discoverMCPConfigs } from "./mcp.js";
-import { createModelCaller, resolveProviderConfig } from "./llm-adapter.js";
-import { handleSlashCommand } from "./commands.js";
-import { expandFileRefs } from "./file-refs.js";
-import { HookRegistry } from "./hooks.js";
+import { formatCliError } from "./cli-errors.js";
 import { createCliInputReader } from "./cli-input.js";
 import { createRawInputReader, promptPermissionMenu, promptSelectMenu } from "./cli-interactive.js";
-import { Spinner } from "./cli-spinner.js";
-import { formatSpeculationLine } from "./speculation.js";
-import { formatCliError } from "./cli-errors.js";
 import {
-  StreamingRenderer,
   renderPermissionPrompt,
   renderSubAgentActivity,
   renderToolResult,
   renderToolStart,
   renderWelcome,
+  StreamingRenderer,
 } from "./cli-renderer.js";
-import { COMMANDS } from "./commands.js";
+import { Spinner } from "./cli-spinner.js";
 import type { ToolSource } from "./commands.js";
-import { SessionStats } from "./session-stats.js";
+import { COMMANDS, handleSlashCommand } from "./commands.js";
+import { expandFileRefs } from "./file-refs.js";
+import { formatGitContext, gatherGitContext } from "./git-context.js";
+import { HookRegistry } from "./hooks.js";
+import { createModelCaller, resolveProviderConfig } from "./llm-adapter.js";
+import { discoverMCPConfigs, MCPManager } from "./mcp.js";
 import { PersistenceManager } from "./persistence.js";
+import { SessionStats } from "./session-stats.js";
 import { SessionTranscript } from "./session-transcript.js";
+import { formatSpeculationLine } from "./speculation.js";
+import { setCoreToolsForSubagents } from "./subagents.js";
+import { buildSystemPrompt } from "./system-prompt.js";
 import { Telemetry } from "./telemetry.js";
-import { gatherGitContext, formatGitContext } from "./git-context.js";
+import { ToolRegistry } from "./tool-registry.js";
+import { CORE_TOOLS } from "./tools.js";
+import { createMcpResourceTools, createToolSearchTool } from "./tools-m8.js";
 import type {
   AskUserFn,
   Message,
@@ -53,6 +52,59 @@ import type {
 
 // Load environment variables
 dotenv.config();
+
+// --- CLI info flags (--version / --help) ---
+// Handled before any config load so they work without an API key or network.
+// The smoke test (scripts/smoke.mjs) exercises exactly this path:
+//   build → `node dist/cli.js --version` → assert exit 0 + version string.
+
+function readPackageVersion(): string {
+  try {
+    // src/cli.ts and dist/cli.js both sit one level below the repo root,
+    // so "../package.json" resolves correctly under tsx and the built CLI.
+    const pkgUrl = new URL("../package.json", import.meta.url);
+    const pkg = JSON.parse(fs.readFileSync(pkgUrl, "utf8")) as { version?: string };
+    return pkg.version ?? "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
+
+const HELP_TEXT = `Claude Code Replica (ccr) — a local AI coding assistant for OpenAI-compatible APIs.
+
+Usage:
+  ccr [options]              Start an interactive session (TUI on a TTY, line REPL otherwise)
+  echo "prompt" | ccr        Pipe a single prompt (non-TTY)
+
+Options:
+  --version, -V              Print version and exit
+  --help, -h                 Print this help and exit
+  --session=<id>             Resume a saved session by id
+  --verbose                  Verbose startup + token accounting
+  --quiet                    Suppress non-essential output (default)
+  --show-tokens              Show per-turn token usage
+  --no-tui                   Force the line-based REPL (skip the Ink TUI)
+  --no-speculation           Disable speculative prefetch
+  --llm-perm-classifier      Use the LLM permission-risk classifier
+
+Configuration:
+  .env                       LLM_PROVIDER, LLM_API_KEY, LLM_MODEL, LLM_BASE_URL
+  .mcp.json                  MCP server definitions (optional)
+  .claude/settings.json      Permission mode, hooks, telemetry
+
+In-session: type /help for slash commands.`;
+
+function maybeHandleInfoFlags(argv: string[]): boolean {
+  if (argv.includes("--version") || argv.includes("-V")) {
+    console.log(readPackageVersion());
+    return true;
+  }
+  if (argv.includes("--help") || argv.includes("-h")) {
+    console.log(HELP_TEXT);
+    return true;
+  }
+  return false;
+}
 
 // --- Configuration ---
 
@@ -75,12 +127,8 @@ function loadConfig(): ModelConfig {
     apiKey,
     model: process.env.LLM_MODEL || undefined,
     baseURL: process.env.LLM_BASE_URL || undefined,
-    maxTokens: process.env.LLM_MAX_TOKENS
-      ? parseInt(process.env.LLM_MAX_TOKENS)
-      : undefined,
-    temperature: process.env.LLM_TEMPERATURE
-      ? parseFloat(process.env.LLM_TEMPERATURE)
-      : undefined,
+    maxTokens: process.env.LLM_MAX_TOKENS ? parseInt(process.env.LLM_MAX_TOKENS, 10) : undefined,
+    temperature: process.env.LLM_TEMPERATURE ? parseFloat(process.env.LLM_TEMPERATURE) : undefined,
     // Cloud gateway routing (11.3): LLM_GATEWAY=bedrock|vertex, plus region
     // and (Vertex) project. Resolved into an OpenAI-compatible base URL.
     options: process.env.LLM_GATEWAY
@@ -128,13 +176,14 @@ function loadClaudeMd(workspaceRoot: string): string | undefined {
 // --- Main ---
 
 async function main() {
+  // Info flags first — print + return before touching config / API key / stdin.
+  if (maybeHandleInfoFlags(process.argv)) return;
+
   const verbose = process.argv.includes("--verbose") || process.env.CCR_VERBOSE === "1";
   const quiet = process.argv.includes("--quiet") || process.env.CCR_QUIET === "1" || !verbose;
   const uiState = {
     showTokens:
-      process.argv.includes("--show-tokens") ||
-      process.env.SHOW_TOKENS === "1" ||
-      verbose,
+      process.argv.includes("--show-tokens") || process.env.SHOW_TOKENS === "1" || verbose,
     verbose,
   };
 
@@ -148,6 +197,11 @@ async function main() {
 
   // Load configuration
   const modelConfig = loadConfig();
+  // loadConfig sets process.exitCode = 1 and returns {} when LLM_API_KEY is
+  // missing. Bail out cleanly here instead of limping on with an empty config
+  // (which would otherwise fail deep inside the agent loop). Also makes the
+  // no-key path deterministic for the smoke test.
+  if (!modelConfig.provider) return;
   const workspaceRoot = getWorkspaceRoot();
   const permissionMode = getPermissionMode();
   const claudeMdContent = loadClaudeMd(workspaceRoot);
@@ -198,9 +252,7 @@ async function main() {
           `  ${s.sessionId.slice(0, 8)}... — ${s.messageCount} msgs — ${new Date(s.updatedAt).toLocaleString()}`,
         );
       }
-      console.log(
-        '  Use --session=<id> to resume, or continue for a new session.',
-      );
+      console.log("  Use --session=<id> to resume, or continue for a new session.");
       console.log("");
     }
   }
@@ -216,9 +268,7 @@ async function main() {
         );
       }
     } else {
-      console.log(
-        `Session ${sessionId.slice(0, 8)}... not found. Starting new session.`,
-      );
+      console.log(`Session ${sessionId.slice(0, 8)}... not found. Starting new session.`);
       sessionId = persistence.generateId();
     }
   } else {
@@ -305,18 +355,16 @@ async function main() {
   // the prompt for ordinary tools, and degrades fail-safe (still prompts with
   // the regex reason) on any API/timeout/unavailable error.
   const llmPermClassifierEnabled =
-    process.argv.includes("--llm-perm-classifier") ||
-    process.env.CCR_PERM_CLASSIFIER === "1";
-  const permissionClassifier: PermissionClassifier | undefined =
-    llmPermClassifierEnabled
-      ? {
-          callModel,
-          modelConfig,
-          // Bound classifier latency so a slow/hung provider can't stall the
-          // approval flow; on timeout we defer to the regex reason.
-          timeoutMs: 4000,
-        }
-      : undefined;
+    process.argv.includes("--llm-perm-classifier") || process.env.CCR_PERM_CLASSIFIER === "1";
+  const permissionClassifier: PermissionClassifier | undefined = llmPermClassifierEnabled
+    ? {
+        callModel,
+        modelConfig,
+        // Bound classifier latency so a slow/hung provider can't stall the
+        // approval flow; on timeout we defer to the regex reason.
+        timeoutMs: 4000,
+      }
+    : undefined;
 
   // --- Conversation ---
 
@@ -377,7 +425,9 @@ async function main() {
     sessionId = existing.sessionId;
     messages.length = 0;
     messages.push(...existing.messages);
-    console.log(chalk.gray(`  Resumed session ${sessionId.slice(0, 8)}... (${messages.length} messages)`));
+    console.log(
+      chalk.gray(`  Resumed session ${sessionId.slice(0, 8)}... (${messages.length} messages)`),
+    );
     return true;
   };
 
@@ -483,9 +533,7 @@ async function main() {
   };
 
   const askUser: AskUserFn = (tool, input, riskHint) => {
-    const run = permissionPromptChain.then(() =>
-      askUserImpl(tool, input, riskHint),
-    );
+    const run = permissionPromptChain.then(() => askUserImpl(tool, input, riskHint));
     permissionPromptChain = run.catch(() => {});
     return run;
   };
@@ -504,7 +552,9 @@ async function main() {
     }
     // Non-TTY: print the question + numbered options, read one line.
     console.log(`\n  ${chalk.bold(q.header)}: ${q.question}`);
-    q.options.forEach((o, i) => console.log(`    ${i + 1}. ${o.label}`));
+    q.options.forEach((o, i) => {
+      console.log(`    ${i + 1}. ${o.label}`);
+    });
     const hint = q.multiSelect ? "numbers separated by commas" : "a number";
     const raw = await askQuestion(`  Choose ${hint}: `);
     if (raw === null) return null;
@@ -530,7 +580,9 @@ async function main() {
       workspaceRoot,
     });
   } else if (quiet) {
-    console.log(`Claude Code Replica (${modelConfig.provider}/${modelConfig.model}) — /help for commands, exit to quit`);
+    console.log(
+      `Claude Code Replica (${modelConfig.provider}/${modelConfig.model}) — /help for commands, exit to quit`,
+    );
   } else {
     console.log('Type your request, /help for commands (or "exit" to quit):\n');
   }
@@ -565,9 +617,7 @@ async function main() {
     for (const note of notes) console.log(chalk.gray(note));
 
     const contentText =
-      attachments.length > 0
-        ? `${userInput}\n\n${attachments.join("\n\n")}`
-        : userInput;
+      attachments.length > 0 ? `${userInput}\n\n${attachments.join("\n\n")}` : userInput;
 
     // Add user message
     messages.push({
@@ -615,41 +665,34 @@ async function main() {
     const turnSystemPrompt = goalHolder.value
       ? `${systemPrompt}\n\n[SESSION GOAL]\nThe user set this objective for the session. Keep it in view and steer toward it:\n${goalHolder.value}`
       : systemPrompt;
-    const loop = agentLoop(
-      messages,
-      tools,
-      callModel,
-      modelConfig,
-      {
-        systemPrompt: turnSystemPrompt,
-        maxTurns: 50,
-        toolContext: {
-          workspaceRoot,
-          sessionId: sessionId!,
-          permissionMode,
-          modelConfig,
-          askUserQuestion: askUserQuestionGuarded,
-          // Thread the approver into sub-agent (Task/Team) loops so their
-          // destructive tools prompt the user instead of auto-approving.
-          askUser: askUserGuarded,
-          onSubAgentProgress: (event) => {
-            spinner.stop();
-            renderer.flush();
-            renderSubAgentActivity(event);
-          },
-          // M15.3: opt-in LLM permission classifier for flagged dangerous calls.
-          permissionClassifier,
-        },
+    const loop = agentLoop(messages, tools, callModel, modelConfig, {
+      systemPrompt: turnSystemPrompt,
+      maxTurns: 50,
+      toolContext: {
+        workspaceRoot,
+        sessionId: sessionId!,
+        permissionMode,
+        modelConfig,
+        askUserQuestion: askUserQuestionGuarded,
+        // Thread the approver into sub-agent (Task/Team) loops so their
+        // destructive tools prompt the user instead of auto-approving.
         askUser: askUserGuarded,
-        abortSignal: controller.signal,
-        hooks,
-        // 12.2: opt-in speculative prefetch of likely follow-up Reads.
-        // M15.2: ON by default; --no-speculation / CCR_SPECULATION=0 disable.
-        speculation:
-          !process.argv.includes("--no-speculation") &&
-          process.env.CCR_SPECULATION !== "0",
+        onSubAgentProgress: (event) => {
+          spinner.stop();
+          renderer.flush();
+          renderSubAgentActivity(event);
+        },
+        // M15.3: opt-in LLM permission classifier for flagged dangerous calls.
+        permissionClassifier,
       },
-    );
+      askUser: askUserGuarded,
+      abortSignal: controller.signal,
+      hooks,
+      // 12.2: opt-in speculative prefetch of likely follow-up Reads.
+      // M15.2: ON by default; --no-speculation / CCR_SPECULATION=0 disable.
+      speculation:
+        !process.argv.includes("--no-speculation") && process.env.CCR_SPECULATION !== "0",
+    });
 
     let lastText = "";
     let turnInputTokens = 0;
@@ -755,9 +798,7 @@ async function main() {
           renderer.flush();
           if (uiState.showTokens && (turnInputTokens || turnOutputTokens)) {
             console.log(
-              chalk.gray(
-                `\n  [tokens: ${turnInputTokens} in / ${turnOutputTokens} out]`,
-              ),
+              chalk.gray(`\n  [tokens: ${turnInputTokens} in / ${turnOutputTokens} out]`),
             );
           }
           // M15.2: surface speculation cost/benefit (only if anything was

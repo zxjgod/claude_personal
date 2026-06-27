@@ -1,10 +1,6 @@
 // /pr — draft a PR description from commits/changes vs upstream
 import chalk from "chalk";
-import {
-  gatherDiffSummary,
-  suggestCommitSubject,
-  type GitDiffSummary,
-} from "../git-context.js";
+import { type GitDiffSummary, gatherDiffSummary, suggestCommitSubject } from "../git-context.js";
 import type { SlashCommand } from "./types.js";
 
 export const prCommand: SlashCommand = {

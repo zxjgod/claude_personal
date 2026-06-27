@@ -19,12 +19,12 @@
 // interactive callbacks are absent.
 // ============================================================
 
-import * as path from "node:path";
 import { execFile } from "node:child_process";
+import * as path from "node:path";
 import { promisify } from "node:util";
-import type { Tool, ToolResult, ToolContext, PermissionResult } from "./types.js";
-import { createTool } from "./tool-registry.js";
 import { getSkill, listSkills } from "./skills.js";
+import { createTool } from "./tool-registry.js";
+import type { PermissionResult, Tool, ToolResult } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -60,11 +60,7 @@ export function resetWorktrees(sessionId: string): void {
 }
 
 /** Best-effort git invocation; returns null on any failure. */
-async function git(
-  args: string[],
-  cwd: string,
-  timeoutMs = 8000,
-): Promise<string | null> {
+async function git(args: string[], cwd: string, timeoutMs = 8000): Promise<string | null> {
   try {
     const { stdout } = await execFileAsync("git", args, {
       cwd,
@@ -126,7 +122,7 @@ export const EnterWorktreeTool: Tool = createTool<EnterWorktreeInput>({
   async call(input, context): Promise<ToolResult> {
     const root = context.workspaceRoot;
     const inside = await git(["rev-parse", "--is-inside-work-tree"], root);
-    if (!inside || inside.trim() !== "true") {
+    if (inside?.trim() !== "true") {
       return { content: "", error: "Not a git repository — cannot create a worktree." };
     }
 
@@ -145,11 +141,7 @@ export const EnterWorktreeTool: Tool = createTool<EnterWorktreeInput>({
     const wtPath = path.join(root, worktreeDir(context.sessionId), branch);
 
     // git worktree add -b <branch> <path> <startpoint>
-    const out = await git(
-      ["worktree", "add", "-b", branch, wtPath, startPoint],
-      root,
-      15_000,
-    );
+    const out = await git(["worktree", "add", "-b", branch, wtPath, startPoint], root, 15_000);
     if (out === null) {
       return {
         content: "",
@@ -282,13 +274,9 @@ export const SkillTool: Tool = createTool<SkillInput>({
         error: `Unknown skill "${name}". Available skills:\n${available}`,
       };
     }
-    const argsLine = input.args?.trim()
-      ? `\n\nArguments: ${input.args}`
-      : "";
+    const argsLine = input.args?.trim() ? `\n\nArguments: ${input.args}` : "";
     return {
-      content:
-        `Skill "${skill.name}" loaded.\n\n` +
-        `Instructions:\n${skill.prompt}${argsLine}`,
+      content: `Skill "${skill.name}" loaded.\n\n` + `Instructions:\n${skill.prompt}${argsLine}`,
     };
   },
 });

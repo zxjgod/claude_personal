@@ -2,12 +2,12 @@
 // Tests: raw-mode interactive input (autocomplete + permission menu)
 // ============================================================
 
-import { describe, it, expect, vi } from "vitest";
 import { EventEmitter } from "node:events";
+import { describe, expect, it } from "vitest";
 import {
+  type CommandInfo,
   createRawInputReader,
   promptPermissionMenu,
-  type CommandInfo,
 } from "../cli-interactive.js";
 
 // A fake raw-mode TTY stdin we can push keystrokes into.

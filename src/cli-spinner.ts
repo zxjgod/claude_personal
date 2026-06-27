@@ -15,7 +15,7 @@
 // ============================================================
 
 import chalk from "chalk";
-import { graphemes, visualWidth, terminalColumns } from "./terminal-width.js";
+import { graphemes, terminalColumns, visualWidth } from "./terminal-width.js";
 
 // --- Constants (mirrored from the reference implementation) ---
 
@@ -181,8 +181,7 @@ export class Spinner {
   constructor(opts: SpinnerOptions = {}) {
     this.out = opts.out ?? process.stdout;
     this.reducedMotion =
-      opts.reducedMotion ??
-      (process.env.CCR_REDUCED_MOTION === "1" || !this.out.isTTY);
+      opts.reducedMotion ?? (process.env.CCR_REDUCED_MOTION === "1" || !this.out.isTTY);
   }
 
   get isActive(): boolean {
@@ -245,14 +244,8 @@ export class Spinner {
   private render(elapsedMs: number): void {
     if (!this.out.isTTY) return;
     const frame = Math.floor(elapsedMs / 120) % SPINNER_FRAMES.length;
-    const glyphChar = this.reducedMotion
-      ? TEARDROP_ASTERISK
-      : SPINNER_FRAMES[frame]!;
-    const glyph = chalk.rgb(
-      CLAUDE_ORANGE.r,
-      CLAUDE_ORANGE.g,
-      CLAUDE_ORANGE.b,
-    )(glyphChar);
+    const glyphChar = this.reducedMotion ? TEARDROP_ASTERISK : SPINNER_FRAMES[frame]!;
+    const glyph = chalk.rgb(CLAUDE_ORANGE.r, CLAUDE_ORANGE.g, CLAUDE_ORANGE.b)(glyphChar);
 
     const message = `${this.verb}…`;
     const verbText = this.reducedMotion
@@ -267,7 +260,7 @@ export class Spinner {
         parts.push(`${UP_ARROW} ${formatTokens(this.tokens)} tokens`);
       }
     }
-    let suffix = parts.length > 0 ? chalk.dim(` (${parts.join(" · ")})`) : "";
+    const suffix = parts.length > 0 ? chalk.dim(` (${parts.join(" · ")})`) : "";
 
     let line = `${glyph} ${verbText}${suffix}`;
     // If the line would overflow, drop the suffix.
@@ -283,11 +276,7 @@ export class Spinner {
     const glimmer = computeGlimmerIndex(tick, width);
     const { before, shimmer, after } = computeShimmerSegments(message, glimmer);
     const base = chalk.rgb(CLAUDE_ORANGE.r, CLAUDE_ORANGE.g, CLAUDE_ORANGE.b);
-    const hot = chalk.rgb(
-      CLAUDE_SHIMMER.r,
-      CLAUDE_SHIMMER.g,
-      CLAUDE_SHIMMER.b,
-    );
+    const hot = chalk.rgb(CLAUDE_SHIMMER.r, CLAUDE_SHIMMER.g, CLAUDE_SHIMMER.b);
     return base(before) + hot(shimmer) + base(after);
   }
 }

@@ -2,7 +2,7 @@
 // Tests: System Prompt Builder
 // ============================================================
 
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { buildSystemPrompt, rebuildDynamicSections } from "../system-prompt.js";
 
 describe("buildSystemPrompt", () => {
@@ -38,7 +38,7 @@ describe("buildSystemPrompt", () => {
       isConcurrencySafe: () => true,
       call: async () => ({ content: "" }),
       formatResult: (r: any) => r.content,
-      checkPermissions: async () => ({ allowed: true } as const),
+      checkPermissions: async () => ({ allowed: true }) as const,
     };
 
     const prompt = buildSystemPrompt({

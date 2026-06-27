@@ -131,13 +131,9 @@ export function predictReads(
 
   const all = extractPaths(name, result.content);
   const ranked = rankPaths(name, all);
-  const filtered = alreadyRead
-    ? ranked.filter((r) => !alreadyRead.has(r.path))
-    : ranked;
+  const filtered = alreadyRead ? ranked.filter((r) => !alreadyRead.has(r.path)) : ranked;
   const cap = effectiveCap(filtered.length, baseMax);
-  return filtered
-    .slice(0, cap)
-    .map((r) => ({ toolName: "read", input: { filePath: r.path } }));
+  return filtered.slice(0, cap).map((r) => ({ toolName: "read", input: { filePath: r.path } }));
 }
 
 /**
@@ -146,7 +142,10 @@ export function predictReads(
  * portion before the first ":" on grep lines, the whole line for glob.
  */
 function extractPaths(toolName: string, content: string): string[] {
-  const lines = content.split("\n").map((l) => l.trim()).filter(Boolean);
+  const lines = content
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
   const paths: string[] = [];
   for (const line of lines) {
     // Skip obvious non-path lines (headers, "No files found", counts).
@@ -215,24 +214,23 @@ export class SpeculationCache {
    * looked up from `tools`; only read-only + concurrency-safe ones run. Errors
    * are swallowed into a normal error ToolResult (a bad guess never throws).
    */
-  prefetch(
-    predictions: PredictedCall[],
-    tools: Tool[],
-    context: ToolContext,
-  ): void {
+  prefetch(predictions: PredictedCall[], tools: Tool[], context: ToolContext): void {
     if (!this.enabled) return;
     for (const pred of predictions) {
       const key = specKey(pred.toolName, pred.input);
       if (this.pending.has(key)) continue;
       const tool = tools.find((t) => t.name === pred.toolName);
-      if (!tool || !tool.isReadOnly() || !tool.isConcurrencySafe()) continue;
+      if (!tool?.isReadOnly() || !tool.isConcurrencySafe()) continue;
       this.prefetched++;
       const p = Promise.resolve()
         .then(() => tool.call(pred.input, context))
-        .catch((e) => ({
-          content: "",
-          error: e instanceof Error ? e.message : String(e),
-        }) as ToolResult);
+        .catch(
+          (e) =>
+            ({
+              content: "",
+              error: e instanceof Error ? e.message : String(e),
+            }) as ToolResult,
+        );
       this.pending.set(key, p);
     }
   }
@@ -242,10 +240,7 @@ export class SpeculationCache {
    * the ToolResult (awaiting the in-flight prefetch) or null on a miss. Each
    * key is served at most once.
    */
-  async take(
-    toolName: string,
-    input: Record<string, unknown>,
-  ): Promise<ToolResult | null> {
+  async take(toolName: string, input: Record<string, unknown>): Promise<ToolResult | null> {
     if (!this.enabled) return null;
     const key = specKey(toolName, input);
     const p = this.pending.get(key);

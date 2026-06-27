@@ -12,8 +12,8 @@
 // "↑ N more" / "↓ N more" markers indicate hidden rows above/below.
 // ============================================================
 
-import React, { useState } from "react";
 import { Box, Text, useInput } from "ink";
+import { useState } from "react";
 import type { Overlay } from "./store.js";
 
 const CYAN = "cyan";
@@ -84,8 +84,8 @@ export function SessionPicker({
         Resume a session
       </Text>
       <Text dimColor>
-        {sessions.length} saved session{sessions.length === 1 ? "" : "s"} — restores history
-        without using tokens
+        {sessions.length} saved session{sessions.length === 1 ? "" : "s"} — restores history without
+        using tokens
       </Text>
 
       <Box marginTop={1} flexDirection="column">

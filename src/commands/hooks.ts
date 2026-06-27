@@ -21,7 +21,9 @@ export const hooksCommand: SlashCommand = {
     console.log("");
     console.log(chalk.bold(`  Hooks (${entries.length} registered):`));
     if (entries.length === 0) {
-      console.log(chalk.gray("    None. Register PreToolUse/PostToolUse hooks in cli.ts or project config."));
+      console.log(
+        chalk.gray("    None. Register PreToolUse/PostToolUse hooks in cli.ts or project config."),
+      );
       return;
     }
     for (const h of entries) {

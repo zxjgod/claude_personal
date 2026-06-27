@@ -2,16 +2,13 @@
 // Tests: memory-extract (M19.3)
 // ============================================================
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
-import * as path from "node:path";
 import * as os from "node:os";
-import {
-  extractMemoriesHeuristic,
-  MemoryStore,
-} from "../memory-extract.js";
-import type { Message } from "../types.js";
+import * as path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FileChange } from "../change-tracker.js";
+import { extractMemoriesHeuristic, MemoryStore } from "../memory-extract.js";
+import type { Message } from "../types.js";
 
 let tmpDir: string;
 
@@ -39,7 +36,9 @@ describe("extractMemoriesHeuristic", () => {
     expect(texts).toContain("Always use tabs for indentation.");
     expect(texts).toContain("Remember that the API base URL is in .env");
     expect(texts).not.toContain("Can you fix the bug?");
-    out.forEach((m) => expect(m.source).toBe("heuristic"));
+    out.forEach((m) => {
+      expect(m.source).toBe("heuristic");
+    });
   });
 
   it("summarizes files changed this session", () => {

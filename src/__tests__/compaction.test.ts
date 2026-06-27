@@ -7,7 +7,7 @@
 // ("tool message must follow tool_calls").
 // ============================================================
 
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { agentLoop } from "../agent-loop.js";
 import type { Message, ModelCaller, ModelConfig, StreamEvent } from "../types.js";
 
@@ -23,9 +23,7 @@ const testConfig: ModelConfig = {
  * passes to the model after compaction.
  */
 function makeRecordingCaller(captured: Message[][]): ModelCaller {
-  return async function* (
-    messages: Message[],
-  ): AsyncGenerator<StreamEvent> {
+  return async function* (messages: Message[]): AsyncGenerator<StreamEvent> {
     captured.push(structuredClone(messages));
     yield { type: "text_delta", delta: "ok" };
     yield {
@@ -39,9 +37,7 @@ function makeRecordingCaller(captured: Message[][]): ModelCaller {
 /** Build a long, well-formed history that ends right after a tool result,
  * so a naive `slice(-N)` tail would begin with an orphan `tool` message. */
 function buildHistoryEndingInToolResult(pairs: number): Message[] {
-  const messages: Message[] = [
-    { role: "user", content: [{ type: "text", text: "start" }] },
-  ];
+  const messages: Message[] = [{ role: "user", content: [{ type: "text", text: "start" }] }];
   for (let i = 0; i < pairs; i++) {
     messages.push({
       role: "assistant",
@@ -190,9 +186,7 @@ describe("handleModelError recovery behavior", () => {
       yield { type: "error", error: e };
     };
 
-    const messages: Message[] = [
-      { role: "user", content: [{ type: "text", text: "hi" }] },
-    ];
+    const messages: Message[] = [{ role: "user", content: [{ type: "text", text: "hi" }] }];
     const types: string[] = [];
     for await (const event of agentLoop(messages, [], caller, testConfig, {
       systemPrompt: "sys",

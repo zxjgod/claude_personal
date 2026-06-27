@@ -32,7 +32,8 @@ export const mcpCommand: SlashCommand = {
     for (const [server, toolNames] of byServer) {
       console.log(`    ${chalk.cyan(server)} — ${toolNames.length} tool(s)`);
       for (const tn of toolNames.slice(0, 12)) console.log(chalk.gray(`        - ${tn}`));
-      if (toolNames.length > 12) console.log(chalk.gray(`        … +${toolNames.length - 12} more`));
+      if (toolNames.length > 12)
+        console.log(chalk.gray(`        … +${toolNames.length - 12} more`));
     }
     console.log(chalk.gray("  Auth: tokens are persisted per-server via the OAuth provider."));
   },

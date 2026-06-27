@@ -1,9 +1,6 @@
 // /commit — draft a commit message from the current git changes
 import chalk from "chalk";
-import {
-  gatherDiffSummary,
-  suggestCommitSubject,
-} from "../git-context.js";
+import { gatherDiffSummary, suggestCommitSubject } from "../git-context.js";
 import type { SlashCommand } from "./types.js";
 
 export const commitCommand: SlashCommand = {

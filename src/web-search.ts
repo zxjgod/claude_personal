@@ -6,8 +6,8 @@
 // the LLM to synthesize. No API key required.
 // ============================================================
 
-import type { Tool, ToolResult } from "./types.js";
 import { createTool } from "./tool-registry.js";
+import type { Tool, ToolResult } from "./types.js";
 
 const TIMEOUT_MS = 15_000;
 const MAX_RESULTS = 10;
@@ -138,8 +138,7 @@ export const WebSearchTool: Tool = createTool<WebSearchInput>({
 
       const body = results
         .map(
-          (r, idx) =>
-            `${idx + 1}. ${r.title}\n   ${r.url}${r.snippet ? `\n   ${r.snippet}` : ""}`,
+          (r, idx) => `${idx + 1}. ${r.title}\n   ${r.url}${r.snippet ? `\n   ${r.snippet}` : ""}`,
         )
         .join("\n\n");
 

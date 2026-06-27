@@ -2,24 +2,24 @@
 // Tests: M8 breadth tools
 // ============================================================
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { filterByFile, formatDiagnostics, parseTscOutput } from "../lsp-legacy.js";
+import { markRead, resetReadTracker } from "../read-tracker.js";
 import {
-  NotebookEditTool,
-  LspDiagnosticsTool,
-  createToolSearchTool,
   createMcpResourceTools,
+  createToolSearchTool,
+  LspDiagnosticsTool,
   type MCPResourceProvider,
+  NotebookEditTool,
 } from "../tools-m8.js";
 import {
+  AskUserQuestionTool,
   EnterPlanModeTool,
   ExitPlanModeTool,
-  AskUserQuestionTool,
 } from "../tools-m8-interactive.js";
-import { parseTscOutput, filterByFile, formatDiagnostics } from "../lsp-legacy.js";
-import { markRead, resetReadTracker } from "../read-tracker.js";
 import type { Tool, ToolContext, UserQuestion } from "../types.js";
 
 function ctx(overrides: Partial<ToolContext> = {}): ToolContext {
@@ -43,7 +43,13 @@ describe("NotebookEdit", () => {
     nbPath = path.join(dir, "n.ipynb");
     const nb = {
       cells: [
-        { cell_type: "code", source: ["print(1)\n"], metadata: {}, outputs: [], execution_count: 1 },
+        {
+          cell_type: "code",
+          source: ["print(1)\n"],
+          metadata: {},
+          outputs: [],
+          execution_count: 1,
+        },
         { cell_type: "markdown", source: ["# title\n"], metadata: {} },
       ],
       metadata: {},
@@ -150,8 +156,16 @@ describe("LSP diagnostics parsing", () => {
 describe("ToolSearch", () => {
   const fakeTools: Tool[] = [
     { name: "read", description: "Read a file", promptDescription: "read files from disk" } as Tool,
-    { name: "grep", description: "Search contents", promptDescription: "search file contents with regex" } as Tool,
-    { name: "web_search", description: "Search the web", promptDescription: "search the internet" } as Tool,
+    {
+      name: "grep",
+      description: "Search contents",
+      promptDescription: "search file contents with regex",
+    } as Tool,
+    {
+      name: "web_search",
+      description: "Search the web",
+      promptDescription: "search the internet",
+    } as Tool,
   ];
   const tool = createToolSearchTool(() => fakeTools);
 
@@ -249,18 +263,12 @@ describe("AskUserQuestion", () => {
     const c = ctx({
       askUserQuestion: async (q) => [q.options[0]!.label],
     });
-    const r = await AskUserQuestionTool.call(
-      { question: "q", options: ["only"] },
-      c,
-    );
+    const r = await AskUserQuestionTool.call({ question: "q", options: ["only"] }, c);
     expect(r.content).toContain("only");
   });
 
   it("degrades gracefully without a callback", async () => {
-    const r = await AskUserQuestionTool.call(
-      { question: "q", options: ["a", "b"] },
-      ctx(),
-    );
+    const r = await AskUserQuestionTool.call({ question: "q", options: ["a", "b"] }, ctx());
     expect(r.content).toContain("unavailable");
   });
 

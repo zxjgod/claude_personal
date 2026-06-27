@@ -2,14 +2,14 @@
 // Tests: speculation — predictive tool prefetch (12.2)
 // ============================================================
 
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
-  predictReads,
-  specKey,
-  rankPaths,
   effectiveCap,
   formatSpeculationLine,
+  predictReads,
+  rankPaths,
   SpeculationCache,
+  specKey,
 } from "../speculation.js";
 import type { Tool, ToolContext, ToolResult } from "../types.js";
 
@@ -119,22 +119,12 @@ describe("effectiveCap", () => {
 
 describe("predictReads alreadyRead filter", () => {
   it("drops paths already read this session", () => {
-    const preds = predictReads(
-      "glob",
-      { content: "a.ts\nb.ts" },
-      {},
-      new Set(["a.ts"]),
-    );
+    const preds = predictReads("glob", { content: "a.ts\nb.ts" }, {}, new Set(["a.ts"]));
     expect(preds.map((p) => p.input.filePath)).toEqual(["b.ts"]);
   });
 
   it("returns [] when every candidate was already read", () => {
-    const preds = predictReads(
-      "glob",
-      { content: "a.ts" },
-      {},
-      new Set(["a.ts"]),
-    );
+    const preds = predictReads("glob", { content: "a.ts" }, {}, new Set(["a.ts"]));
     expect(preds).toEqual([]);
   });
 });

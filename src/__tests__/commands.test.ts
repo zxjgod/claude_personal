@@ -2,14 +2,14 @@
 // Tests: slash commands
 // ============================================================
 
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { handleSlashCommand, type CommandContext } from "../commands.js";
-import type { Message, ModelConfig, ModelCaller } from "../types.js";
-import { SessionStats } from "../session-stats.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { recordChange, resetChangeTracker } from "../change-tracker.js";
+import { type CommandContext, handleSlashCommand } from "../commands.js";
+import { SessionStats } from "../session-stats.js";
+import type { Message, ModelCaller, ModelConfig } from "../types.js";
 
 // A model caller that yields a single text + done (used by /compact).
 const fakeCaller: ModelCaller = async function* () {
@@ -49,9 +49,7 @@ describe("handleSlashCommand", () => {
   });
 
   it("/clear empties the message array in place", async () => {
-    const messages: Message[] = [
-      { role: "user", content: [{ type: "text", text: "hi" }] },
-    ];
+    const messages: Message[] = [{ role: "user", content: [{ type: "text", text: "hi" }] }];
     const r = await handleSlashCommand("/clear", makeCtx(messages));
     expect(r.handled).toBe(true);
     expect(messages).toHaveLength(0);
@@ -270,7 +268,6 @@ describe("handleSlashCommand", () => {
       return ctx;
     }
 
-
     it("/memory add appends a bullet to CLAUDE.md", async () => {
       const ctx = ctxFor();
       await handleSlashCommand("/memory add use tabs not spaces", ctx);
@@ -361,7 +358,6 @@ describe("handleSlashCommand", () => {
       expect(messages).toHaveLength(0);
     });
   });
-
 
   describe("prompt-injecting commands (M18.3 / 18.4 / 18.7)", () => {
     it("/review returns a prompt to inject", async () => {
@@ -523,7 +519,9 @@ describe("handleSlashCommand", () => {
     });
 
     it("lists and cancels a scheduled job", async () => {
-      const { ScheduleCronTool, resetScheduledJobs, listScheduledJobs } = await import("../tools-m9.js");
+      const { ScheduleCronTool, resetScheduledJobs, listScheduledJobs } = await import(
+        "../tools-m9.js"
+      );
       resetScheduledJobs();
       await ScheduleCronTool.call(
         { cron: "5 9 * * 1", prompt: "weekly recap", recurring: true } as any,

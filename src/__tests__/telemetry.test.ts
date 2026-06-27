@@ -2,14 +2,11 @@
 // Tests: local telemetry recorder (11.4)
 // ============================================================
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import {
-  Telemetry,
-  resolveTelemetryOptions,
-} from "../telemetry.js";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { resolveTelemetryOptions, Telemetry } from "../telemetry.js";
 
 let tmp: string;
 

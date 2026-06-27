@@ -2,11 +2,8 @@
 // Tests: prompt cache refinement (12.3)
 // ============================================================
 
-import { describe, it, expect } from "vitest";
-import {
-  formatToolsForAnthropic,
-  withMessageCacheBreakpoint,
-} from "../anthropic-adapter.js";
+import { describe, expect, it } from "vitest";
+import { formatToolsForAnthropic, withMessageCacheBreakpoint } from "../anthropic-adapter.js";
 import { SessionStats } from "../session-stats.js";
 import type { Tool } from "../types.js";
 
@@ -48,7 +45,10 @@ describe("withMessageCacheBreakpoint", () => {
       { role: "user" as const, content: [{ type: "text", text: "hi" }] },
       {
         role: "assistant" as const,
-        content: [{ type: "text", text: "a" }, { type: "text", text: "b" }],
+        content: [
+          { type: "text", text: "a" },
+          { type: "text", text: "b" },
+        ],
       },
     ];
     const out = withMessageCacheBreakpoint(msgs);
@@ -60,9 +60,7 @@ describe("withMessageCacheBreakpoint", () => {
   });
 
   it("promotes a string content message to a marked block", () => {
-    const out = withMessageCacheBreakpoint([
-      { role: "user" as const, content: "plain" },
-    ]);
+    const out = withMessageCacheBreakpoint([{ role: "user" as const, content: "plain" }]);
     const blocks = out[0].content as any[];
     expect(blocks[0]).toMatchObject({
       type: "text",

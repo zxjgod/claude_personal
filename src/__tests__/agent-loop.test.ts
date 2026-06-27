@@ -2,9 +2,9 @@
 // Tests: Agent Loop
 // ============================================================
 
-import { describe, it, expect, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { agentLoop } from "../agent-loop.js";
-import type { Message, ModelCaller, ModelConfig, Tool, StreamEvent } from "../types.js";
+import type { Message, ModelCaller, ModelConfig, StreamEvent, Tool } from "../types.js";
 
 function makeMockCaller(responses: StreamEvent[][]): ModelCaller {
   let callIndex = 0;
@@ -49,9 +49,7 @@ describe("agentLoop", () => {
       ],
     ]);
 
-    const messages: Message[] = [
-      { role: "user", content: [{ type: "text", text: "Hi" }] },
-    ];
+    const messages: Message[] = [{ role: "user", content: [{ type: "text", text: "Hi" }] }];
 
     const events: any[] = [];
     for await (const event of agentLoop(messages, [], caller, testConfig, {
@@ -115,9 +113,7 @@ describe("agentLoop", () => {
       ],
     ]);
 
-    const messages: Message[] = [
-      { role: "user", content: [{ type: "text", text: "Echo test" }] },
-    ];
+    const messages: Message[] = [{ role: "user", content: [{ type: "text", text: "Echo test" }] }];
 
     const events: any[] = [];
     for await (const event of agentLoop(messages, [tool], caller, testConfig, {
@@ -178,9 +174,7 @@ describe("agentLoop", () => {
       ],
     ]);
 
-    const messages: Message[] = [
-      { role: "user", content: [{ type: "text", text: "go" }] },
-    ];
+    const messages: Message[] = [{ role: "user", content: [{ type: "text", text: "go" }] }];
 
     const events: any[] = [];
     for await (const event of agentLoop(messages, [slow, fast], caller, testConfig, {
@@ -236,9 +230,7 @@ describe("agentLoop", () => {
       ]),
     );
 
-    const messages: Message[] = [
-      { role: "user", content: [{ type: "text", text: "Loop" }] },
-    ];
+    const messages: Message[] = [{ role: "user", content: [{ type: "text", text: "Loop" }] }];
 
     const events: any[] = [];
     for await (const event of agentLoop(messages, [tool], caller, testConfig, {
@@ -279,9 +271,7 @@ describe("agentLoop", () => {
       ],
     ]);
 
-    const messages: Message[] = [
-      { role: "user", content: [{ type: "text", text: "Test" }] },
-    ];
+    const messages: Message[] = [{ role: "user", content: [{ type: "text", text: "Test" }] }];
 
     const events: any[] = [];
     for await (const event of agentLoop(messages, [], caller, testConfig, {
@@ -345,22 +335,14 @@ describe("agentLoop", () => {
       ],
     ]);
 
-    const messages: Message[] = [
-      { role: "user", content: [{ type: "text", text: "write" }] },
-    ];
+    const messages: Message[] = [{ role: "user", content: [{ type: "text", text: "write" }] }];
 
     const events: any[] = [];
-    for await (const event of agentLoop(
-      messages,
-      [writeTool],
-      caller,
-      testConfig,
-      {
-        systemPrompt: "You are helpful.",
-        maxTurns: 5,
-        askUser: async () => false, // user denies
-      },
-    )) {
+    for await (const event of agentLoop(messages, [writeTool], caller, testConfig, {
+      systemPrompt: "You are helpful.",
+      maxTurns: 5,
+      askUser: async () => false, // user denies
+    })) {
       events.push(event);
     }
 
@@ -415,24 +397,16 @@ describe("agentLoop", () => {
       ],
     ]);
 
-    const messages: Message[] = [
-      { role: "user", content: [{ type: "text", text: "write" }] },
-    ];
+    const messages: Message[] = [{ role: "user", content: [{ type: "text", text: "write" }] }];
 
     const events: any[] = [];
-    for await (const event of agentLoop(
-      messages,
-      [writeTool],
-      caller,
-      testConfig,
-      {
-        systemPrompt: "You are helpful.",
-        maxTurns: 5,
-        toolContext: { permissionMode: "plan" },
-        // askUser would allow, but plan mode must block before asking.
-        askUser: async () => true,
-      },
-    )) {
+    for await (const event of agentLoop(messages, [writeTool], caller, testConfig, {
+      systemPrompt: "You are helpful.",
+      maxTurns: 5,
+      toolContext: { permissionMode: "plan" },
+      // askUser would allow, but plan mode must block before asking.
+      askUser: async () => true,
+    })) {
       events.push(event);
     }
 
@@ -491,9 +465,7 @@ describe("agentLoop", () => {
       ],
     ]);
 
-    const messages: Message[] = [
-      { role: "user", content: [{ type: "text", text: "rm" }] },
-    ];
+    const messages: Message[] = [{ role: "user", content: [{ type: "text", text: "rm" }] }];
     const events: any[] = [];
     for await (const event of agentLoop(messages, [bashTool], caller, testConfig, {
       systemPrompt: "You are helpful.",
@@ -547,27 +519,19 @@ describe("agentLoop", () => {
       ],
     ]);
 
-    const messages: Message[] = [
-      { role: "user", content: [{ type: "text", text: "probe" }] },
-    ];
+    const messages: Message[] = [{ role: "user", content: [{ type: "text", text: "probe" }] }];
 
     const onSubAgentProgress = vi.fn();
-    for await (const _event of agentLoop(
-      messages,
-      [probeTool],
-      caller,
-      testConfig,
-      {
-        systemPrompt: "You are helpful.",
-        maxTurns: 5,
-        toolContext: {
-          workspaceRoot: "/custom/workspace",
-          sessionId: "session-xyz",
-          permissionMode: "default",
-          onSubAgentProgress,
-        },
+    for await (const _event of agentLoop(messages, [probeTool], caller, testConfig, {
+      systemPrompt: "You are helpful.",
+      maxTurns: 5,
+      toolContext: {
+        workspaceRoot: "/custom/workspace",
+        sessionId: "session-xyz",
+        permissionMode: "default",
+        onSubAgentProgress,
       },
-    )) {
+    })) {
       // drain
     }
 
@@ -614,9 +578,7 @@ describe("agentLoop", () => {
       ],
     ]);
 
-    const messages: Message[] = [
-      { role: "user", content: [{ type: "text", text: "run" }] },
-    ];
+    const messages: Message[] = [{ role: "user", content: [{ type: "text", text: "run" }] }];
 
     const events: any[] = [];
     for await (const event of agentLoop(messages, [tool], caller, testConfig, {
@@ -668,9 +630,7 @@ describe("agentLoop", () => {
       ],
     ]);
 
-    const messages: Message[] = [
-      { role: "user", content: [{ type: "text", text: "read" }] },
-    ];
+    const messages: Message[] = [{ role: "user", content: [{ type: "text", text: "read" }] }];
 
     const events: any[] = [];
     for await (const event of agentLoop(messages, [tool], caller, testConfig, {
@@ -697,7 +657,11 @@ describe("agentLoop", () => {
       name: "read",
       description: "Read",
       promptDescription: "Read a file",
-      inputSchema: { type: "object", properties: { filePath: { type: "string" } }, required: ["filePath"] },
+      inputSchema: {
+        type: "object",
+        properties: { filePath: { type: "string" } },
+        required: ["filePath"],
+      },
       isEnabled: () => true,
       isReadOnly: () => true,
       isConcurrencySafe: () => true,
@@ -721,11 +685,19 @@ describe("agentLoop", () => {
     const caller = makeMockCaller([
       [
         { type: "tool_use", id: "g1", name: "grep", input: { pattern: "x" } },
-        { type: "done", usage: { input_tokens: 10, output_tokens: 5 }, finish_reason: "tool_calls" },
+        {
+          type: "done",
+          usage: { input_tokens: 10, output_tokens: 5 },
+          finish_reason: "tool_calls",
+        },
       ],
       [
         { type: "tool_use", id: "r1", name: "read", input: { filePath: "src/a.ts" } },
-        { type: "done", usage: { input_tokens: 10, output_tokens: 5 }, finish_reason: "tool_calls" },
+        {
+          type: "done",
+          usage: { input_tokens: 10, output_tokens: 5 },
+          finish_reason: "tool_calls",
+        },
       ],
       [
         { type: "text_delta", delta: "done" },
@@ -734,11 +706,17 @@ describe("agentLoop", () => {
     ]);
 
     const events: any[] = [];
-    for await (const event of agentLoop(messages("search"), [readTool, grepTool], caller, testConfig, {
-      systemPrompt: "You are helpful.",
-      maxTurns: 5,
-      speculation: true,
-    })) {
+    for await (const event of agentLoop(
+      messages("search"),
+      [readTool, grepTool],
+      caller,
+      testConfig,
+      {
+        systemPrompt: "You are helpful.",
+        maxTurns: 5,
+        speculation: true,
+      },
+    )) {
       events.push(event);
     }
 

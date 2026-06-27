@@ -6,9 +6,9 @@
 // active row (ctrl+r) can toggle expansion via the App's expanded set.
 // ============================================================
 
-import React from "react";
 import { Box, Text } from "ink";
 import Spinner from "ink-spinner";
+import type React from "react";
 import type { ToolExecutionResult } from "./../types.js";
 
 const ORANGE = "#d77757";
