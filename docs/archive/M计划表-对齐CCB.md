@@ -118,6 +118,15 @@
 - 测试 458 → **600+**
 - CI 全绿
 
+> **进度（2026-06-28）**：M21 完成。新增 **6 个集成测试文件 / +105 用例**，总量 **508 → 613**（超 600 目标），`tsc --noEmit` 0 错、`biome check` 干净、`npm test` **613/613**、`npm run smoke` PASSED。
+> - 21.1 `integration-tools.test.ts`（23）——真 git 全生命周期：enter→worktree 内 commit→exit keep/remove，证明提交隔离（main 不被 worktree 提交带走）、嵌套 worktree 栈 LIFO 弹出、脏树拒删+`discardChanges` 强删、跨 session 栈隔离；Skill 注册/解析/override/未知列目录；Cron list/get/remove/durable + Sleep 入队一次性 job。
+> - 21.2 `integration-permissions.test.ts`（21）——完整 `checkPermission` 管道 × LLM 分类器：read-only/plan/bypass/blocked-path 在分类器之前短路（验证 callModel **零调用**）、BLOCK/CONFIRM/ALLOW 三判决端到端、失败安全（无 key/抛错/不可解析/超时/已 abort 一律退回正则原因并仍弹窗）、`formatActionForClassifier` 四种形态（bash/edit/url/JSON）、工作区外写入被标记后 BLOCK 拒绝。
+> - 21.3 `integration-persistence.test.ts`（20）——多 session 隔离（同/异 workspace）、模拟重启后 `resume`（新实例读快照，保 `createdAt`/completed）、`history-replay` 把多轮会话折回 transcript items、`SessionTranscript` 有序 seq+recap 折叠+崩溃尾行容错、`MemoryStore` 抽取+去重+跨实例、并发多 session 落盘。
+> - 21.4 `integration-mcp.test.ts`（23）+ `fixtures/mock-mcp-stdio-server.mjs`——**真 SDK** 多传输：stdio 子进程 mock server 全链路（connect→listTools→包装 `mcp__<srv>__<tool>`→调用 echo/add→首调批准粘滞→resources 读取→断开）、**进程内 StreamableHTTP** mock server（无状态+JSON 响应）http 往返、sse/ws/http 路由分支与不可达端点优雅降级（serverCount 0 不抛）、disabled/缺 url/缺 command/未知类型/坏 JSON 配置容错。
+> - 21.5 `integration-tui.test.tsx`（12）——30 轮长会话压测 store 不变量（transcript 每轮 +3、id 全唯一、活动工具零泄漏、token 精确累加、乱序并发工具收尾不漏）、overlay 中途开/解不扰历史、`<App>` 渲染 30 轮与 resume 回放大 transcript 不崩、expandedId 展开工具卡。
+> - 21.6 `ci-smoke.test.ts`（6）——回归守卫：`scripts/smoke.mjs` 存在、`package.json` 暴露 smoke/typecheck/test/check、smoke 覆盖 build+无 key 路径、`ci.yml` push/PR→main 跑 typecheck+check+test+smoke 且 smoke 在 test **之后**（M20 已接入 CI，此处把"接入"本身钉成不可回归）。
+> - 决策：MCP 用 stdio 子进程 + 进程内 HTTP 作"真 mock server"（非打桩），sse/ws 以路由构造+不可达降级覆盖（真起 sse/ws 服务跨平台易脆）；分类器超时测试改用"慢流中途截断"（其超时是 yield 间协作式，无法中断从不 yield 的生成器）。详见 [更新日志 20260628-m21-testing](../更新日志/20260628-m21-testing.md)。
+
 ---
 
 ## 六、M22 — 多 provider 原生化（P2）
