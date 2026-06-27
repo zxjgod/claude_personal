@@ -521,7 +521,7 @@ async function main() {
 
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    const userInput = await readInput();
+    let userInput = await readInput();
 
     // null = stdin closed (EOF / Ctrl+D). Exit the REPL cleanly.
     if (userInput === null) break;
@@ -532,7 +532,16 @@ async function main() {
     if (userInput.startsWith("/")) {
       const result = await handleSlashCommand(userInput, makeCommandContext());
       if (result.exit) break;
-      if (result.handled) continue;
+      // M18: a command may return a prompt to inject as a user message and
+      // run through the agent loop (e.g. /review, /recap, /fork). Fall through
+      // to the normal turn machinery with that prompt replacing the input.
+      if (result.handled) {
+        if (result.prompt) {
+          userInput = result.prompt;
+        } else {
+          continue;
+        }
+      }
     }
 
     // Expand @file references into context attachments.

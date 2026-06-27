@@ -1,0 +1,71 @@
+// ============================================================
+// Slash Commands — types & registry (M18 directory split)
+// ============================================================
+// Each command lives in src/commands/<name>.ts and default-exports a
+// SlashCommand. This file owns the shared types and the registry that
+// index.ts assembles. Behavior is unchanged from the pre-split commands.ts.
+// ============================================================
+
+import type { Message, ModelConfig, ModelCaller, Tool } from "../types.js";
+import type { PersistenceManager } from "../persistence.js";
+import type { SessionStats } from "../session-stats.js";
+
+/** Source label for a tool listed by /tools. */
+export type ToolSource = "core" | "mcp";
+
+/** Mutable session state a command may read or change. */
+export interface CommandContext {
+  messages: Message[];
+  modelConfig: ModelConfig;
+  callModel: ModelCaller;
+  workspaceRoot: string;
+  sessionId: string;
+  persistence?: PersistenceManager;
+  ui?: {
+    showTokens: boolean;
+    verbose: boolean;
+  };
+  permissions?: {
+    listAlwaysAllow(): string[];
+    clearAlwaysAllow(): void;
+  };
+  resumeSession?: (sessionId: string) => Promise<boolean>;
+  /** Cumulative token/cost/tool stats for this session. */
+  stats?: SessionStats;
+  /** Tools loaded this session, with their source for /tools. */
+  tools?: Array<{ tool: Tool; source: ToolSource }>;
+  /** The active permission mode (for /status, /config). */
+  permissionMode?: string;
+  /** The assembled system prompt (for /context token breakdown). */
+  systemPrompt?: string;
+  /** Number of connected MCP servers (for /status). */
+  mcpServerCount?: number;
+  /** MCP manager for /mcp (server/tool/auth status). */
+  mcpManager?: import("../mcp.js").MCPManager;
+}
+
+export interface CommandResult {
+  /** True if the input was a recognized slash command (don't send to LLM). */
+  handled: boolean;
+  /** True if the REPL should exit. */
+  exit?: boolean;
+  /**
+   * M18: a prompt the caller should inject as a user message and run through
+   * the agent loop (instead of treating the command as fully handled). Used by
+   * /review, /recap, /onboarding, … Mirrors B's `type: 'prompt'` commands.
+   * When set, `handled` is still true (the slash line itself is consumed),
+   * and the caller is responsible for pushing + running the prompt.
+   */
+  prompt?: string;
+}
+
+export interface SlashCommand {
+  name: string;
+  description: string;
+  /**
+   * Run the command. May return a partial CommandResult (e.g. `{ prompt }`)
+   * to ask the caller to inject a prompt into the agent loop; otherwise the
+   * command is treated as fully handled. Mirrors B's `type: 'prompt'` commands.
+   */
+  run: (args: string, ctx: CommandContext) => Promise<Partial<CommandResult> | void> | Partial<CommandResult> | void;
+}

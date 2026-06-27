@@ -270,6 +270,7 @@ describe("handleSlashCommand", () => {
       return ctx;
     }
 
+
     it("/memory add appends a bullet to CLAUDE.md", async () => {
       const ctx = ctxFor();
       await handleSlashCommand("/memory add use tabs not spaces", ctx);
@@ -305,6 +306,183 @@ describe("handleSlashCommand", () => {
       // /init force overwrites.
       await handleSlashCommand("/init force", ctx);
       expect(fs.readFileSync(path.join(dir, "CLAUDE.md"), "utf-8")).not.toBe("MANUAL");
+    });
+  });
+
+  // ---- M18 new commands: /branch /fork /review /recap /share /rewind /onboarding ----
+
+  describe("/rewind (M18.6)", () => {
+    function ctxWith(messages: Message[]): CommandContext {
+      return makeCtx(messages);
+    }
+
+    it("rewinds one user turn by default, dropping trailing assistant/tool msgs", async () => {
+      const messages: Message[] = [
+        { role: "user", content: [{ type: "text", text: "first" }] },
+        { role: "assistant", content: "hi", tool_calls: [] },
+        { role: "user", content: [{ type: "text", text: "second" }] },
+        { role: "assistant", content: "yo", tool_calls: [] },
+      ];
+      await handleSlashCommand("/rewind", ctxWith(messages));
+      // Removed the 2nd user turn + its assistant reply → back to 2 messages.
+      expect(messages).toHaveLength(2);
+      const first = messages[0] as { content: Array<{ text?: string }> };
+      expect(first.content[0]?.text).toBe("first");
+    });
+
+    it("rewinds N turns when given a number", async () => {
+      const messages: Message[] = [
+        { role: "user", content: [{ type: "text", text: "a" }] },
+        { role: "assistant", content: "1", tool_calls: [] },
+        { role: "user", content: [{ type: "text", text: "b" }] },
+        { role: "assistant", content: "2", tool_calls: [] },
+        { role: "user", content: [{ type: "text", text: "c" }] },
+        { role: "assistant", content: "3", tool_calls: [] },
+      ];
+      await handleSlashCommand("/rewind 2", ctxWith(messages));
+      expect(messages).toHaveLength(2);
+      const first = messages[0] as { content: Array<{ text?: string }> };
+      expect(first.content[0]?.text).toBe("a");
+    });
+
+    it("rewinds everything when N >= turn count", async () => {
+      const messages: Message[] = [
+        { role: "user", content: [{ type: "text", text: "a" }] },
+        { role: "assistant", content: "1", tool_calls: [] },
+      ];
+      await handleSlashCommand("/rewind 5", ctxWith(messages));
+      expect(messages).toHaveLength(0);
+    });
+
+    it("is a no-op (handled) when there are no user turns", async () => {
+      const messages: Message[] = [];
+      const r = await handleSlashCommand("/rewind", ctxWith(messages));
+      expect(r.handled).toBe(true);
+      expect(messages).toHaveLength(0);
+    });
+  });
+
+
+  describe("prompt-injecting commands (M18.3 / 18.4 / 18.7)", () => {
+    it("/review returns a prompt to inject", async () => {
+      const ctx = makeCtx([]);
+      const r = await handleSlashCommand("/review", ctx);
+      expect(r.handled).toBe(true);
+      expect(r.prompt).toBeTruthy();
+      expect(r.prompt).toContain("code reviewer");
+    });
+
+    it("/recap returns a prompt referencing the change list", async () => {
+      resetChangeTracker();
+      const ctx = makeCtx([
+        { role: "user", content: [{ type: "text", text: "hi" }] },
+        { role: "assistant", content: "hello", tool_calls: [] },
+      ]);
+      const r = await handleSlashCommand("/recap", ctx);
+      expect(r.handled).toBe(true);
+      expect(r.prompt).toBeTruthy();
+      expect(r.prompt).toContain("no files changed");
+    });
+
+    it("/onboarding injects a prompt only when gaps exist", async () => {
+      // Empty workspace in /tmp has no .env / no CLAUDE.md → gaps → prompt.
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-onboard-"));
+      try {
+        const ctx = makeCtx([]);
+        ctx.workspaceRoot = dir;
+        const r = await handleSlashCommand("/onboarding", ctx);
+        expect(r.handled).toBe(true);
+        expect(r.prompt).toBeTruthy();
+        expect(r.prompt).toContain("onboarding");
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("/fork returns a prompt that seeds a sub-agent", async () => {
+      const ctx = makeCtx([
+        { role: "user", content: [{ type: "text", text: "do X" }] },
+        { role: "assistant", content: "ok", tool_calls: [] },
+      ]);
+      const r = await handleSlashCommand("/fork", ctx);
+      expect(r.handled).toBe(true);
+      expect(r.prompt).toContain("task tool");
+      expect(r.prompt).toContain("do X");
+    });
+
+    it("/fork refuses on an empty conversation", async () => {
+      const ctx = makeCtx([]);
+      const r = await handleSlashCommand("/fork", ctx);
+      expect(r.handled).toBe(true);
+      expect(r.prompt).toBeUndefined();
+    });
+  });
+
+  describe("/share (M18.5)", () => {
+    it("renders a compact shareable transcript to stdout when no path given", async () => {
+      const ctx = makeCtx([
+        { role: "user", content: [{ type: "text", text: "hello world" }] },
+        { role: "assistant", content: "hi there", tool_calls: [] },
+      ]);
+      const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+      try {
+        await handleSlashCommand("/share", ctx);
+        const out = writeSpy.mock.calls.map((c) => String(c[0])).join("");
+        expect(out).toContain("hello world");
+        expect(out).toContain("hi there");
+        expect(out).toContain("Assistant:");
+      } finally {
+        writeSpy.mockRestore();
+      }
+    });
+
+    it("writes a markdown file when a path is given", async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-share-"));
+      try {
+        const ctx = makeCtx([
+          { role: "user", content: [{ type: "text", text: "ping" }] },
+          { role: "assistant", content: "pong", tool_calls: [] },
+        ]);
+        ctx.workspaceRoot = dir;
+        const target = path.join(dir, "out.md");
+        await handleSlashCommand(`/share ${target}`, ctx);
+        const content = fs.readFileSync(target, "utf-8");
+        expect(content).toContain("ping");
+        expect(content).toContain("pong");
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe("/branch (M18.1)", () => {
+    it("snapshots current messages into a new session via persistence", async () => {
+      const saved: { id: string; msgs: Message[] }[] = [];
+      const ctx = makeCtx([
+        { role: "user", content: [{ type: "text", text: "hi" }] },
+        { role: "assistant", content: "yo", tool_calls: [] },
+      ]);
+      ctx.persistence = {
+        generateId: () => "new-branch-id",
+        save: async (id: string, msgs: Message[]) => {
+          saved.push({ id, msgs });
+        },
+      } as any;
+      const r = await handleSlashCommand("/branch", ctx);
+      expect(r.handled).toBe(true);
+      expect(saved).toHaveLength(1);
+      expect(saved[0]!.id).toBe("new-branch-id");
+      expect(saved[0]!.msgs).toHaveLength(2);
+      // Original messages untouched.
+      expect(ctx.messages).toHaveLength(2);
+    });
+
+    it("refuses to branch an empty conversation", async () => {
+      const ctx = makeCtx([]);
+      ctx.persistence = { generateId: () => "x", save: async () => {} } as any;
+      const r = await handleSlashCommand("/branch", ctx);
+      expect(r.handled).toBe(true);
+      expect(r.prompt).toBeUndefined();
     });
   });
 });

@@ -188,18 +188,19 @@ function truncate(value: string, max: number): string {
 }
 
 /** Capture console.log output produced while `fn` runs, returning the lines. */
-async function captureConsole(fn: () => Promise<void> | void): Promise<string[]> {
+async function captureConsole<T>(fn: () => Promise<T> | T): Promise<{ lines: string[]; result: T }> {
   const lines: string[] = [];
   const orig = console.log;
   console.log = (...args: unknown[]) => {
     lines.push(args.map((a) => (typeof a === "string" ? a : String(a))).join(" "));
   };
+  let result: T;
   try {
-    await fn();
+    result = await fn();
   } finally {
     console.log = orig;
   }
-  return lines;
+  return { lines, result };
 }
 
 /**
@@ -253,6 +254,9 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
         setTimeout(() => process.exit(0), 50);
         return;
       }
+      // Echo the user's input line once. For prompt-injecting slash commands
+      // the echoed line is the command itself (e.g. "/review"); the injected
+      // prompt is pushed only into `deps.messages`, not re-echoed.
       store.addUserMessage(value);
 
       void (async () => {
@@ -270,20 +274,30 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
           return;
         }
 
-        // Slash commands run locally; capture their console output.
+        // Slash commands run locally; capture their console output and read
+        // the CommandResult in one dispatch (no double-execution). A command
+        // may return `prompt` to inject a user message and run the loop
+        // (/review /recap /fork /onboarding); otherwise it's fully local.
+        let effectiveText: string | null = null;
         if (value.startsWith("/")) {
-          const lines = await captureConsole(async () => {
-            await handleSlashCommand(value, deps.makeCommandContext());
-          });
+          const { lines, result } = await captureConsole(() =>
+            handleSlashCommand(value, deps.makeCommandContext()),
+          );
           if (lines.length > 0) store.addLog(lines);
-          return;
+          if (result.exit) return;
+          if (result.handled && !result.prompt) return; // purely local command
+          if (result.prompt) effectiveText = result.prompt;
         }
 
+        // Determine the effective user text: either a prompt injected by a
+        // slash command, or the raw input.
+        const inputText = effectiveText ?? value;
+
         // Expand @file refs, then push the user message + run the loop.
-        const { attachments, notes } = expandFileRefs(value, deps.workspaceRoot);
+        const { attachments, notes } = expandFileRefs(inputText, deps.workspaceRoot);
         for (const note of notes) store.addNotice(note);
         const contentText =
-          attachments.length > 0 ? `${value}\n\n${attachments.join("\n\n")}` : value;
+          attachments.length > 0 ? `${inputText}\n\n${attachments.join("\n\n")}` : inputText;
         deps.messages.push({ role: "user", content: [{ type: "text", text: contentText }] });
 
         const controller = new AbortController();
