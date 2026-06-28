@@ -16,6 +16,11 @@ import type { CommandContext } from "./../commands.js";
 import { handleSlashCommand } from "./../commands.js";
 import { EFFORT_DESCRIPTIONS, getEffort } from "./../effort.js";
 import { expandFileRefs } from "./../file-refs.js";
+import {
+  applyProfile,
+  loadProviderProfiles,
+  type ProviderProfile,
+} from "./../provider-profiles.js";
 import { formatSpeculationLine } from "./../speculation.js";
 import type {
   AskUserFn,
@@ -32,7 +37,7 @@ import { App } from "./App.js";
 import { printBanner } from "./banner.js";
 import { firstUserPreview, messagesToTranscript } from "./history-replay.js";
 import type { CommandInfo } from "./InputBox.js";
-import { type SessionPickerItem, TuiStore } from "./store.js";
+import { type ProviderPickerItem, type SessionPickerItem, TuiStore } from "./store.js";
 
 export interface TuiDeps {
   messages: Message[];
@@ -278,6 +283,40 @@ async function runResumePicker(store: TuiStore, deps: TuiDeps): Promise<void> {
 }
 
 /**
+ * Drive the interactive /provider flow: list saved API endpoint profiles from
+ * .claude/providers.json, let the user pick one from the overlay, then swap the
+ * live ModelConfig in place. No LLM call — the next turn uses the new endpoint.
+ */
+async function runProviderPicker(store: TuiStore, deps: TuiDeps): Promise<void> {
+  const profiles = loadProviderProfiles(deps.workspaceRoot);
+  if (profiles.length === 0) {
+    store.addNotice("  No provider profiles. Create .claude/providers.json to use /provider.");
+    return;
+  }
+
+  const cfg = deps.modelConfig;
+  const items: ProviderPickerItem[] = profiles.map((p: ProviderProfile) => ({
+    name: p.name,
+    label: `${p.provider ?? "openai"}/${p.model ?? "default"}`,
+    detail: p.baseURL,
+    current: (p.provider ?? "openai") === cfg.provider && (!p.model || p.model === cfg.model),
+  }));
+
+  const chosen = await store.pickProvider(items);
+  if (!chosen) {
+    store.addNotice("  Provider switch cancelled.");
+    return;
+  }
+  const profile = profiles.find((p) => p.name === chosen);
+  if (!profile) return;
+
+  const prev = `${cfg.provider}/${cfg.model}`;
+  applyProfile(cfg, profile);
+  store.setModelLabel(`${cfg.provider}/${cfg.model}`);
+  store.addNotice(`  Provider: ${prev} → ${cfg.provider}/${cfg.model} (${profile.name})`);
+}
+
+/**
  * Root that wires the InputBox submit handler to slash-command dispatch and
  * the agent loop, and installs a process-level SIGINT handler that aborts the
  * current turn (9.6) without tearing down the session.
@@ -354,6 +393,14 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
         // history into the transcript and costs no tokens (no LLM call).
         if (/^\/resume\s*$/i.test(value)) {
           await runResumePicker(store, deps);
+          return;
+        }
+
+        // /provider with no args → open the interactive endpoint-profile picker.
+        // With an arg (e.g. /provider deepseek) it falls through to the static
+        // handler which switches by name. Switching costs no tokens (no LLM call).
+        if (/^\/provider\s*$/i.test(value)) {
+          await runProviderPicker(store, deps);
           return;
         }
 

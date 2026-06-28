@@ -1,0 +1,29 @@
+{
+  "_comment": "Copy this file to .claude/providers.json (gitignored — holds plaintext keys). Switch between profiles in-session with /provider, or /provider <name>. Only 'name' is required; provider defaults to 'openai', and baseURL/model fall back to the provider's defaults.",
+  "profiles": [
+    {
+      "name": "relay",
+      "provider": "openai",
+      "baseURL": "https://your-relay.example.com/v1",
+      "apiKey": "sk-your-relay-key",
+      "model": "gpt-4o"
+    },
+    {
+      "name": "deepseek",
+      "provider": "deepseek",
+      "apiKey": "sk-your-deepseek-key",
+      "model": "deepseek-chat"
+    },
+    {
+      "name": "kimi",
+      "provider": "moonshot",
+      "apiKey": "sk-your-moonshot-key"
+    },
+    {
+      "name": "qwen",
+      "provider": "qwen",
+      "apiKey": "sk-your-dashscope-key",
+      "model": "qwen-plus"
+    }
+  ]
+}

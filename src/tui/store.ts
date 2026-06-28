@@ -45,6 +45,17 @@ export interface SessionPickerItem {
   current?: boolean;
 }
 
+export interface ProviderPickerItem {
+  /** Profile name (returned by the picker on selection). */
+  name: string;
+  /** One-line summary: "provider/model". */
+  label: string;
+  /** Optional detail (e.g. base URL). */
+  detail?: string;
+  /** True when this profile matches the active provider/model. */
+  current?: boolean;
+}
+
 /** A pending interactive prompt the App should overlay. */
 export type Overlay =
   | {
@@ -71,6 +82,11 @@ export type Overlay =
       kind: "sessionPicker";
       sessions: SessionPickerItem[];
       resolve: (sessionId: string | null) => void;
+    }
+  | {
+      kind: "providerPicker";
+      profiles: ProviderPickerItem[];
+      resolve: (name: string | null) => void;
     };
 
 export interface StoreState {
@@ -325,5 +341,30 @@ export class TuiStore {
         },
       });
     });
+  }
+
+  /**
+   * Open the /provider profile picker; resolves with the chosen profile name,
+   * or null if the user cancelled (Esc). Switching mutates the live ModelConfig
+   * in place — no LLM call, applies to the next turn.
+   */
+  pickProvider(profiles: ProviderPickerItem[]): Promise<string | null> {
+    return new Promise((resolve) => {
+      this.set({
+        overlay: {
+          kind: "providerPicker",
+          profiles,
+          resolve: (name) => {
+            this.set({ overlay: null });
+            resolve(name);
+          },
+        },
+      });
+    });
+  }
+
+  /** Update the status-bar model label (e.g. after a /provider switch). */
+  setModelLabel(label: string): void {
+    this.set({ modelLabel: label });
   }
 }

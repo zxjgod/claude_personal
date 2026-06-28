@@ -31,6 +31,7 @@ import { modelCommand } from "./model.js";
 import { onboardingCommand } from "./onboarding.js";
 import { permissionsCommand } from "./permissions.js";
 import { prCommand } from "./pr.js";
+import { providerCommand } from "./provider.js";
 import { recapCommand } from "./recap.js";
 import { resumeCommand } from "./resume.js";
 import { reviewCommand } from "./review.js";
@@ -68,6 +69,7 @@ export const COMMANDS: SlashCommand[] = [
   effortCommand,
   commitCommand,
   prCommand,
+  providerCommand,
   agentsCommand,
   skillsCommand,
   exportCommand,

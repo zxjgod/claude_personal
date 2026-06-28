@@ -43,6 +43,7 @@ import { createMcpResourceTools, createToolSearchTool } from "./tools-m8.js";
 import type {
   AskUserFn,
   Message,
+  ModelCaller,
   ModelConfig,
   PermissionClassifier,
   PermissionMode,
@@ -346,7 +347,13 @@ async function main() {
 
   // --- Model Caller ---
 
-  const callModel = createModelCaller(modelConfig);
+  // Dispatch by provider at *call* time, not once at startup. createModelCaller
+  // binds Anthropic vs OpenAI-compatible by `provider`; resolving it per call
+  // means /provider (and any in-session config mutation) can switch provider
+  // families — including to/from Anthropic — without rebuilding the closure.
+  // The branch is a cheap function-ref lookup, so per-turn cost is negligible.
+  const callModel: ModelCaller = (messages, tools, systemPrompt, cfg, abortSignal) =>
+    createModelCaller(cfg)(messages, tools, systemPrompt, cfg, abortSignal);
 
   // M15.3: LLM-assisted permission classifier. OFF by default — enable with
   // --llm-perm-classifier or CCR_PERM_CLASSIFIER=1. When enabled, tool calls

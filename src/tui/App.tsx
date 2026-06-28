@@ -15,6 +15,7 @@ import { EffortPrompt } from "./EffortPrompt.js";
 import { type CommandInfo, InputBox } from "./InputBox.js";
 import { ParticleSpinner } from "./ParticleSpinner.js";
 import { PermissionPrompt, QuestionPrompt } from "./Prompts.js";
+import { ProviderPicker } from "./ProviderPicker.js";
 import { SessionPicker } from "./SessionPicker.js";
 import type { TranscriptItem, TuiStore } from "./store.js";
 import { ActiveToolCard, CompletedToolCard } from "./ToolCard.js";
@@ -120,6 +121,8 @@ export function App({
           <QuestionPrompt overlay={state.overlay} />
         ) : state.overlay.kind === "sessionPicker" ? (
           <SessionPicker overlay={state.overlay} />
+        ) : state.overlay.kind === "providerPicker" ? (
+          <ProviderPicker overlay={state.overlay} />
         ) : (
           <EffortPrompt overlay={state.overlay} />
         )

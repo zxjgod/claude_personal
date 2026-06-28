@@ -21,6 +21,9 @@ coverage/
 # Local session state (runtime artifacts, not source)
 .claude/sessions/
 
+# Provider profiles — contains plaintext API keys (commit providers.json.example instead)
+.claude/providers.json
+
 # Bundled reference materials (large files)
 reference/
 *.pdf

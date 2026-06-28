@@ -131,6 +131,8 @@
 
 ## 六、M22 — 多 provider 原生化（P2）
 
+> **状态更新（2026-06-28）：降为「按需/低优先」。** 用户面的「多后端切换」需求已由 `/provider` 多端点档案（`.claude/providers.json` + 会话内热切换）覆盖——中转站/国内平台都是 OpenAI 兼容，改 baseURL 即可，无需为它们写原生 adapter。M22 仅在确需 Bedrock/Vertex 命名式注册时再做，且仍不含 SigV4/ADC 签名。详见 [更新日志 20260628-provider-profiles](../更新日志/20260628-provider-profiles.md)。
+
 > 目标：把 `cloud-gateway.ts` 薄路由升级为原生 adapter，对齐 B 的 7 provider 注册体系，但**不打包云 SDK、不做 SigV4/ADC 签名**（保持薄层，token 用户提供）。
 
 | # | 任务 | 验收 |
