@@ -11,16 +11,34 @@
 import { Box, Static, Text } from "ink";
 import { useSyncExternalStore } from "react";
 import { renderMarkdown } from "./../markdown.js";
+import { actionLabel } from "./../spinner-core.js";
 import { EffortPrompt } from "./EffortPrompt.js";
 import { type CommandInfo, InputBox } from "./InputBox.js";
-import { ParticleSpinner } from "./ParticleSpinner.js";
 import { PermissionPrompt, QuestionPrompt } from "./Prompts.js";
 import { ProviderPicker } from "./ProviderPicker.js";
 import { SessionPicker } from "./SessionPicker.js";
-import type { TranscriptItem, TuiStore } from "./store.js";
+import { StatusLine } from "./StatusLine.js";
+import type { StoreState, TranscriptItem, TuiStore } from "./store.js";
 import { ActiveToolCard, CompletedToolCard } from "./ToolCard.js";
 
 const ORANGE = "#d77757";
+
+/**
+ * Present-continuous status for the live status line (M23.3). While a tool is
+ * running we show the concrete action ("Reading App.tsx", "Running npm test");
+ * otherwise the phase word ("Thinking" / "Responding").
+ */
+function statusLabel(state: StoreState): string {
+  if (state.activeTools.length === 1) {
+    const t = state.activeTools[0]!;
+    return actionLabel(t.name, t.detail);
+  }
+  if (state.activeTools.length > 1) {
+    return `Running ${state.activeTools.length} tools`;
+  }
+  if (state.spinner === "responding") return "Responding";
+  return "Thinking";
+}
 
 function TranscriptRow({ item, expanded }: { item: TranscriptItem; expanded: boolean }) {
   switch (item.kind) {
@@ -86,11 +104,14 @@ export function App({
         )}
       </Static>
 
-      {/* Live region: streaming assistant text. */}
+      {/* Live region: streaming assistant text. Rendered as RAW text while it
+          streams (M23.7) — markdown is parsed once at commit time (see the
+          "assistant" transcript row), so we don't re-lex the whole block on
+          every coalesced frame. */}
       {state.streamingText ? (
         <Box marginBottom={1}>
           <Text color={ORANGE}>●</Text>
-          <Text> {renderMarkdown(state.streamingText)}</Text>
+          <Text> {state.streamingText}</Text>
         </Box>
       ) : null}
 
@@ -99,18 +120,14 @@ export function App({
         <ActiveToolCard key={t.id} name={t.name} detail={t.detail} />
       ))}
 
-      {/* Spinner line while thinking / responding (no active tool). */}
+      {/* Animated status line while thinking / responding (no active tool):
+          orange glyph + shimmer label + live clock + real token count. */}
       {state.busy && state.activeTools.length === 0 && state.spinner !== "idle" ? (
-        <Box>
-          <Text color="yellow">
-            <ParticleSpinner />
-          </Text>
-          <Text dimColor>
-            {" "}
-            {state.spinner === "thinking" ? "Thinking" : "Responding"}
-            {state.spinnerTokens > 0 ? ` (${state.spinnerTokens} tokens)` : ""}
-          </Text>
-        </Box>
+        <StatusLine
+          label={statusLabel(state)}
+          startedAt={state.turnStartedAt}
+          tokens={state.spinnerTokens}
+        />
       ) : null}
 
       {/* Overlay takes over input when present. */}

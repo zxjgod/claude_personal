@@ -103,6 +103,10 @@ export interface StoreState {
   spinner: SpinnerMode;
   /** Rough output-token counter shown next to the spinner. */
   spinnerTokens: number;
+  /** Epoch ms when the current turn began (0 = no turn running). Drives the
+   *  status-line elapsed clock so it survives the thinking→tool→responding
+   *  phase changes within one turn. */
+  turnStartedAt: number;
   /** Session-wide token totals for the status bar. */
   tokensIn: number;
   tokensOut: number;
@@ -128,6 +132,7 @@ export class TuiStore {
       activeTools: [],
       spinner: "idle",
       spinnerTokens: 0,
+      turnStartedAt: 0,
       tokensIn: 0,
       tokensOut: 0,
       overlay: null,
@@ -209,9 +214,31 @@ export class TuiStore {
     this.set({ spinnerTokens: n });
   }
 
+  /** Mark the start of a turn (resets the elapsed clock). */
+  startTurnClock(): void {
+    this.set({ turnStartedAt: Date.now() });
+  }
+
+  /** Stop the elapsed clock (turn finished/aborted). */
+  stopTurnClock(): void {
+    this.set({ turnStartedAt: 0 });
+  }
+
   /** Append streamed assistant text to the live region. */
   appendStreaming(delta: string): void {
     this.set({ streamingText: this.state.streamingText + delta });
+  }
+
+  /**
+   * Append streamed text AND update the live token counter in a single emit.
+   * The coalescing producer (run.tsx) calls this once per flush frame (~30fps)
+   * instead of once per delta, so a fast stream re-renders at a steady cadence.
+   */
+  appendStreamingWithTokens(delta: string, tokens: number): void {
+    this.set({
+      streamingText: this.state.streamingText + delta,
+      spinnerTokens: Math.max(this.state.spinnerTokens, tokens),
+    });
   }
 
   /** Commit the streamed text as a finished assistant transcript item. */

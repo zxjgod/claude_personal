@@ -197,7 +197,7 @@ while (pending.size > 0) {
 
 UI（TUI 与 CLI 两条路径都如此）在提交后立即 `setBusy(true)` / 启动 spinner：
 
-- TUI：`src/tui/run.tsx:59` `store.setBusy(true)`，`App.tsx:96` 据此渲染 `ParticleSpinner`；
+- TUI：`src/tui/run.tsx` `store.setBusy(true)` 后由 `App.tsx` 渲染工作状态行（M23 后为 `StatusLine`/`SpinnerGlyph`；早期为 `ParticleSpinner`）；
 - CLI：`src/cli.ts:594` `spinner.setMode("thinking"); spinner.start()`。
 
 `busy`/spinner 只在 agent loop 的 `done`/`error`/`aborted` 事件里被置回（`run.tsx:154-158`

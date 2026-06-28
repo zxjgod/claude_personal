@@ -7,9 +7,10 @@
 // ============================================================
 
 import { Box, Text } from "ink";
-import Spinner from "ink-spinner";
 import type React from "react";
+import { actionLabel } from "./../spinner-core.js";
 import type { ToolExecutionResult } from "./../types.js";
+import { SpinnerGlyph } from "./SpinnerGlyph.js";
 
 const ORANGE = "#d77757";
 const PREVIEW_LINES = 12;
@@ -21,15 +22,12 @@ function colorizeLine(line: string): React.ReactNode {
   return <Text>{line}</Text>;
 }
 
-/** The live "tool is running" card (spinner + name). */
+/** The live "tool is running" card: shared orange glyph + concrete action. */
 export function ActiveToolCard({ name, detail }: { name: string; detail: string }) {
   return (
     <Box>
-      <Text color="yellow">
-        <Spinner type="dots" />
-      </Text>
-      <Text> {capitalize(name)}</Text>
-      {detail ? <Text dimColor>({truncate(detail, 100)})</Text> : null}
+      <SpinnerGlyph />
+      <Text> {actionLabel(name, detail)}</Text>
     </Box>
   );
 }

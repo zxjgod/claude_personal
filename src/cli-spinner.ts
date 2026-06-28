@@ -2,7 +2,8 @@
 // CLI Spinner — animated "thinking" status line
 // ============================================================
 // A no-React reimplementation of Claude Code's SpinnerWithVerb /
-// SpinnerAnimationRow. Renders a single in-place line of the form:
+// SpinnerAnimationRow for the line-based CLI path. Renders a single in-place
+// line of the form:
 //
 //   ✶ Whisking… (16s · ↑ 144 tokens)
 //
@@ -10,153 +11,39 @@
 // elapsed seconds, and an estimated token count. The whole line is redrawn
 // in place via \r + erase-to-EOL, so it never scrolls the terminal.
 //
-// Reference: claude test/src/src/components/Spinner/* and
-// claude test/src/src/bridge/bridgeStatusUtil.ts (shimmer maths).
+// The pure primitives (verbs, frames, colours, shimmer maths, formatters) live
+// in `spinner-core.ts` and are shared with the Ink TUI status line; this file
+// is the line-CLI renderer on top of them.
 // ============================================================
 
 import chalk from "chalk";
-import { graphemes, terminalColumns, visualWidth } from "./terminal-width.js";
+import {
+  CLAUDE_ORANGE,
+  CLAUDE_SHIMMER,
+  computeGlimmerIndex,
+  computeShimmerSegments,
+  FRAME_MS,
+  formatDuration,
+  formatTokens,
+  GLYPH_FRAME_MS,
+  pickVerb,
+  SHIMMER_INTERVAL_MS,
+  SPINNER_FRAMES,
+  SPINNER_VERBS,
+  TEARDROP_ASTERISK,
+  UP_ARROW,
+} from "./spinner-core.js";
+import { terminalColumns, visualWidth } from "./terminal-width.js";
 
-// --- Constants (mirrored from the reference implementation) ---
+// Re-export the shared primitives so existing importers of `cli-spinner.js`
+// (and its tests) keep working unchanged.
+export { computeGlimmerIndex, computeShimmerSegments, formatDuration, formatTokens, SPINNER_VERBS };
 
-// A curated subset of the ~190 gerunds in spinnerVerbs.ts.
-export const SPINNER_VERBS = [
-  "Accomplishing",
-  "Architecting",
-  "Baking",
-  "Brewing",
-  "Calculating",
-  "Cerebrating",
-  "Churning",
-  "Clauding",
-  "Cogitating",
-  "Computing",
-  "Concocting",
-  "Considering",
-  "Contemplating",
-  "Cooking",
-  "Crafting",
-  "Crunching",
-  "Deciphering",
-  "Deliberating",
-  "Determining",
-  "Distilling",
-  "Forging",
-  "Generating",
-  "Herding",
-  "Ideating",
-  "Imagining",
-  "Incubating",
-  "Inferring",
-  "Manifesting",
-  "Marinating",
-  "Mulling",
-  "Musing",
-  "Noodling",
-  "Percolating",
-  "Pondering",
-  "Processing",
-  "Puzzling",
-  "Reticulating",
-  "Ruminating",
-  "Schlepping",
-  "Simmering",
-  "Sketching",
-  "Spelunking",
-  "Spinning",
-  "Stewing",
-  "Swirling",
-  "Synthesizing",
-  "Thinking",
-  "Tinkering",
-  "Whisking",
-  "Working",
-  "Wrangling",
-];
-
-// Spinner glyph frames (official particle charset), played forwards then backwards.
-const BASE_FRAMES = ["·", "✢", "✳", "✶", "✻", "✽"];
-const SPINNER_FRAMES = [...BASE_FRAMES, ...[...BASE_FRAMES].reverse()];
-
-const TEARDROP_ASTERISK = "✻";
-const UP_ARROW = "↑";
-
-// Claude orange + a lighter shimmer variant (theme.ts: claude / claudeShimmer).
-const CLAUDE_ORANGE: RGB = { r: 215, g: 119, b: 87 };
-const CLAUDE_SHIMMER: RGB = { r: 245, g: 149, b: 117 };
-
-const FRAME_MS = 80;
-const SHIMMER_INTERVAL_MS = 150;
-// Show the timer/token suffix only after the turn has run a little while,
-// matching the reference (which gates it behind ~30s / verbose).
+// Show the timer/token suffix immediately (the reference gates it behind ~30s /
+// verbose; we always show it so the elapsed clock is visible from the start).
 const SHOW_SUFFIX_AFTER_MS = 0;
 
 export type SpinnerMode = "thinking" | "tool" | "responding";
-
-interface RGB {
-  r: number;
-  g: number;
-  b: number;
-}
-
-// --- Shimmer maths (ported from bridgeStatusUtil.ts) ---
-
-export function computeGlimmerIndex(tick: number, messageWidth: number): number {
-  const cycleLength = messageWidth + 20;
-  return messageWidth + 10 - (tick % cycleLength);
-}
-
-export function computeShimmerSegments(
-  text: string,
-  glimmerIndex: number,
-): { before: string; shimmer: string; after: string } {
-  const messageWidth = visualWidth(text);
-  const shimmerStart = glimmerIndex - 1;
-  const shimmerEnd = glimmerIndex + 1;
-
-  if (shimmerStart >= messageWidth || shimmerEnd < 0) {
-    return { before: text, shimmer: "", after: "" };
-  }
-
-  const clampedStart = Math.max(0, shimmerStart);
-  let colPos = 0;
-  let before = "";
-  let shimmer = "";
-  let after = "";
-  for (const { segment, width } of graphemes(text)) {
-    if (colPos + width <= clampedStart) {
-      before += segment;
-    } else if (colPos > shimmerEnd) {
-      after += segment;
-    } else {
-      shimmer += segment;
-    }
-    colPos += width;
-  }
-  return { before, shimmer, after };
-}
-
-// --- Formatting helpers ---
-
-/** Format a duration in ms as the spinner's short form (e.g. "16s", "2m 5s"). */
-export function formatDuration(ms: number): string {
-  const totalSec = Math.max(0, Math.round(ms / 1000));
-  if (totalSec < 60) return `${totalSec}s`;
-  const min = Math.floor(totalSec / 60);
-  const sec = totalSec % 60;
-  return sec === 0 ? `${min}m` : `${min}m ${sec}s`;
-}
-
-/** Format a token count with thousands separators (e.g. 1234 → "1.2k"). */
-export function formatTokens(n: number): string {
-  if (n < 1000) return String(n);
-  if (n < 10_000) return `${(n / 1000).toFixed(1)}k`;
-  return `${Math.round(n / 1000)}k`;
-}
-
-function pickVerb(): string {
-  return SPINNER_VERBS[Math.floor(Math.random() * SPINNER_VERBS.length)]!;
-}
 
 // --- Spinner ---
 
@@ -243,7 +130,7 @@ export class Spinner {
 
   private render(elapsedMs: number): void {
     if (!this.out.isTTY) return;
-    const frame = Math.floor(elapsedMs / 120) % SPINNER_FRAMES.length;
+    const frame = Math.floor(elapsedMs / GLYPH_FRAME_MS) % SPINNER_FRAMES.length;
     const glyphChar = this.reducedMotion ? TEARDROP_ASTERISK : SPINNER_FRAMES[frame]!;
     const glyph = chalk.rgb(CLAUDE_ORANGE.r, CLAUDE_ORANGE.g, CLAUDE_ORANGE.b)(glyphChar);
 

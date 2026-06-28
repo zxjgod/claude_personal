@@ -15,8 +15,8 @@
 | **P0** | 记忆服务化 | persistence 单点 → SessionMemory + extractMemories + sessionTranscript | services/memory, memdir | 机制对齐，简化实现 |
 | **P1** | 工程化对齐 | 零 CI → CI + pre-commit + 构建升级 | GitHub Actions, Biome, husky | 引入 CI + husky，构建用 esbuild |
 | **P1** | 测试广度 | 458 → 600+，补 tools/permissions/persistence 集成 + production-test 冒烟 | 319 + production-test | 补集成测试 + 冒烟脚本 |
+| **P1** | TUI 体验对齐 | 静态状态行 → 橙字形+流光+实时秒表+真 token；流式合批 + markdown 提交时解析 | Spinner / StatusBar 组件 | 复用 ink/chalk，不引渲染库 |
 | **P2** | 多 provider 原生化 | cloud-gateway 薄路由 → 原生 adapter（Bedrock/Vertex/Gemini/Grok） | 7 provider 注册 | 做成 adapter 而非网关 |
-| **P2** | 可观测性（轻量） | 本地 telemetry → + analytics + 远程配置开关 | telemetry remote config | 仅开关 + 本地 analytics，不引 Sentry/Langfuse |
 | **不做** | Bun / NAPI / 群控 / Remote Control / Chrome Use / Computer Use / monorepo | — | — | 与"轻量本地"定位冲突 |
 
 ---
@@ -149,13 +149,62 @@
 
 ---
 
-## 七、M23 — 轻量可观测性（P2，按需）
+## 七、M23 — TUI 体验对齐参考版（响应 / 状态行 / 流式输出，P1）✅
+
+> **状态（2026-06-28）：完成。** 9 项子任务全落地，`tsc --noEmit` 0 错、`biome check` 干净、`npm test` **651/651**（+38）、`npm run smoke` PASSED。新增 `src/spinner-core.ts`（共享原语）、`src/tui/SpinnerGlyph.tsx`、`src/tui/StatusLine.tsx`、`src/tui/stream-buffer.ts`；删除 `src/tui/ParticleSpinner.tsx` 与未用依赖 `ink-spinner`。状态行/工具卡共享粒子帧集 `·✢✶✻✽`，已按用户偏好移除 `✳`。详见 [更新日志 20260628-m23-tui-statusline](../更新日志/20260628-m23-tui-statusline.md)。
+>
+> **缘起**：项目已有一份**完整且忠实**的参考版 spinner（`src/cli-spinner.ts`：随机 gerund 动词、橙→shimmer 流光、实时秒表 `formatDuration`、真实 token `↑ 1.2k`），但它**只服务于旧的行式 CLI 路径，Ink TUI 从未用上**。当前 TUI（`App.tsx` + `ParticleSpinner.tsx`）只显示静态 "Thinking/Responding" + 黄色（非橙）粒子字形 + 粗估 `(streamedChars/4 tokens)`、**无计时**；而 `ToolCard.tsx` 又用了另一套 `ink-spinner` dots。M23 把这份已有能力接进 TUI，并修复流式重绘成本——本质是「接线 + 优化」而非从零造轮子。
+>
+> **决策（用户选定）**：① 状态行 **完全对齐参考版**（橙字形 / 流光 / 实时秒表 / 真实 token）；② 标签用 **具体动作**（Thinking / Reading `<file>` / Running `<cmd>` / Responding），而非随机 verb；③ 四项响应优化 **全做**（合并流式重绘 + markdown 延迟到提交 + 隔离动画子树 + 统一工具卡字形）。
+>
+> **落地要点**：
+> - 23.1 `spinner-core.ts`：verbs / 帧 / 颜色 / shimmer 数学 / `formatDuration` / `formatTokens` / `glyphAt` / `actionLabel` 抽为纯模块，`cli-spinner.ts` 改为 import + re-export（旧测试零改动仍绿）。
+> - 23.2/23.8 `StatusLine.tsx` + `SpinnerGlyph.tsx`：各自持有 `setInterval`，动画帧只重绘那一小块叶子，不惊动 `<Static>` 与输入框。
+> - 23.3 `actionLabel`：从 spinner 模式 + 活动工具 detail 推导（Reading/Writing/Editing/Running/Searching/Fetching/Delegating），多工具时显示 `Running N tools`。
+> - 23.4 真实 token：`usage` 事件在每次模型调用结束时落 `committedOutputTokens`，期间用 `char/4` 估算并在 usage 落地时校准（loop 内 usage 在流末，故估算+校准而非纯实时）。
+> - 23.5 实时计时：`store.turnStartedAt` 在 turn 起点记录，跨 thinking→tool→responding 不重置，结束归零。
+> - 23.6 `stream-buffer.ts`：注入式定时器的 `StreamBuffer`，token delta 合批 ~30fps（`appendStreamingWithTokens` 单次 emit）。
+> - 23.7 流式期间渲染纯文本，markdown 仅在 `commitStreaming` 后的 assistant 行解析一次。
+> - 23.9 `ToolCard` 改用 `SpinnerGlyph`，全 TUI 字形/配色统一为橙色粒子。
+
+### 现状 vs 目标
+
+| 维度 | 当前 TUI | 目标（对齐参考版） |
+|---|---|---|
+| 左侧字形 | 黄色粒子（`ParticleSpinner`），`ToolCard` 又用 `ink-spinner` dots | 统一橙色粒子字形 `·✢✶✻✽`（正放+倒放；无 `✳`） |
+| 标签 | 静态 "Thinking" / "Responding" | 具体动作：`Reading App.tsx` / `Running npm test` |
+| 计时 | 无 | 实时秒表（`16s` · `2m 5s`） |
+| token | `streamedChars/4` 粗估 | 流式期间估算，`usage.output_tokens` 落地后校准为真实值（`↑ 1.2k`） |
+| 流光 | 无 | shimmer 扫过标签（150ms） |
+| 流式重绘 | 每 token → 整树 re-render + 每 delta 重解析 markdown | 合批 ~30fps + markdown 仅提交时解析一次 |
+
+### 任务
 
 | # | 任务 | 验收 |
 |---|---|---|
-| 23.1 | analytics 本地计数（命令/工具调用频次） | `/stats` 可查看 |
-| 23.2 | telemetry 远程配置开关（读 settings.json 的 endpoint，但不强依赖） | 开关可配 |
-| 23.3 | **不引** Sentry / Langfuse / GrowthBook / OpenTelemetry | — |
+| 23.1 | 抽公共 spinner 模块：把 `cli-spinner.ts` 的 verb / shimmer / `formatDuration` / `formatTokens` 提取为 Ink 与行式 CLI 共用（不重复实现） | 两端共用一份字形/计时/格式化逻辑 |
+| 23.2 | TUI 状态行重写：橙色粒子字形 + shimmer 流光 + 实时秒表 + 真实 token，形如 `✶ Reading App.tsx (16s · ↑ 1.2k tokens)` | 手测与参考版一致 |
+| 23.3 | 具体动作标签：从 `store.spinner` + 活动工具 detail 推导（Thinking / Reading `<file>` / Running `<cmd>` / Editing `<file>` / Searching `<pattern>` / Responding） | 工具运行时显示「动作 + 目标」 |
+| 23.4 | token 计数：流式期间用 char/4 估算，`usage` 事件真实 `output_tokens` 落地后校准并累计 | 状态行 token 与会话累计最终一致 |
+| 23.5 | 实时计时：turn 起点记 `startTime`，状态行按帧推进已用秒（`formatDuration`） | 秒表随帧前进，turn 结束归零 |
+| 23.6 | 合并流式重绘：token delta 合批，固定节奏（~30ms / 30fps）刷新，避免每 token 触发整树 re-render | 高频流式重绘成本显著下降，不掉帧 |
+| 23.7 | Markdown 延迟到提交：流式期间纯文本输出，仅 `commitStreaming` 时解析一次 markdown | 不再每 delta 重解析整段 markdown |
+| 23.8 | 隔离动画子树：字形/计时/shimmer 收进自带 `interval` 的独立组件，动画帧只重绘那一小块 | 动画不惊动 `<Static>` transcript 与输入框 |
+| 23.9 | 统一工具卡字形：`ToolCard` 的 `ink-spinner` dots 改为统一橙色粒子字形 | 全 TUI 字形/配色一致 |
+
+### 验收
+
+- 状态行：`✶ Reading App.tsx (16s · ↑ 1.2k tokens)`——橙色字形（帧集 `·✢✶✻✽`，无 `✳`）+ 流光 + 实时秒表 + token 估算/真实校准。
+- 流式：长输出不卡顿/不闪烁；markdown 仅在消息提交时解析一次。
+- `tsc --noEmit` 0 错、`biome check` 干净；新增/更新 TUI 组件测试覆盖状态行格式化 + 合批逻辑。
+- 不引新依赖（复用 `ink` / `chalk` / 现有 `terminal-width` 工具）。
+
+### 不做
+
+- 不引入新动画/渲染库（仍用 Ink + 自管 `interval`）。
+- 不改 agent loop 的事件协议（仅消费已有 `text_delta` / `usage` / `tool_use` 事件）。
+
+**优先级 P1（用户明确要求）· 估时 1.5–2.5 天**
 
 ---
 
@@ -180,7 +229,8 @@ M18 (命令广度, P0) ──> M19 (记忆服务化, P0)
                               │
                               └──> M20 (工程化, P1) ──> M21 (测试, P1)
                                                             │
-                                                            └──> M22 (多provider, P2) ──> M23 (可观测, P2, 按需)
+                                                            ├──> M22 (多provider, P2, 按需)
+                                                            └──> M23 (TUI响应, P1)
 ```
 
 | 里程碑 | 主题 | 优先级 | 估时 | 完成后状态 |
@@ -190,7 +240,7 @@ M18 (命令广度, P0) ──> M19 (记忆服务化, P0)
 | M20 | 工程化（CI/构建/pre-commit） | P1 | 2–3 天 | 从个人项目迈向可发布 |
 | M21 | 测试广度 458→600+ | P1 | 3–4 天 | 质量门槛对齐 |
 | M22 | 多 provider 原生化 | P2 | 2–3 天 | provider 体系对齐 |
-| M23 | 轻量可观测性 | P2 | 1–2 天 | 迭代数据可见 |
+| M23 | TUI 体验对齐（响应/状态行/流式） | P1 | 1.5–2.5 天 | 交互手感对齐参考版 |
 
 ---
 
@@ -209,4 +259,4 @@ M18 (命令广度, P0) ──> M19 (记忆服务化, P0)
 | 运行时 | Node（纯 TS） | Node（纯 TS） | Bun + NAPI |
 | 定位 | 轻量本地 | 轻量本地 + 工程化 | 企业级全功能 |
 
-**一句话**：M18–M21 落地后，A 在"机制 + 广度 + 工程化"上基本对齐 B 的里子，同时保留"纯 TS / Node 可跑 / 易读 / 轻量"的差异化护城河。M22–M23 视需求推进。
+**一句话**：M18–M21 落地后，A 在"机制 + 广度 + 工程化"上基本对齐 B 的里子，同时保留"纯 TS / Node 可跑 / 易读 / 轻量"的差异化护城河。M22 视需求推进；M23（TUI 体验对齐）按用户要求推进。

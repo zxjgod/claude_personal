@@ -905,6 +905,7 @@ Use the task tool with subagent_name code-explorer to inspect README.md in the w
 - `cli.ts`：`isInteractive && !--no-tui` → `await import("./tui/run.js")` 动态加载并 `runTui(...)`，结束后保存 session + 断开 MCP 后 return；否则 fall through 到原 line-based REPL
 - `tsconfig.json`：加 `"jsx": "react-jsx"`（对现有 .ts 零影响）
 - 依赖：ink@7.1.0 / react@19.2.7 / ink-spinner@5.0.0；devDep @types/react、ink-testing-library@4.0.0
+  - 注：M23 已移除未用 `ink-spinner`，改为共享 `spinner-core.ts` + TUI `StatusLine`/`SpinnerGlyph`。
 
 ## 验收
 
@@ -1088,10 +1089,11 @@ Use the task tool with subagent_name code-explorer to inspect README.md in the w
 - `modelSupportsReasoningEffort`（仅推理模型下发 `reasoning_effort`，避免对普通 chat 模型 400）
 - 色彩工具：`hslToHex` / `gradientColorAt`（冷青→暖红渐变）/ `rainbowColors`（官方 voice-waveform HSL 参数 s=0.7/l=0.6，按 phase 偏移驱动 max 彩虹流动）
 
-新增 `src/tui/ParticleSpinner.tsx`（AI 思考转圈）：
+新增 `src/tui/ParticleSpinner.tsx`（AI 思考转圈，历史实现；M23 后已删除，替换为 `SpinnerGlyph.tsx` + `StatusLine.tsx`）：
 
-- 循环官方粒子字符集 `['·','✢','✳','✶','✻','✽']`（正放+倒放，120ms/帧），替换 TUI 原 ink-spinner 的 `dots`
-- CLI 行内 spinner（`cli-spinner.ts`）字符集对齐同集（原 `*` → `✳`）
+- 当时循环官方粒子字符集 `['·','✢','✳','✶','✻','✽']`（正放+倒放，120ms/帧），替换 TUI 原 ink-spinner 的 `dots`
+- 当时 CLI 行内 spinner（`cli-spinner.ts`）字符集对齐同集（原 `*` → `✳`）
+- 注：当前 M23 实现已改为共享 `spinner-core.ts`，帧集按用户偏好移除 `✳`，现为 `· ✢ ✶ ✻ ✽`。
 
 新增 `src/tui/EffortPrompt.tsx` + `src/tui/effort-fx.ts`（交互式滑块覆盖层）：
 

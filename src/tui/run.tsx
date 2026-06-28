@@ -38,6 +38,7 @@ import { printBanner } from "./banner.js";
 import { firstUserPreview, messagesToTranscript } from "./history-replay.js";
 import type { CommandInfo } from "./InputBox.js";
 import { type ProviderPickerItem, type SessionPickerItem, TuiStore } from "./store.js";
+import { StreamBuffer } from "./stream-buffer.js";
 
 export interface TuiDeps {
   messages: Message[];
@@ -68,6 +69,7 @@ async function runTurn(
 ): Promise<void> {
   store.setBusy(true);
   store.setSpinner("thinking");
+  store.startTurnClock();
 
   // M18.12: append the session goal (if set) to this turn's system prompt.
   const goal = deps.makeCommandContext().goal?.value;
@@ -107,7 +109,19 @@ async function runTurn(
 
   let thinkingStart = Date.now();
   let thoughtReported = false;
-  let streamedChars = 0;
+  // Real output tokens reconciled with a live estimate: each model call ends
+  // with a `usage` event carrying the true output_tokens, which we accumulate
+  // into `committedOutputTokens`. Between usage events we show that committed
+  // total plus a char/4 estimate of the in-flight stream, so the counter rises
+  // live and then snaps to the exact value when usage lands.
+  let committedOutputTokens = 0;
+  let streamedCharsThisCall = 0;
+  const liveTokens = () => committedOutputTokens + Math.round(streamedCharsThisCall / 4);
+  // Coalesce high-frequency text deltas: buffer them and flush text + token
+  // estimate together at ~30fps (one store emit per frame, not per token).
+  const streamBuffer = new StreamBuffer((text) => {
+    store.appendStreamingWithTokens(text, liveTokens());
+  });
   // Map tool-call id → its display detail, so the result card keeps the input
   // (filePath/command/…) the start card showed.
   const toolDetails = new Map<string, string>();
@@ -127,11 +141,11 @@ async function runTurn(
             thoughtReported = true;
           }
           store.setSpinner("responding");
-          store.appendStreaming(event.delta);
-          streamedChars += event.delta.length;
-          store.setSpinnerTokens(Math.round(streamedChars / 4));
+          streamedCharsThisCall += event.delta.length;
+          streamBuffer.push(event.delta);
           break;
         case "tool_use": {
+          streamBuffer.flush();
           store.commitStreaming();
           const detail = toolDetail(event.input);
           toolDetails.set(event.id, detail);
@@ -151,19 +165,26 @@ async function runTurn(
           break;
         case "usage":
           store.addUsage(event.usage.input_tokens, event.usage.output_tokens);
+          // Reconcile the live estimate to the real output-token count.
+          committedOutputTokens += event.usage.output_tokens;
+          streamedCharsThisCall = 0;
+          store.setSpinnerTokens(committedOutputTokens);
           break;
         case "compacting":
           store.addNotice("Compacting context…");
           break;
         case "error":
+          streamBuffer.flush();
           store.commitStreaming();
           store.addNotice(`⎿ ${formatCliError(event.error)}`);
           break;
         case "aborted":
+          streamBuffer.flush();
           store.commitStreaming();
           store.addNotice(`⎿ Aborted: ${event.reason}`);
           break;
         case "done":
+          streamBuffer.flush();
           store.commitStreaming();
           // M15.2: surface speculation cost/benefit (only if prefetched anything).
           if (event.speculation) {
@@ -175,8 +196,10 @@ async function runTurn(
       }
     }
   } finally {
+    streamBuffer.stop();
     store.setSpinner("idle");
     store.setSpinnerTokens(0);
+    store.stopTurnClock();
     store.setBusy(false);
   }
 }

@@ -155,4 +155,23 @@ describe("TuiStore", () => {
     expect(snap.spinner).toBe("thinking");
     expect(snap.spinnerTokens).toBe(42);
   });
+
+  it("starts and stops the turn clock", () => {
+    const store = new TuiStore("p/m");
+    expect(store.getSnapshot().turnStartedAt).toBe(0);
+    store.startTurnClock();
+    expect(store.getSnapshot().turnStartedAt).toBeGreaterThan(0);
+    store.stopTurnClock();
+    expect(store.getSnapshot().turnStartedAt).toBe(0);
+  });
+
+  it("appendStreamingWithTokens appends text and keeps tokens monotonic", () => {
+    const store = new TuiStore("p/m");
+    store.appendStreamingWithTokens("Hello ", 10);
+    store.appendStreamingWithTokens("world", 25);
+    store.appendStreamingWithTokens("!", 5); // lower token value ignored
+    const snap = store.getSnapshot();
+    expect(snap.streamingText).toBe("Hello world!");
+    expect(snap.spinnerTokens).toBe(25);
+  });
 });
