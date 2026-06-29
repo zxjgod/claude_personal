@@ -88,14 +88,28 @@ export function InputBox({
   disabled,
   onSubmit,
   editorMode,
+  keepColorWhenDisabled,
+  hideBottomRule,
 }: {
   commands: CommandInfo[];
   disabled: boolean;
   onSubmit: (value: string) => void;
   /** M18.10: shared holder toggled by /vim. When "vim", input is modal. */
   editorMode?: { value: "default" | "vim" };
+  /** M25.2 fix: in full-screen mode the box stays orange while the agent is
+   *  busy (rather than greying out) so it doesn't read as "white + narrower".
+   *  The cursor is still hidden while disabled. */
+  keepColorWhenDisabled?: boolean;
+  /** M25.2 fix: drop the bottom rule so the prompt row is the LAST rendered
+   *  line. The terminal parks its real cursor at the end of the final row, so
+   *  if a rule rendered below the prompt the cursor blinked one line too low.
+   *  Full-screen passes this; the default path keeps the symmetric box. */
+  hideBottomRule?: boolean;
 }) {
   const vimActive = editorMode?.value === "vim";
+  // Frame color: grey out when disabled UNLESS the caller asks to keep the
+  // accent (full-screen path). The input remains inactive either way.
+  const frameColor = disabled && !keepColorWhenDisabled ? "gray" : ORANGE;
   const [buffer, setBuffer] = useState("");
   const [cursor, setCursor] = useState(0);
   const [selected, setSelected] = useState(0);
@@ -306,38 +320,57 @@ export function InputBox({
   const lines = splitLines(buffer);
   const { row: curRow, col: curCol } = offsetToRowCol(buffer, cursor);
 
+  const suggestionList =
+    suggestions.length > 0 ? (
+      <Box flexDirection="column">
+        {suggestions.map((s, i) => (
+          <Text key={s.name} color={i === safeSelected ? ORANGE : "cyan"}>
+            {i === safeSelected ? "❯ " : "  "}/{s.name}
+            <Text dimColor> {s.description}</Text>
+          </Text>
+        ))}
+      </Box>
+    ) : null;
+
+  const promptRows = lines.map((line, i) => (
+    <Box key={i}>
+      {i === 0 && vimActive ? (
+        <Text color={vimMode === "normal" ? "yellow" : "green"}>
+          {vimMode === "normal" ? "[N] " : "[I] "}
+        </Text>
+      ) : null}
+      <Text color={frameColor}>{i === 0 ? "> " : "  "}</Text>
+      <CursorLine
+        line={line}
+        // The cursor is only drawn on the row it sits on; other rows render
+        // their text plainly.
+        cursorCol={!disabled && i === curRow ? curCol : -1}
+      />
+    </Box>
+  ));
+
+  // Full-screen (hideBottomRule): suggestions go ABOVE the box and the bottom
+  // rule is dropped, so the prompt row is the very last rendered line — the
+  // terminal then parks its real cursor exactly on the prompt. Default path:
+  // symmetric box with the suggestion dropdown below.
+  if (hideBottomRule) {
+    return (
+      <Box flexDirection="column">
+        {suggestionList}
+        <Text color={frameColor}>{rule}</Text>
+        {promptRows}
+      </Box>
+    );
+  }
+
   return (
     <Box flexDirection="column">
       {/* Input box: a top + bottom horizontal rule with the prompt between,
           matching the reference layout (not a rounded border). */}
-      <Text color={disabled ? "gray" : ORANGE}>{rule}</Text>
-      {lines.map((line, i) => (
-        <Box key={i}>
-          {i === 0 && vimActive ? (
-            <Text color={vimMode === "normal" ? "yellow" : "green"}>
-              {vimMode === "normal" ? "[N] " : "[I] "}
-            </Text>
-          ) : null}
-          <Text color={disabled ? "gray" : ORANGE}>{i === 0 ? "> " : "  "}</Text>
-          <CursorLine
-            line={line}
-            // The cursor is only drawn on the row it sits on; other rows render
-            // their text plainly.
-            cursorCol={!disabled && i === curRow ? curCol : -1}
-          />
-        </Box>
-      ))}
-      <Text color={disabled ? "gray" : ORANGE}>{rule}</Text>
-      {suggestions.length > 0 ? (
-        <Box flexDirection="column">
-          {suggestions.map((s, i) => (
-            <Text key={s.name} color={i === safeSelected ? ORANGE : "cyan"}>
-              {i === safeSelected ? "❯ " : "  "}/{s.name}
-              <Text dimColor> {s.description}</Text>
-            </Text>
-          ))}
-        </Box>
-      ) : null}
+      <Text color={frameColor}>{rule}</Text>
+      {promptRows}
+      <Text color={frameColor}>{rule}</Text>
+      {suggestionList}
     </Box>
   );
 }

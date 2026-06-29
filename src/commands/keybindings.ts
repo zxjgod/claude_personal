@@ -22,6 +22,9 @@ export const keybindingsCommand: SlashCommand = {
       ["Home / End", "Same as Ctrl+A / Ctrl+E"],
       ["Ctrl+R", "Toggle expansion of the last long tool card"],
       ["Ctrl+C", "Interrupt the current turn (keeps the session)"],
+      ["PgUp / PgDn", "Scroll the transcript (full-screen mode)"],
+      ["Ctrl+U / Ctrl+D", "Scroll up / down a half page (full-screen mode)"],
+      ["Ctrl+End / G", "Jump back to the latest output (full-screen mode)"],
       ["/", "Open the full command palette"],
       ["@<path>", "Inject a file's contents into the message"],
     ];

@@ -4,9 +4,15 @@
 
 import { render } from "ink-testing-library";
 import { describe, expect, it } from "vitest";
+import { App } from "../tui/App.js";
 import { bottomScrollTop, clampScrollTop, ScrollView, visibleWindow } from "../tui/ScrollView.js";
 import type { TranscriptItem } from "../tui/store.js";
+import { TuiStore } from "../tui/store.js";
 import { transcriptToLines } from "../tui/transcript-lines.js";
+
+const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 20));
+const CTRL_U = "\x15";
+const CTRL_D = "\x04";
 
 describe("ScrollView windowing math", () => {
   it("visibleWindow returns the slice for a given scrollTop", () => {
@@ -38,7 +44,7 @@ describe("ScrollView windowing math", () => {
 describe("ScrollView rendering", () => {
   it("renders only the visible window of lines", () => {
     const lines = Array.from({ length: 50 }, (_, i) => `line-${i}`);
-    const { lastFrame } = render(<ScrollView lines={lines} height={5} scrollTop={10} />);
+    const { lastFrame } = render(<ScrollView lines={lines} fallbackHeight={5} scrollTop={10} />);
     const frame = lastFrame()!;
     expect(frame).toContain("line-10");
     expect(frame).toContain("line-14");
@@ -47,7 +53,7 @@ describe("ScrollView rendering", () => {
   });
 
   it("pads short content to the fixed viewport height", () => {
-    const { lastFrame } = render(<ScrollView lines={["only"]} height={5} scrollTop={0} />);
+    const { lastFrame } = render(<ScrollView lines={["only"]} fallbackHeight={5} scrollTop={0} />);
     // 5 rows tall even with one line of content (4 padding rows).
     expect(lastFrame()!.split("\n").length).toBe(5);
   });
@@ -76,5 +82,84 @@ describe("transcriptToLines", () => {
   it("appends the in-flight streaming text as an assistant block", () => {
     const lines = transcriptToLines([], "streaming now");
     expect(lines.some((l) => l.includes("streaming now"))).toBe(true);
+  });
+});
+
+describe("full-screen App scrolling (M25.2 fix)", () => {
+  function bigStore(): TuiStore {
+    const store = new TuiStore("test/model");
+    // Push enough rows to overflow the default 24-row test viewport.
+    for (let i = 0; i < 40; i++) {
+      store.addUserMessage(`line ${i}`);
+    }
+    return store;
+  }
+
+  it("starts pinned to the bottom (latest content visible)", async () => {
+    const store = bigStore();
+    const { lastFrame } = render(
+      <App
+        store={store}
+        commands={[{ name: "help", description: "h" }]}
+        onSubmit={() => {}}
+        expandedId={null}
+        fullscreen
+      />,
+    );
+    await flush();
+    const frame = lastFrame()!;
+    expect(frame).toContain("line 39"); // newest visible
+    expect(frame).not.toContain("line 0"); // oldest scrolled off
+  });
+
+  it("renders the input prompt as the LAST line (cursor must not drift below it)", async () => {
+    const store = bigStore();
+    const { lastFrame } = render(
+      <App
+        store={store}
+        commands={[{ name: "help", description: "h" }]}
+        onSubmit={() => {}}
+        expandedId={null}
+        fullscreen
+      />,
+    );
+    await flush();
+    const rows = lastFrame()!.split("\n");
+    // The terminal parks the real cursor at the end of the final rendered row,
+    // so the prompt ("> …") must be that row — otherwise the cursor blinks one
+    // line too low (the original bug). The status bar / rules render above it.
+    const last = rows[rows.length - 1]!;
+    expect(last.trimStart().startsWith(">")).toBe(true);
+  });
+
+  it("Ctrl+U scrolls up to reveal earlier lines; Ctrl+D returns toward bottom", async () => {
+    const store = bigStore();
+    const { stdin, lastFrame } = render(
+      <App
+        store={store}
+        commands={[{ name: "help", description: "h" }]}
+        onSubmit={() => {}}
+        expandedId={null}
+        fullscreen
+      />,
+    );
+    await flush();
+    // Scroll up several half-pages — earlier lines should appear, newest leaves.
+    for (let i = 0; i < 6; i++) {
+      stdin.write(CTRL_U);
+      await flush();
+    }
+    const scrolled = lastFrame()!;
+    expect(scrolled).toContain("line 0"); // earlier content now visible
+    expect(scrolled).not.toContain("line 39"); // newest scrolled off
+    // The "scrolled" hint replaces the live status line.
+    expect(scrolled).toContain("return to latest");
+
+    // Scroll back down to the bottom — newest content returns.
+    for (let i = 0; i < 8; i++) {
+      stdin.write(CTRL_D);
+      await flush();
+    }
+    expect(lastFrame()!).toContain("line 39");
   });
 });

@@ -3,20 +3,25 @@
 // ============================================================
 // Stock Ink 7 has no ScrollBox (the reference uses a forked Ink + hundreds of
 // lines of wheel physics). This is a deliberately small replacement: given a
-// flat array of already-rendered text lines and a fixed viewport height, it
-// renders only the visible window and tracks a scroll offset with sticky-bottom
-// behavior (new content auto-follows unless the user has scrolled up).
+// flat array of already-rendered text lines, it fills the height it's given by
+// its flex parent (measured via measureElement) and renders only the visible
+// window, tracking a scroll offset with sticky-bottom behavior.
 //
-// Why line-based (not element measurement): a robust pixel/row scroll of
-// arbitrary React subtrees needs per-node height measurement that Ink doesn't
-// expose cheaply. Flattening to lines keeps the windowing exact and testable —
-// the caller is responsible for turning transcript items into lines.
+// Why measure (not a fixed height prop): the bottom chrome (status line + input
+// box + command palette) changes height — the palette alone is up to 8 rows.
+// A fixed-height layout fought that and pushed the cursor onto the wrong row.
+// Here ScrollView lives in a flexGrow={1} box and adapts to whatever height the
+// flex layout leaves it, so the input box stays pinned to the bottom and the
+// cursor never drifts.
 //
-// Scrolling is driven by the parent via a ScrollController (see useScrollView):
-// PgUp/PgDn page by half a viewport, Ctrl+End jumps to bottom and re-sticks.
+// Why line-based (not element measurement of content): a robust pixel/row
+// scroll of arbitrary React subtrees needs per-node height measurement Ink
+// doesn't expose cheaply. Flattening to lines keeps the windowing exact and
+// testable — the caller turns transcript items into lines.
 // ============================================================
 
-import { Box, Text } from "ink";
+import { Box, measureElement, Text } from "ink";
+import { useEffect, useRef, useState } from "react";
 
 /** Pure windowing math, exported for tests. Returns the slice [start, end) of
  *  `lines` visible for a given scrollTop and viewport height. */
@@ -46,24 +51,49 @@ export function bottomScrollTop(totalLines: number, viewportHeight: number): num
   return Math.max(0, totalLines - Math.max(1, viewportHeight));
 }
 
+/**
+ * Windowed scroll view that fills its flex parent. Reports its measured height
+ * back through `onHeight` so the parent can size scroll math (page steps,
+ * sticky-bottom) against the real viewport rather than a guessed row count.
+ */
 export function ScrollView({
   lines,
-  height,
   scrollTop,
+  fallbackHeight,
+  onHeight,
 }: {
   lines: string[];
-  height: number;
   scrollTop: number;
+  /** Used before the first measurement settles (and under ink-testing). */
+  fallbackHeight: number;
+  onHeight?: (h: number) => void;
 }) {
+  const ref = useRef(null);
+  const [height, setHeight] = useState(fallbackHeight);
+
+  // Measure the height the flex layout actually gave us, after each render
+  // (content / terminal / palette changes all re-flow). measureElement is cheap
+  // and synchronous in Ink. The guard avoids a setState (and re-render) when the
+  // height is unchanged, so this can't loop.
+  useEffect(() => {
+    if (!ref.current) return;
+    const measured = measureElement(ref.current).height;
+    const h = measured > 0 ? measured : fallbackHeight;
+    if (h !== height) {
+      setHeight(h);
+      onHeight?.(h);
+    }
+  });
+
   const { start, end } = visibleWindow(lines.length, height, scrollTop);
   const slice = lines.slice(start, end);
-  // Pad to a fixed height so the regions below (status line / input) keep a
-  // stable position even when the content is shorter than the viewport.
   const pad = Math.max(0, height - slice.length);
   return (
-    <Box flexDirection="column" height={height}>
+    <Box ref={ref} flexDirection="column" flexGrow={1}>
       {slice.map((line, i) => (
-        <Text key={start + i}>{line.length > 0 ? line : " "}</Text>
+        <Text key={start + i} wrap="truncate-end">
+          {line.length > 0 ? line : " "}
+        </Text>
       ))}
       {Array.from({ length: pad }, (_, i) => (
         <Text key={`pad-${i}`}> </Text>

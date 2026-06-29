@@ -108,3 +108,26 @@
 
 **已知限制**：fullscreen 仅在真 TTY 生效（`isInteractive` 门控），无法用管道端到端验证；alt-screen 进入/退出/复位契约由源码回归测试锁住。全屏滚动区为纯文本（丢色），默认路径保留全色。
 
+---
+
+## 七、实测修复 + 模块解耦（2026-06-29，M25 初版 `7db7a98` 之后）
+
+> 用户真机 `npm start -- --fullscreen` 实测，报三类问题；并明确要求**全屏独立成模块、与默认路径解耦、不影响正常启动**。详见 [更新日志 20260629-fullscreen-tui-fixes](../更新日志/20260629-fullscreen-tui-fixes.md)。
+
+**三类实测问题的根因与修复**：
+1. **光标跑到下一行** → 根因：InputBox 不是最后渲染元素（其下有 StatusBar，且 InputBox 自带下分隔线在 prompt 之下），终端真实光标停在最后渲染行。修复：StatusBar 上移、InputBox 加 `hideBottomRule`（去下分隔线 + 命令面板改在 prompt 上方展开），让 prompt 恒为最后一行。
+2. **输入框变色/缩小** → `keepColorWhenDisabled`（busy 时保持橙色）+ 撤掉上轮误加的 `width={ruleWidth()}`（与 flex 冲突，是缩小主因）。
+3. **无法上拉回看** → PgUp 在用户终端未发 `key.pageUp`；扩展滚动键为 PgUp/PgDn + less 风格 Ctrl+U/D（半屏）/ Ctrl+B/F（整屏）/ G·Ctrl+End（回底）；sticky 改 state 驱动 UI。
+4. **布局根因（连带）** → 全屏从 `height={rows}` 固定布局 + 写死 `CHROME_ROWS` 改为 **flex `flexGrow={1}` + `measureElement` 自测高度**，命令面板/多行输入行数变化时 flex 自动重排，不再溢出挤压。
+
+**模块解耦**（用户核心诉求）：
+- 新增 `src/tui/FullScreenApp.tsx`，把全屏逻辑整段抽出，**只依赖叶子组件 + store，不 import App.tsx**，自己内联状态行/状态栏/overlay 分发。
+- `App.tsx` 回退到接近原始：删内嵌全屏块、`InteractionRegion` 去掉全屏专用 prop、移除全屏专用 import；仅留 1 行 import + `if (fullscreen) return <FullScreenApp/>` 委托分支。
+- `InputBox.tsx` 的 `keepColorWhenDisabled`/`hideBottomRule` 默认关，**默认路径行为字节级不变**。
+
+**方法论修正**：前两轮"头痛医头"且未真正跑起来。本轮用注入假 TTY 的驱动脚本 + ink-testing `lastFrame()` **抓真实布局帧**定位，确认 `> ` 为最后一行、命令面板在 prompt 上方、`measureElement` 真实 render 返回 19/30。
+
+**验收**：`tsc` 0 错、`biome` 干净、`vitest` **683/683**（scroll-view 加 "prompt 必须最后一行" + 全屏 Ctrl+U/D 滚动集成回归）、`smoke` PASSED。默认启动（无 flag）退出码 0、无 alt-screen 序列、横幅正常 → 零回归。解耦边界 grep 验证：App.tsx 仅引用 FullScreenApp，FullScreenApp 不引用 App.tsx。
+
+> 用户态度：全屏交互细节"暂时不太满意但可接受"，后续在独立模块内继续打磨，不影响主线。
+
