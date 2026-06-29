@@ -17,6 +17,8 @@ const commands = [
 
 const ARROW_DOWN = "[B";
 const ENTER = "\r";
+const ARROW_UP = "\x1b[A";
+const CTRL_J = "\n"; // Ctrl+J sends LF
 
 function flush(): Promise<void> {
   return new Promise((r) => setTimeout(r, 10));
@@ -120,5 +122,79 @@ describe("InputBox horizontal rule width (M24.4 — DECAWM fix)", () => {
     );
     expect(longestRule).toBeGreaterThan(0); // a rule was drawn
     expect(longestRule).toBeLessThan(cols); // …but not flush to the edge
+  });
+});
+
+describe("InputBox multi-line input (M25.1)", () => {
+  it("Ctrl+J inserts a newline instead of submitting; Enter submits the whole buffer", async () => {
+    const onSubmit = vi.fn();
+    const { stdin } = render(<InputBox commands={commands} disabled={false} onSubmit={onSubmit} />);
+    await flush();
+    stdin.write("line one");
+    await flush();
+    stdin.write(CTRL_J); // newline, NOT submit
+    await flush();
+    stdin.write("line two");
+    await flush();
+    expect(onSubmit).not.toHaveBeenCalled(); // Ctrl+J did not submit
+    stdin.write(ENTER); // now submit the full two-line buffer
+    await flush();
+    expect(onSubmit).toHaveBeenCalledWith("line one\nline two");
+  });
+
+  it("'\\' + Enter inserts a newline rather than submitting", async () => {
+    const onSubmit = vi.fn();
+    const { stdin } = render(<InputBox commands={commands} disabled={false} onSubmit={onSubmit} />);
+    await flush();
+    stdin.write("first\\"); // trailing backslash
+    await flush();
+    stdin.write(ENTER); // backslash+Enter → newline
+    await flush();
+    expect(onSubmit).not.toHaveBeenCalled();
+    stdin.write("second");
+    await flush();
+    stdin.write(ENTER);
+    await flush();
+    // The backslash was replaced by the newline.
+    expect(onSubmit).toHaveBeenCalledWith("first\nsecond");
+  });
+
+  it("renders each logical line on its own row", async () => {
+    const { stdin, lastFrame } = render(
+      <InputBox commands={commands} disabled={false} onSubmit={vi.fn()} />,
+    );
+    await flush();
+    stdin.write("alpha");
+    await flush();
+    stdin.write(CTRL_J);
+    await flush();
+    stdin.write("beta");
+    await flush();
+    const frame = lastFrame()!;
+    expect(frame).toContain("alpha");
+    expect(frame).toContain("beta");
+    // Two distinct rows: "alpha" and "beta" land on different lines.
+    const alphaRow = frame.split("\n").findIndex((l) => l.includes("alpha"));
+    const betaRow = frame.split("\n").findIndex((l) => l.includes("beta"));
+    expect(betaRow).toBeGreaterThan(alphaRow);
+  });
+
+  it("↑ moves the cursor to the previous line when the palette is closed", async () => {
+    const onSubmit = vi.fn();
+    const { stdin } = render(<InputBox commands={commands} disabled={false} onSubmit={onSubmit} />);
+    await flush();
+    stdin.write("ab");
+    await flush();
+    stdin.write(CTRL_J);
+    await flush();
+    stdin.write("cd"); // buffer "ab\ncd", cursor at end (row 1, col 2)
+    await flush();
+    stdin.write(ARROW_UP); // → row 0, col 2 (end of "ab")
+    await flush();
+    stdin.write("X"); // insert at that position → "abX\ncd"
+    await flush();
+    stdin.write(ENTER);
+    await flush();
+    expect(onSubmit).toHaveBeenCalledWith("abX\ncd");
   });
 });

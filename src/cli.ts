@@ -470,6 +470,10 @@ async function main() {
   // input, or an explicit opt-out, falls through to the line-based REPL below.
   const tuiDisabled = process.argv.includes("--no-tui") || process.env.CCR_NO_TUI === "1";
   if (isInteractive && !tuiDisabled) {
+    // M25.2: opt-in full-screen layout (alt-screen + in-app scrollback). Default
+    // OFF — the proven <Static> native-scrollback path stays the default so
+    // there's zero regression for anyone not asking for it.
+    const fullscreen = process.argv.includes("--fullscreen") || process.env.CCR_FULLSCREEN === "1";
     const { runTui } = await import("./tui/run.js");
     await runTui({
       messages,
@@ -485,6 +489,7 @@ async function main() {
       makeCommandContext,
       alwaysAllow,
       permissionKey,
+      fullscreen,
       // M15.3: opt-in LLM permission classifier, threaded into the TUI's
       // agent loop the same way as the line-based REPL path.
       permissionClassifier,

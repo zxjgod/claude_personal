@@ -34,7 +34,7 @@ import type {
   UserQuestion,
 } from "./../types.js";
 import { App } from "./App.js";
-import { printBanner } from "./banner.js";
+import { printBanner, renderBannerLines } from "./banner.js";
 import { firstUserPreview, messagesToTranscript } from "./history-replay.js";
 import type { CommandInfo } from "./InputBox.js";
 import { type ProviderPickerItem, type SessionPickerItem, TuiStore } from "./store.js";
@@ -56,6 +56,8 @@ export interface TuiDeps {
   permissionKey: (toolName: string, input: Record<string, unknown>) => string;
   /** M15.3: optional LLM permission classifier (opt-in via CLI flag). */
   permissionClassifier?: PermissionClassifier;
+  /** M25.2: opt-in full-screen alt-screen layout (default off). */
+  fullscreen?: boolean;
   onSave: () => void;
 }
 
@@ -485,12 +487,55 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
       onSubmit={onSubmit}
       expandedId={expandedId}
       editorMode={deps.makeCommandContext().editorMode}
+      fullscreen={deps.fullscreen}
     />
   );
 }
 
 /** Launch the Ink TUI. Resolves when the user exits. */
 export function runTui(deps: TuiDeps): Promise<void> {
+  // M25.2: in full-screen mode we switch to the alternate screen buffer (DEC
+  // 1049) so the layout owns the whole viewport and the main-screen scrollback
+  // is left untouched on exit. CRITICAL: every exit path must restore the main
+  // screen — a leaked alt-screen leaves the user's terminal blank. We install a
+  // restore on Ink unmount AND on process exit/signals, and guard against double
+  // restore. (See archive/终端界面bug修复-20260626.md for the history that makes
+  // this opt-in and carefully torn down.)
+  const ENTER_ALT = "\x1B[?1049h\x1B[2J\x1B[H";
+  const EXIT_ALT = "\x1B[?1049l";
+  let altRestored = false;
+  const restoreScreen = () => {
+    if (altRestored) return;
+    altRestored = true;
+    if (deps.fullscreen) process.stdout.write(EXIT_ALT);
+  };
+  if (deps.fullscreen) {
+    process.stdout.write(ENTER_ALT);
+    // Belt-and-suspenders: restore on any abrupt exit so the terminal isn't
+    // left on the alternate screen.
+    process.once("exit", restoreScreen);
+    process.once("SIGTERM", restoreScreen);
+  }
+
+  // In full-screen mode the layout is the whole viewport (the banner becomes the
+  // first scroll line); in the default mode we print the banner into scrollback
+  // above Ink's live region as before.
+  if (deps.fullscreen) {
+    const store = new TuiStore(`${deps.modelConfig.provider}/${deps.modelConfig.model}`, {
+      batching: true,
+    });
+    store.loadTranscript(
+      renderBannerLines({
+        version: "1.0.0",
+        model: deps.modelConfig.model,
+        provider: deps.modelConfig.provider,
+        workspaceRoot: deps.workspaceRoot,
+      }).map((line) => ({ kind: "log", lines: [line] })),
+    );
+    const { waitUntilExit } = render(<Root store={store} deps={deps} />);
+    return (waitUntilExit() as Promise<void>).finally(restoreScreen);
+  }
+
   // Print the startup banner once into scrollback (above Ink's live region).
   printBanner({
     version: "1.0.0",

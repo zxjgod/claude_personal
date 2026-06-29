@@ -9,16 +9,16 @@ export const keybindingsCommand: SlashCommand = {
     console.log("");
     console.log(chalk.bold("  Keybindings:"));
     // Only keys that are actually wired up in InputBox/App today. Multi-line
-    // input (Ctrl+J) and transcript scrollback (PgUp/PgDn) belong to the
-    // reverted M17 full-screen layout and are NOT implemented on the current
-    // <Static>-based TUI — listing them here advertised keys that did nothing.
-    // They return if/when M25 restores the alt-screen layout.
+    // input (Ctrl+J) is implemented as of M25.1. Transcript scrollback
+    // (PgUp/PgDn) belongs to the M25.2 full-screen layout (opt-in via
+    // --fullscreen); it's listed there only when that flag is on.
     const bindings: Array<[string, string]> = [
       ["Enter", "Submit the current input"],
+      ["Ctrl+J", "Insert a newline (multi-line input; \\ + Enter also works)"],
       ["Tab", "Accept the highlighted /command suggestion"],
-      ["↑ / ↓", "Navigate the command suggestion list (when the palette is open)"],
+      ["↑ / ↓", "Navigate the /command list (palette open) · move between lines (closed)"],
       ["← / →", "Move the cursor within the line"],
-      ["Ctrl+A / Ctrl+E", "Move cursor to start / end of the line"],
+      ["Ctrl+A / Ctrl+E", "Move cursor to start / end of the current line"],
       ["Home / End", "Same as Ctrl+A / Ctrl+E"],
       ["Ctrl+R", "Toggle expansion of the last long tool card"],
       ["Ctrl+C", "Interrupt the current turn (keeps the session)"],

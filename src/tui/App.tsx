@@ -15,20 +15,23 @@
 // M24 "response smoothing": no more whole-tree reconcile per frame.
 // ============================================================
 
-import { Box, Static, Text } from "ink";
-import type { ReactNode } from "react";
+import { Box, Static, Text, useInput } from "ink";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { renderMarkdown } from "./../markdown.js";
 import { actionLabel } from "./../spinner-core.js";
 import { EffortPrompt } from "./EffortPrompt.js";
 import { type CommandInfo, InputBox } from "./InputBox.js";
 import { PermissionPrompt, QuestionPrompt } from "./Prompts.js";
 import { ProviderPicker } from "./ProviderPicker.js";
+import { bottomScrollTop, clampScrollTop, ScrollView } from "./ScrollView.js";
 import { SessionPicker } from "./SessionPicker.js";
 import { StatusLine } from "./StatusLine.js";
 import { StreamingMarkdown } from "./StreamingMarkdown.js";
 import type { StoreState, TranscriptItem, TuiStore } from "./store.js";
 import { ActiveToolCard, CompletedToolCard } from "./ToolCard.js";
+import { transcriptToLines } from "./transcript-lines.js";
 import { useStoreField, useStoreSelector } from "./useStoreSelector.js";
+import { useTerminalSize } from "./useTerminalSize.js";
 
 const ORANGE = "#d77757";
 
@@ -241,13 +244,28 @@ export function App({
   onSubmit,
   expandedId,
   editorMode,
+  fullscreen,
 }: {
   store: TuiStore;
   commands: CommandInfo[];
   onSubmit: (value: string) => void;
   expandedId: number | null;
   editorMode?: { value: "default" | "vim" };
+  /** M25.2: when true, render the alt-screen full-screen layout (input pinned
+   *  to the bottom + in-app PgUp/PgDn scrollback) instead of the default
+   *  <Static> native-scrollback layout. */
+  fullscreen?: boolean;
 }) {
+  if (fullscreen) {
+    return (
+      <FullScreenApp
+        store={store}
+        commands={commands}
+        onSubmit={onSubmit}
+        editorMode={editorMode}
+      />
+    );
+  }
   // The root no longer subscribes to the store at all — each region below owns
   // its own field-sliced subscription, so a mutation only re-renders the region
   // that reads the changed slice (M24.2). The outer column is a stable layout
@@ -258,6 +276,89 @@ export function App({
       <TranscriptRegion store={store} expandedId={expandedId} />
       <StreamingRegion store={store} />
       <ActiveToolsRegion store={store} />
+      <StatusLineRegion store={store} />
+      <InteractionRegion
+        store={store}
+        commands={commands}
+        onSubmit={onSubmit}
+        editorMode={editorMode}
+      />
+      <StatusBar store={store} />
+    </Box>
+  );
+}
+
+/**
+ * Full-screen layout (M25.2). The whole terminal height is a column: a fixed
+ * ScrollView fills the space above a pinned status line + input box. The
+ * transcript + live streaming text are flattened to plain text lines and
+ * windowed by the ScrollView. PgUp/PgDn page by half a viewport; Ctrl+End jumps
+ * to the bottom and re-enables sticky-follow (new content auto-scrolls).
+ *
+ * Trade-off vs the default path: color is dropped in the scroll region (plain
+ * text lines) so the windowing can be exact without per-node height
+ * measurement. This path is opt-in (--fullscreen); the default keeps color.
+ */
+function FullScreenApp({
+  store,
+  commands,
+  onSubmit,
+  editorMode,
+}: {
+  store: TuiStore;
+  commands: CommandInfo[];
+  onSubmit: (value: string) => void;
+  editorMode?: { value: "default" | "vim" };
+}) {
+  const { rows } = useTerminalSize();
+  const transcript = useStoreField(store, "transcript");
+  const streamingText = useStoreField(store, "streamingText");
+  const { busy } = useStoreSelector(store, selectInteraction);
+
+  // Reserve rows for the bottom chrome: 1 status line + ~3 input box (two rules
+  // + at least one prompt row). The ScrollView gets the rest.
+  const CHROME_ROWS = 4;
+  const viewportHeight = Math.max(3, rows - CHROME_ROWS);
+
+  const lines = transcriptToLines(transcript, streamingText);
+  const [scrollTop, setScrollTop] = useState(0);
+  const stickyRef = useRef(true);
+
+  // Sticky-follow: while stuck to the bottom, keep scrollTop pinned as content
+  // grows. Once the user scrolls up (PgUp), sticky releases until Ctrl+End.
+  useEffect(() => {
+    if (stickyRef.current) {
+      setScrollTop(bottomScrollTop(lines.length, viewportHeight));
+    } else {
+      setScrollTop((t) => clampScrollTop(lines.length, viewportHeight, t));
+    }
+  }, [lines.length, viewportHeight]);
+
+  useInput((_input, key) => {
+    if (key.pageUp) {
+      stickyRef.current = false;
+      const page = Math.max(1, Math.floor(viewportHeight / 2));
+      setScrollTop((t) => clampScrollTop(lines.length, viewportHeight, t - page));
+      return;
+    }
+    if (key.pageDown) {
+      const page = Math.max(1, Math.floor(viewportHeight / 2));
+      const next = clampScrollTop(lines.length, viewportHeight, scrollTop + page);
+      setScrollTop(next);
+      // Reaching the bottom re-enables sticky-follow.
+      if (next >= bottomScrollTop(lines.length, viewportHeight)) stickyRef.current = true;
+      return;
+    }
+    // Ctrl+End (and Ctrl+G as a fallback some terminals send) → jump to bottom.
+    if (key.ctrl && (key.downArrow || (key as { end?: boolean }).end)) {
+      stickyRef.current = true;
+      setScrollTop(bottomScrollTop(lines.length, viewportHeight));
+    }
+  });
+
+  return (
+    <Box flexDirection="column" height={rows}>
+      <ScrollView lines={lines} height={viewportHeight} scrollTop={scrollTop} />
       <StatusLineRegion store={store} />
       <InteractionRegion
         store={store}

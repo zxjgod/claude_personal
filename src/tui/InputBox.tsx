@@ -9,12 +9,19 @@
 //   • Backspace  delete the char *before* the cursor (input only)
 //   • Delete     delete the char *under* the cursor
 //   • Enter      submit · Tab accept highlighted completion
-//   • ↑/↓        move the completion selection (only when the dropdown is open)
+//   • Ctrl+J     insert a newline (multi-line input; "\" + Enter also works)
+//   • ↑/↓        move the completion selection when the palette is open;
+//                otherwise move the cursor between logical lines (M25.1)
 //
 // The cursor is rendered *inline* — the buffer is split at the cursor and the
 // char under it is drawn inverse. This lets Ink wrap the text naturally and
 // keeps the cursor glued to its character when the line wraps (the old
 // trailing-block cursor stayed stranded on the previous row).
+//
+// M25.1: the buffer can contain "\n". The cursor is a single linear offset into
+// the buffer; line/column are derived from it (see cursorRowCol). ↑/↓ move the
+// offset to the same column on the adjacent logical line when the palette is
+// closed, so the box behaves like a small multi-line editor.
 // ============================================================
 
 import { Box, Text, useInput } from "ink";
@@ -41,6 +48,39 @@ const MAX_SUGGESTIONS = 8;
 // flush-width outlier. Computed per-render so it tracks terminal resize.
 function ruleWidth(): number {
   return Math.max(20, terminalColumns() - 1);
+}
+
+// --- Multi-line cursor helpers (M25.1) ---
+// The buffer is a single string that may contain "\n"; the cursor is one linear
+// offset into it. These derive (row, col) from the offset and back, so ↑/↓ can
+// move to the same column on the adjacent logical line.
+
+/** Split a buffer into logical lines (kept simple — no wrap awareness). */
+function splitLines(buffer: string): string[] {
+  return buffer.split("\n");
+}
+
+/** Linear offset → { row, col } over logical lines. col is within the row. */
+function offsetToRowCol(buffer: string, offset: number): { row: number; col: number } {
+  const clamped = Math.max(0, Math.min(offset, buffer.length));
+  let row = 0;
+  let lineStart = 0;
+  for (let i = 0; i < clamped; i++) {
+    if (buffer[i] === "\n") {
+      row++;
+      lineStart = i + 1;
+    }
+  }
+  return { row, col: clamped - lineStart };
+}
+
+/** { row, col } → linear offset, clamping col to the target row's length. */
+function rowColToOffset(buffer: string, row: number, col: number): number {
+  const lines = splitLines(buffer);
+  const r = Math.max(0, Math.min(row, lines.length - 1));
+  let offset = 0;
+  for (let i = 0; i < r; i++) offset += lines[i]!.length + 1; // +1 for the "\n"
+  return offset + Math.min(col, lines[r]!.length);
 }
 
 export function InputBox({
@@ -142,8 +182,24 @@ export function InputBox({
         return;
       }
 
+      // --- Newline insertion (multi-line input, M25.1) ---
+      // Ctrl+J inserts a newline. So does "\" immediately before Enter: if the
+      // char left of the cursor is a backslash, Enter replaces it with a
+      // newline instead of submitting (matches the reference editor).
+      if (key.ctrl && input === "j") {
+        setBuffer((b) => b.slice(0, cursor) + "\n" + b.slice(cursor));
+        setCursor((c) => c + 1);
+        return;
+      }
+
       // --- Submit / completion ---
       if (key.return) {
+        // "\" + Enter → newline (continue editing) rather than submit.
+        if (cursor > 0 && buffer[cursor - 1] === "\\") {
+          setBuffer((b) => b.slice(0, cursor - 1) + "\n" + b.slice(cursor));
+          // cursor stays put: removed "\" (−1) then added "\n" (+1).
+          return;
+        }
         let value = buffer;
         // When the command palette is open and the user is still on the
         // command *name* (no args typed yet), Enter runs the highlighted
@@ -174,6 +230,21 @@ export function InputBox({
         return;
       }
 
+      // --- Multi-line cursor movement (palette closed, M25.1) ---
+      // With the palette closed, ↑/↓ move the cursor to the same column on the
+      // adjacent logical line. On the first/last line they're a no-op (no
+      // history navigation in this TUI — kept minimal).
+      if (key.upArrow) {
+        const { row, col } = offsetToRowCol(buffer, cursor);
+        if (row > 0) setCursor(rowColToOffset(buffer, row - 1, col));
+        return;
+      }
+      if (key.downArrow) {
+        const { row, col } = offsetToRowCol(buffer, cursor);
+        if (row < splitLines(buffer).length - 1) setCursor(rowColToOffset(buffer, row + 1, col));
+        return;
+      }
+
       // --- Cursor movement ---
       if (key.leftArrow) {
         setCursor((c) => Math.max(0, c - 1));
@@ -183,13 +254,18 @@ export function InputBox({
         setCursor((c) => Math.min(buffer.length, c + 1));
         return;
       }
-      // Ctrl+A / Ctrl+E (and Home/End where the terminal sends them) → edges.
+      // Ctrl+A / Ctrl+E (and Home/End where the terminal sends them) → jump to
+      // the start / end of the CURRENT logical line (M25.1: line-relative, so a
+      // multi-line buffer behaves like a normal editor; single-line is the
+      // whole buffer as before).
       if ((key.ctrl && input === "a") || (key as { home?: boolean }).home) {
-        setCursor(0);
+        const { row } = offsetToRowCol(buffer, cursor);
+        setCursor(rowColToOffset(buffer, row, 0));
         return;
       }
       if ((key.ctrl && input === "e") || (key as { end?: boolean }).end) {
-        setCursor(buffer.length);
+        const { row } = offsetToRowCol(buffer, cursor);
+        setCursor(rowColToOffset(buffer, row, splitLines(buffer)[row]!.length));
         return;
       }
 
@@ -224,20 +300,33 @@ export function InputBox({
   // ruleWidth's note on why we leave one column of slack.)
   const rule = "─".repeat(ruleWidth());
 
+  // M25.1: render each logical line on its own row so a multi-line buffer
+  // displays as multiple rows. The "> " prompt sits on the first line; wrapped
+  // continuation rows get a matching two-space indent so text aligns under it.
+  const lines = splitLines(buffer);
+  const { row: curRow, col: curCol } = offsetToRowCol(buffer, cursor);
+
   return (
     <Box flexDirection="column">
       {/* Input box: a top + bottom horizontal rule with the prompt between,
           matching the reference layout (not a rounded border). */}
       <Text color={disabled ? "gray" : ORANGE}>{rule}</Text>
-      <Box>
-        {vimActive ? (
-          <Text color={vimMode === "normal" ? "yellow" : "green"}>
-            {vimMode === "normal" ? "[N] " : "[I] "}
-          </Text>
-        ) : null}
-        <Text color={disabled ? "gray" : ORANGE}>{"> "}</Text>
-        <CursorText buffer={buffer} cursor={cursor} showCursor={!disabled} />
-      </Box>
+      {lines.map((line, i) => (
+        <Box key={i}>
+          {i === 0 && vimActive ? (
+            <Text color={vimMode === "normal" ? "yellow" : "green"}>
+              {vimMode === "normal" ? "[N] " : "[I] "}
+            </Text>
+          ) : null}
+          <Text color={disabled ? "gray" : ORANGE}>{i === 0 ? "> " : "  "}</Text>
+          <CursorLine
+            line={line}
+            // The cursor is only drawn on the row it sits on; other rows render
+            // their text plainly.
+            cursorCol={!disabled && i === curRow ? curCol : -1}
+          />
+        </Box>
+      ))}
       <Text color={disabled ? "gray" : ORANGE}>{rule}</Text>
       {suggestions.length > 0 ? (
         <Box flexDirection="column">
@@ -254,25 +343,19 @@ export function InputBox({
 }
 
 /**
- * Render the buffer with an inline block cursor. Splitting at the cursor and
- * drawing the char under it inverse keeps the cursor attached to its glyph as
- * the text wraps, rather than floating at the end of the previous line.
+ * Render one logical line with an optional inline block cursor at `cursorCol`
+ * (−1 = no cursor on this line). Splitting at the cursor and drawing the char
+ * under it inverse keeps the cursor attached to its glyph as the text wraps.
  */
-function CursorText({
-  buffer,
-  cursor,
-  showCursor,
-}: {
-  buffer: string;
-  cursor: number;
-  showCursor: boolean;
-}) {
-  if (!showCursor) {
-    return <Text>{buffer}</Text>;
+function CursorLine({ line, cursorCol }: { line: string; cursorCol: number }) {
+  if (cursorCol < 0) {
+    // No cursor on this row. Render a space for an empty line so the row keeps
+    // height (Ink collapses a fully-empty <Text>).
+    return <Text>{line.length > 0 ? line : " "}</Text>;
   }
-  const before = buffer.slice(0, cursor);
-  const under = buffer.slice(cursor, cursor + 1) || " ";
-  const after = buffer.slice(cursor + 1);
+  const before = line.slice(0, cursorCol);
+  const under = line.slice(cursorCol, cursorCol + 1) || " ";
+  const after = line.slice(cursorCol + 1);
   return (
     <Text>
       {before}
