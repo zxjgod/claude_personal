@@ -97,3 +97,28 @@ describe("InputBox slash-command submit", () => {
     expect(lastFrame()).toContain("/clear");
   });
 });
+
+describe("InputBox horizontal rule width (M24.4 — DECAWM fix)", () => {
+  // The rule must leave at least one column of slack vs the terminal width: a
+  // rule exactly as wide as the terminal trips auto-wrap (DECAWM), which made
+  // the input box jump on each ASCII keystroke. We assert the rendered rule is
+  // strictly narrower than the terminal column count.
+  it("renders a divider strictly narrower than the terminal width", async () => {
+    const cols = process.stdout.columns && process.stdout.columns > 0 ? process.stdout.columns : 80;
+    const { lastFrame } = render(
+      <InputBox commands={commands} disabled={false} onSubmit={vi.fn()} />,
+    );
+    await flush();
+    const frame = lastFrame()!;
+    // Find the longest run of box-drawing dashes in any rendered line.
+    const longestRule = Math.max(
+      0,
+      ...frame.split("\n").map((line) => {
+        const m = line.match(/─+/g);
+        return m ? Math.max(...m.map((r) => r.length)) : 0;
+      }),
+    );
+    expect(longestRule).toBeGreaterThan(0); // a rule was drawn
+    expect(longestRule).toBeLessThan(cols); // …but not flush to the edge
+  });
+});

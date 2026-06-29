@@ -260,3 +260,89 @@ M18 (命令广度, P0) ──> M19 (记忆服务化, P0)
 | 定位 | 轻量本地 | 轻量本地 + 工程化 | 企业级全功能 |
 
 **一句话**：M18–M21 落地后，A 在"机制 + 广度 + 工程化"上基本对齐 B 的里子，同时保留"纯 TS / Node 可跑 / 易读 / 轻量"的差异化护城河。M22 视需求推进；M23（TUI 体验对齐）按用户要求推进。
+
+---
+
+## 十一、M24 — TUI 响应平滑 + 输入框稳定（加强修复轮，P0）
+
+> 制定：2026-06-28
+> 触发：用户实测 M23 产物两个体感问题——① **AI 输出响应不平滑、生硬、卡顿**；② **输入框跳位**：在下方输入字母（ASCII）会被强制弹到一个固定位置，删字也会跳；**输入汉字不跳**。
+> 性质：本轮**不做新能力**，只修「响应平滑度」「输入框稳定性」两件体感问题，并**消除一处已确认的文档/代码漂移**。修完跑 `typecheck` + `biome` + `test` + `smoke`。
+> 优先级 **P0**（影响日常可用性）· 估时 **1–1.5 天**。
+> 范围决策（用户选定）：**最小稳定** —— 只恢复「帧合批 + 按字段订阅 + 流式区隔离」治卡顿、「分隔线宽度修正 + 输入框布局稳定」治跳位；**保留现有 `<Static>` 滚动模型，不引入 alt-screen**。
+
+### 背景：一处必须先讲清的文档/代码漂移（已取证）
+
+通读当前 `main`（最后一次提交 `4c2d9b8 update for tui`）后确认：
+
+- `docs/archive/M计划更新日志.md` 的 **M17** 与 `docs/archive/项目计划表.md` 的 **M15.1 / M17** 都声称已落地：帧级合批 `scheduleEmit`/`FRAME_MS=16`、按字段切片订阅 `useStoreField`/`useStoreSelector`、`ScrollBox`、alt-screen 全屏贴底（DEC 1049）、输入框多行（Ctrl+J）+ ↑/↓ 行间光标、`/` 面板分页。
+- **但当前源码里这些机制全部不存在**。取证：`grep -r "ScrollBox|useTerminalSize|1049|scheduleEmit|useStoreField|height={rows}|Ctrl\+J" src/` 仅在 `commands/keybindings.ts`（帮助文本）命中，**实现代码零命中**。
+  - `src/tui/store.ts`：`set()` 每次**同步** `emit()`，无帧合批。
+  - `src/tui/App.tsx`：用**整快照** `useSyncExternalStore(store.subscribe, store.getSnapshot)`，无字段切片；用 `<Static>`，无 ScrollBox / alt-screen。
+  - `src/tui/InputBox.tsx`：**单行**输入，`RULE_WIDTH = Math.max(20, terminalColumns())`（顶格全宽），`MAX_SUGGESTIONS=8` 截断。
+- 推断：`update for tui`（M23）是在一棵**已回退掉 M15.1/M17 成果**的树上做的——M23 把 `StatusLine`/`SpinnerGlyph`/`StreamBuffer` 接了进来，但「布局稳定 + 渲染隔离」的底座没了。
+- 后果：`/keybindings` 仍宣传 `Ctrl+J`（换行）、`PgUp/PgDn`（滚动回看），**实际按了无反应**——不实宣传。
+
+> M24 **不追求重做 M17 的全屏布局**（用户选最小稳定），但必须把这处漂移**显式标注**并**修掉不实宣传**，避免再次「文档说有、代码没有」。
+
+### 根因分析（对应两个症状）
+
+| # | 症状 | 根因 | 位置（文件:行） |
+|---|---|---|---|
+| 1 | 响应不平滑/卡顿 | `store.set()` 每次同步 `emit()` + `App` 整快照订阅 → 流式每帧（StreamBuffer ~30fps）触发**整棵 Ink 树 reconcile**（含输入框、状态栏、全部活动卡） | `store.ts:153-161`、`App.tsx:91` |
+| 2 | 响应不平滑/卡顿 | 在途 assistant 文本**不在 `<Static>` 内**，是一个不断增长的 `<Text>`；每帧整段重跑 Yoga 布局，文本越长越卡（O(n) 重布局 × 每帧） | `App.tsx:111-116` |
+| 3 | 输入框跳位（字母触发、删字触发、汉字不触发） | InputBox 分隔线 `"─".repeat(terminalColumns())` **正好等于终端列宽** → 触发终端自动换行 DECAWM，Ink 计算的行数与终端实际占行差 1~2 行；每次 InputBox 重渲染（ASCII 每键一次、退格一次；中文走 IME 仅提交时一次）→ Ink 擦旧帧/重画动态区按错误行数定位 → 输入框「跳」到固定偏移 | `InputBox.tsx:33,216,226` |
+| 4 | （隐患）跳位放大 | 动态区（流式文本 + 活动卡 + StatusLine + InputBox）无固定布局锚，任一区域行数变化都会让下方 InputBox 位置抖动 | `App.tsx:93-167` |
+| 5 | 文档/代码漂移 | `/keybindings` 宣传 Ctrl+J / PgUp/PgDn，源码未实现 | `commands/keybindings.ts:13,21` |
+
+> **为什么"打汉字不跳、打字母跳"是关键线索**：字母（ASCII）每个 keypress 经 `useInput` 同步 `setBuffer` → 立即重渲染；中文经输入法（IME）组字，**组字阶段终端不把每个码点交给程序**，直到上屏才作为一次输入到达，故重渲染次数远少、用户感知"不跳"。这把根因精确指向了「**InputBox 重渲染时的行数/布局计算**」而非输入逻辑本身——即根因 3（顶格分隔线触发 DECAWM 折行）。
+
+### 任务清单
+
+| # | 任务 | 涉及文件 | 验收标准 | 状态 |
+|---|---|---|---|---|
+| 24.0 | **文档对齐 + 去不实宣传** | `commands/keybindings.ts`、`docs/archive/M计划更新日志.md`、`docs/archive/项目计划表.md` | 文档不再声称未落地特性；`/keybindings` 只列**真实可用**键位 | ✅ 完成 |
+| 24.1 | **帧级合批 emit**（恢复 M15.1 机制，最小版） | `src/tui/store.ts`、`src/tui/run.tsx` | 流式高频 mutation 合并为 ~60fps notify；`vitest` 同步断言经 `{batching:false}` 或 `flush()` 不变 | ✅ 完成 |
+| 24.2 | **按字段切片订阅**（恢复 M15.1 机制） | `src/tui/App.tsx`、`src/tui/useStoreSelector.ts`（新） | 单字段变化只重渲订阅该字段的子树；InputBox 不因流式 token 重渲 | ✅ 完成 |
+| 24.3 | **流式区低成本重布局 + 实时 markdown** | `src/tui/App.tsx`、`src/tui/StreamingMarkdown.tsx`（新）、`src/markdown.ts` | 流式文本在独立 `StreamingRegion` 子组件内，仅它随 delta 重渲；**流式期间实时渲染 markdown** | ✅ 完成（隔离子树 + 稳定前缀分割实时 markdown；mid-stream→`<Static>` 尾窗仍不做） |
+| 24.4 | **分隔线宽度修正（治跳位核心）** | `src/tui/InputBox.tsx` | 分隔线不再撑满到触发折行；ASCII 逐字符输入 / 退格时输入框**不跳位** | ✅ 完成 |
+| 24.5 | **输入框布局锚定（治跳位补强）** | `src/tui/App.tsx`、`src/tui/InputBox.tsx` | 连续输入/删除过程中输入框视觉位置稳定，无强制弹回 | ✅ 完成（固定列序锚 + per-render 宽度） |
+| 24.6 | **回归测试 + 真机冒烟** | `src/__tests__/tui-store.test.ts`、`src/__tests__/input-box.test.tsx`、`src/__tests__/use-store-selector.test.tsx`（新） | `typecheck` 0 错、`biome` 干净、`test` 全绿、`smoke` PASSED | ✅ 完成（+8 用例，651→659） |
+
+> **进度（2026-06-28）**：M24 完成。**最小稳定**方案落地——治卡顿（帧合批 + 字段切片订阅 + 流式区隔离）+ 治跳位（分隔线留 1 列 + 固定列序布局锚）+ 消除文档/代码漂移。`tsc --noEmit` 0 错、`biome check` 干净（164 文件）、`vitest run --dir src` **659/659**（+8）、`npm run smoke` PASSED。
+> - **24.0**：`/keybindings` 删除未实现的 `Ctrl+J`（换行）与 `PgUp/PgDn`（滚动回看），只留真实可用键位；`项目计划表.md` 的 M15.1/M17 节、`M计划更新日志.md` 的 M17 节各加「⚠️ 漂移更正」横幅，显式标注「在当前 main 已回退，未随 M23 保留」，并指明 M24 重新落地的范围与 M25 待办（ScrollBox/alt-screen）。
+> - **24.1**：`TuiStore` 加帧合批——`set()` 仍**立即写 state**（`getSnapshot` 即时可见，同步测试零回归），仅把 `emit()` 延到下一帧（`scheduleEmit`，`FRAME_MS=16`）。新增 `flush()`（同步排空）、`setBatching(on)`、构造器 `{ batching? }`。**默认 OFF**（单测同步），`runTui` 构造时开 ON；`runTurn` 的 `finally` 调 `store.flush()` 让 idle 态立即上色。
+> - **24.2**：新增 `src/tui/useStoreSelector.ts`——`useStoreField(store,key)`（单字段 `===`）+ `useStoreSelector(store,selector)`（多字段对象**浅等缓存**，避免 fresh-object 身份打穿 React bail-out / `getSnapshot` 不稳定）。`App` 拆为 `TranscriptRegion`/`StreamingRegion`/`ActiveToolsRegion`/`StatusLineRegion`/`InteractionRegion`/`StatusBar` 六个区域组件，各订阅自己的切片：**root 不再整快照订阅**，token delta 只重渲 `StreamingRegion`。
+> - **24.3**：流式 assistant 文本收进独立 `StreamingRegion`（仅订阅 `streamingText`），随 delta 只重渲这一叶子。
+> - **24.4**：根因——`RULE_WIDTH = terminalColumns()`（顶格）触发 DECAWM 自动折行，是输入框跳位主因（ASCII 每键重渲一次→累积错位；CJK 经 IME 重渲少→不跳）。取证：InputBox 是**全仓唯一**顶格 `repeat(cols)`，其余渲染器（cli-renderer/cli-spinner/markdown/cli-interactive）早已留 `-1`。改 `ruleWidth() = max(20, cols-1)`，**per-render 读取**（resize 自适应），去模块级常量。
+> - **24.5**：`App` 外层列容器固定区域**垂直顺序**（区域出现/消失但次序不变），InputBox 高度可预测，下方输入区位置稳定。
+> - **24.6**：新增 `use-store-selector.test.tsx`（字段订阅 bail-out：未订阅字段变化不重渲、订阅字段变化才重渲）；`tui-store.test.ts` 加帧合批 5 例（默认同步 / 批量合并 / `flush` 幂等 / 帧定时器自发 emit / `setBatching(false)` 排空并恢复同步）；`input-box.test.tsx` 加分隔线宽度回归（渲染的横线严格窄于终端列宽）。
+> - **决策**：① 默认 batching OFF（保同步测试零改动），生产 ON；② state 立即写、仅延迟 emit（合批只作用通知频率，不作用可见性）；③ 分隔线留 1 列而非顶格（最小、零依赖、跨终端稳定）；④ 漂移显式标注而非默默补码（M15.1/M17 回填留 M25）；⑤ 24.3 尾窗暂不做（最小稳定，隔离子树已够）。
+
+> **追加（2026-06-28，同轮）：实时流式 markdown（撤销「24.3 markdown 延到提交」决策）。** 用户要求「AI 输出时就用 markdown 渲染、同时不卡顿、TUI 以 claude code 为目标」。原 M23.7/M24.3 为避免每帧重 lex 整段而把 markdown 延到提交时——这与「实时 markdown」冲突。参考标准 `reference/components/Markdown.tsx` 的 `StreamingMarkdown` 给出正解：**单调稳定前缀分割**。落地：
+> - 新增 `src/tui/StreamingMarkdown.tsx`：`stablePrefixRef` 记录已settle边界，每帧只 `marked.lexer(substring(boundary))`（O(tail) 而非 O(msg)）；把「最后一个非 space token」之前的已完成块推进稳定前缀，前缀经 `memo` 的 `MarkdownChunk` **解析一次、永不重 lex**；仅在制作中的尾块每帧重渲。`marked.lexer` 把未闭合 ``` fence 当单 token，故边界永不切进开放围栏。边界单调递增→render 期改 ref 幂等（StrictMode 安全），提交时组件卸载（`streamingText→""`）自动重置。
+> - `src/markdown.ts`：加 `hasMarkdownSyntax` 快路径（首 500 字符无 MD 标记→跳过 `marked.lexer`，按纯段落返回），省去纯文本尾每帧 ~3ms lex。
+> - `App.tsx`：抽 `AssistantMessage`（橙 `●` + markdown 列）共享给「已提交 assistant 行」与「流式区」，提交瞬间无布局跳动（仅尾块停止重 lex）。`StreamingRegion` 改用 `StreamingMarkdown`。
+> - 测试：新增 `streaming-markdown.test.tsx`（6 例：标题/粗体标记消费、列表成 bullet、未闭合 fence 留尾、跨 rerender 增长 settle、纯文本快路径、真 markdown 仍走 lexer）。`tsc` 0 错、`biome` 干净（166 文件）、`vitest` **665/665**（+6）、`smoke` PASSED。详见 [更新日志 20260628-m24-tui-smoothing](../更新日志/20260628-m24-tui-smoothing.md)。
+
+### 验收
+
+- **响应平滑**：长输出（200+ 行）流式过程中，输入框/状态栏不随每帧 token 重渲染；CPU/重绘成本相比 M23 显著下降（订阅切片 + 帧合批生效）。
+- **输入框稳定**：ASCII 逐字符输入与退格时输入框**不跳位**（与输入汉字行为一致）；终端 resize 后分隔线宽度自适应且仍不折行。
+- **文档自洽**：`/keybindings` 只列真实键位；M15.1/M17 漂移在文档中显式标注「已回退」。
+- `typecheck` 0 错、`biome check` 干净、`vitest run` 全绿、`npm run smoke` PASSED。
+- **不引新依赖**（仍用 ink7 / react19 / 现有 `terminal-width`）。
+
+### 不做（本轮明确边界）
+
+- **不引入 alt-screen（DEC 1049）/ ScrollBox / 全屏贴底布局**（M17 全量重做）——用户选最小稳定；若后续仍要全屏回看体验，另开 M25 重做 M17（含 PgUp/PgDn 真实落地后再恢复 `/keybindings` 那两条）。
+- **不做多行输入（Ctrl+J）+ ↑/↓ 行间光标**——同属 M17 范畴，留待 M25。
+- **不改 agent-loop 事件协议**（仅消费已有 `text_delta`/`usage`/`tool_use`/`done`）。
+- **不动行式 CLI（非 TTY）路径**，保持 fallback 不回归。
+
+### 设计决策（预先记录）
+
+1. **最小稳定优先于全量恢复 M17** —— 两个症状（卡顿/跳位）的根因是「渲染隔离缺失 + 顶格分隔线折行」，用帧合批 + 字段订阅 + 留 1 列即可根治，无需 alt-screen 这种高风险大改；alt-screen 历史上已被回退过一次，重做应单独成轮（M25）谨慎验证。
+2. **`set()` 立即写 state、仅延迟 emit** —— 保 `getSnapshot` 即时可见，使现有同步测试与非 React 读者零回归；合批只作用于「通知频率」，不作用于「状态可见性」。
+3. **分隔线留 1 列而非顶格** —— 顶格 `repeat(cols)` 在多数终端会触发 DECAWM 自动折到下一行，Ink 行模型与终端实际占行错位是跳位主因；`cols-1` 是最小、零依赖、跨终端稳定的修法。
+4. **文档漂移显式标注而非默默补代码** —— 本轮只修两个体感问题；M15.1/M17 是否回填由 M25 决定，但「文档说有、代码没有」必须当轮消除，否则后续里程碑会继续踩空。

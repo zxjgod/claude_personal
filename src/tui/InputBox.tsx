@@ -28,9 +28,20 @@ export interface CommandInfo {
 
 const ORANGE = "#d77757";
 const MAX_SUGGESTIONS = 8;
-// Width of the input box's horizontal rules — flush to the terminal edges
-// ("顶格"): the full column count, no side margin.
-const RULE_WIDTH = Math.max(20, terminalColumns());
+
+// Width of the input box's horizontal rules. We leave ONE column of slack
+// (`cols - 1`) rather than going flush to the terminal edge: a rule exactly as
+// wide as the terminal trips DECAWM (auto-wrap), so the terminal emits a
+// phantom wrapped row that Ink's line model doesn't account for. On every
+// InputBox re-render Ink then clears/repaints the dynamic region off by a row,
+// which is what made the input box "jump" on each ASCII keystroke/backspace
+// (CJK input goes through the IME and re-renders far less, so it didn't jump —
+// the tell that pointed here). Every other rule in the codebase already leaves
+// this slack (cli-renderer, cli-spinner, markdown); InputBox was the lone
+// flush-width outlier. Computed per-render so it tracks terminal resize.
+function ruleWidth(): number {
+  return Math.max(20, terminalColumns() - 1);
+}
 
 export function InputBox({
   commands,
@@ -209,11 +220,15 @@ export function InputBox({
     { isActive: !disabled },
   );
 
+  // Read terminal width at render time so the rule tracks resize. (See
+  // ruleWidth's note on why we leave one column of slack.)
+  const rule = "─".repeat(ruleWidth());
+
   return (
     <Box flexDirection="column">
       {/* Input box: a top + bottom horizontal rule with the prompt between,
           matching the reference layout (not a rounded border). */}
-      <Text color={disabled ? "gray" : ORANGE}>{"─".repeat(RULE_WIDTH)}</Text>
+      <Text color={disabled ? "gray" : ORANGE}>{rule}</Text>
       <Box>
         {vimActive ? (
           <Text color={vimMode === "normal" ? "yellow" : "green"}>
@@ -223,7 +238,7 @@ export function InputBox({
         <Text color={disabled ? "gray" : ORANGE}>{"> "}</Text>
         <CursorText buffer={buffer} cursor={cursor} showCursor={!disabled} />
       </Box>
-      <Text color={disabled ? "gray" : ORANGE}>{"─".repeat(RULE_WIDTH)}</Text>
+      <Text color={disabled ? "gray" : ORANGE}>{rule}</Text>
       {suggestions.length > 0 ? (
         <Box flexDirection="column">
           {suggestions.map((s, i) => (

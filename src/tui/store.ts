@@ -120,12 +120,26 @@ export interface StoreState {
 
 type Listener = () => void;
 
+// Coalescing window for batched notifications. A burst of mutations within one
+// frame (~60fps) collapses to a single `emit()`, so a fast stream doesn't fire
+// one React re-render per store write. State itself is always written
+// synchronously (see `set`), so `getSnapshot` stays current regardless.
+const FRAME_MS = 16;
+
 export class TuiStore {
   private state: StoreState;
   private listeners = new Set<Listener>();
   private nextId = 1;
+  // When true, `emit()` is deferred and coalesced to the next frame. Defaults
+  // OFF so unit tests see synchronous notifications (zero churn on existing
+  // sync assertions); the TUI runner opts in via the constructor for the
+  // production render path.
+  private batching: boolean;
+  private emitScheduled = false;
+  private frameTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(modelLabel: string) {
+  constructor(modelLabel: string, opts?: { batching?: boolean }) {
+    this.batching = opts?.batching ?? false;
     this.state = {
       transcript: [],
       streamingText: "",
@@ -150,8 +164,49 @@ export class TuiStore {
 
   getSnapshot = (): StoreState => this.state;
 
-  private emit(): void {
+  private emitNow(): void {
     for (const l of this.listeners) l();
+  }
+
+  /** Coalesce multiple mutations in one frame into a single notify. */
+  private scheduleEmit(): void {
+    if (this.emitScheduled) return;
+    this.emitScheduled = true;
+    this.frameTimer = setTimeout(() => {
+      this.frameTimer = null;
+      if (this.emitScheduled) {
+        this.emitScheduled = false;
+        this.emitNow();
+      }
+    }, FRAME_MS);
+  }
+
+  /**
+   * Synchronously drain any pending batched notification. The TUI runner calls
+   * this from `runTurn`'s `finally` so the terminal idle state paints at once
+   * rather than waiting on a trailing frame; tests can call it to assert
+   * post-mutation state deterministically.
+   */
+  flush = (): void => {
+    if (this.frameTimer !== null) {
+      clearTimeout(this.frameTimer);
+      this.frameTimer = null;
+    }
+    if (this.emitScheduled) {
+      this.emitScheduled = false;
+      this.emitNow();
+    }
+  };
+
+  /** Toggle frame-coalescing. Turning it off flushes any pending notify. */
+  setBatching(on: boolean): void {
+    this.batching = on;
+    if (!on) this.flush();
+  }
+
+  private emit(): void {
+    if (this.batching) this.scheduleEmit();
+    else this.emitNow();
   }
 
   /** Replace state with a shallow-merged patch and notify. */

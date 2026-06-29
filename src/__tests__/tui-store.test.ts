@@ -175,3 +175,60 @@ describe("TuiStore", () => {
     expect(snap.spinnerTokens).toBe(25);
   });
 });
+
+describe("TuiStore frame batching (M24.1)", () => {
+  it("notifies synchronously by default (batching off)", () => {
+    const store = new TuiStore("p/m");
+    let count = 0;
+    store.subscribe(() => count++);
+    store.appendStreaming("a");
+    store.appendStreaming("b");
+    expect(count).toBe(2); // one notify per mutation
+  });
+
+  it("coalesces a burst of mutations into a single notify when batching", () => {
+    const store = new TuiStore("p/m", { batching: true });
+    let count = 0;
+    store.subscribe(() => count++);
+    store.appendStreaming("a");
+    store.appendStreaming("b");
+    store.appendStreaming("c");
+    // State is written synchronously regardless of batching.
+    expect(store.getSnapshot().streamingText).toBe("abc");
+    // …but the notify is deferred and coalesced — no sync emit yet.
+    expect(count).toBe(0);
+    // flush() drains the pending frame synchronously into one notify.
+    store.flush();
+    expect(count).toBe(1);
+  });
+
+  it("flush is a no-op when nothing is pending", () => {
+    const store = new TuiStore("p/m", { batching: true });
+    let count = 0;
+    store.subscribe(() => count++);
+    store.flush();
+    expect(count).toBe(0);
+  });
+
+  it("eventually emits on its own frame timer when batching", async () => {
+    const store = new TuiStore("p/m", { batching: true });
+    let count = 0;
+    store.subscribe(() => count++);
+    store.appendStreaming("x");
+    expect(count).toBe(0);
+    await new Promise((r) => setTimeout(r, 40)); // > FRAME_MS
+    expect(count).toBe(1);
+  });
+
+  it("setBatching(false) flushes pending work and restores sync notifies", () => {
+    const store = new TuiStore("p/m", { batching: true });
+    let count = 0;
+    store.subscribe(() => count++);
+    store.appendStreaming("pending");
+    expect(count).toBe(0);
+    store.setBatching(false);
+    expect(count).toBe(1); // pending notify flushed by the switch
+    store.appendStreaming("more");
+    expect(count).toBe(2); // now synchronous again
+  });
+});

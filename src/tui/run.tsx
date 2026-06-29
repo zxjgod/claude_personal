@@ -201,6 +201,10 @@ async function runTurn(
     store.setSpinnerTokens(0);
     store.stopTurnClock();
     store.setBusy(false);
+    // Drain any frame-coalesced notify so the idle state (spinner cleared,
+    // input re-enabled) paints immediately rather than waiting on a trailing
+    // frame after the turn ends.
+    store.flush();
   }
 }
 
@@ -494,7 +498,12 @@ export function runTui(deps: TuiDeps): Promise<void> {
     provider: deps.modelConfig.provider,
     workspaceRoot: deps.workspaceRoot,
   });
-  const store = new TuiStore(`${deps.modelConfig.provider}/${deps.modelConfig.model}`);
+  const store = new TuiStore(`${deps.modelConfig.provider}/${deps.modelConfig.model}`, {
+    // Coalesce the high-frequency stream of store mutations (text deltas, token
+    // ticks) into one notify per frame so a fast stream doesn't trigger a React
+    // re-render per write. Tests construct the store without this (synchronous).
+    batching: true,
+  });
   const { waitUntilExit } = render(<Root store={store} deps={deps} />);
   return waitUntilExit() as Promise<void>;
 }

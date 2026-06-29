@@ -1147,6 +1147,8 @@ Use the task tool with subagent_name code-explorer to inspect README.md in the w
 
 # M17 — TUI 启动界面布局重做（2026-06-25）
 
+> ⚠️ **漂移更正（M24，2026-06-28）：本节记录的 M17 全套成果在当前 `main` 已被回退，未随 M23（`update for tui`）保留。** 取证：`grep -r "1049|ScrollBox|useTerminalSize|height={rows}|Ctrl\+J|scheduleEmit|useStoreField" src/` 在实现代码零命中——alt-screen / ScrollBox / 全屏贴底 / 多行输入（Ctrl+J）/ ↑↓ 行间光标 / `/` 面板分页 **当前源码中均不存在**。M23 在一棵已回退掉 M15.1/M17 成果的树上做的，把 StatusLine/SpinnerGlyph/StreamBuffer 接了进来，但「布局稳定 + 渲染隔离」的底座没了。M24 以「最小稳定」重新落地帧合批 + 字段订阅 + 流式区隔离 + 分隔线留 1 列治跳位，但**不重做 M17 全屏布局**；ScrollBox / alt-screen 回填留待 M25。下文 M17 记录**仅作历史**，不代表当前代码状态。
+
 ## 目标
 
 修复用户实测 `npm start` 的三个体感问题，对齐官方 Claude Code 启动界面观感：

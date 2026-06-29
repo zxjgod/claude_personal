@@ -297,11 +297,28 @@ function formatToken(
  * Bold/italic markers are consumed; tables get box borders.
  */
 export function renderMarkdown(content: string): string {
+  // Fast path: plain prose with no markdown syntax → skip the full GFM lex
+  // (the hot cost when re-rendering a streaming tail every frame). A paragraph
+  // of plain text formats to itself anyway, so just return it trimmed.
+  // Mirrors the reference's hasMarkdownSyntax guard.
+  if (!hasMarkdownSyntax(content)) {
+    return content.replace(/\n+$/, "");
+  }
   const tokens = marked.lexer(content);
   return tokens
     .map((t) => formatToken(t))
     .join("")
     .replace(/\n+$/, "");
+}
+
+// Markdown syntax sniff: if none of these markers appear, skip marked.lexer
+// entirely. Checked over the first 500 chars (markdown markers — headers, code
+// fences, lists — show up early; long tails are mostly plain text). Matches any
+// MD marker or an ordered-list start (`N. ` at line start). Ported from the
+// reference renderer.
+const MD_SYNTAX_RE = /[#*`|[>\-_~]|\n\n|^\d+\. |\n\d+\. /;
+function hasMarkdownSyntax(s: string): boolean {
+  return MD_SYNTAX_RE.test(s.length > 500 ? s.slice(0, 500) : s);
 }
 
 // Exported for tests.

@@ -57,6 +57,7 @@ docs/更新日志/
 
 | 日期 | 类型 | 模块 | 主题 | commit | 关联 |
 |---|---|---|---|---|---|
+| 2026-06-28 | fix | TUI / store / InputBox / 流式响应 | [M24 TUI 响应平滑 + 输入框稳定（帧合批 + 字段订阅 + 流式区隔离 + 分隔线留 1 列治跳位）](./20260628-m24-tui-smoothing.md) | 待提交 | [M计划表 §十一 M24](../archive/M计划表-对齐CCB.md) |
 | 2026-06-28 | feature | TUI / 状态行 / 流式响应 | [M23 TUI 体验对齐参考版（StatusLine / SpinnerGlyph / StreamBuffer / spinner-core）](./20260628-m23-tui-statusline.md) | 待提交 | [M计划表 §七 M23](../archive/M计划表-对齐CCB.md) |
 | 2026-06-28 | feature | provider 路由 / 配置 | [`/provider` 多 API 端点档案热切换（中转站/国内平台免重启切换）](./20260628-provider-profiles.md) | 待提交 | [M计划表 §六 M22](../archive/M计划表-对齐CCB.md) |
 | 2026-06-28 | feature | 测试基建 / 集成测试 | [M21 测试广度（5 大集成测试 + CI 冒烟元测试，508→613）](./20260628-m21-testing.md) | 待提交 | [M计划表](../archive/M计划表-对齐CCB.md) |
@@ -78,7 +79,7 @@ docs/更新日志/
 - **BashTool / 进程管理**：`bash-deadlock-fix-20260626`（spawn + taskkill 进程树 + timedOut 标志 + 非并发安全）、`bash-deadlock-analysis`（根因）。
 - **agent-loop 并行 / abort**：`bash-deadlock-fix-20260626`（并行路径加 abort 竞速）。
 - **permissions 危险命令拦截**：`bash-deadlock-fix-20260626`（补充易致死命令静态拦截）。
-- **TUI 启动 / 渲染**：`终端界面bug修复-20260626`、`更新日志-终端界面`（渲染层对齐）、`20260628-m23-tui-statusline`（状态行对齐参考版：`spinner-core` / `StatusLine` / `SpinnerGlyph` / `StreamBuffer`，删除 `ParticleSpinner` 与 `ink-spinner`）。
+- **TUI 启动 / 渲染**：`终端界面bug修复-20260626`、`更新日志-终端界面`（渲染层对齐）、`20260628-m23-tui-statusline`（状态行对齐参考版：`spinner-core` / `StatusLine` / `SpinnerGlyph` / `StreamBuffer`，删除 `ParticleSpinner` 与 `ink-spinner`）、`20260628-m24-tui-smoothing`（M24：帧合批 `scheduleEmit`/`flush`/`setBatching`、字段切片订阅 `useStoreSelector`、`App` 拆六区域组件、流式区隔离、分隔线 `cols-1` 治 DECAWM 跳位；同时去 `/keybindings` 不实宣传、标注 M15.1/M17 漂移已回退）。
 - **工程基建 / CI / 构建**：`20260628-m20-engineering`（M20：Biome 替 eslint+prettier、esbuild 转译构建、免 key 冒烟脚本、husky+lint-staged pre-commit、GitHub Actions CI、`.gitattributes` 强制 LF、cli `--version/--help`）。
 - **测试基建 / 集成测试**：`20260628-m21-testing`（M21：tools/permissions/persistence/MCP/TUI 五大集成测试 + CI 冒烟元测试，508→613；真 git worktree 提交隔离、真 MCP SDK stdio/http mock server、分类器短路顺序、resume 折叠、30 轮长会话 store 不变量）。
 - **TUI overlay / resume**：`20260628-resume-session-picker`（裸 `/resume` 弹 sessionPicker overlay、`nextOffset` 滚动窗口、`history-replay` 把 `Message[]` 回放进 transcript、零 token 恢复）。
