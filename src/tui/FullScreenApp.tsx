@@ -24,6 +24,7 @@
 import { Box, Text, useInput } from "ink";
 import { useEffect, useRef, useState } from "react";
 import { actionLabel } from "./../spinner-core.js";
+import { CommandPicker } from "./CommandPicker.js";
 import { EffortPrompt } from "./EffortPrompt.js";
 import { type CommandInfo, InputBox } from "./InputBox.js";
 import { PermissionPrompt, QuestionPrompt } from "./Prompts.js";
@@ -68,7 +69,14 @@ function FsStatusLine({ store }: { store: TuiStore }) {
     selectStatusLine,
   );
   if (!(busy && toolCount === 0 && spinner !== "idle")) return null;
-  return <StatusLine label={label} startedAt={turnStartedAt} tokens={spinnerTokens} />;
+  return (
+    <StatusLine
+      label={label}
+      startedAt={turnStartedAt}
+      tokens={spinnerTokens}
+      cycleVerbs={spinner === "thinking"}
+    />
+  );
 }
 
 function selectStatusBar(s: StoreState) {
@@ -126,6 +134,8 @@ function FsInteraction({
         return <SessionPicker overlay={overlay} />;
       case "providerPicker":
         return <ProviderPicker overlay={overlay} />;
+      case "commandPicker":
+        return <CommandPicker overlay={overlay} />;
       default:
         return <EffortPrompt overlay={overlay} />;
     }

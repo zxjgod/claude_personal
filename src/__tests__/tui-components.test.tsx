@@ -9,6 +9,7 @@
 import { render } from "ink-testing-library";
 import { describe, expect, it } from "vitest";
 import { App } from "../tui/App.js";
+import { CommandPicker } from "../tui/CommandPicker.js";
 import { EffortPrompt } from "../tui/EffortPrompt.js";
 import { PermissionPrompt, QuestionPrompt } from "../tui/Prompts.js";
 import { nextOffset, SessionPicker } from "../tui/SessionPicker.js";
@@ -219,6 +220,85 @@ describe("SessionPicker (/resume overlay)", () => {
       />,
     );
     stdin.write(""); // Esc
+    await new Promise((r) => setTimeout(r, 20));
+    expect(chosen).toBeNull();
+  });
+});
+
+describe("CommandPicker (/help palette)", () => {
+  const many = Array.from({ length: 25 }, (_, i) => ({
+    name: `cmd${i.toString().padStart(2, "0")}`,
+    description: `does thing ${i}`,
+  }));
+
+  it("renders the header, a row, and a more-below marker for a long list", () => {
+    const { lastFrame } = render(
+      <CommandPicker overlay={{ kind: "commandPicker", commands: many, resolve: () => {} }} />,
+    );
+    const frame = lastFrame()!;
+    expect(frame).toContain("Commands");
+    expect(frame).toContain("/cmd00");
+    expect(frame).toContain("does thing 0");
+    expect(frame).toMatch(/↓ \d+ more/); // rows hidden below the window
+    expect(frame).not.toContain("cmd24"); // beyond the visible window
+  });
+
+  it("resolves with the highlighted command name on Enter", async () => {
+    let chosen: string | null = "unset";
+    const { stdin } = render(
+      <CommandPicker
+        overlay={{
+          kind: "commandPicker",
+          commands: many,
+          resolve: (name) => {
+            chosen = name;
+          },
+        }}
+      />,
+    );
+    stdin.write("\r"); // Enter on the first (default-selected) row
+    await new Promise((r) => setTimeout(r, 20));
+    expect(chosen).toBe("cmd00");
+  });
+
+  it("scrolls the window as the cursor moves down, then selects", async () => {
+    let chosen: string | null = "unset";
+    const { stdin, lastFrame } = render(
+      <CommandPicker
+        overlay={{
+          kind: "commandPicker",
+          commands: many,
+          resolve: (name) => {
+            chosen = name;
+          },
+        }}
+      />,
+    );
+    // Step the cursor down past the initial window so it must scroll.
+    for (let i = 0; i < 12; i++) {
+      stdin.write("\x1B[B"); // down arrow
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(lastFrame()).toMatch(/↑ \d+ more/); // window scrolled off the top
+    stdin.write("\r");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(chosen).toBe("cmd12");
+  });
+
+  it("cancels with null on Esc", async () => {
+    let chosen: string | null = "unset";
+    const { stdin } = render(
+      <CommandPicker
+        overlay={{
+          kind: "commandPicker",
+          commands: many,
+          resolve: (name) => {
+            chosen = name;
+          },
+        }}
+      />,
+    );
+    stdin.write("\x1B"); // Esc
     await new Promise((r) => setTimeout(r, 20));
     expect(chosen).toBeNull();
   });

@@ -354,6 +354,21 @@ async function runProviderPicker(store: TuiStore, deps: TuiDeps): Promise<void> 
 }
 
 /**
+ * Drive the interactive /help command palette: list every registered slash
+ * command in a scrollable, arrow-navigable overlay. Resolves with the chosen
+ * command name (without the slash) or null on cancel. The caller dispatches the
+ * chosen command through the normal path — this only picks.
+ */
+async function runCommandPicker(store: TuiStore, deps: TuiDeps): Promise<string | null> {
+  const items = deps.commands.map((c) => ({ name: c.name, description: c.description }));
+  if (items.length === 0) {
+    store.addNotice("  No commands available.");
+    return null;
+  }
+  return store.pickCommand(items);
+}
+
+/**
  * Root that wires the InputBox submit handler to slash-command dispatch and
  * the agent loop, and installs a process-level SIGINT handler that aborts the
  * current turn (9.6) without tearing down the session.
@@ -427,6 +442,15 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
       store.addUserMessage(value);
 
       void (async () => {
+        // /help (or /commands) with no args → open the interactive command
+        // palette overlay instead of dumping a static list. Selecting a command
+        // dispatches it exactly as if the user had typed "/name"; Esc cancels.
+        if (/^\/(help|commands)\s*$/i.test(value)) {
+          const chosen = await runCommandPicker(store, deps);
+          if (chosen) onSubmit("/" + chosen);
+          return;
+        }
+
         // /effort with no args → open the interactive slider overlay (TUI).
         // With an arg (e.g. /effort max) it falls through to the static handler.
         if (/^\/effort\s*$/i.test(value)) {

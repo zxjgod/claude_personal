@@ -75,6 +75,30 @@ export function pickVerb(): string {
   return SPINNER_VERBS[Math.floor(Math.random() * SPINNER_VERBS.length)]!;
 }
 
+/** How long each thinking verb stays on screen before the next one (ms). */
+export const VERB_CYCLE_MS = 3500;
+
+/**
+ * Deterministic cycling verb for the thinking status line. Instead of a fixed
+ * "Thinking", the label rotates through SPINNER_VERBS every VERB_CYCLE_MS — the
+ * playful gerunds ("Cogitating", "Pondering"…) the reference shows while the
+ * model works.
+ *
+ * It's a pure function of elapsed time + a per-turn `seed` (pass the turn start
+ * time) rather than random-per-render: the status line re-renders ~12×/s for
+ * its clock/shimmer, and re-rolling the verb each of those frames would make it
+ * flicker illegibly. Deriving the index from `floor(elapsed / cycle)` keeps the
+ * verb stable within its window and advances exactly once per window; the seed
+ * mixes in so different turns don't all start on the same word.
+ */
+export function verbAt(elapsedMs: number, seed = 0): string {
+  const step = Math.floor(Math.max(0, elapsedMs) / VERB_CYCLE_MS);
+  // Cheap integer hash of (seed, step) → spreads consecutive steps across the
+  // list instead of walking it in order (which would look like a slow scroll).
+  const mixed = Math.abs(Math.floor(seed / 1000) * 2654435761 + step * 40503);
+  return SPINNER_VERBS[mixed % SPINNER_VERBS.length]!;
+}
+
 // --- Glyph frames ------------------------------------------------------------
 
 /** Official particle charset (✳ omitted by preference), played forwards then backwards. */

@@ -27,14 +27,23 @@
 import { Box, Text, useInput } from "ink";
 import { useState } from "react";
 import { terminalColumns } from "./../terminal-width.js";
+import { nextOffset } from "./SessionPicker.js";
+import { palette } from "./theme.js";
 
 export interface CommandInfo {
   name: string;
   description: string;
 }
 
-const ORANGE = "#d77757";
+const ORANGE = palette.accent;
+/** How many command rows the inline "/" dropdown shows at once before it
+ *  scrolls. The full filtered list is kept and windowed around the selection
+ *  (see the render below) so every command is reachable, not just the first 8. */
 const MAX_SUGGESTIONS = 8;
+
+function clamp(n: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, n));
+}
 
 // Width of the input box's horizontal rules. We leave ONE column of slack
 // (`cols - 1`) rather than going flush to the terminal edge: a rule exactly as
@@ -120,15 +129,19 @@ export function InputBox({
   const [buffer, setBuffer] = useState("");
   const [cursor, setCursor] = useState(0);
   const [selected, setSelected] = useState(0);
+  // First-visible index of the dropdown scroll window; nudged as `selected`
+  // moves so the highlighted command stays on screen (see MAX_SUGGESTIONS).
+  const [suggestOffset, setSuggestOffset] = useState(0);
   // Vim sub-mode (only meaningful when vimActive). Starts in insert so typing
   // works immediately after /vim on; Esc drops to normal.
   const [vimMode, setVimMode] = useState<"normal" | "insert">("insert");
 
+  // Full filtered command list (no longer capped): the palette windows over
+  // this so a long list scrolls with the cursor instead of truncating at 8.
   const suggestions = buffer.startsWith("/")
-    ? commands
-        .filter((c) => c.name.startsWith(buffer.slice(1).split(/\s+/)[0]!.toLowerCase()))
-        .slice(0, MAX_SUGGESTIONS)
+    ? commands.filter((c) => c.name.startsWith(buffer.slice(1).split(/\s+/)[0]!.toLowerCase()))
     : [];
+  const windowSize = Math.min(MAX_SUGGESTIONS, suggestions.length);
 
   // `selected` is plain state that can outlive a shrinking filtered list:
   // type "/", arrow down to a high index, then narrow the query and the list
@@ -141,6 +154,7 @@ export function InputBox({
     setBuffer("");
     setCursor(0);
     setSelected(0);
+    setSuggestOffset(0);
   };
 
   useInput(
@@ -242,12 +256,18 @@ export function InputBox({
       }
 
       // --- Dropdown navigation (only while it's open) ---
+      // Wrap around at the ends, and slide the scroll window the minimum amount
+      // needed to keep the highlighted row visible.
       if (key.upArrow && suggestions.length > 0) {
-        setSelected((s) => (s - 1 + suggestions.length) % suggestions.length);
+        const next = (safeSelected - 1 + suggestions.length) % suggestions.length;
+        setSelected(next);
+        setSuggestOffset((off) => nextOffset(next, off, windowSize));
         return;
       }
       if (key.downArrow && suggestions.length > 0) {
-        setSelected((s) => (s + 1) % suggestions.length);
+        const next = (safeSelected + 1) % suggestions.length;
+        setSelected(next);
+        setSuggestOffset((off) => nextOffset(next, off, windowSize));
         return;
       }
 
@@ -328,16 +348,32 @@ export function InputBox({
   const { row: curRow, col: curCol } = offsetToRowCol(buffer, cursor);
 
   const suggestionList =
-    suggestions.length > 0 ? (
-      <Box flexDirection="column">
-        {suggestions.map((s, i) => (
-          <Text key={s.name} color={i === safeSelected ? ORANGE : "cyan"}>
-            {i === safeSelected ? "❯ " : "  "}/{s.name}
-            <Text dimColor> {s.description}</Text>
-          </Text>
-        ))}
-      </Box>
-    ) : null;
+    suggestions.length > 0
+      ? (() => {
+          // Window the full list around the selection so long command lists
+          // scroll instead of overflowing the terminal.
+          const start = clamp(suggestOffset, 0, Math.max(0, suggestions.length - windowSize));
+          const visible = suggestions.slice(start, start + windowSize);
+          const hiddenAbove = start;
+          const hiddenBelow = suggestions.length - (start + windowSize);
+          return (
+            <Box flexDirection="column">
+              {hiddenAbove > 0 ? <Text dimColor>{`  ↑ ${hiddenAbove} more`}</Text> : null}
+              {visible.map((s, i) => {
+                const realIdx = start + i;
+                const sel = realIdx === safeSelected;
+                return (
+                  <Text key={s.name} color={sel ? ORANGE : palette.command}>
+                    {sel ? "❯ " : "  "}/{s.name}
+                    <Text dimColor> {s.description}</Text>
+                  </Text>
+                );
+              })}
+              {hiddenBelow > 0 ? <Text dimColor>{`  ↓ ${hiddenBelow} more`}</Text> : null}
+            </Box>
+          );
+        })()
+      : null;
 
   // M36: type-ahead hint — only while the agent is busy AND the box is active.
   // Tells the user their next line is queued (runs after the current turn),

@@ -19,6 +19,7 @@ import { Box, Static, Text } from "ink";
 import type { ReactNode } from "react";
 import { renderMarkdown } from "./../markdown.js";
 import { actionLabel } from "./../spinner-core.js";
+import { CommandPicker } from "./CommandPicker.js";
 import { EffortPrompt } from "./EffortPrompt.js";
 import { FullScreenApp } from "./FullScreenApp.js";
 import { type CommandInfo, InputBox } from "./InputBox.js";
@@ -29,9 +30,8 @@ import { StatusLine } from "./StatusLine.js";
 import { StreamingMarkdown } from "./StreamingMarkdown.js";
 import type { StoreState, TranscriptItem, TuiStore } from "./store.js";
 import { ActiveToolCard, CompletedToolCard } from "./ToolCard.js";
+import { palette } from "./theme.js";
 import { useStoreField, useStoreSelector } from "./useStoreSelector.js";
-
-const ORANGE = "#d77757";
 
 /** The orange ● bullet + a markdown body column. Shared by the committed
  *  assistant row and the live streaming region so the handoff at commit time
@@ -39,7 +39,7 @@ const ORANGE = "#d77757";
 function AssistantMessage({ children }: { children: ReactNode }) {
   return (
     <Box>
-      <Text color={ORANGE}>{"● "}</Text>
+      <Text color={palette.accent}>{"● "}</Text>
       <Box flexDirection="column">{children}</Box>
     </Box>
   );
@@ -68,10 +68,13 @@ function statusLabel(
 function TranscriptRow({ item, expanded }: { item: TranscriptItem; expanded: boolean }) {
   switch (item.kind) {
     case "user":
+      // Role coloring: the user's turn is drawn in a calm blue (marker + text)
+      // so it's instantly distinguishable from the assistant's orange-bulleted
+      // reply as you scroll back through the transcript.
       return (
         <Box>
-          <Text dimColor>{"> "}</Text>
-          <Text>{item.text}</Text>
+          <Text color={palette.user}>{"> "}</Text>
+          <Text color={palette.user}>{item.text}</Text>
         </Box>
       );
     case "assistant":
@@ -159,7 +162,14 @@ function StatusLineRegion({ store }: { store: TuiStore }) {
     selectStatusLine,
   );
   if (!(busy && toolCount === 0 && spinner !== "idle")) return null;
-  return <StatusLine label={label} startedAt={turnStartedAt} tokens={spinnerTokens} />;
+  return (
+    <StatusLine
+      label={label}
+      startedAt={turnStartedAt}
+      tokens={spinnerTokens}
+      cycleVerbs={spinner === "thinking"}
+    />
+  );
 }
 
 function selectStatusLine(s: StoreState) {
@@ -196,6 +206,8 @@ function InteractionRegion({
         return <SessionPicker overlay={overlay} />;
       case "providerPicker":
         return <ProviderPicker overlay={overlay} />;
+      case "commandPicker":
+        return <CommandPicker overlay={overlay} />;
       default:
         return <EffortPrompt overlay={overlay} />;
     }

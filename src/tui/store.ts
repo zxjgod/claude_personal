@@ -56,6 +56,14 @@ export interface ProviderPickerItem {
   current?: boolean;
 }
 
+/** One row in the /help command palette. */
+export interface CommandPickerItem {
+  /** Command name without the leading slash (returned on selection). */
+  name: string;
+  /** One-line description shown beside the name. */
+  description: string;
+}
+
 /** A pending interactive prompt the App should overlay. */
 export type Overlay =
   | {
@@ -86,6 +94,11 @@ export type Overlay =
   | {
       kind: "providerPicker";
       profiles: ProviderPickerItem[];
+      resolve: (name: string | null) => void;
+    }
+  | {
+      kind: "commandPicker";
+      commands: CommandPickerItem[];
       resolve: (name: string | null) => void;
     };
 
@@ -448,5 +461,25 @@ export class TuiStore {
   /** Update the status-bar model label (e.g. after a /provider switch). */
   setModelLabel(label: string): void {
     this.set({ modelLabel: label });
+  }
+
+  /**
+   * Open the /help command palette; resolves with the chosen command name
+   * (without the leading slash), or null if cancelled (Esc). Selecting a command
+   * runs it through the normal dispatch path — the overlay is purely a picker.
+   */
+  pickCommand(commands: CommandPickerItem[]): Promise<string | null> {
+    return new Promise((resolve) => {
+      this.set({
+        overlay: {
+          kind: "commandPicker",
+          commands,
+          resolve: (name) => {
+            this.set({ overlay: null });
+            resolve(name);
+          },
+        },
+      });
+    });
   }
 }

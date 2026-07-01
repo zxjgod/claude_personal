@@ -12,6 +12,8 @@ import {
   pickVerb,
   SPINNER_FRAMES,
   SPINNER_VERBS,
+  VERB_CYCLE_MS,
+  verbAt,
 } from "../spinner-core.js";
 
 describe("SPINNER_VERBS / pickVerb", () => {
@@ -26,6 +28,35 @@ describe("SPINNER_VERBS / pickVerb", () => {
     for (let i = 0; i < 20; i++) {
       expect(SPINNER_VERBS).toContain(pickVerb());
     }
+  });
+});
+
+describe("verbAt (cycling thinking verb)", () => {
+  it("always returns a member of the list", () => {
+    for (let ms = 0; ms < 60_000; ms += 137) {
+      expect(SPINNER_VERBS).toContain(verbAt(ms, 12345));
+    }
+  });
+
+  it("is stable within a cycle window", () => {
+    const seed = 1_700_000_000_000;
+    // Two reads inside the same window (frame re-renders ~12×/s) must match, so
+    // the verb doesn't flicker between frames.
+    expect(verbAt(10, seed)).toBe(verbAt(VERB_CYCLE_MS - 1, seed));
+    expect(verbAt(VERB_CYCLE_MS + 5, seed)).toBe(verbAt(2 * VERB_CYCLE_MS - 1, seed));
+  });
+
+  it("cycles through more than one verb over time", () => {
+    const seed = 1_700_000_000_000;
+    const seen = new Set<string>();
+    for (let step = 0; step < 40; step++) {
+      seen.add(verbAt(step * VERB_CYCLE_MS + 1, seed));
+    }
+    expect(seen.size).toBeGreaterThan(1);
+  });
+
+  it("clamps negative elapsed to the first window", () => {
+    expect(verbAt(-500, 42)).toBe(verbAt(0, 42));
   });
 });
 

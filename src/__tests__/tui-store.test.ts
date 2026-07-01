@@ -124,6 +124,27 @@ describe("TuiStore", () => {
     await expect(p).resolves.toBeNull();
   });
 
+  it("resolves a command-picker overlay with the chosen command name", async () => {
+    const store = new TuiStore("p/m");
+    const p = store.pickCommand([
+      { name: "help", description: "Show help" },
+      { name: "effort", description: "Set effort" },
+    ]);
+    const overlay = store.getSnapshot().overlay;
+    expect(overlay?.kind).toBe("commandPicker");
+    overlay!.kind === "commandPicker" && overlay!.resolve("effort");
+    await expect(p).resolves.toBe("effort");
+    expect(store.getSnapshot().overlay).toBeNull();
+  });
+
+  it("resolves the command picker with null when cancelled", async () => {
+    const store = new TuiStore("p/m");
+    const p = store.pickCommand([{ name: "help", description: "Show help" }]);
+    const overlay = store.getSnapshot().overlay;
+    overlay!.kind === "commandPicker" && overlay!.resolve(null);
+    await expect(p).resolves.toBeNull();
+  });
+
   it("loadTranscript appends replayed items with fresh unique ids", () => {
     const store = new TuiStore("p/m");
     store.addUserMessage("/resume");

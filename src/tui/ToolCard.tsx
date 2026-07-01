@@ -11,14 +11,14 @@ import type React from "react";
 import { actionLabel } from "./../spinner-core.js";
 import type { ToolExecutionResult } from "./../types.js";
 import { SpinnerGlyph } from "./SpinnerGlyph.js";
+import { palette } from "./theme.js";
 
-const ORANGE = "#d77757";
 const PREVIEW_LINES = 12;
 
 function colorizeLine(line: string): React.ReactNode {
-  if (line.startsWith("+ ")) return <Text color="green">{line}</Text>;
-  if (line.startsWith("- ")) return <Text color="red">{line}</Text>;
-  if (line.startsWith("Error:")) return <Text color="red">{line}</Text>;
+  if (line.startsWith("+ ")) return <Text color={palette.success}>{line}</Text>;
+  if (line.startsWith("- ")) return <Text color={palette.error}>{line}</Text>;
+  if (line.startsWith("Error:")) return <Text color={palette.error}>{line}</Text>;
   return <Text>{line}</Text>;
 }
 
@@ -43,8 +43,11 @@ export function CompletedToolCard({
 }) {
   const title = (
     <Box>
-      <Text color={ORANGE}>●</Text>
-      <Text bold> {capitalize(result.toolName)}</Text>
+      <Text color={palette.accent}>●</Text>
+      <Text bold color={palette.tool}>
+        {" "}
+        {capitalize(result.toolName)}
+      </Text>
       {detail ? <Text dimColor>({truncate(detail, 100)})</Text> : null}
     </Box>
   );
@@ -55,7 +58,7 @@ export function CompletedToolCard({
         {title}
         <Box>
           <Text dimColor>{"  ⎿ "}</Text>
-          <Text color="red">{result.error}</Text>
+          <Text color={palette.error}>{result.error}</Text>
         </Box>
       </Box>
     );

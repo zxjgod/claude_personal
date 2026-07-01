@@ -27,6 +27,7 @@ import {
   SHIMMER_HEX,
   SHIMMER_INTERVAL_MS,
   UP_ARROW,
+  verbAt,
 } from "./../spinner-core.js";
 import { visualWidth } from "./../terminal-width.js";
 
@@ -46,6 +47,7 @@ export function StatusLine({
   label,
   startedAt,
   tokens,
+  cycleVerbs,
 }: {
   /** Present-continuous status, e.g. "Thinking" or "Reading App.tsx". */
   label: string;
@@ -53,6 +55,10 @@ export function StatusLine({
   startedAt: number;
   /** Live output-token estimate / count. */
   tokens: number;
+  /** When true (pure thinking phase, no tool running), rotate through the
+   *  playful gerunds instead of showing the static `label`. The verb advances
+   *  every VERB_CYCLE_MS, seeded by `startedAt` so turns don't all start alike. */
+  cycleVerbs?: boolean;
 }) {
   // A monotonically increasing tick drives the clock + glyph + shimmer. We read
   // the wall clock on each tick rather than storing elapsed, so a paused render
@@ -65,7 +71,10 @@ export function StatusLine({
 
   const elapsedMs = startedAt > 0 ? Date.now() - startedAt : 0;
   const glyph = glyphAt(elapsedMs);
-  const { before, shimmer, after } = shimmerParts(label, elapsedMs);
+  // The thinking phase cycles verbs; every other phase keeps its concrete label
+  // ("Reading App.tsx", "Responding") unchanged.
+  const shown = cycleVerbs ? verbAt(elapsedMs, startedAt) : label;
+  const { before, shimmer, after } = shimmerParts(shown, elapsedMs);
 
   const suffixParts: string[] = [formatDuration(elapsedMs)];
   if (tokens > 0) suffixParts.push(`${UP_ARROW} ${formatTokens(tokens)} tokens`);
