@@ -201,3 +201,109 @@ describe("handleModelError recovery behavior", () => {
     expect(types).not.toContain("done");
   });
 });
+
+// ============================================================
+// M31: light-to-heavy compaction pipeline
+// ============================================================
+
+describe("M31 compaction pipeline", () => {
+  it("returns blocking_limit when autoCompact is disabled and over the hard limit", async () => {
+    // A small caller that would succeed — but the loop should refuse to call it
+    // because the prepared context exceeds contextHardLimit with autoCompact off.
+    let modelCalled = false;
+    const caller: ModelCaller = async function* () {
+      modelCalled = true;
+      yield { type: "text_delta", delta: "ok" };
+      yield { type: "done", usage: { input_tokens: 1, output_tokens: 1 }, finish_reason: "stop" };
+    };
+
+    // ~80 pairs × ~2500 chars ≈ 200k tool chars ≈ 50k tokens. The recent window
+    // the cheap layers must leave intact keeps it over a low hard limit.
+    const messages = buildHistoryEndingInToolResult(80);
+    const types: string[] = [];
+    for await (const event of agentLoop(messages, [], caller, testConfig, {
+      systemPrompt: "sys",
+      maxTurns: 3,
+      autoCompactThreshold: Number.POSITIVE_INFINITY, // disable autoCompact
+      contextHardLimit: 1000, // tiny ceiling → blocked
+    })) {
+      types.push(event.type);
+    }
+
+    expect(modelCalled).toBe(false);
+    expect(types).toContain("error");
+    expect(types).not.toContain("done");
+  });
+
+  it("runs the cheap layers (compacted notes) before calling the model when over threshold", async () => {
+    const captured: Message[][] = [];
+    const caller = makeRecordingCaller(captured);
+    const messages = buildHistoryEndingInToolResult(40);
+
+    const compactedSummaries: string[] = [];
+    for await (const event of agentLoop(messages, [], caller, testConfig, {
+      systemPrompt: "sys",
+      maxTurns: 1,
+      // Above the cheap-layer trigger but autoCompact still enabled.
+      autoCompactThreshold: 100,
+    })) {
+      if (event.type === "compacted") compactedSummaries.push(event.summary);
+    }
+
+    // At least one cheap-layer note or the autoCompact note fired.
+    expect(compactedSummaries.length).toBeGreaterThan(0);
+    // The model received a window with no orphan tool messages.
+    for (const snapshot of captured) assertNoOrphanToolMessages(snapshot);
+  });
+
+  it("estimates context from reported usage without re-tokenizing the full history", async () => {
+    // The model reports a HUGE prompt token usage on turn 1. Even though the raw
+    // message chars are tiny, the usage baseline should carry that figure into
+    // the next turn's estimate — so with a threshold below the reported usage,
+    // turn 2 triggers compaction despite a small char count.
+    let turn = 0;
+    const caller: ModelCaller = async function* () {
+      turn++;
+      if (turn === 1) {
+        // Ask for a tool so the loop continues to a second turn.
+        yield { type: "tool_use", id: "c1", name: "noop", input: {} };
+        yield {
+          type: "done",
+          usage: { input_tokens: 50_000, output_tokens: 10 },
+          finish_reason: "tool_calls",
+        };
+        return;
+      }
+      yield { type: "text_delta", delta: "done" };
+      yield { type: "done", usage: { input_tokens: 1, output_tokens: 1 }, finish_reason: "stop" };
+    };
+
+    const noop = {
+      name: "noop",
+      description: "noop",
+      promptDescription: "noop",
+      inputSchema: { type: "object" as const, properties: {}, required: [] },
+      isEnabled: () => true,
+      isReadOnly: () => true,
+      isConcurrencySafe: () => true,
+      call: async () => ({ content: "small" }),
+      formatResult: (r: any) => r.content,
+      checkPermissions: async () => ({ allowed: true as const }),
+    };
+
+    const messages: Message[] = [{ role: "user", content: [{ type: "text", text: "go" }] }];
+    const types: string[] = [];
+    for await (const event of agentLoop(messages, [noop as any], caller, testConfig, {
+      systemPrompt: "sys",
+      maxTurns: 3,
+      // Below the 50k reported usage → turn 2 should see "over threshold" purely
+      // from the baseline, not from the (tiny) char count.
+      autoCompactThreshold: 10_000,
+    })) {
+      types.push(event.type);
+    }
+
+    // Turn 2's prep saw the baseline (50k) > threshold (10k) and compacted.
+    expect(types).toContain("compacting");
+  });
+});

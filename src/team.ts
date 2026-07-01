@@ -16,8 +16,15 @@
 
 import { agentLoop } from "./agent-loop.js";
 import { createModelCaller } from "./llm-adapter.js";
-import { getCoreToolsForSubagents, getSubagentType, resolveSubagentTools } from "./subagents.js";
+import {
+  buildSubagentSystemPrompt,
+  extractLastAssistantText,
+  getCoreToolsForSubagents,
+  getSubagentType,
+  resolveSubagentTools,
+} from "./subagents.js";
 import type { AskUserFn, Message, ModelConfig, PermissionMode, SubAgentProgress } from "./types.js";
+import { CancellationScope } from "./utils/cancellation.js";
 
 const AGENT_MAX_TURNS = 10;
 const AGENT_COMPACT_THRESHOLD = 50_000;
@@ -34,8 +41,8 @@ export interface TeamAgent {
   error?: string;
   createdAt: number;
   updatedAt: number;
-  /** Set while running so task_stop can abort it. */
-  abort?: AbortController;
+  /** Cancellation scope set while running so task_stop can abort it (M35). */
+  scope?: CancellationScope;
 }
 
 /** Context the team runner needs (threaded from the calling tool's ToolContext). */
@@ -51,6 +58,13 @@ export interface TeamRunContext {
    * instead of being auto-approved. Absent in tests.
    */
   askUser?: AskUserFn;
+  /**
+   * Parent loop's cancellation signal (M35, kernel §9). When present, each
+   * agent's run is forked from it, so a parent Ctrl+C / abort cascades into the
+   * team agent's loop. Absent → the agent's own controller is the root (current
+   * behavior: only task_stop can abort it).
+   */
+  parentSignal?: AbortSignal;
 }
 
 // sessionId -> (agentId -> agent)
@@ -130,12 +144,27 @@ export function listAgents(sessionId: string): TeamAgent[] {
 export function stopAgent(sessionId: string, id: string): boolean {
   const agent = getAgent(sessionId, id);
   if (!agent) return false;
-  if (agent.status === "running" && agent.abort) {
-    agent.abort.abort("stopped by task_stop");
+  if (agent.status === "running" && agent.scope) {
+    agent.scope.cancel("hard", "stopped by task_stop");
   }
   agent.status = "stopped";
   agent.updatedAt = Date.now();
   return true;
+}
+
+/**
+ * Remove an agent from the team (M35). If it is running, its scope is cancelled
+ * first so the in-flight loop stops, then the entry is deleted along with its
+ * accumulated history. Returns false when no such agent exists.
+ */
+export function deleteAgent(sessionId: string, id: string): boolean {
+  const m = teams.get(sessionId);
+  const agent = m?.get(normalizeId(id));
+  if (!m || !agent) return false;
+  if (agent.status === "running" && agent.scope) {
+    agent.scope.cancel("hard", "deleted by team_delete");
+  }
+  return m.delete(normalizeId(id));
 }
 
 /** Test/util. */
@@ -175,17 +204,18 @@ export async function runAgentTurn(
   agent.messages.push({ role: "user", content: [{ type: "text", text: message }] });
   agent.status = "running";
   agent.updatedAt = Date.now();
-  const abort = new AbortController();
-  agent.abort = abort;
+  // M35: fork the agent's scope from the parent signal so a parent abort
+  // cascades; task_stop still cancels this scope directly.
+  const scope = new CancellationScope(ctx.parentSignal);
+  agent.scope = scope;
 
   const caller = createModelCaller(ctx.modelConfig);
-  const systemPrompt = [
-    role.systemPrompt,
-    "",
-    `You are team member "${agent.id}" (role: ${agent.role}).`,
-  ].join("\n");
+  const systemPrompt = buildSubagentSystemPrompt(
+    role,
+    [role.systemPrompt, "", `You are team member "${agent.id}" (role: ${agent.role}).`].join("\n"),
+    { workspaceRoot: ctx.workspaceRoot },
+  );
 
-  const chunks: string[] = [];
   let toolCalls = 0;
   let error: string | undefined;
 
@@ -196,7 +226,7 @@ export async function runAgentTurn(
       systemPrompt,
       maxTurns: role.maxTurns ?? AGENT_MAX_TURNS,
       autoCompactThreshold: AGENT_COMPACT_THRESHOLD,
-      abortSignal: abort.signal,
+      abortSignal: scope.signal,
       toolContext: {
         workspaceRoot: ctx.workspaceRoot,
         sessionId: ctx.sessionId,
@@ -211,9 +241,6 @@ export async function runAgentTurn(
 
     for await (const event of loop) {
       switch (event.type) {
-        case "text_delta":
-          chunks.push(event.delta);
-          break;
         case "tool_use":
           toolCalls++;
           ctx.onProgress?.({
@@ -245,11 +272,15 @@ export async function runAgentTurn(
     error = e?.message || String(e);
   }
 
-  const output = chunks.join("").trim();
+  // Context protection (kernel §4): the agent's output is ONLY its final
+  // assistant text, not its accumulated turn-by-turn narration. agentLoop
+  // mutated agent.messages in place, so the last assistant text lives there.
+  const output = extractLastAssistantText(agent.messages);
   agent.toolCalls += toolCalls;
   agent.lastOutput = output;
   agent.updatedAt = Date.now();
-  agent.abort = undefined;
+  scope.dispose();
+  agent.scope = undefined;
   // A stop requested mid-run wins over done.
   if ((agent.status as AgentStatus) !== "stopped") {
     agent.status = error && !output ? "error" : "done";

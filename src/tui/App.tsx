@@ -201,7 +201,13 @@ function InteractionRegion({
     }
   }
   return (
-    <InputBox commands={commands} disabled={busy} onSubmit={onSubmit} editorMode={editorMode} />
+    <InputBox
+      commands={commands}
+      disabled={false}
+      busy={busy}
+      onSubmit={onSubmit}
+      editorMode={editorMode}
+    />
   );
 }
 

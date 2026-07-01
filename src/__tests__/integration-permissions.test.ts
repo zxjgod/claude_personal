@@ -121,7 +121,10 @@ describe("checkPermission ordering vs. classifier", () => {
     expect(calls.count).toBe(0);
   });
 
-  it("bypass mode allows before the classifier runs", async () => {
+  it("bypass mode does NOT short-circuit the safety floor (M26)", async () => {
+    // Kernel §4: the dangerous-pattern floor is immune to bypassPermissions.
+    // A flagged command still runs the classifier, and a BLOCK verdict denies
+    // it even in YOLO mode — the escape valve must never be global.
     const { caller, calls } = recordingCaller("BLOCK|catastrophic");
     const r = await checkPermission(
       bashTool(),
@@ -132,8 +135,9 @@ describe("checkPermission ordering vs. classifier", () => {
         classifier: { callModel: caller, modelConfig: classifierConfig },
       },
     );
-    expect(r.allowed).toBe(true);
-    expect(calls.count).toBe(0);
+    expect(r.allowed).toBe(false);
+    expect(r.decisionReason).toBe("classifier");
+    expect(calls.count).toBe(1);
   });
 
   it("blocked paths deny before the dangerous/classifier path", async () => {

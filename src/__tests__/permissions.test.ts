@@ -64,24 +64,100 @@ describe("checkPermission", () => {
     expect(result.allowed).toBe(false);
   });
 
-  it("should allow everything in bypass mode", async () => {
+  it("should allow ordinary writes in bypass mode (no safety floor hit)", async () => {
     const tool = createTool({
-      name: "bash",
-      description: "Bash",
-      promptDescription: "Run commands",
+      name: "write",
+      description: "Write",
+      promptDescription: "Write files",
       inputSchema: { type: "object", properties: {}, required: [] },
       isReadOnly: false,
-      isConcurrencySafe: true,
+      isConcurrencySafe: false,
       call: async () => ({ content: "" }),
     });
 
     const result = await checkPermission(
       tool,
-      { command: "rm -rf /" },
+      { filePath: "/home/user/project/src/file.ts" },
       makeContext("bypassPermissions"),
       { askUser: alwaysDeny },
     );
     expect(result.allowed).toBe(true);
+  });
+
+  // ============================================================
+  // M26: the safety floor is IMMUNE to bypassPermissions (kernel §4, 1f/1g).
+  // The escape valve must never be global — a small class of operations must
+  // always go through a human (or be hard-denied) even in YOLO mode.
+  // ============================================================
+  describe("bypass-immune safety floor (M26)", () => {
+    function bashTool(): Tool {
+      return createTool({
+        name: "bash",
+        description: "Bash",
+        promptDescription: "Run commands",
+        inputSchema: { type: "object", properties: {}, required: [] },
+        isReadOnly: false,
+        isConcurrencySafe: true,
+        call: async () => ({ content: "" }),
+      });
+    }
+    function writeTool(): Tool {
+      return createTool({
+        name: "write",
+        description: "Write",
+        promptDescription: "Write files",
+        inputSchema: { type: "object", properties: {}, required: [] },
+        isReadOnly: false,
+        isConcurrencySafe: false,
+        call: async () => ({ content: "" }),
+      });
+    }
+
+    it("bypass mode still prompts for a dangerous bash command", async () => {
+      const askUser = vi.fn().mockResolvedValue(false);
+      const result = await checkPermission(
+        bashTool(),
+        { command: "rm -rf /" },
+        makeContext("bypassPermissions"),
+        { askUser },
+      );
+      // The dangerous-pattern floor runs before the bypass short-circuit.
+      expect(askUser).toHaveBeenCalledTimes(1);
+      expect(result.allowed).toBe(false);
+      expect(result.decisionReason).toBe("safetyCheck");
+    });
+
+    it.each([
+      ["/home/user/project/.git/config", ".git/"],
+      ["/home/user/project/.git/hooks/pre-commit", ".git/ hooks"],
+      ["/home/user/project/.claude/settings.json", ".claude/"],
+      ["/home/user/.ssh/id_rsa", ".ssh"],
+      ["/home/user/project/.env", ".env"],
+      ["/home/user/.bashrc", "shell config"],
+    ])("bypass mode hard-denies writes to %s (%s)", async (filePath) => {
+      const result = await checkPermission(
+        writeTool(),
+        { filePath },
+        makeContext("bypassPermissions"),
+        {
+          askUser: alwaysAllow,
+        },
+      );
+      expect(result.allowed).toBe(false);
+      expect(result.decisionReason).toBe("safetyCheck");
+    });
+
+    it("default mode also blocks the broadened .git/ and .claude/ paths", async () => {
+      for (const filePath of [
+        "/home/user/project/.git/refs/heads/main",
+        "/home/user/project/.claude/agent-memory/x.md",
+      ]) {
+        const result = await checkPermission(writeTool(), { filePath }, makeContext(), {
+          askUser: alwaysAllow,
+        });
+        expect(result.allowed).toBe(false);
+      }
+    });
   });
 
   it("should block .env files", async () => {

@@ -6,7 +6,15 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { BashTool, EditTool, GlobTool, GrepTool, ReadTool, WriteTool } from "../tools.js";
+import {
+  BashTool,
+  bashCommandIsReadOnly,
+  EditTool,
+  GlobTool,
+  GrepTool,
+  ReadTool,
+  WriteTool,
+} from "../tools.js";
 import type { ToolContext } from "../types.js";
 
 let tmpDir: string;
@@ -249,6 +257,70 @@ describe("BashTool", () => {
     const cmd = IS_WINDOWS ? "echo error 1>&2" : "echo error >&2";
     const result = await BashTool.call({ command: cmd, description: "stderr test" }, ctx);
     expect(result.content).toContain("error");
+  });
+
+  // --- M29: data-driven read-only / concurrency ---
+  it("treats read-only commands as read-only + concurrency-safe", () => {
+    for (const command of [
+      "cat foo.txt",
+      "ls -la",
+      "grep -r x .",
+      "pwd",
+      "git status",
+      "git log --oneline",
+    ]) {
+      expect(BashTool.isReadOnly({ command, description: "" })).toBe(true);
+      expect(BashTool.isConcurrencySafe({ command, description: "" })).toBe(true);
+    }
+  });
+
+  it("treats mutating commands as NOT read-only and NOT concurrency-safe", () => {
+    for (const command of [
+      "rm -rf x",
+      "git commit -m y",
+      "echo hi > f",
+      "npm install",
+      "mkdir z",
+      "git push",
+    ]) {
+      expect(BashTool.isReadOnly({ command, description: "" })).toBe(false);
+      expect(BashTool.isConcurrencySafe({ command, description: "" })).toBe(false);
+    }
+  });
+
+  it("is conservative when input is absent (static listings)", () => {
+    expect(BashTool.isReadOnly()).toBe(false);
+    expect(BashTool.isConcurrencySafe()).toBe(false);
+  });
+});
+
+describe("bashCommandIsReadOnly (M29)", () => {
+  it("accepts pure read-only pipelines", () => {
+    expect(bashCommandIsReadOnly("cat a.txt | grep foo | wc -l")).toBe(true);
+    expect(bashCommandIsReadOnly("ls && pwd")).toBe(true);
+  });
+
+  it("rejects a pipeline where any segment writes", () => {
+    expect(bashCommandIsReadOnly("cat a.txt && rm a.txt")).toBe(false);
+    expect(bashCommandIsReadOnly("grep x f | tee out.txt")).toBe(false);
+  });
+
+  it("rejects redirects, command substitution, and backticks", () => {
+    expect(bashCommandIsReadOnly("cat a > b")).toBe(false);
+    expect(bashCommandIsReadOnly("echo $(rm x)")).toBe(false);
+    expect(bashCommandIsReadOnly("echo `rm x`")).toBe(false);
+  });
+
+  it("rejects write-capable git subcommands", () => {
+    expect(bashCommandIsReadOnly("git commit -am x")).toBe(false);
+    expect(bashCommandIsReadOnly("git checkout -b new")).toBe(false);
+    expect(bashCommandIsReadOnly("git config user.name me")).toBe(false);
+  });
+
+  it("rejects empty / non-string input", () => {
+    expect(bashCommandIsReadOnly("")).toBe(false);
+    expect(bashCommandIsReadOnly("   ")).toBe(false);
+    expect(bashCommandIsReadOnly(undefined as unknown as string)).toBe(false);
   });
 });
 

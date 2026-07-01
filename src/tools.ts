@@ -7,12 +7,13 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { promisify } from "node:util";
 import fg from "fast-glob";
+import { z } from "zod";
 import { recordChange } from "./change-tracker.js";
 import { checkDangerousPattern, isBlockedPath } from "./permissions.js";
 import { checkReadBeforeEdit, markRead, refreshRead } from "./read-tracker.js";
 import { TaskTool } from "./task-tool.js";
 import { TodoTool } from "./todo-tool.js";
-import { createTool } from "./tool-registry.js";
+import { buildTool } from "./tool-registry.js";
 import { LspDiagnosticsTool, NotebookEditTool } from "./tools-m8.js";
 import {
   AskUserQuestionTool,
@@ -28,79 +29,77 @@ import { WebSearchTool } from "./web-search.js";
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 
-// --- Input type definitions for each tool ---
+// --- Zod input schemas for each tool (M28) ---
+// z.strictObject rejects unknown keys the model may inject; .optional() maps
+// to a non-required field in the derived JSON Schema.
 
-interface ReadInput {
-  filePath: string;
-  offset?: number;
-  limit?: number;
-  [key: string]: unknown;
-}
+const ReadSchema = z.strictObject({
+  filePath: z.string().describe("The absolute path to the file to read"),
+  offset: z.number().int().optional().describe("Line number to start reading from (1-based)"),
+  limit: z.number().int().optional().describe("Maximum number of lines to read"),
+});
+type ReadInput = z.infer<typeof ReadSchema>;
 
-interface WriteInput {
-  filePath: string;
-  content: string;
-  [key: string]: unknown;
-}
+const WriteSchema = z.strictObject({
+  filePath: z.string().describe("The absolute path where to write the file"),
+  content: z.string().describe("Content to write to the file"),
+});
+type WriteInput = z.infer<typeof WriteSchema>;
 
-interface EditInput {
-  filePath: string;
-  old_string: string;
-  new_string: string;
-  replace_all?: boolean;
-  [key: string]: unknown;
-}
+const EditSchema = z.strictObject({
+  filePath: z.string().describe("The absolute path to the file to edit"),
+  old_string: z
+    .string()
+    .describe(
+      "The text to replace. Must match EXACTLY including whitespace and indentation. If not unique, add more surrounding context lines.",
+    ),
+  new_string: z.string().describe("The text to replace it with. Use empty string to delete."),
+  replace_all: z
+    .boolean()
+    .optional()
+    .describe(
+      "Replace every occurrence of old_string instead of requiring a unique match. Defaults to false.",
+    ),
+});
+type EditInput = z.infer<typeof EditSchema>;
 
-interface BashInput {
-  command: string;
-  description: string;
-  timeout?: number;
-  [key: string]: unknown;
-}
+const BashSchema = z.strictObject({
+  command: z.string().describe("The CLI command to execute"),
+  description: z.string().describe("What this command does (shown to user)"),
+  timeout: z.number().optional().describe("Timeout in ms (default: 120000)"),
+});
+type BashInput = z.infer<typeof BashSchema>;
 
-interface GlobInput {
-  pattern: string;
-  path?: string;
-  [key: string]: unknown;
-}
+const GlobSchema = z.strictObject({
+  pattern: z.string().describe("Glob pattern, e.g. '**/*.ts' or 'src/**/*.test.ts'"),
+  path: z.string().optional().describe("Directory to search in (default: workspace root)"),
+});
+type GlobInput = z.infer<typeof GlobSchema>;
 
-interface GrepInput {
-  pattern: string;
-  path?: string;
-  include?: string;
-  [key: string]: unknown;
-}
+const GrepSchema = z.strictObject({
+  pattern: z.string().describe("Regex pattern to search for"),
+  path: z.string().optional().describe("Directory or file to search (default: workspace root)"),
+  include: z.string().optional().describe("File pattern filter, e.g. '*.ts'"),
+});
+type GrepInput = z.infer<typeof GrepSchema>;
 
 // ============================================================
 // Read Tool
 // ============================================================
 
-export const ReadTool: Tool = createTool<ReadInput>({
+export const ReadTool: Tool = buildTool({
   name: "read",
   description: "Read a file from the local filesystem",
   promptDescription:
     "Read a file from the local filesystem. Returns text content with line numbers. " +
     "Images (PNG/JPG/GIF/WebP) and PDFs are returned as visual content blocks you can see directly.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      filePath: {
-        type: "string",
-        description: "The absolute path to the file to read",
-      },
-      offset: {
-        type: "number",
-        description: "Line number to start reading from (1-based)",
-      },
-      limit: {
-        type: "number",
-        description: "Maximum number of lines to read",
-      },
-    },
-    required: ["filePath"],
-  },
+  schema: ReadSchema,
   isReadOnly: true,
   isConcurrencySafe: true,
+  // M30: never spill a Read result — its line window is already bounded by
+  // offset/limit, and spilling would loop "Read → spill file → Read the spill".
+  maxResultSizeChars: Number.POSITIVE_INFINITY,
+  getPath: (input) => input.filePath,
 
   async call(input, context): Promise<ToolResult> {
     const resolution = resolveInWorkspace(input.filePath, context.workspaceRoot);
@@ -211,26 +210,14 @@ export const ReadTool: Tool = createTool<ReadInput>({
 // Write Tool
 // ============================================================
 
-export const WriteTool: Tool = createTool<WriteInput>({
+export const WriteTool: Tool = buildTool({
   name: "write",
   description: "Create or overwrite a file",
   promptDescription: "Create or overwrite a file. Creates parent directories automatically.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      filePath: {
-        type: "string",
-        description: "The absolute path where to write the file",
-      },
-      content: {
-        type: "string",
-        description: "Content to write to the file",
-      },
-    },
-    required: ["filePath", "content"],
-  },
+  schema: WriteSchema,
   isReadOnly: false,
   isConcurrencySafe: false, // Same file writes must be serial
+  getPath: (input) => input.filePath,
 
   async call(input, context): Promise<ToolResult> {
     const resolution = resolveInWorkspace(input.filePath, context.workspaceRoot);
@@ -289,37 +276,15 @@ export const WriteTool: Tool = createTool<WriteInput>({
 // Edit Tool (Search/Replace — the most critical tool!)
 // ============================================================
 
-export const EditTool: Tool = createTool<EditInput>({
+export const EditTool: Tool = buildTool({
   name: "edit",
   description: "Make precise edits using search/replace",
   promptDescription:
     "Make precise edits using search/replace. old_string must match exactly including whitespace and indentation. If not unique, add more surrounding context lines.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      filePath: {
-        type: "string",
-        description: "The absolute path to the file to edit",
-      },
-      old_string: {
-        type: "string",
-        description:
-          "The text to replace. Must match EXACTLY including whitespace and indentation. If not unique, add more surrounding context lines.",
-      },
-      new_string: {
-        type: "string",
-        description: "The text to replace it with. Use empty string to delete.",
-      },
-      replace_all: {
-        type: "boolean",
-        description:
-          "Replace every occurrence of old_string instead of requiring a unique match. Defaults to false.",
-      },
-    },
-    required: ["filePath", "old_string", "new_string"],
-  },
+  schema: EditSchema,
   isReadOnly: false,
   isConcurrencySafe: false, // Same file edits must be serial
+  getPath: (input) => input.filePath,
 
   async call(input, context): Promise<ToolResult> {
     const resolution = resolveInWorkspace(input.filePath, context.workspaceRoot);
@@ -428,19 +393,27 @@ export const EditTool: Tool = createTool<EditInput>({
 // MultiEdit Tool — atomic batch edits on a single file
 // ============================================================
 
-interface MultiEditOp {
-  old_string: string;
-  new_string: string;
-  replace_all?: boolean;
-}
+const MultiEditSchema = z.strictObject({
+  filePath: z.string().describe("The absolute path to the file to edit"),
+  edits: z
+    .array(
+      z.strictObject({
+        old_string: z.string().describe("Text to find (exact match)"),
+        new_string: z.string().describe("Replacement text"),
+        replace_all: z
+          .boolean()
+          .optional()
+          .describe("Replace all occurrences of this edit's old_string"),
+      }),
+    )
+    .describe(
+      "Ordered list of edits. Each is {old_string, new_string, replace_all?}. " +
+        "Applied sequentially; all must succeed or none are written.",
+    ),
+});
+type MultiEditInput = z.infer<typeof MultiEditSchema>;
 
-interface MultiEditInput {
-  filePath: string;
-  edits: MultiEditOp[];
-  [key: string]: unknown;
-}
-
-export const MultiEditTool: Tool = createTool<MultiEditInput>({
+export const MultiEditTool: Tool = buildTool({
   name: "multi_edit",
   description: "Apply multiple search/replace edits to a single file atomically",
   promptDescription:
@@ -450,36 +423,10 @@ export const MultiEditTool: Tool = createTool<MultiEditInput>({
     "If ANY edit fails (no match, or a non-unique match without replace_all), " +
     "NOTHING is written — the file is left untouched. Prefer this over multiple " +
     "edit calls when changing several places in the same file.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      filePath: {
-        type: "string",
-        description: "The absolute path to the file to edit",
-      },
-      edits: {
-        type: "array",
-        description:
-          "Ordered list of edits. Each is {old_string, new_string, replace_all?}. " +
-          "Applied sequentially; all must succeed or none are written.",
-        items: {
-          type: "object",
-          properties: {
-            old_string: { type: "string", description: "Text to find (exact match)" },
-            new_string: { type: "string", description: "Replacement text" },
-            replace_all: {
-              type: "boolean",
-              description: "Replace all occurrences of this edit's old_string",
-            },
-          },
-          required: ["old_string", "new_string"],
-        },
-      },
-    },
-    required: ["filePath", "edits"],
-  },
+  schema: MultiEditSchema,
   isReadOnly: false,
   isConcurrencySafe: false, // Same file — must be serial
+  getPath: (input) => input.filePath,
 
   async call(input, context): Promise<ToolResult> {
     const resolution = resolveInWorkspace(input.filePath, context.workspaceRoot);
@@ -590,31 +537,19 @@ export const MultiEditTool: Tool = createTool<MultiEditInput>({
 // Bash Tool
 // ============================================================
 
-export const BashTool: Tool = createTool<BashInput>({
+export const BashTool: Tool = buildTool({
   name: "bash",
   description: "Execute a shell command",
   promptDescription:
-    "Execute a shell command. Commands must be non-interactive. Output truncated at 30k characters.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      command: {
-        type: "string",
-        description: "The CLI command to execute",
-      },
-      description: {
-        type: "string",
-        description: "What this command does (shown to user)",
-      },
-      timeout: {
-        type: "number",
-        description: "Timeout in ms (default: 120000)",
-      },
-    },
-    required: ["command", "description"],
-  },
-  isReadOnly: false,
-  isConcurrencySafe: false, // bash 命令之间有副作用依赖，不应并行；改走串行路径
+    "Execute a shell command. Commands must be non-interactive. Very large output is " +
+    "saved to a file and you receive a preview plus the path (read it for the full output).",
+  schema: BashSchema,
+  // Data-driven (M29): a read-only command (`cat`, `ls`, `git status`…) is
+  // auto-approved and safe to parallelize; anything else routes through
+  // approval and runs serially. Concurrency-safety mirrors read-only because a
+  // command with no side effects can't race another.
+  isReadOnly: (input) => bashCommandIsReadOnly(input?.command),
+  isConcurrencySafe: (input) => bashCommandIsReadOnly(input?.command),
 
   async call(input, context): Promise<ToolResult> {
     const timeout = input.timeout ?? 120_000;
@@ -735,10 +670,11 @@ export const BashTool: Tool = createTool<BashInput>({
     if (stdout) output += stdout;
     if (stderr) output += (output ? "\n" : "") + stderr;
 
-    const outTruncated = truncated || output.length > 30_000;
-    if (output.length > 30_000) {
-      output = output.slice(0, 30_000) + "\n[... result too long, truncated]";
-    }
+    // M30: no longer hard-slice at 30k here. Oversized output spills to disk at
+    // the agent-loop boundary (the model gets a preview + path; the UI keeps the
+    // full text). `outTruncated` now reflects only the 10MB in-memory guard
+    // above, which is genuine data loss the formatter should flag.
+    const outTruncated = truncated;
 
     // timedOut is set by our killTree timer. We cannot rely on exitCode === null
     // here: on Windows `taskkill /T /F` makes the shell exit with code 1 (a real
@@ -774,25 +710,12 @@ export const BashTool: Tool = createTool<BashInput>({
 // Glob Tool
 // ============================================================
 
-export const GlobTool: Tool = createTool<GlobInput>({
+export const GlobTool: Tool = buildTool({
   name: "glob",
   description: "Find files matching a glob pattern",
   promptDescription:
     'Find files matching a glob pattern. Example patterns: "**/*.ts", "src/**/*.test.ts"',
-  inputSchema: {
-    type: "object",
-    properties: {
-      pattern: {
-        type: "string",
-        description: "Glob pattern, e.g. '**/*.ts' or 'src/**/*.test.ts'",
-      },
-      path: {
-        type: "string",
-        description: "Directory to search in (default: workspace root)",
-      },
-    },
-    required: ["pattern"],
-  },
+  schema: GlobSchema,
   isReadOnly: true,
   isConcurrencySafe: true,
 
@@ -840,29 +763,12 @@ export const GlobTool: Tool = createTool<GlobInput>({
 // Grep Tool
 // ============================================================
 
-export const GrepTool: Tool = createTool<GrepInput>({
+export const GrepTool: Tool = buildTool({
   name: "grep",
   description: "Search file contents with regex",
   promptDescription:
     "Search file contents with regex pattern. Uses ripgrep if available, falls back to Node.js.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      pattern: {
-        type: "string",
-        description: "Regex pattern to search for",
-      },
-      path: {
-        type: "string",
-        description: "Directory or file to search (default: workspace root)",
-      },
-      include: {
-        type: "string",
-        description: "File pattern filter, e.g. '*.ts'",
-      },
-    },
-    required: ["pattern"],
-  },
+  schema: GrepSchema,
   isReadOnly: true,
   isConcurrencySafe: true,
 
@@ -1023,6 +929,112 @@ export function relForDisplay(absPath: string, workspaceRoot: string): string {
     return rel.split(path.sep).join("/");
   }
   return absPath;
+}
+
+/**
+ * Decide whether a shell command is read-only (M29). Read-only ⇒ auto-approved
+ * + safe to run concurrently. This is intentionally CONSERVATIVE: it returns
+ * true only when every segment is a known read-only command with no shell
+ * features that could hide a write. Anything uncertain ⇒ false (mutating), so
+ * the command routes through approval and runs serially.
+ *
+ * Heuristics:
+ *  - Reject command substitution / process substitution / backticks / redirects
+ *    (`$(...)`, `<(...)`, `` `...` ``, `>`, `>>`) — they can write or smuggle
+ *    side effects.
+ *  - Split on `|`, `&&`, `||`, `;` and require EVERY segment's leading word to
+ *    be in the read-only allowlist.
+ *  - `git` is special-cased: only a fixed set of read-only subcommands count.
+ */
+export function bashCommandIsReadOnly(command: string | undefined): boolean {
+  if (typeof command !== "string") return false;
+  const cmd = command.trim();
+  if (!cmd) return false;
+
+  // Any of these shell features can write or hide side effects — bail out.
+  if (/[`]|\$\(|<\(|>>|>|\btee\b/.test(cmd)) return false;
+
+  // Read-only command leaders. Kept tight; expand deliberately.
+  const READONLY = new Set([
+    "cat",
+    "ls",
+    "pwd",
+    "echo",
+    "head",
+    "tail",
+    "wc",
+    "grep",
+    "egrep",
+    "fgrep",
+    "rg",
+    "find",
+    "stat",
+    "file",
+    "which",
+    "type",
+    "env",
+    "printenv",
+    "date",
+    "whoami",
+    "hostname",
+    "uname",
+    "df",
+    "du",
+    "ps",
+    "tree",
+    "diff",
+    "cmp",
+    "sort",
+    "uniq",
+    "cut",
+    "awk",
+    "sed",
+    "less",
+    "more",
+    "realpath",
+    "dirname",
+    "basename",
+    "readlink",
+    "true",
+    "false",
+    "test",
+  ]);
+  // git subcommands that never mutate the repo or working tree. Kept strict:
+  // `tag`/`remote`/`config`/`branch` are omitted because they can write
+  // (create a tag, add a remote, set a value, delete a branch).
+  const GIT_READONLY = new Set([
+    "status",
+    "log",
+    "diff",
+    "show",
+    "ls-files",
+    "rev-parse",
+    "blame",
+    "describe",
+    "ls-tree",
+    "cat-file",
+    "shortlog",
+    "grep",
+    "reflog",
+    "whatchanged",
+  ]);
+
+  const segments = cmd.split(/\||&&|\|\||;/g);
+  for (const seg of segments) {
+    const trimmed = seg.trim();
+    if (!trimmed) continue;
+    const tokens = trimmed.split(/\s+/);
+    const leader = tokens[0];
+    if (!leader) return false;
+    if (leader === "git") {
+      // First non-flag token after `git` is the subcommand.
+      const sub = tokens.slice(1).find((t) => !t.startsWith("-"));
+      if (!sub || !GIT_READONLY.has(sub)) return false;
+      continue;
+    }
+    if (!READONLY.has(leader)) return false;
+  }
+  return true;
 }
 
 function isBinary(buffer: Buffer): boolean {

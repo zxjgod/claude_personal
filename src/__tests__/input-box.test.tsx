@@ -198,3 +198,38 @@ describe("InputBox multi-line input (M25.1)", () => {
     expect(onSubmit).toHaveBeenCalledWith("abX\ncd");
   });
 });
+
+// M36: type-ahead — while the agent is busy the box stays active (disabled=false
+// + busy=true) so the user can type the next message; a hint marks it as queued.
+describe("InputBox type-ahead (M36)", () => {
+  it("still captures keystrokes and submits while busy", async () => {
+    const onSubmit = vi.fn();
+    const { stdin } = render(
+      <InputBox commands={commands} disabled={false} busy onSubmit={onSubmit} />,
+    );
+    await flush();
+    stdin.write("next message");
+    await flush();
+    stdin.write(ENTER);
+    await flush();
+    // Busy doesn't gate input here — the box stays active; routing-to-queue is
+    // the parent's job (Root.onSubmit), the box just submits.
+    expect(onSubmit).toHaveBeenCalledWith("next message");
+  });
+
+  it("shows the type-ahead hint while busy", async () => {
+    const { lastFrame } = render(
+      <InputBox commands={commands} disabled={false} busy onSubmit={vi.fn()} />,
+    );
+    await flush();
+    expect(lastFrame()).toContain("queues your next message");
+  });
+
+  it("does not show the hint when idle", async () => {
+    const { lastFrame } = render(
+      <InputBox commands={commands} disabled={false} onSubmit={vi.fn()} />,
+    );
+    await flush();
+    expect(lastFrame()).not.toContain("queues your next message");
+  });
+});

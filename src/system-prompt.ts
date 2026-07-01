@@ -1,12 +1,29 @@
 // ============================================================
-// System Prompt Builder — 6 static sections + dynamic boundary
+// System Prompt Builder — cache-first design (M33, kernel §4/§5)
+// ============================================================
+// The system prompt is an ORDERED ARRAY of string blocks, not a concatenated
+// string. A `DYNAMIC_BOUNDARY` block divides it in two:
+//
+//   [ static, cacheable prefix ]   ← byte-identical every turn / every day
+//   --- DYNAMIC_BOUNDARY ---
+//   [ dynamic, session-specific ]  ← cwd / git / date / language / mcp / ...
+//
+// The kernel's load-bearing rule: anything whose value drifts at runtime (the
+// current date, the cwd, git status, the platform) MUST live BELOW the
+// boundary. If it leaks into the prefix, the prefix hash changes and the
+// provider prompt cache stops hitting. The Anthropic adapter places its
+// `cache_control` breakpoint exactly at this boundary, so a stable prefix is
+// what makes caching pay off. (Previously `buildWorkspaceSection` injected the
+// date + platform ABOVE the boundary — silently busting the cache once a day
+// and once per machine. M33 moves them below.)
 // ============================================================
 
 import type { Tool } from "./types.js";
 
-/**
- * Section 1: Identity Declaration
- */
+// ============================================================
+// Static sections — the cacheable prefix
+// ============================================================
+
 function buildIdentitySection(): string {
   return `You are an interactive AI coding assistant. You help users with software
 engineering tasks including code analysis, debugging, refactoring, writing
@@ -18,23 +35,6 @@ explain the risk and refuse unless the user explicitly and knowingly approves
 the dangerous operation.`;
 }
 
-/**
- * Section 2: Workspace Information (Dynamic)
- */
-function buildWorkspaceSection(workspaceRoot: string): string {
-  const date = new Date().toISOString().split("T")[0];
-  return `OS Version: ${process.platform} ${process.env.OS || ""}
-Shell: ${process.env.SHELL || process.env.ComSpec || "unknown"}
-Workspace Folder: ${workspaceRoot}
-Current date: ${date}
-
-Note: Prefer absolute paths over relative paths. Use the workspace root
-as the base for all file operations unless the user specifies otherwise.`;
-}
-
-/**
- * Section 3: Coding Rules
- */
 function buildCodingRulesSection(): string {
   return `CODING RULES:
 
@@ -52,9 +52,6 @@ function buildCodingRulesSection(): string {
   to make the old_string unique.`;
 }
 
-/**
- * Section 4: Tool Usage Rules
- */
 function buildToolUsageSection(): string {
   return `USING YOUR TOOLS:
 
@@ -72,9 +69,6 @@ function buildToolUsageSection(): string {
   Example: Grep + Glob → parallel calls.`;
 }
 
-/**
- * Section 5: Output Style
- */
 function buildOutputStyleSection(): string {
   return `OUTPUT STYLE:
 
@@ -87,9 +81,6 @@ function buildOutputStyleSection(): string {
 - Minimize output tokens while maintaining quality.`;
 }
 
-/**
- * Section 6: Destructive Actions
- */
 function buildDestructiveActionsSection(): string {
   return `DESTRUCTIVE ACTIONS:
 
@@ -106,9 +97,6 @@ The following ALWAYS require explicit user confirmation:
 - Running commands that pipe downloaded content to a shell (curl|bash)`;
 }
 
-/**
- * Build tool descriptions for system prompt
- */
 function buildToolDescriptionsSection(tools: Tool[]): string {
   const lines = ["AVAILABLE TOOLS:", ""];
   for (const tool of tools) {
@@ -122,12 +110,106 @@ function buildToolDescriptionsSection(tools: Tool[]): string {
   return lines.join("\n");
 }
 
+// ============================================================
+// Memoized dynamic-section registry (kernel §4)
+// ============================================================
+// Dynamic sections are computed through a name-keyed cache that survives across
+// turns and is invalidated only on a session reset (/clear, /compact). Two ways
+// to register:
+//
+//   systemPromptSection(name, compute)
+//     — memoized. Computed once, reused until resetSystemPromptCache().
+//
+//   DANGEROUS_uncachedSystemPromptSection(name, compute, reason)
+//     — recomputed EVERY call. The `reason` is mandatory: breaking the cache
+//       must be an explicit, auditable decision, never an accident. Used for
+//       values that genuinely drift between turns (the date, MCP server state).
+//
+// The discipline is the point: most sections are memoized; the few that bust
+// the cache must say why, so "accidentally recomputed every turn" can't happen.
+
+const sectionCache = new Map<string, string>();
+/** Names registered via the DANGEROUS_ variant, with their stated reason. */
+const uncachedReasons = new Map<string, string>();
+
+/** Register/resolve a memoized section. Computed once, reused until reset. */
+export function systemPromptSection(name: string, compute: () => string): string {
+  const hit = sectionCache.get(name);
+  if (hit !== undefined) return hit;
+  const value = compute();
+  sectionCache.set(name, value);
+  return value;
+}
+
 /**
- * Dynamic boundary marker
+ * Register/resolve a section that is recomputed on every call (cache-busting).
+ * `reason` documents WHY this section cannot be cached — it is recorded for
+ * audit (see listUncachedSections) so cache busts stay visible and rare.
  */
-export const DYNAMIC_BOUNDARY =
-  "--- SYSTEM PROMPT DYNAMIC BOUNDARY ---\n" +
-  "Everything below this line is session/user-specific and cannot be cached.";
+export function DANGEROUS_uncachedSystemPromptSection(
+  name: string,
+  compute: () => string,
+  reason: string,
+): string {
+  uncachedReasons.set(name, reason);
+  return compute();
+}
+
+/** Clear the memoized section cache. Wire to /clear and /compact. */
+export function resetSystemPromptCache(): void {
+  sectionCache.clear();
+}
+
+/** The recorded reasons for every cache-busting section (for audit/tests). */
+export function listUncachedSections(): ReadonlyMap<string, string> {
+  return uncachedReasons;
+}
+
+// ============================================================
+// Dynamic sections — below the boundary, never cached into the prefix
+// ============================================================
+
+/**
+ * Environment info as its own recomputable block (kernel §5). cwd / platform /
+ * shell / OS / model — stable within a session, so memoized; but kept BELOW the
+ * boundary because the values vary across machines and the prefix above must be
+ * byte-identical for all sessions. The date is deliberately NOT here — it goes
+ * through a runtime reminder (see buildDateReminder) so this block stays
+ * date-free and cacheable.
+ */
+function computeEnvInfo(workspaceRoot: string, model?: string): string {
+  const lines = [
+    "# Environment",
+    `- Working directory: ${workspaceRoot}`,
+    `- Platform: ${process.platform}`,
+    `- Shell: ${process.env.SHELL || process.env.ComSpec || "unknown"}`,
+    `- OS: ${process.platform} ${process.env.OS || ""}`.trimEnd(),
+  ];
+  if (model) lines.push(`- Model: ${model}`);
+  if (process.platform === "win32") {
+    lines.push("- On Windows, prefer Unix shell syntax where the shell is bash.");
+  }
+  lines.push(
+    "",
+    "Note: Prefer absolute paths over relative paths. The shell's cwd may reset",
+    "between Bash calls, so do not rely on a persisted cwd — pass absolute paths.",
+  );
+  return lines.join("\n");
+}
+
+/**
+ * The current date, delivered as a `<system-reminder>` rather than baked into
+ * any cacheable text (kernel §5). This is the one value most likely to silently
+ * bust a daily cache, so it lives here, isolated, and recomputed every build.
+ */
+function buildDateReminder(): string {
+  const date = new Date().toISOString().split("T")[0];
+  return DANGEROUS_uncachedSystemPromptSection(
+    "date",
+    () => `<system-reminder>\nToday's date is ${date}.\n</system-reminder>`,
+    "the calendar date changes daily; caching it would serve a stale date",
+  );
+}
 
 export interface SystemPromptOptions {
   workspaceRoot: string;
@@ -138,73 +220,91 @@ export interface SystemPromptOptions {
   gitStatus?: string;
   /** Language preference detected from user */
   languagePreference?: string;
+  /** Active model id, surfaced in the environment block */
+  model?: string;
+  /** MCP server instructions, if any servers are connected */
+  mcpInstructions?: string;
 }
 
+// ============================================================
+// Boundary + assembly
+// ============================================================
+
 /**
- * Build the complete system prompt as an array of strings.
- * Join with "\n\n" at the end for sending to the LLM.
+ * The cache-boundary marker. Everything above is the stable, cacheable prefix;
+ * everything from this block down is session/user-specific. The Anthropic
+ * adapter (formatSystemForAnthropic) places its cache_control breakpoint here.
+ * Its literal value is part of the cross-module contract — do not change it
+ * without updating the adapter + tests.
  */
-export function buildSystemPrompt(options: SystemPromptOptions): string {
-  const staticSections = [
-    buildIdentitySection(),
-    buildWorkspaceSection(options.workspaceRoot),
-    buildCodingRulesSection(),
-    buildToolUsageSection(),
-    buildOutputStyleSection(),
-    buildDestructiveActionsSection(),
+export const DYNAMIC_BOUNDARY =
+  "--- SYSTEM PROMPT DYNAMIC BOUNDARY ---\n" +
+  "Everything below this line is session/user-specific and cannot be cached.";
+
+/**
+ * Build the system prompt as an ORDERED ARRAY of blocks (kernel §4). Static
+ * blocks come first (cacheable prefix), then the boundary, then the dynamic
+ * blocks. Join with `renderSystemPrompt` before sending to a provider — the
+ * boundary block is preserved in the joined string so adapters can still split
+ * on it to place a cache breakpoint.
+ *
+ * `CLAUDE_CODE_SIMPLE=1` is an escape hatch: returns a single minimal block,
+ * for debugging or running against a degraded/strict provider.
+ */
+export function buildSystemPrompt(options: SystemPromptOptions): string[] {
+  if (process.env.CLAUDE_CODE_SIMPLE === "1") {
+    return ["You are an interactive AI coding assistant. Help with the user's task."];
+  }
+
+  // --- Static, cacheable prefix (memoized; identical across sessions) ---
+  const staticBlocks = [
+    systemPromptSection("identity", buildIdentitySection),
+    systemPromptSection("coding_rules", buildCodingRulesSection),
+    systemPromptSection("tool_usage", buildToolUsageSection),
+    systemPromptSection("output_style", buildOutputStyleSection),
+    systemPromptSection("destructive_actions", buildDestructiveActionsSection),
+    // Tool descriptions are stable within a session (the enabled tool set does
+    // not change turn-to-turn), so they belong in the cacheable prefix.
     buildToolDescriptionsSection(options.tools),
   ];
 
-  const dynamicSections: string[] = [DYNAMIC_BOUNDARY];
+  // --- Dynamic suffix (below the boundary; values drift at runtime) ---
+  const dynamicBlocks: string[] = [DYNAMIC_BOUNDARY];
 
-  // User context from CLAUDE.md
+  dynamicBlocks.push(buildDateReminder());
+  dynamicBlocks.push(computeEnvInfo(options.workspaceRoot, options.model));
+
   if (options.claudeMdContent) {
-    dynamicSections.push(`[PROJECT CONTEXT from CLAUDE.md]\n${options.claudeMdContent}`);
+    dynamicBlocks.push(`[PROJECT CONTEXT from CLAUDE.md]\n${options.claudeMdContent}`);
   }
-
-  // Git status
   if (options.gitStatus) {
-    dynamicSections.push(`[GIT STATUS]\n${options.gitStatus}`);
+    dynamicBlocks.push(`[GIT STATUS]\n${options.gitStatus}`);
   }
-
-  // Language preference
   if (options.languagePreference) {
-    dynamicSections.push(
+    dynamicBlocks.push(
       `[LANGUAGE PREFERENCE]\nThe user prefers responses in: ${options.languagePreference}`,
     );
   }
-
-  return [...staticSections, ...dynamicSections].join("\n\n");
-}
-
-/**
- * Rebuild only dynamic sections without changing static sections.
- * Static sections are cached between requests.
- */
-export function rebuildDynamicSections(
-  currentPrompt: string,
-  dynamicOptions: Pick<SystemPromptOptions, "claudeMdContent" | "gitStatus" | "languagePreference">,
-): string {
-  const boundaryIndex = currentPrompt.indexOf(DYNAMIC_BOUNDARY);
-  if (boundaryIndex === -1) {
-    // No boundary found, rebuild entirely
-    return currentPrompt;
-  }
-
-  const staticPart = currentPrompt.slice(0, boundaryIndex);
-  const dynamicSections: string[] = [DYNAMIC_BOUNDARY];
-
-  if (dynamicOptions.claudeMdContent) {
-    dynamicSections.push(`[PROJECT CONTEXT from CLAUDE.md]\n${dynamicOptions.claudeMdContent}`);
-  }
-  if (dynamicOptions.gitStatus) {
-    dynamicSections.push(`[GIT STATUS]\n${dynamicOptions.gitStatus}`);
-  }
-  if (dynamicOptions.languagePreference) {
-    dynamicSections.push(
-      `[LANGUAGE PREFERENCE]\nThe user prefers responses in: ${dynamicOptions.languagePreference}`,
+  if (options.mcpInstructions) {
+    // MCP servers connect/disconnect between turns, so this is intentionally
+    // cache-busting when present.
+    dynamicBlocks.push(
+      DANGEROUS_uncachedSystemPromptSection(
+        "mcp_instructions",
+        () => `[MCP SERVERS]\n${options.mcpInstructions}`,
+        "MCP servers connect/disconnect between turns; their instructions drift",
+      ),
     );
   }
+  // Scratchpad: a stable reminder that the model may think before acting.
+  dynamicBlocks.push(
+    "[SCRATCHPAD]\nThink step by step before acting on complex tasks. Plan, then execute.",
+  );
 
-  return staticPart + dynamicSections.join("\n\n");
+  return [...staticBlocks, ...dynamicBlocks];
+}
+
+/** Join system-prompt blocks into the single string a ModelCaller expects. */
+export function renderSystemPrompt(blocks: string[]): string {
+  return blocks.join("\n\n");
 }

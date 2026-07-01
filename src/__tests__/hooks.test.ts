@@ -85,3 +85,42 @@ describe("HookRegistry — PostToolUse", () => {
     expect(out.result!.content).toBe("x-a-b");
   });
 });
+
+describe("HookRegistry — Stop (M32)", () => {
+  it("returns empty when no stop hooks are registered", async () => {
+    const reg = new HookRegistry();
+    const out = await reg.runStop({ messages: [], stopHookActive: false });
+    expect(out).toEqual({});
+  });
+
+  it("preventContinuation short-circuits over any blockingError", async () => {
+    const reg = new HookRegistry();
+    reg.register({ matcher: "*", stop: () => ({ blockingError: "more" }) });
+    reg.register({ matcher: "*", stop: () => ({ preventContinuation: true, reason: "halt" }) });
+    const out = await reg.runStop({ messages: [], stopHookActive: false });
+    expect(out.preventContinuation).toBe(true);
+    expect(out.reason).toBe("halt");
+  });
+
+  it("returns the first blockingError when not already active", async () => {
+    const reg = new HookRegistry();
+    reg.register({ matcher: "*", stop: () => ({ blockingError: "first" }) });
+    reg.register({ matcher: "*", stop: () => ({ blockingError: "second" }) });
+    const out = await reg.runStop({ messages: [], stopHookActive: false });
+    expect(out.blockingError).toBe("first");
+  });
+
+  it("ignores blockingError when stopHookActive is set (anti-loop)", async () => {
+    const reg = new HookRegistry();
+    reg.register({ matcher: "*", stop: () => ({ blockingError: "again" }) });
+    const out = await reg.runStop({ messages: [], stopHookActive: true });
+    expect(out.blockingError).toBeUndefined();
+  });
+
+  it("still hard-stops via preventContinuation even when active", async () => {
+    const reg = new HookRegistry();
+    reg.register({ matcher: "*", stop: () => ({ preventContinuation: true }) });
+    const out = await reg.runStop({ messages: [], stopHookActive: true });
+    expect(out.preventContinuation).toBe(true);
+  });
+});

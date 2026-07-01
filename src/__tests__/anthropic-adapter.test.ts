@@ -9,7 +9,7 @@ import {
   formatToolsForAnthropic,
 } from "../anthropic-adapter.js";
 import { createModelCaller } from "../llm-adapter.js";
-import { buildSystemPrompt, DYNAMIC_BOUNDARY } from "../system-prompt.js";
+import { buildSystemPrompt, DYNAMIC_BOUNDARY, renderSystemPrompt } from "../system-prompt.js";
 import type { Message, ModelConfig, Tool } from "../types.js";
 
 const testTool: Tool = {
@@ -73,7 +73,9 @@ describe("formatSystemForAnthropic", () => {
   });
 
   it("works with the real system prompt builder", () => {
-    const prompt = buildSystemPrompt({ workspaceRoot: "/tmp/project", tools: [] });
+    const prompt = renderSystemPrompt(
+      buildSystemPrompt({ workspaceRoot: "/tmp/project", tools: [] }),
+    );
     const system = formatSystemForAnthropic(prompt) as any[];
     expect(system[0].cache_control).toEqual({ type: "ephemeral" });
     expect(system[0].text).not.toContain(DYNAMIC_BOUNDARY);

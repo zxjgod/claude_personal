@@ -33,9 +33,10 @@ import { discoverMCPConfigs, MCPManager } from "./mcp.js";
 import { PersistenceManager } from "./persistence.js";
 import { SessionStats } from "./session-stats.js";
 import { SessionTranscript } from "./session-transcript.js";
+import { loadSkillsDir } from "./skills/loadSkillsDir.js";
 import { formatSpeculationLine } from "./speculation.js";
 import { setCoreToolsForSubagents } from "./subagents.js";
-import { buildSystemPrompt } from "./system-prompt.js";
+import { buildSystemPrompt, renderSystemPrompt } from "./system-prompt.js";
 import { Telemetry } from "./telemetry.js";
 import { ToolRegistry } from "./tool-registry.js";
 import { CORE_TOOLS } from "./tools.js";
@@ -293,6 +294,18 @@ async function main() {
   // tools.ts (which would re-enter the tools.ts → TaskTool → tools.ts cycle).
   setCoreToolsForSubagents(CORE_TOOLS);
 
+  // M37: discover disk skills (<root>/.claude/skills/<name>/SKILL.md and the
+  // user-level equivalent). Cheap — only frontmatter is read here; each skill's
+  // body stays lazy until the Skill tool or /<name> sugar invokes it.
+  try {
+    const loaded = loadSkillsDir(workspaceRoot);
+    if (loaded.length > 0) {
+      console.log(chalk.gray(`Loaded ${loaded.length} disk skill(s): ${loaded.join(", ")}`));
+    }
+  } catch {
+    // Disk skills are optional; a malformed skills dir never blocks startup.
+  }
+
   // MCP Setup
   const mcpManager = new MCPManager();
   const mcpConfigs = discoverMCPConfigs(workspaceRoot);
@@ -333,17 +346,20 @@ async function main() {
     permissionMode,
   });
 
-  const systemPrompt = buildSystemPrompt({
-    workspaceRoot,
-    tools: toolRegistry.getEnabledTools(),
-    claudeMdContent,
-    // 12.4: inject a compact git snapshot (branch / dirty files / recent
-    // commits). Read-only, best-effort — null in non-git dirs.
-    gitStatus: await (async () => {
-      const ctx = await gatherGitContext(workspaceRoot);
-      return ctx ? formatGitContext(ctx) : undefined;
-    })(),
-  });
+  const systemPrompt = renderSystemPrompt(
+    buildSystemPrompt({
+      workspaceRoot,
+      tools: toolRegistry.getEnabledTools(),
+      claudeMdContent,
+      model: modelConfig.model,
+      // 12.4: inject a compact git snapshot (branch / dirty files / recent
+      // commits). Read-only, best-effort — null in non-git dirs.
+      gitStatus: await (async () => {
+        const ctx = await gatherGitContext(workspaceRoot);
+        return ctx ? formatGitContext(ctx) : undefined;
+      })(),
+    }),
+  );
 
   // --- Model Caller ---
 

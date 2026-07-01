@@ -177,3 +177,37 @@ describe("team tools", () => {
     expect(getAgent("team-sess", "w")!.status).toBe("stopped");
   });
 });
+
+describe("team_delete + parent-signal cascade (M35)", () => {
+  it("deleteAgent removes an agent and its history", async () => {
+    const { deleteAgent } = await import("../team.js");
+    createAgents("team-sess", [{ role: "general", name: "w" }]);
+    expect(getAgent("team-sess", "w")).toBeDefined();
+    expect(deleteAgent("team-sess", "w")).toBe(true);
+    expect(getAgent("team-sess", "w")).toBeUndefined();
+    // Deleting a missing agent returns false.
+    expect(deleteAgent("team-sess", "w")).toBe(false);
+  });
+
+  it("TeamDeleteTool deletes via the tool surface", async () => {
+    const { TeamDeleteTool } = await import("../tools-team.js");
+    createAgents("team-sess", [{ role: "general", name: "w" }]);
+    const r = await TeamDeleteTool.call({ agent_id: "w" }, ctx());
+    expect(r.content).toContain("deleted");
+    expect(getAgent("team-sess", "w")).toBeUndefined();
+  });
+
+  it("a parent signal abort cascades into a running agent turn", async () => {
+    createAgents("team-sess", [{ role: "general", name: "w" }]);
+    const parent = new AbortController();
+    // Abort the parent before the turn runs: the agent's forked scope is born
+    // aborted, so the loop stops immediately and the turn yields no output.
+    parent.abort("parent gone");
+    const res = await runAgentTurn(
+      { ...runContext(), parentSignal: parent.signal },
+      "w",
+      "do work",
+    );
+    expect(res.output).toBe("");
+  });
+});

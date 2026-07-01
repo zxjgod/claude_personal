@@ -8,15 +8,25 @@
 // ============================================================
 
 import { agentLoop } from "./agent-loop.js";
+import { loadAgentMemoryPrompt } from "./agent-memory.js";
 import { createModelCaller } from "./llm-adapter.js";
 import {
+  buildSubagentSystemPrompt,
+  extractLastAssistantText,
   getCoreToolsForSubagents,
   getSubagentType,
   listSubagentNames,
+  listSubagentSelectionHints,
   resolveSubagentTools,
+  setAgentMemoryLoader,
 } from "./subagents.js";
 import { createTool } from "./tool-registry.js";
 import type { Message, Tool, ToolResult } from "./types.js";
+import { CancellationScope } from "./utils/cancellation.js";
+
+// Register the agent-memory loader once (M35). Done here rather than in
+// subagents.ts to keep that module free of a static node:fs dependency.
+setAgentMemoryLoader(loadAgentMemoryPrompt);
 
 // --- Constants ---
 
@@ -36,7 +46,8 @@ const MAX_CONCURRENCY = (() => {
 interface TaskInput {
   description: string;
   prompt: string;
-  subagent_name: string;
+  /** Omit to FORK the current agent (kernel §6 mechanism A); name a type otherwise. */
+  subagent_name?: string;
   [key: string]: unknown;
 }
 
@@ -72,12 +83,19 @@ export const TaskTool: Tool = createTool<TaskInput>({
   description: "Launch a sub-agent to handle complex, multi-step tasks autonomously",
   promptDescription:
     "Launch a sub-agent to handle complex, multi-step tasks. " +
-    "Provide description (short summary), prompt (detailed instructions), and subagent_name. " +
-    `Available sub-agent types: ${listSubagentNames().join(", ")}. ` +
-    "code-explorer/code-reviewer are read-only; general can modify files. " +
-    "Use this for broad exploration, review, or research where intermediate " +
+    "Provide description (short summary), prompt (detailed instructions), and optionally subagent_name. " +
+    "OMIT subagent_name to FORK the current agent: the fork inherits this " +
+    "conversation's context and shares the prompt cache, runs the prompt in " +
+    "isolation, and returns only its final report (use a fork for cheap parallel " +
+    "work whose intermediate output you won't need again). Or pick a typed " +
+    "sub-agent by matching your need to its purpose:\n" +
+    listSubagentSelectionHints()
+      .map((h) => `  - ${h.name}: ${h.whenToUse}`)
+      .join("\n") +
+    "\nUse this for broad exploration, review, or research where intermediate " +
     "tool results don't need user review. Multiple sub-agents run concurrently " +
-    `(capped at ${MAX_CONCURRENCY}).`,
+    `(capped at ${MAX_CONCURRENCY}). Only the sub-agent's final report is returned — ` +
+    "its intermediate tool output never enters this conversation.",
   inputSchema: {
     type: "object",
     properties: {
@@ -92,12 +110,11 @@ export const TaskTool: Tool = createTool<TaskInput>({
       },
       subagent_name: {
         type: "string",
-        description: "The type of sub-agent to launch.",
+        description: "The type of sub-agent to launch. Omit to fork the current agent.",
         enum: listSubagentNames(),
-        default: "code-explorer",
       },
     },
-    required: ["description", "prompt", "subagent_name"],
+    required: ["description", "prompt"],
   },
   isReadOnly: false,
   requiresApproval: false,
@@ -106,7 +123,7 @@ export const TaskTool: Tool = createTool<TaskInput>({
   async call(input, context): Promise<ToolResult> {
     const description = input.description?.trim();
     const prompt = input.prompt?.trim();
-    const subagentName = input.subagent_name || "code-explorer";
+    const requestedName = input.subagent_name?.trim();
 
     // --- Validation ---
 
@@ -116,8 +133,18 @@ export const TaskTool: Tool = createTool<TaskInput>({
     if (!prompt) {
       return { content: "", error: "prompt is required" };
     }
-    const subagentType = getSubagentType(subagentName);
-    if (!subagentType) {
+
+    // Fork mode (kernel §6 mechanism A): subagent_name omitted AND the loop
+    // exposed the parent's context. The fork inherits the parent's message
+    // history and reuses its system prompt verbatim — same prompt + same model
+    // so it shares the prompt cache. When fork context is absent (tests, no CLI
+    // wiring), we fall back to the default typed sub-agent rather than erroring.
+    const canFork = !!context.getParentMessages && !!context.parentSystemPrompt;
+    const isFork = !requestedName && canFork;
+
+    const subagentName = isFork ? "fork" : requestedName || "code-explorer";
+    const subagentType = isFork ? undefined : getSubagentType(subagentName);
+    if (!isFork && !subagentType) {
       return {
         content: "",
         error: `Unknown subagent type: "${subagentName}". Allowed: ${listSubagentNames().join(", ")}`,
@@ -132,31 +159,48 @@ export const TaskTool: Tool = createTool<TaskInput>({
 
     // --- Setup sub-agent ---
 
+    // Fork seeds the sub-loop with a copy of the parent's history (inherit
+    // context) then appends the fork task; a typed sub-agent starts clean.
+    const seed: Message[] = isFork ? context.getParentMessages!() : [];
+    const seedLen = seed.length;
     const subMessages: Message[] = [
-      {
-        role: "user",
-        content: [{ type: "text", text: prompt }],
-      },
+      ...seed,
+      { role: "user", content: [{ type: "text", text: prompt }] },
     ];
 
     const subCaller = createModelCaller(context.modelConfig);
-    const subSystemPrompt = [subagentType.systemPrompt, "", `Your task: ${description}`].join("\n");
+    // Fork reuses the parent prompt verbatim (shared cache); a typed sub-agent
+    // gets its own type-specific prompt + env footnote.
+    const subSystemPrompt = isFork
+      ? context.parentSystemPrompt!
+      : buildSubagentSystemPrompt(
+          subagentType!,
+          [subagentType!.systemPrompt, "", `Your task: ${description}`].join("\n"),
+          { workspaceRoot: context.workspaceRoot },
+        );
+
+    // M35: fork a child cancellation scope from the parent's signal so a parent
+    // Ctrl+C / abort cascades into this sub-agent's loop. Previously the loop
+    // was spawned with no signal, so an aborted parent left sub-agents running.
+    const scope = new CancellationScope(context.abortSignal);
 
     // --- Run sub-agent loop (under the concurrency cap) ---
 
     const startTime = Date.now();
-    const outputChunks: string[] = [];
     let toolCallCount = 0;
     let errorMessage: string | undefined;
 
     await acquireSlot();
     try {
       const coreTools = await getCoreToolsForSubagents();
-      const subagentTools = resolveSubagentTools(subagentType, coreTools);
+      // Fork inherits the full core tool set (it IS the current agent); a typed
+      // sub-agent is restricted to its declared tools.
+      const subagentTools = isFork ? coreTools : resolveSubagentTools(subagentType!, coreTools);
       const loop = agentLoop(subMessages, subagentTools, subCaller, context.modelConfig, {
         systemPrompt: subSystemPrompt,
-        maxTurns: subagentType.maxTurns ?? SUBAGENT_MAX_TURNS,
+        maxTurns: subagentType?.maxTurns ?? SUBAGENT_MAX_TURNS,
         autoCompactThreshold: SUBAGENT_COMPACT_THRESHOLD,
+        abortSignal: scope.signal,
         // Run sub-agent tools in the same workspace/session as the parent.
         toolContext: {
           workspaceRoot: context.workspaceRoot,
@@ -175,9 +219,6 @@ export const TaskTool: Tool = createTool<TaskInput>({
 
       for await (const event of loop) {
         switch (event.type) {
-          case "text_delta":
-            outputChunks.push(event.delta);
-            break;
           case "tool_use":
             toolCallCount++;
             context.onSubAgentProgress?.({
@@ -215,21 +256,28 @@ export const TaskTool: Tool = createTool<TaskInput>({
       errorMessage = error.message || String(error);
     } finally {
       releaseSlot();
+      scope.dispose();
     }
 
     const duration = Date.now() - startTime;
-    const output = outputChunks.join("").trim();
+    // Context protection (kernel §4): return ONLY the sub-agent's final
+    // assistant text — never its accumulated multi-turn narration or raw tool
+    // output. For a fork, the sub-loop's messages start with a copy of the
+    // PARENT's history (seedLen messages); we slice past it so extraction can
+    // only see the fork's own turns and never echoes a parent assistant message.
+    const own = isFork ? subMessages.slice(seedLen) : subMessages;
+    const output = extractLastAssistantText(own);
 
     if (errorMessage && !output) {
       return {
         content: "",
-        error: `Sub-agent failed: ${errorMessage}`,
+        error: `${isFork ? "Fork" : "Sub-agent"} failed: ${errorMessage}`,
         metadata: { durationMs: duration },
       };
     }
 
     const header = [
-      `[Sub-agent "${subagentName}" completed]`,
+      isFork ? `[Fork of current agent completed]` : `[Sub-agent "${subagentName}" completed]`,
       `Task: ${description}`,
       `Tool calls: ${toolCallCount}`,
       `Duration: ${(duration / 1000).toFixed(1)}s`,

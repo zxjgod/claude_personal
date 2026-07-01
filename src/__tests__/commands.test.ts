@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { recordChange, resetChangeTracker } from "../change-tracker.js";
 import { type CommandContext, handleSlashCommand } from "../commands.js";
 import { SessionStats } from "../session-stats.js";
+import { registerSkill, resetSkills } from "../skills.js";
 import type { Message, ModelCaller, ModelConfig } from "../types.js";
 
 // A model caller that yields a single text + done (used by /compact).
@@ -35,6 +36,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   vi.restoreAllMocks();
+  resetSkills();
 });
 
 describe("handleSlashCommand", () => {
@@ -612,6 +614,35 @@ describe("handleSlashCommand", () => {
       const out = (console.log as any).mock.calls.flat().join("\n");
       expect(out).toContain("Git:");
       expect(out).toContain("MCP:");
+    });
+  });
+
+  describe("/<name> skill slash sugar (M37)", () => {
+    it("expands an inline skill into a prompt Command", async () => {
+      registerSkill({ name: "myskill", description: "d", prompt: "Run the playbook." });
+      const r = await handleSlashCommand("/myskill extra args", makeCtx([]));
+      expect(r.handled).toBe(true);
+      expect(r.prompt).toContain("Run the playbook.");
+      // Args ride along on the expanded prompt.
+      expect(r.prompt).toContain("Arguments: extra args");
+    });
+
+    it("does NOT expand a fork skill via slash sugar (must use the Skill tool)", async () => {
+      registerSkill({
+        name: "forky",
+        description: "d",
+        context: "fork",
+        getPromptForCommand: async () => "fork body",
+      });
+      const r = await handleSlashCommand("/forky", makeCtx([]));
+      expect(r.handled).toBe(true);
+      expect(r.prompt).toBeUndefined();
+    });
+
+    it("still reports unknown for a name that is neither command nor skill", async () => {
+      const r = await handleSlashCommand("/definitely-not-a-thing", makeCtx([]));
+      expect(r.handled).toBe(true);
+      expect(r.prompt).toBeUndefined();
     });
   });
 });

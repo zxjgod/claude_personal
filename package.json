@@ -31,7 +31,9 @@
     "ink": "^7.1.0",
     "marked": "^12.0.0",
     "openai": "^4.52.0",
-    "react": "^19.2.7"
+    "react": "^19.2.7",
+    "zod": "^3.25.76",
+    "zod-to-json-schema": "^3.25.2"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.1",

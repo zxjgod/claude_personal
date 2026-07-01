@@ -220,7 +220,9 @@ export class SpeculationCache {
       const key = specKey(pred.toolName, pred.input);
       if (this.pending.has(key)) continue;
       const tool = tools.find((t) => t.name === pred.toolName);
-      if (!tool?.isReadOnly() || !tool.isConcurrencySafe()) continue;
+      // Pass the predicted input so data-driven tools (Bash) judge this exact
+      // call: only a read-only + concurrency-safe call is safe to prefetch.
+      if (!tool?.isReadOnly(pred.input) || !tool.isConcurrencySafe(pred.input)) continue;
       this.prefetched++;
       const p = Promise.resolve()
         .then(() => tool.call(pred.input, context))

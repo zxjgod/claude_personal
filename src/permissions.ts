@@ -4,7 +4,13 @@
 // ============================================================
 
 import * as path from "node:path";
-import type { ClassifierResult, PermissionClassifier, Tool, ToolContext } from "./types.js";
+import type {
+  ClassifierResult,
+  PermissionClassifier,
+  PermissionDecisionReason,
+  Tool,
+  ToolContext,
+} from "./types.js";
 
 // --- Dangerous Pattern Detection ---
 
@@ -113,8 +119,14 @@ export function checkDangerousPattern(
 }
 
 // --- Blocked Paths ---
-
+//
+// The bypass-immune safety floor (kernel §4, 1g). Writing to any of these is
+// denied in EVERY permission mode — including bypassPermissions / YOLO. The
+// rule: the escape valve must never be global; a small class of paths must
+// always be off-limits to automated edits (secrets, VCS internals, the
+// assistant's own config, and shell startup files that grant code execution).
 const BLOCKED_PATTERNS = [
+  // --- secrets / credentials ---
   /\.ssh\/.*/,
   /\.ssh$/,
   /\/etc\/(passwd|shadow|sudoers)/,
@@ -123,8 +135,15 @@ const BLOCKED_PATTERNS = [
   /\.env\./,
   /credentials\.json$/,
   /\.npmrc$/,
-  /\.git\/config$/,
-  /\.git\/hooks\//,
+  // --- VCS internals: the whole .git/ tree, not just config/hooks. Editing
+  //     refs/objects/index can corrupt the repo or smuggle in hooks. ---
+  /(^|[/\\])\.git([/\\]|$)/,
+  // --- the assistant's own project config / memory (kernel names .claude/) ---
+  /(^|[/\\])\.claude([/\\]|$)/,
+  // --- shell startup files: writing these grants arbitrary code execution
+  //     on the next shell launch, a classic bypass-mode escalation. ---
+  /(^|[/\\])\.(bashrc|bash_profile|zshrc|zprofile|profile|fish\/config\.fish)$/,
+  /(^|[/\\])\.config[/\\]fish[/\\]config\.fish$/,
 ];
 
 export function isBlockedPath(filePath: string): boolean {
@@ -281,41 +300,43 @@ export async function checkPermission(
   input: Record<string, unknown>,
   context: ToolContext,
   options: PermissionCheckOptions,
-): Promise<{ allowed: boolean; reason?: string }> {
-  // Step 1: Read-only tools are always allowed
-  if (tool.isReadOnly()) {
+): Promise<{ allowed: boolean; reason?: string; decisionReason?: PermissionDecisionReason }> {
+  // Step 1: Read-only tools are always allowed. Pass input so data-driven
+  // tools (Bash: `cat` read-only, `rm` not) decide per call (M29).
+  if (tool.isReadOnly(input)) {
     return { allowed: true };
   }
 
-  // Step 2: Plan mode — never execute destructive tools
+  // Step 2: Plan mode — never execute destructive tools.
   if (context.permissionMode === "plan") {
     return {
       allowed: false,
       reason: `Plan mode: ${tool.name} is a destructive tool. Not executing.`,
+      decisionReason: "mode",
     };
   }
 
-  // Step 3: Bypass mode — everything is allowed
-  if (context.permissionMode === "bypassPermissions") {
-    return { allowed: true };
-  }
+  // ============================================================
+  // SAFETY FLOOR (kernel §4, 1f/1g) — runs BEFORE the bypass
+  // short-circuit. These checks are IMMUNE to bypassPermissions: even
+  // YOLO mode cannot clear them. The escape valve must never be global.
+  // ============================================================
 
-  // Step 4: Check blocked paths
+  // Step 3a (safetyCheck): blocked paths — hard deny in every mode.
   if (input.filePath && typeof input.filePath === "string") {
     if (isBlockedPath(input.filePath as string)) {
       return {
         allowed: false,
         reason: `Path "${input.filePath}" is blocked for security reasons.`,
+        decisionReason: "safetyCheck",
       };
     }
   }
 
-  // Step 5: Dangerous patterns — ALWAYS require confirmation. When the LLM
-  // classifier is enabled (M15.3), it runs FIRST to enrich the approval
-  // prompt with a model-assessed risk reason. The classifier never relaxes
-  // the prompt — it can only block outright or annotate. On any failure
-  // (no caller, no apiKey, parse error, API error, timeout) we fail SAFE:
-  // fall back to the regex reason and still prompt, exactly as before.
+  // Step 3b (safetyCheck): dangerous patterns — ALWAYS require confirmation,
+  // even under bypassPermissions. When the LLM classifier is enabled (M15.3)
+  // it runs FIRST to enrich the approval prompt; it can only block outright or
+  // annotate, never relax. On any failure we fail SAFE: regex reason + prompt.
   const dangerousCheck = checkDangerousPattern(tool.name, input, context.workspaceRoot);
   if (dangerousCheck.dangerous) {
     let riskHint = dangerousCheck.reason;
@@ -325,6 +346,7 @@ export async function checkPermission(
         return {
           allowed: false,
           reason: classified.reason ?? dangerousCheck.reason,
+          decisionReason: "classifier",
         };
       }
       if (classified.reason) {
@@ -332,22 +354,35 @@ export async function checkPermission(
       }
     }
     const allowed = await options.askUser(tool, input, riskHint);
-    return allowed ? { allowed: true } : { allowed: false, reason: riskHint };
+    return allowed
+      ? { allowed: true, decisionReason: "safetyCheck" }
+      : { allowed: false, reason: riskHint, decisionReason: "safetyCheck" };
   }
 
-  // Step 6: acceptEdits — auto-approve file operations
+  // ============================================================
+  // Past the safety floor — now mode-based fast paths may apply.
+  // ============================================================
+
+  // Step 4: Bypass mode — allow anything the safety floor didn't already stop.
+  if (context.permissionMode === "bypassPermissions") {
+    return { allowed: true, decisionReason: "mode" };
+  }
+
+  // Step 5: acceptEdits — auto-approve file operations.
   if (context.permissionMode === "acceptEdits") {
     if (["edit", "write"].includes(tool.name)) {
-      return { allowed: true };
+      return { allowed: true, decisionReason: "mode" };
     }
   }
 
-  // Step 7: Default — ask only for tools that require interactive approval
-  const needsApproval = tool.requiresApproval ? tool.requiresApproval() : !tool.isReadOnly();
+  // Step 6: Default — ask only for tools that require interactive approval.
+  const needsApproval = tool.requiresApproval ? tool.requiresApproval() : !tool.isReadOnly(input);
   if (!needsApproval) {
     return { allowed: true };
   }
 
   const allowed = await options.askUser(tool, input);
-  return allowed ? { allowed: true } : { allowed: false, reason: "User denied permission" };
+  return allowed
+    ? { allowed: true }
+    : { allowed: false, reason: "User denied permission", decisionReason: "mode" };
 }

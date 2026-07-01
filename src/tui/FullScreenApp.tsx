@@ -133,7 +133,8 @@ function FsInteraction({
   return (
     <InputBox
       commands={commands}
-      disabled={busy}
+      disabled={false}
+      busy={busy}
       onSubmit={onSubmit}
       editorMode={editorMode}
       keepColorWhenDisabled

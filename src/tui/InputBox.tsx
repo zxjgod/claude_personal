@@ -86,6 +86,7 @@ function rowColToOffset(buffer: string, row: number, col: number): number {
 export function InputBox({
   commands,
   disabled,
+  busy,
   onSubmit,
   editorMode,
   keepColorWhenDisabled,
@@ -93,6 +94,12 @@ export function InputBox({
 }: {
   commands: CommandInfo[];
   disabled: boolean;
+  /** M36: type-ahead. When busy the agent is working but the box stays active
+   *  (disabled=false) so the user can type the NEXT message; submitting queues
+   *  it (the loop drains the queue at its next turn boundary) instead of
+   *  starting a competing turn. We render a hint so the user knows it's queued
+   *  rather than run immediately. Distinct from `disabled` (overlay = hard-off). */
+  busy?: boolean;
   onSubmit: (value: string) => void;
   /** M18.10: shared holder toggled by /vim. When "vim", input is modal. */
   editorMode?: { value: "default" | "vim" };
@@ -332,6 +339,14 @@ export function InputBox({
       </Box>
     ) : null;
 
+  // M36: type-ahead hint — only while the agent is busy AND the box is active.
+  // Tells the user their next line is queued (runs after the current turn),
+  // rather than starting a competing turn.
+  const typeAheadHint =
+    busy && !disabled ? (
+      <Text dimColor>{"  ⏎ queues your next message (runs after the current turn)"}</Text>
+    ) : null;
+
   const promptRows = lines.map((line, i) => (
     <Box key={i}>
       {i === 0 && vimActive ? (
@@ -357,6 +372,7 @@ export function InputBox({
     return (
       <Box flexDirection="column">
         {suggestionList}
+        {typeAheadHint}
         <Text color={frameColor}>{rule}</Text>
         {promptRows}
       </Box>
@@ -370,6 +386,7 @@ export function InputBox({
       <Text color={frameColor}>{rule}</Text>
       {promptRows}
       <Text color={frameColor}>{rule}</Text>
+      {typeAheadHint}
       {suggestionList}
     </Box>
   );

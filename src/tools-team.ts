@@ -12,6 +12,7 @@ import { listSubagentNames } from "./subagents.js";
 import {
   type AgentStatus,
   createAgents,
+  deleteAgent,
   getAgent,
   listAgents,
   runAgentTurn,
@@ -34,6 +35,8 @@ function runCtx(context: ToolContext): TeamRunContext | { error: string } {
     // Forward the parent loop's approver into team agent sub-loops so their
     // destructive tool calls prompt the user instead of auto-approving.
     askUser: context.askUser,
+    // M35: thread the parent's signal so a parent abort cascades into agents.
+    parentSignal: context.abortSignal,
   };
 }
 
@@ -257,10 +260,38 @@ export const TaskStopTool: Tool = createTool<TaskStopInput>({
   },
 });
 
+interface TeamDeleteInput {
+  agent_id: string;
+  [key: string]: unknown;
+}
+
+export const TeamDeleteTool: Tool = createTool<TeamDeleteInput>({
+  name: "team_delete",
+  description: "Delete a team agent (aborts it if running)",
+  promptDescription:
+    "Remove an agent from the team by id. If it's running, its current turn is " +
+    "aborted first. Its history is discarded — use task_stop instead if you want " +
+    "to keep the agent for later.",
+  inputSchema: {
+    type: "object",
+    properties: { agent_id: { type: "string", description: "Agent id" } },
+    required: ["agent_id"],
+  },
+  isReadOnly: false,
+  requiresApproval: false,
+  isConcurrencySafe: false,
+  async call(input, context): Promise<ToolResult> {
+    const ok = deleteAgent(context.sessionId, String(input.agent_id || ""));
+    if (!ok) return { content: "", error: `No agent "${input.agent_id}"` };
+    return { content: `Agent "${input.agent_id}" deleted.` };
+  },
+});
+
 export const TEAM_TOOLS: Tool[] = [
   TeamCreateTool,
   SendMessageTool,
   TaskListTool,
   TaskGetTool,
   TaskStopTool,
+  TeamDeleteTool,
 ];

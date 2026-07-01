@@ -22,7 +22,8 @@
 import { execFile } from "node:child_process";
 import * as path from "node:path";
 import { promisify } from "node:util";
-import { getSkill, listSkills } from "./skills.js";
+import { runForkSkill } from "./skills/forkSkill.js";
+import { getSkill, listSkills, resolveSkillPrompt } from "./skills.js";
 import { createTool } from "./tool-registry.js";
 import type { PermissionResult, Tool, ToolResult } from "./types.js";
 
@@ -245,9 +246,11 @@ export const SkillTool: Tool = createTool<SkillInput>({
   description: "Invoke a registered skill by name and load its instructions",
   promptDescription:
     "Invoke a named skill (e.g. skill=deep-research) to load its specialized " +
-    "instructions into the conversation. Pass args to parameterize it. If the " +
-    "skill name is unknown, the result lists available skills. Only invoke " +
-    "skills from the available-skills list or one the user explicitly named.",
+    "instructions into the conversation. Pass args to parameterize it. A skill's " +
+    "full body is loaded only when invoked. context:'fork' skills run in a " +
+    "sub-agent and return only their final report. If the skill name is unknown, " +
+    "the result lists available skills. Only invoke skills from the available-" +
+    "skills list or one the user explicitly named.",
   inputSchema: {
     type: "object",
     properties: {
@@ -259,7 +262,7 @@ export const SkillTool: Tool = createTool<SkillInput>({
   isReadOnly: true,
   isConcurrencySafe: true,
 
-  async call(input): Promise<ToolResult> {
+  async call(input, context): Promise<ToolResult> {
     const name = input.skill?.trim();
     if (!name) {
       return { content: "", error: "skill is required" };
@@ -274,9 +277,28 @@ export const SkillTool: Tool = createTool<SkillInput>({
         error: `Unknown skill "${name}". Available skills:\n${available}`,
       };
     }
-    const argsLine = input.args?.trim() ? `\n\nArguments: ${input.args}` : "";
+
+    // Resolve the body now (kernel: discovery cheap, loading expensive — the
+    // template/shell expansion happens here, at invocation, not at discovery).
+    let resolved: string;
+    try {
+      resolved = await resolveSkillPrompt(skill, {
+        args: input.args,
+        workspaceRoot: context.workspaceRoot,
+      });
+    } catch (error: any) {
+      return { content: "", error: `Skill "${name}" failed to load: ${error?.message ?? error}` };
+    }
+
+    // context:'fork' → run the body in a sub-agent and return only its final
+    // text (kernel §6 context protection). Falls back to inline injection when
+    // the loop didn't provide modelConfig (e.g. unit tests calling .call bare).
+    if (skill.context === "fork" && context.modelConfig) {
+      return runForkSkill(skill, resolved, context);
+    }
+
     return {
-      content: `Skill "${skill.name}" loaded.\n\n` + `Instructions:\n${skill.prompt}${argsLine}`,
+      content: `Skill "${skill.name}" loaded.\n\n` + `Instructions:\n${resolved}`,
     };
   },
 });

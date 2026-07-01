@@ -129,6 +129,21 @@ export interface ToolContext {
    * Absent in tests and sub-agents spawned without an explicit signal.
    */
   abortSignal?: AbortSignal;
+  /**
+   * Fork support (M35, kernel §6 mechanism A). Returns a snapshot copy of the
+   * parent loop's current message history so the Task tool can fork the current
+   * agent (Agent tool with no subagent_type) — the fork inherits context. The
+   * loop wires this as a closure over its (reassigned) messages local; absent in
+   * tests/sub-agents, in which case fork mode is unavailable and Task falls back
+   * to a typed sub-agent.
+   */
+  getParentMessages?: () => Message[];
+  /**
+   * The parent loop's system prompt (M35, kernel §6). A fork reuses this verbatim
+   * — same prompt prefix + same model — so it SHARES the parent's prompt cache
+   * (the kernel's reason a fork must not swap model). Absent → fork unavailable.
+   */
+  parentSystemPrompt?: string;
 }
 
 /** A structured question the model can pose to the user (AskUserQuestion). */
@@ -152,6 +167,15 @@ export interface SubAgentProgress {
 }
 
 export type PermissionMode = "default" | "acceptEdits" | "bypassPermissions" | "plan";
+
+/**
+ * Why a permission decision was reached (kernel §4 decisionReason union).
+ * Used for logging/UI, but `safetyCheck` has special standing: decisions tagged
+ * `safetyCheck` are made by the bypass-immune safety floor (blocked paths /
+ * dangerous patterns) which runs BEFORE the bypassPermissions short-circuit —
+ * so even YOLO mode cannot clear them.
+ */
+export type PermissionDecisionReason = "rule" | "mode" | "hook" | "classifier" | "safetyCheck";
 
 export type PermissionResult = { allowed: true } | { allowed: false; reason: string };
 
@@ -205,12 +229,58 @@ export interface Tool<T extends ToolInput = ToolInput> {
   };
   /** Whether this tool is currently enabled */
   isEnabled(): boolean;
-  /** Whether this tool only reads (auto-approved) */
-  isReadOnly(): boolean;
+  /**
+   * Whether this tool only reads (auto-approved). Takes the call's input so the
+   * decision can be data-driven (M29): e.g. Bash is read-only for `cat` but not
+   * `rm`. Called without input in a few static contexts (UI listings) — return
+   * the most conservative answer (treat as mutating) when input is absent.
+   */
+  isReadOnly(input?: T): boolean;
   /** Whether this tool requires an interactive approval prompt in default mode. */
   requiresApproval?(): boolean;
-  /** Whether this tool can run concurrently */
-  isConcurrencySafe(): boolean;
+  /**
+   * Whether this tool can run concurrently given THIS input (M29). Bash sets
+   * this equal to isReadOnly, so read-only commands parallelize and mutating
+   * ones serialize. Absent input → conservative (not safe).
+   */
+  isConcurrencySafe(input?: T): boolean;
+  /**
+   * Semantic input validation (M28). Runs after JSON.parse but before any
+   * side effect or permission check. Should THROW (typically an
+   * InputValidationError) when the input is malformed, and otherwise return
+   * the sanitized input — strict Zod schemas strip unknown keys the model may
+   * have injected. Optional: tools without a schema skip this layer. This is
+   * distinct from checkPermissions (operation policy) and the central
+   * permission system (mode/rule/safety floor).
+   */
+  validateInput?(input: Record<string, unknown>): T;
+  /**
+   * Whether this tool mutates state irreversibly given THIS input (M28). Used
+   * by the permission UI / classifier to flag higher-risk calls. Fail-closed:
+   * defaults to "not read-only" when unspecified.
+   */
+  isDestructive?(input: T): boolean;
+  /** Alternate names the model may use for this tool (e.g. legacy aliases). */
+  aliases?: string[];
+  /** Short hint surfaced by the tool-search tool to help the model pick this. */
+  searchHint?: string;
+  /**
+   * What should happen to an in-flight call when the user interrupts (Ctrl+C).
+   * "kill" = abort immediately (default for side-effecting work like Bash),
+   * "wait" = let it finish (cheap read-only work not worth tearing down).
+   */
+  interruptBehavior?: "kill" | "wait";
+  /** Extract the primary filesystem path this call touches, if any (for UI/safety). */
+  getPath?(input: T): string | undefined;
+  /**
+   * Soft cap on the model-facing result size in chars (M30). When the formatted
+   * result exceeds this, the agent loop spills the full text to a workspace file
+   * and hands the model a preview + path instead of the whole thing — bounding
+   * the context window without losing data (the UI still renders the full
+   * result). Defaults to DEFAULT_MAX_RESULT_CHARS; Read sets it to Infinity so a
+   * Read result never spills (which would loop "Read → spill → Read").
+   */
+  maxResultSizeChars?: number;
   /** Main execution */
   call(input: T, context: ToolContext): Promise<ToolResult>;
   /** Permission check */
@@ -291,17 +361,80 @@ export type LoopEvent =
     }
   | { type: "aborted"; reason: string };
 
+/**
+ * Typed terminal reason the agent loop RETURNS (kernel §8). Distinct from the
+ * yielded `done`/`aborted`/`error` events (which UI consumers read): a caller
+ * that drives the loop with `const t = yield* agentLoop(...)` gets this typed
+ * exit code and branches on `t.reason` without scanning the event stream.
+ *
+ *   completed          — model produced a final answer with no tool calls
+ *   max_turns          — hit the maxTurns ceiling
+ *   aborted_streaming  — abort fired before/while the model was streaming
+ *   aborted_tools      — abort fired while/after tools ran this turn
+ *   model_error        — unrecoverable model/transport error
+ *   prompt_too_long    — context exceeded the model limit and compaction failed
+ *   blocking_limit     — hard context limit hit with auto-compaction disabled
+ *   stop_hook_prevented— a stop hook hard-stopped continuation
+ *   hook_stopped       — a hook aborted the run
+ *   image_error        — an image block could not be processed
+ *   aborted_interrupt  — a SOFT interrupt (user typed mid-turn); queued input is
+ *                        preserved so the caller resumes with it (M36/kernel §9)
+ */
+export type TerminalReason =
+  | "completed"
+  | "max_turns"
+  | "aborted_streaming"
+  | "aborted_tools"
+  | "aborted_interrupt"
+  | "model_error"
+  | "prompt_too_long"
+  | "blocking_limit"
+  | "stop_hook_prevented"
+  | "hook_stopped"
+  | "image_error";
+
+export interface Terminal {
+  reason: TerminalReason;
+  /** Turns completed when the loop exited. */
+  turns: number;
+  /** Underlying error for model_error / prompt_too_long / blocking_limit. */
+  error?: unknown;
+}
+
 export interface ToolExecutionResult {
   toolName: string;
   result?: ToolResult;
   error?: string;
   formatted: string;
+  /**
+   * Model-facing copy of the result (M30). The agent loop sends THIS (not
+   * `formatted`) to the model history, after spilling oversized output to disk.
+   * Absent → the model sees `formatted` verbatim. The UI always renders
+   * `formatted`, so the split keeps the context window bounded while terminal
+   * output stays full and rich.
+   */
+  modelContent?: string;
   durationMs?: number;
+  /**
+   * True when this result represents a failure (M28). The agent loop wraps the
+   * model-facing tool content in <tool_use_error>…</tool_use_error> when set,
+   * so the model reliably distinguishes errors from ordinary output. The UI
+   * still renders `formatted` verbatim (no envelope), keeping terminal output
+   * clean.
+   */
+  isError?: boolean;
 }
 
 export interface LoopOptions {
   maxTurns?: number;
   autoCompactThreshold?: number;
+  /**
+   * Hard context ceiling in tokens (M31). When autoCompact is disabled
+   * (autoCompactThreshold = Infinity) and the prepared context still exceeds
+   * this, the loop exits with a `blocking_limit` terminal instead of sending an
+   * oversized request — leaving room for a manual /compact. Default 200_000.
+   */
+  contextHardLimit?: number;
   systemPrompt: string;
   abortSignal?: AbortSignal;
   /** Partial context to thread into each tool call (sessionId, workspaceRoot, permissionMode). */
@@ -310,6 +443,41 @@ export interface LoopOptions {
   askUser?: AskUserFn;
   /** Optional hook registry to intercept tool calls (PreToolUse/PostToolUse). */
   hooks?: HookRunner;
+  /**
+   * Turn output budget for auto-continuation (M32, kernel §7). When > 0 and the
+   * model ends a turn with no tool calls, the loop may inject a nudge and keep
+   * working until cumulative output approaches this ceiling or hits diminishing
+   * returns. 0 / undefined disables it — the loop ends the turn as before.
+   * Distinct from `autoCompactThreshold`/`contextHardLimit` (the context-window
+   * budget). See src/query/token-budget.ts.
+   */
+  turnOutputBudget?: number;
+  /**
+   * Background prefetch provider (M36, kernel §9). Fired once at loop start with
+   * the latest user text, concurrently with the first model stream. Its resolved
+   * string (relevant memories / skills, as a <system-reminder>) is injected once
+   * as a system message before the next model call. Returns null → nothing
+   * injected. Injected by the CLI; absent in tests/sub-agents (no-op then).
+   */
+  prefetch?: (latestUserText: string) => Promise<string | null>;
+  /**
+   * Fast-model tool-batch summarizer (M36, kernel §9). After a tool batch runs,
+   * the loop starts this with a compact prompt digesting that batch; the call
+   * runs (on a cheap/fast model) concurrently with the NEXT model stream and is
+   * consumed non-blockingly at the next turn boundary, injected as a single
+   * <system-reminder> digest alongside the full results. Returns null → nothing
+   * injected. Injected by the CLI; absent in tests/sub-agents (no-op then).
+   * Latency hiding must never add latency — the loop never awaits this inline.
+   */
+  summarizeToolBatch?: (prompt: string) => Promise<string | null>;
+  /**
+   * Queued user input provider (M36, kernel §9). Called at each turn boundary
+   * (and before the loop would otherwise complete); any returned text is
+   * injected as user messages and the loop continues working on it instead of
+   * ending — type-ahead that's queued, not discarded. Returns [] when nothing is
+   * queued. Injected by the CLI/TUI; absent in tests/sub-agents (no-op then).
+   */
+  drainQueuedInput?: () => string[];
   /**
    * Enable speculative tool prefetch (12.2). On by default (M15.2); callers
    * disable it via --no-speculation / CCR_SPECULATION=0. Only read-only +
@@ -330,6 +498,16 @@ export interface HookRunner {
     input: Record<string, unknown>;
     result: ToolResult;
   }): Promise<{ result?: ToolResult }>;
+  /**
+   * Stop hook (M32). Optional — runners predating M32 omit it and the loop
+   * simply skips the stop gate. Returning `blockingError` injects a meta user
+   * message and continues; `preventContinuation` hard-stops the loop.
+   */
+  runStop?(payload: { messages: unknown[]; stopHookActive: boolean }): Promise<{
+    blockingError?: string;
+    preventContinuation?: boolean;
+    reason?: string;
+  }>;
 }
 
 /** Prompts the user to approve a destructive/dangerous tool call. */

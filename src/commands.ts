@@ -10,6 +10,7 @@
 import chalk from "chalk";
 import { COMMANDS } from "./commands/registry.js";
 import type { CommandContext, CommandResult } from "./commands/types.js";
+import { getSkill, resolveSkillPrompt } from "./skills.js";
 
 export { COMMANDS } from "./commands/registry.js";
 export type {
@@ -41,6 +42,24 @@ export async function handleSlashCommand(
   const cmd = COMMAND_MAP.get(name);
 
   if (!cmd) {
+    // Slash sugar (kernel §Skill point 3): `/<name>` that isn't a built-in
+    // command may be a skill. Expand it to the skill's prompt body and hand it
+    // back as a prompt Command for the caller to run through the agent loop —
+    // exactly what the model would get from the Skill tool. Inline skills only;
+    // fork skills must go through the Skill tool (they spawn a sub-agent).
+    const skill = getSkill(name);
+    if (skill && skill.context !== "fork") {
+      try {
+        const prompt = await resolveSkillPrompt(skill, {
+          args,
+          workspaceRoot: ctx.workspaceRoot,
+        });
+        return { handled: true, prompt };
+      } catch (error: any) {
+        console.log(chalk.yellow(`  Skill /${name} failed to load: ${error?.message ?? error}`));
+        return { handled: true };
+      }
+    }
     console.log(chalk.yellow(`  Unknown command: /${name}. Try /help.`));
     return { handled: true };
   }

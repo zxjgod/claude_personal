@@ -21,6 +21,9 @@ coverage/
 # Local session state (runtime artifacts, not source)
 .claude/sessions/
 
+# Spilled tool results (M30) — runtime artifacts written when output exceeds the cap
+.ccr/
+
 # Provider profiles — contains plaintext API keys (commit providers.json.example instead)
 .claude/providers.json
 
@@ -29,3 +32,4 @@ reference/
 *.pdf
 
 claude-code-参考标准/
+参考文档/

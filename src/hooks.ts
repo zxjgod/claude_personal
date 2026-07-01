@@ -34,6 +34,29 @@ export interface PostToolUseOutcome {
   result?: ToolResult;
 }
 
+/**
+ * Payload for a Stop hook (M32, kernel §8). Fired when a turn would naturally
+ * end (no tool calls). `messages` is the current window; `stopHookActive` is
+ * true when a prior stop hook already injected a blocking error this turn — a
+ * guard so a hook that always blocks can't loop forever.
+ */
+export interface StopPayload {
+  messages: unknown[];
+  stopHookActive: boolean;
+}
+
+export interface StopOutcome {
+  /**
+   * Inject this text as a meta user message and continue the loop, giving the
+   * agent more to do. Ignored when `stopHookActive` is already set (anti-loop).
+   */
+  blockingError?: string;
+  /** Hard-stop: the loop returns `stop_hook_prevented` and does not continue. */
+  preventContinuation?: boolean;
+  /** Optional human-readable reason, surfaced to the UI. */
+  reason?: string;
+}
+
 export interface Hook {
   /** Tool name to match, or "*" for every tool. */
   matcher: string;
@@ -43,6 +66,12 @@ export interface Hook {
   post?: (
     payload: PostToolUsePayload,
   ) => Promise<PostToolUseOutcome | void> | PostToolUseOutcome | void;
+  /**
+   * Stop hook: runs when the turn would end. Returning `blockingError` keeps the
+   * agent working; `preventContinuation` hard-stops it. Not matched by tool name
+   * — every registered stop hook runs.
+   */
+  stop?: (payload: StopPayload) => Promise<StopOutcome | void> | StopOutcome | void;
 }
 
 export class HookRegistry {
@@ -97,14 +126,40 @@ export class HookRegistry {
   }
 
   /**
+   * Run Stop hooks in registration order (M32, kernel §8). The first hook to
+   * request `preventContinuation` short-circuits (hard stop). Otherwise the
+   * first non-empty `blockingError` is returned so the loop injects it and
+   * continues. When `stopHookActive` is set, blockingErrors are ignored (the
+   * anti-loop guard) but a preventContinuation still hard-stops.
+   */
+  async runStop(payload: StopPayload): Promise<StopOutcome> {
+    let blockingError: string | undefined;
+    let reason: string | undefined;
+    for (const hook of this.hooks) {
+      if (!hook.stop) continue;
+      const outcome = await hook.stop(payload);
+      if (!outcome) continue;
+      if (outcome.preventContinuation) {
+        return { preventContinuation: true, reason: outcome.reason };
+      }
+      if (!blockingError && outcome.blockingError && !payload.stopHookActive) {
+        blockingError = outcome.blockingError;
+        reason = outcome.reason;
+      }
+    }
+    return blockingError ? { blockingError, reason } : {};
+  }
+
+  /**
    * Describe registered hooks for inspection (/hooks). Returns one entry per
    * hook with its matcher and which phases it implements.
    */
-  list(): Array<{ matcher: string; pre: boolean; post: boolean }> {
+  list(): Array<{ matcher: string; pre: boolean; post: boolean; stop: boolean }> {
     return this.hooks.map((h) => ({
       matcher: h.matcher,
       pre: Boolean(h.pre),
       post: Boolean(h.post),
+      stop: Boolean(h.stop),
     }));
   }
 }

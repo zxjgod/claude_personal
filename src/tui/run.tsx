@@ -9,13 +9,14 @@
 // ============================================================
 
 import { render } from "ink";
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { agentLoop } from "./../agent-loop.js";
 import { formatCliError } from "./../cli-errors.js";
 import type { CommandContext } from "./../commands.js";
 import { handleSlashCommand } from "./../commands.js";
 import { EFFORT_DESCRIPTIONS, getEffort } from "./../effort.js";
 import { expandFileRefs } from "./../file-refs.js";
+import { InputQueue } from "./../input-queue.js";
 import {
   applyProfile,
   loadProviderProfiles,
@@ -68,6 +69,7 @@ async function runTurn(
   controller: AbortController,
   askUser: AskUserFn,
   askUserQuestion: (q: UserQuestion) => Promise<string[] | null>,
+  queue: InputQueue,
 ): Promise<void> {
   store.setBusy(true);
   store.setSpinner("thinking");
@@ -107,6 +109,12 @@ async function runTurn(
     askUser,
     abortSignal: controller.signal,
     hooks: deps.hooks,
+    // M36: type-ahead. The loop drains queued input at each turn boundary and
+    // continues the SAME turn with it (kernel §9), so a message typed while the
+    // agent works is picked up without waiting for the turn to end. The TUI
+    // echoes the queued line at push time (see Root.onSubmit); here the loop
+    // injects it into `messages` so the model actually sees it.
+    drainQueuedInput: () => queue.drain(),
   });
 
   let thinkingStart = Date.now();
@@ -352,6 +360,9 @@ async function runProviderPicker(store: TuiStore, deps: TuiDeps): Promise<void> 
  */
 function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
   const [expandedId] = useState<number | null>(null);
+  // M36: one type-ahead queue per session. Stable across renders so a message
+  // typed while the agent is busy survives until the loop drains it.
+  const queueRef = useRef<InputQueue>(new InputQueue());
 
   const askUser: AskUserFn = useCallback(
     async (tool, input, riskHint) => {
@@ -396,6 +407,20 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
         setTimeout(() => process.exit(0), 50);
         return;
       }
+
+      // M36 type-ahead: if the agent is busy, queue this message instead of
+      // starting a competing turn. The running loop drains the queue at its
+      // next turn boundary and continues with it (kernel §9). We echo the line
+      // now so the user sees it captured; the loop injects it into `messages`
+      // when it drains. Slash commands typed while busy are queued as plain
+      // follow-up text (run them when idle for local handling).
+      if (store.getSnapshot().busy) {
+        store.addUserMessage(value);
+        store.addNotice("  ⏎ queued — will run after the current turn");
+        queueRef.current.push(value);
+        return;
+      }
+
       // Echo the user's input line once. For prompt-injecting slash commands
       // the echoed line is the command itself (e.g. "/review"); the injected
       // prompt is pushed only into `deps.messages`, not re-echoed.
@@ -463,7 +488,17 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
         const onSigint = () => controller.abort("用户中断");
         process.on("SIGINT", onSigint);
         try {
-          await runTurn(store, deps, controller, askUser, askUserQuestion);
+          await runTurn(store, deps, controller, askUser, askUserQuestion, queueRef.current);
+          // M36 race window: a message queued AFTER the loop's final drain (but
+          // before busy flipped off) is still pending here. The loop already
+          // ended, so drain it ourselves and run it as a follow-up turn. The
+          // line was already echoed at queue time; just feed it to the model.
+          while (queueRef.current.hasPending) {
+            for (const text of queueRef.current.drain()) {
+              deps.messages.push({ role: "user", content: [{ type: "text", text }] });
+            }
+            await runTurn(store, deps, controller, askUser, askUserQuestion, queueRef.current);
+          }
         } catch (err) {
           store.addNotice(`⎿ ${formatCliError(err)}`);
           store.setBusy(false);
