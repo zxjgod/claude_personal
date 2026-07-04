@@ -10,7 +10,7 @@
 // ============================================================
 
 import type { EffortLevel } from "./../effort.js";
-import type { ToolExecutionResult } from "./../types.js";
+import type { PermissionMode, ToolExecutionResult } from "./../types.js";
 
 export type TranscriptItem =
   | { kind: "user"; id: number; text: string }
@@ -127,6 +127,8 @@ export interface StoreState {
   overlay: Overlay | null;
   /** True while the agent loop is running (input disabled). */
   busy: boolean;
+  /** Current permission mode, shared by Shift+Tab, status bar, and tool checks. */
+  permissionMode: PermissionMode;
   /** Model label for the status bar. */
   modelLabel: string;
 }
@@ -138,6 +140,18 @@ type Listener = () => void;
 // one React re-render per store write. State itself is always written
 // synchronously (see `set`), so `getSnapshot` stays current regardless.
 const FRAME_MS = 16;
+
+export const PERMISSION_MODE_CYCLE: PermissionMode[] = [
+  "default",
+  "acceptEdits",
+  "bypassPermissions",
+  "plan",
+];
+
+export function nextPermissionMode(current: PermissionMode): PermissionMode {
+  const idx = PERMISSION_MODE_CYCLE.indexOf(current);
+  return PERMISSION_MODE_CYCLE[(idx + 1) % PERMISSION_MODE_CYCLE.length] ?? "default";
+}
 
 export class TuiStore {
   private state: StoreState;
@@ -151,7 +165,7 @@ export class TuiStore {
   private emitScheduled = false;
   private frameTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(modelLabel: string, opts?: { batching?: boolean }) {
+  constructor(modelLabel: string, opts?: { batching?: boolean; permissionMode?: PermissionMode }) {
     this.batching = opts?.batching ?? false;
     this.state = {
       transcript: [],
@@ -164,6 +178,7 @@ export class TuiStore {
       tokensOut: 0,
       overlay: null,
       busy: false,
+      permissionMode: opts?.permissionMode ?? "default",
       modelLabel,
     };
   }
@@ -456,6 +471,20 @@ export class TuiStore {
         },
       });
     });
+  }
+
+  getPermissionMode(): PermissionMode {
+    return this.state.permissionMode;
+  }
+
+  setPermissionMode(mode: PermissionMode): void {
+    this.set({ permissionMode: mode });
+  }
+
+  cyclePermissionMode(): PermissionMode {
+    const mode = nextPermissionMode(this.state.permissionMode);
+    this.set({ permissionMode: mode });
+    return mode;
   }
 
   /** Update the status-bar model label (e.g. after a /provider switch). */

@@ -15,7 +15,7 @@
 // M24 "response smoothing": no more whole-tree reconcile per frame.
 // ============================================================
 
-import { Box, Static, Text } from "ink";
+import { Box, Static, Text, useInput } from "ink";
 import type { ReactNode } from "react";
 import { renderMarkdown } from "./../markdown.js";
 import { actionLabel } from "./../spinner-core.js";
@@ -229,17 +229,20 @@ function selectInteraction(s: StoreState) {
 
 /** Bottom status bar. Subscribes to `busy` + model label + token totals. */
 function StatusBar({ store }: { store: TuiStore }) {
-  const { busy, modelLabel, tokensIn, tokensOut } = useStoreSelector(store, selectStatusBar);
+  const { busy, modelLabel, tokensIn, tokensOut, permissionMode } = useStoreSelector(
+    store,
+    selectStatusBar,
+  );
   return (
     <Box>
       <Text dimColor>
         {busy
-          ? "  working… (Ctrl+C to interrupt)"
-          : "  ? for shortcuts · ← for agents · / for commands · @path to attach"}
+          ? "  working… (Ctrl+C to interrupt · Shift+Tab mode)"
+          : "  ? for shortcuts · ← for agents · / for commands · Shift+Tab mode"}
       </Text>
       <Text dimColor>
         {"   "}
-        {modelLabel} · {tokensIn}↑ {tokensOut}↓ tokens
+        {modelLabel} · mode:{permissionMode} · {tokensIn}↑ {tokensOut}↓ tokens
       </Text>
     </Box>
   );
@@ -249,9 +252,17 @@ function selectStatusBar(s: StoreState) {
   return {
     busy: s.busy,
     modelLabel: s.modelLabel,
+    permissionMode: s.permissionMode,
     tokensIn: s.tokensIn,
     tokensOut: s.tokensOut,
   };
+}
+
+function ModeHotkey({ store }: { store: TuiStore }) {
+  useInput((_input, key) => {
+    if (key.tab && key.shift) store.cyclePermissionMode();
+  });
+  return null;
 }
 
 export function App({
@@ -274,12 +285,15 @@ export function App({
 }) {
   if (fullscreen) {
     return (
-      <FullScreenApp
-        store={store}
-        commands={commands}
-        onSubmit={onSubmit}
-        editorMode={editorMode}
-      />
+      <>
+        <ModeHotkey store={store} />
+        <FullScreenApp
+          store={store}
+          commands={commands}
+          onSubmit={onSubmit}
+          editorMode={editorMode}
+        />
+      </>
     );
   }
   // The root no longer subscribes to the store at all — each region below owns
@@ -289,6 +303,7 @@ export function App({
   // InputBox keeps a predictable position (M24.5).
   return (
     <Box flexDirection="column">
+      <ModeHotkey store={store} />
       <TranscriptRegion store={store} expandedId={expandedId} />
       <StreamingRegion store={store} />
       <ActiveToolsRegion store={store} />

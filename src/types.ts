@@ -93,6 +93,9 @@ export interface ToolContext {
   workspaceRoot: string;
   sessionId: string;
   permissionMode: PermissionMode;
+  /** Optional live permission-mode hooks; TUI uses these for mid-turn Shift+Tab changes. */
+  getPermissionMode?: () => PermissionMode;
+  setPermissionMode?: (mode: PermissionMode) => void;
   /** Optional: model config for sub-agents (Task tool) */
   modelConfig?: ModelConfig;
   /** Optional sink for nested sub-agent activity (Task tool). */

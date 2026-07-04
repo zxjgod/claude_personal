@@ -17,8 +17,9 @@ export const configCommand: SlashCommand = {
     console.log(`    Max tokens:  ${chalk.cyan(c.maxTokens ?? "(default)")}`);
     console.log(`    Temperature: ${chalk.cyan(c.temperature ?? "(default)")}`);
     console.log(`    Workspace:   ${chalk.cyan(ctx.workspaceRoot)}`);
-    if (ctx.permissionMode) {
-      console.log(`    Permissions: ${chalk.cyan(ctx.permissionMode)}`);
+    const permissionMode = ctx.getPermissionMode?.() ?? ctx.permissionMode;
+    if (permissionMode) {
+      console.log(`    Permissions: ${chalk.cyan(permissionMode)}`);
     }
     console.log(chalk.gray("  Use /model <id> to switch model for this session."));
   },

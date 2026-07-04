@@ -16,8 +16,9 @@ export const statusCommand: SlashCommand = {
     console.log(`    Model:       ${chalk.cyan(ctx.modelConfig.model)}`);
     console.log(`    Effort:      ${chalk.cyan(getEffort(ctx.modelConfig.options))}`);
     console.log(`    Workspace:   ${chalk.cyan(ctx.workspaceRoot)}`);
-    if (ctx.permissionMode) {
-      console.log(`    Permissions: ${chalk.cyan(ctx.permissionMode)}`);
+    const permissionMode = ctx.getPermissionMode?.() ?? ctx.permissionMode;
+    if (permissionMode) {
+      console.log(`    Permissions: ${chalk.cyan(permissionMode)}`);
     }
     console.log(`    Messages:    ${chalk.cyan(ctx.messages.length)}`);
     if (ctx.tools) {

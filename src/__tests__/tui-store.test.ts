@@ -186,6 +186,21 @@ describe("TuiStore", () => {
     expect(store.getSnapshot().turnStartedAt).toBe(0);
   });
 
+  it("cycles permission modes in the Shift+Tab order", () => {
+    const store = new TuiStore("p/m", { permissionMode: "default" });
+    expect(store.getPermissionMode()).toBe("default");
+    expect(store.cyclePermissionMode()).toBe("acceptEdits");
+    expect(store.cyclePermissionMode()).toBe("bypassPermissions");
+    expect(store.cyclePermissionMode()).toBe("plan");
+    expect(store.cyclePermissionMode()).toBe("default");
+  });
+
+  it("sets permission mode directly", () => {
+    const store = new TuiStore("p/m");
+    store.setPermissionMode("bypassPermissions");
+    expect(store.getSnapshot().permissionMode).toBe("bypassPermissions");
+  });
+
   it("appendStreamingWithTokens appends text and keeps tokens monotonic", () => {
     const store = new TuiStore("p/m");
     store.appendStreamingWithTokens("Hello ", 10);

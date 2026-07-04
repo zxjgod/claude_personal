@@ -57,6 +57,8 @@ docs/更新日志/
 
 | 日期 | 类型 | 模块 | 主题 | commit | 关联 |
 |---|---|---|---|---|---|
+| 2026-07-02 | feature | commands / sessions / compact / effort / permissions / TUI | [M38 `/` 指令深化（effort 定义、sessions 删除、compact 进度条）+ Shift+Tab 权限模式即时切换](./20260702-m38-command-permission-mode.md) | 待提交 | [M38 计划表](../archive/M38计划表-指令深化与权限模式.md) |
+| 2026-07-02 | feature | TUI / theme / spinner-core / InputBox / CommandPicker | [角色分色（`theme.ts`）+ 思考态趣味动词循环（`verbAt`）+ `/help` 命令面板（方向键选择 + 视口滚动）](./20260702-tui-role-color-verb-command-palette.md) | 待提交 | — |
 | 2026-06-29 | fix | TUI / FullScreenApp / InputBox / ScrollView | [全屏 TUI 实测修复（光标漂移 prompt 末行、busy 变色/缩小、Ctrl+U/D 滚动）+ 抽 FullScreenApp 独立模块解耦](./20260629-fullscreen-tui-fixes.md) | 待提交 | [M25 计划表](../archive/M25计划表-全屏TUI.md) |
 | 2026-06-29 | feature | TUI / InputBox / 全屏布局 | [M25 多行输入（Ctrl+J / 行间光标）+ 可选全屏布局（alt-screen / ScrollView 回看，默认关）](../archive/M25计划表-全屏TUI.md) | 7db7a98 | [M25 计划表](../archive/M25计划表-全屏TUI.md) |
 | 2026-06-28 | fix | TUI / store / InputBox / 流式响应 | [M24 TUI 响应平滑 + 输入框稳定（帧合批 + 字段订阅 + 流式区隔离 + 分隔线留 1 列治跳位）](./20260628-m24-tui-smoothing.md) | 待提交 | [M计划表 §十一 M24](../archive/M计划表-对齐CCB.md) |
@@ -80,14 +82,15 @@ docs/更新日志/
 
 - **BashTool / 进程管理**：`bash-deadlock-fix-20260626`（spawn + taskkill 进程树 + timedOut 标志 + 非并发安全）、`bash-deadlock-analysis`（根因）。
 - **agent-loop 并行 / abort**：`bash-deadlock-fix-20260626`（并行路径加 abort 竞速）。
-- **permissions 危险命令拦截**：`bash-deadlock-fix-20260626`（补充易致死命令静态拦截）。
-- **TUI 启动 / 渲染**：`终端界面bug修复-20260626`、`更新日志-终端界面`（渲染层对齐）、`20260628-m23-tui-statusline`（状态行对齐参考版：`spinner-core` / `StatusLine` / `SpinnerGlyph` / `StreamBuffer`，删除 `ParticleSpinner` 与 `ink-spinner`）、`20260628-m24-tui-smoothing`（M24：帧合批 `scheduleEmit`/`flush`/`setBatching`、字段切片订阅 `useStoreSelector`、`App` 拆六区域组件、流式区隔离、分隔线 `cols-1` 治 DECAWM 跳位；同时去 `/keybindings` 不实宣传、标注 M15.1/M17 漂移已回退）。
+- **permissions 危险命令拦截 / 权限模式**：`bash-deadlock-fix-20260626`（补充易致死命令静态拦截）、`20260702-m38-command-permission-mode`（M38：`ToolContext.getPermissionMode`/`setPermissionMode` 实时模式；TUI Shift+Tab 循环 `default → acceptEdits → bypassPermissions → plan`；安全地板仍在 bypassPermissions 前执行）。
+- **TUI 启动 / 渲染**：`终端界面bug修复-20260626`、`更新日志-终端界面`（渲染层对齐）、`20260628-m23-tui-statusline`（状态行对齐参考版：`spinner-core` / `StatusLine` / `SpinnerGlyph` / `StreamBuffer`，删除 `ParticleSpinner` 与 `ink-spinner`）、`20260628-m24-tui-smoothing`（M24：帧合批 `scheduleEmit`/`flush`/`setBatching`、字段切片订阅 `useStoreSelector`、`App` 拆六区域组件、流式区隔离、分隔线 `cols-1` 治 DECAWM 跳位；同时去 `/keybindings` 不实宣传、标注 M15.1/M17 漂移已回退）、`20260702-tui-role-color-verb-command-palette`（新增 `theme.ts` 统一角色分色；`spinner-core` 新增 `verbAt`/`VERB_CYCLE_MS` 时间驱动趣味动词循环接入 `StatusLine`）、`20260702-m38-command-permission-mode`（状态栏显示当前 mode，Shift+Tab 忙碌中也可即时切换权限模式）。
 - **TUI 多行输入 / 全屏布局（M25）**：`M25计划表-全屏TUI`（M25.1 InputBox 多行 Ctrl+J / `\`+Enter / 行间光标 / 行内 Home·End；M25.2 可选全屏 `--fullscreen`：自造 `ScrollView` + `useTerminalSize` + `transcript-lines`，alt-screen 生命周期退出必复位）、`20260629-fullscreen-tui-fixes`（实测三修：① prompt 做成最后渲染行根治光标漂移；② `keepColorWhenDisabled`/`hideBottomRule` + 撤固定 width 治变色缩小；③ flex+`measureElement` 自测高度 + Ctrl+U/D/B/F/G 滚动兜底；并抽 `FullScreenApp.tsx` 独立模块，App.tsx 仅一委托分支，默认路径零回归）。
 - **工程基建 / CI / 构建**：`20260628-m20-engineering`（M20：Biome 替 eslint+prettier、esbuild 转译构建、免 key 冒烟脚本、husky+lint-staged pre-commit、GitHub Actions CI、`.gitattributes` 强制 LF、cli `--version/--help`）。
 - **测试基建 / 集成测试**：`20260628-m21-testing`（M21：tools/permissions/persistence/MCP/TUI 五大集成测试 + CI 冒烟元测试，508→613；真 git worktree 提交隔离、真 MCP SDK stdio/http mock server、分类器短路顺序、resume 折叠、30 轮长会话 store 不变量）。
 - **TUI overlay / resume**：`20260628-resume-session-picker`（裸 `/resume` 弹 sessionPicker overlay、`nextOffset` 滚动窗口、`history-replay` 把 `Message[]` 回放进 transcript、零 token 恢复）。
 - **provider 路由 / 配置**：`20260628-provider-profiles`（`/provider`：`.claude/providers.json` 存多套 `(provider/baseURL/apiKey/model)` 档案，TUI 方向键 overlay / `/provider <name>` 直切，`applyProfile` 原地改 `modelConfig`；`cli.ts` 把 `callModel` 改为按 provider 现解析以支持家族切换；不做 M22）。
-- **TUI / InputBox 命令面板**：`20260628-inputbox-stale-suggestion-crash-fix`（`/` 补全先 ↓ 选靠后项再打字使列表缩短 → `suggestions[selected]` 越界崩溃；用 `safeSelected` 在使用点夹紧；既有 bug 非格式化引入）。
+- **斜杠命令 `/effort` / `/sessions` / `/compact`**：`20260702-m38-command-permission-mode`（M38：`/effort` 明确 6 档定义与供应商映射；`/sessions delete <prefix|id>` 唯一匹配删除历史会话；`/compact` 展示阶段式进度条）。
+- **TUI / InputBox 命令面板**：`20260628-inputbox-stale-suggestion-crash-fix`（`/` 补全先 ↓ 选靠后项再打字使列表缩短 → `suggestions[selected]` 越界崩溃；用 `safeSelected` 在使用点夹紧；既有 bug 非格式化引入）、`20260702-tui-role-color-verb-command-palette`（新增 `CommandPicker.tsx`：`/help`/`/commands` 弹出方向键选择 + `nextOffset` 视口滚动的命令面板 overlay；`InputBox` 内联 `/` 下拉去掉硬编码 8 条截断，改用同一套滚动窗口）。
 - **全局里程碑**：`M计划更新日志`（M1–M6，后续断档，新特性请补登）。
 
 > 新条目按「模块名: 日志（一句话改了什么）」追加到对应键下；模块名沿用《项目架构.md》的称呼。

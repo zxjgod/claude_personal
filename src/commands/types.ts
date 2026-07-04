@@ -36,6 +36,7 @@ export interface CommandContext {
   tools?: Array<{ tool: Tool; source: ToolSource }>;
   /** The active permission mode (for /status, /config). */
   permissionMode?: string;
+  getPermissionMode?: () => string;
   /** The assembled system prompt (for /context token breakdown). */
   systemPrompt?: string;
   /** Number of connected MCP servers (for /status). */

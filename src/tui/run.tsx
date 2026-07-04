@@ -86,7 +86,9 @@ async function runTurn(
     toolContext: {
       workspaceRoot: deps.workspaceRoot,
       sessionId: deps.sessionId,
-      permissionMode: deps.permissionMode,
+      permissionMode: store.getPermissionMode(),
+      getPermissionMode: () => store.getPermissionMode(),
+      setPermissionMode: (mode) => store.setPermissionMode(mode),
       modelConfig: deps.modelConfig,
       askUserQuestion,
       // M15.3: thread the LLM permission classifier (when enabled) so flagged
@@ -488,9 +490,12 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
         // (/review /recap /fork /onboarding); otherwise it's fully local.
         let effectiveText: string | null = null;
         if (value.startsWith("/")) {
-          const { lines, result } = await captureConsole(() =>
-            handleSlashCommand(value, deps.makeCommandContext()),
-          );
+          const { lines, result } = await captureConsole(() => {
+            const commandContext = deps.makeCommandContext();
+            commandContext.permissionMode = store.getPermissionMode();
+            commandContext.getPermissionMode = () => store.getPermissionMode();
+            return handleSlashCommand(value, commandContext);
+          });
           if (lines.length > 0) store.addLog(lines);
           if (result.exit) return;
           if (result.handled && !result.prompt) return; // purely local command
@@ -582,6 +587,7 @@ export function runTui(deps: TuiDeps): Promise<void> {
   if (deps.fullscreen) {
     const store = new TuiStore(`${deps.modelConfig.provider}/${deps.modelConfig.model}`, {
       batching: true,
+      permissionMode: deps.permissionMode,
     });
     store.loadTranscript(
       renderBannerLines({
@@ -607,6 +613,7 @@ export function runTui(deps: TuiDeps): Promise<void> {
     // ticks) into one notify per frame so a fast stream doesn't trigger a React
     // re-render per write. Tests construct the store without this (synchronous).
     batching: true,
+    permissionMode: deps.permissionMode,
   });
   const { waitUntilExit } = render(<Root store={store} deps={deps} />);
   return waitUntilExit() as Promise<void>;

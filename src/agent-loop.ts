@@ -150,7 +150,9 @@ export async function* agentLoop(
   const baseContext: ToolContext = {
     workspaceRoot: toolContext?.workspaceRoot ?? process.cwd(),
     sessionId: toolContext?.sessionId ?? "default",
-    permissionMode: toolContext?.permissionMode ?? "default",
+    permissionMode: toolContext?.getPermissionMode?.() ?? toolContext?.permissionMode ?? "default",
+    getPermissionMode: toolContext?.getPermissionMode,
+    setPermissionMode: toolContext?.setPermissionMode,
     modelConfig: toolContext?.modelConfig ?? modelConfig,
     onSubAgentProgress: toolContext?.onSubAgentProgress,
     askUserQuestion: toolContext?.askUserQuestion,
@@ -958,6 +960,7 @@ async function executeSingleTool(
     //       declared it but executeSingleTool never called it.
     //   (b) system-level checkPermission() — mode + dangerous-pattern +
     //       interactive askUser flow.
+    context.permissionMode = context.getPermissionMode?.() ?? context.permissionMode;
     const toolLevel = await tool.checkPermissions(input, context);
     if (!toolLevel.allowed) {
       const reason = toolLevel.reason ?? `denied by ${tool.name} policy`;

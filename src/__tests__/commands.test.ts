@@ -128,6 +128,53 @@ describe("handleSlashCommand", () => {
     expect(console.log).toHaveBeenCalled();
   });
 
+  it("/sessions delete removes a uniquely matched session", async () => {
+    const ctx = makeCtx([]);
+    const deleteSession = vi.fn(async () => {});
+    ctx.persistence = {
+      listSessions: async () => [
+        {
+          sessionId: "abc123456789",
+          createdAt: "2026-06-19T00:00:00.000Z",
+          updatedAt: "2026-06-19T00:00:00.000Z",
+          messageCount: 2,
+          completed: false,
+        },
+      ],
+      deleteSession,
+    } as any;
+    await handleSlashCommand("/sessions delete abc123", ctx);
+    expect(deleteSession).toHaveBeenCalledWith("abc123456789");
+  });
+
+  it("/sessions delete refuses ambiguous prefixes", async () => {
+    const ctx = makeCtx([]);
+    const deleteSession = vi.fn(async () => {});
+    ctx.persistence = {
+      listSessions: async () => [
+        {
+          sessionId: "abc123456789",
+          createdAt: "2026-06-19T00:00:00.000Z",
+          updatedAt: "2026-06-19T00:00:00.000Z",
+          messageCount: 2,
+          completed: false,
+        },
+        {
+          sessionId: "abc999999999",
+          createdAt: "2026-06-19T00:00:00.000Z",
+          updatedAt: "2026-06-19T00:00:00.000Z",
+          messageCount: 3,
+          completed: true,
+        },
+      ],
+      deleteSession,
+    } as any;
+    await handleSlashCommand("/sessions delete abc", ctx);
+    expect(deleteSession).not.toHaveBeenCalled();
+    const out = (console.log as any).mock.calls.flat().join("\n");
+    expect(out).toContain("use a longer prefix");
+  });
+
   it("/resume delegates to resumeSession", async () => {
     const ctx = makeCtx([]);
     const resume = vi.fn(async () => true);
@@ -212,6 +259,8 @@ describe("handleSlashCommand", () => {
     expect(r.handled).toBe(true);
     const out = (console.log as any).mock.calls.flat().join("\n");
     expect(out).toContain("Effort");
+    expect(out).toContain("Effort levels");
+    expect(out).toContain("OpenAI-compatible");
     // Default tier is "high" when nothing is set.
     expect(out).toContain("high");
   });
@@ -235,6 +284,17 @@ describe("handleSlashCommand", () => {
     expect(ctx.modelConfig.options?.effort).toBe("high");
     const out = (console.log as any).mock.calls.flat().join("\n");
     expect(out).toContain("Unknown effort");
+  });
+
+  it("/compact shows staged progress", async () => {
+    const messages: Message[] = [{ role: "user", content: [{ type: "text", text: "hi" }] }];
+    const ctx = makeCtx(messages);
+    const r = await handleSlashCommand("/compact", ctx);
+    expect(r.handled).toBe(true);
+    const out = (console.log as any).mock.calls.flat().join("\n");
+    expect(out).toContain("Preparing conversation");
+    expect(out).toContain("Summarizing with the model");
+    expect(out).toContain("Compaction complete");
   });
 
   it("/diff lists session file changes", async () => {

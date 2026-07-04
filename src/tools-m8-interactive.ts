@@ -27,6 +27,7 @@ export const EnterPlanModeTool: Tool = createTool({
   isReadOnly: true, // entering a safer mode is itself non-destructive
   isConcurrencySafe: false,
   async call(_input, context): Promise<ToolResult> {
+    context.setPermissionMode?.("plan");
     (context as { permissionMode: PermissionMode }).permissionMode = "plan";
     return {
       content:
@@ -65,6 +66,7 @@ export const ExitPlanModeTool: Tool = createTool<ExitPlanModeInput>({
   isConcurrencySafe: false,
   async call(input, context): Promise<ToolResult> {
     const target: PermissionMode = input.to === "acceptEdits" ? "acceptEdits" : "default";
+    context.setPermissionMode?.(target);
     (context as { permissionMode: PermissionMode }).permissionMode = target;
     return { content: `Exited plan mode. Now in "${target}" mode.` };
   },

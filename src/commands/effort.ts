@@ -1,13 +1,32 @@
 // /effort — reasoning effort slider
 import chalk from "chalk";
 import {
-  EFFORT_DESCRIPTIONS,
+  EFFORT_DEFINITIONS,
   EFFORT_LEVELS,
+  type EffortLevel,
   getEffort,
   parseEffort,
   renderEffortSlider,
 } from "../effort.js";
 import type { SlashCommand } from "./types.js";
+
+function printEffortDefinition(level: EffortLevel): void {
+  const def = EFFORT_DEFINITIONS[level];
+  console.log(chalk.gray(`  Definition: ${def.definition}`));
+  console.log(chalk.gray(`  Behavior:   ${def.behavior}`));
+  console.log(chalk.gray(`  Mapping:    ${def.mapping}`));
+}
+
+function printEffortDefinitions(): void {
+  console.log("");
+  console.log(chalk.bold("  Effort levels:"));
+  for (const level of EFFORT_LEVELS) {
+    const def = EFFORT_DEFINITIONS[level];
+    console.log(chalk.gray(`  - ${chalk.cyan(level)}: ${def.definition}`));
+    console.log(chalk.gray(`    ${def.behavior}`));
+    console.log(chalk.gray(`    ${def.mapping}`));
+  }
+}
 
 export const effortCommand: SlashCommand = {
   name: "effort",
@@ -19,7 +38,9 @@ export const effortCommand: SlashCommand = {
 
     // No arg → show the slider with the active tier highlighted.
     if (!arg) {
-      console.log(renderEffortSlider(getEffort(options)));
+      const active = getEffort(options);
+      console.log(renderEffortSlider(active));
+      printEffortDefinitions();
       console.log(chalk.gray(`  Set with /effort <level>. Levels: ${EFFORT_LEVELS.join(", ")}.`));
       return;
     }
@@ -33,13 +54,11 @@ export const effortCommand: SlashCommand = {
     const prev = getEffort(options);
     options.effort = next;
     console.log(renderEffortSlider(next));
+    printEffortDefinition(next);
     if (next !== prev) {
       console.log(
         chalk.gray(`  Effort: ${prev} → ${chalk.cyan(next)} (applies to the next turn).`),
       );
-    }
-    if (next === "ultracode") {
-      console.log(chalk.gray(`  ${EFFORT_DESCRIPTIONS.ultracode}.`));
     }
   },
 };

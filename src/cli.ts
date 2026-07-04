@@ -205,7 +205,13 @@ async function main() {
   // no-key path deterministic for the smoke test.
   if (!modelConfig.provider) return;
   const workspaceRoot = getWorkspaceRoot();
-  const permissionMode = getPermissionMode();
+  let permissionMode = getPermissionMode();
+  const permissionModeState = {
+    get: () => permissionMode,
+    set: (mode: PermissionMode) => {
+      permissionMode = mode;
+    },
+  };
   const claudeMdContent = loadClaudeMd(workspaceRoot);
 
   if (verbose) {
@@ -473,6 +479,7 @@ async function main() {
     stats: sessionStats,
     tools: toolSources,
     permissionMode,
+    getPermissionMode: permissionModeState.get,
     systemPrompt,
     mcpServerCount: mcpManager.serverCount,
     mcpManager,
@@ -700,6 +707,8 @@ async function main() {
         workspaceRoot,
         sessionId: sessionId!,
         permissionMode,
+        getPermissionMode: permissionModeState.get,
+        setPermissionMode: permissionModeState.set,
         modelConfig,
         askUserQuestion: askUserQuestionGuarded,
         // Thread the approver into sub-agent (Task/Team) loops so their

@@ -24,15 +24,58 @@ export type EffortLevel = (typeof EFFORT_LEVELS)[number];
 /** Claude Code's default sits at `high`. */
 export const DEFAULT_EFFORT: EffortLevel = "high";
 
-/** One-line description per tier, mirroring the Claude Code slider semantics. */
-export const EFFORT_DESCRIPTIONS: Record<EffortLevel, string> = {
-  low: "Fastest responses, minimal reasoning",
-  medium: "Balanced speed and reasoning",
-  high: "Thorough reasoning (default)",
-  xhigh: "Extra reasoning for hard problems",
-  max: "Maximum reasoning, slowest",
-  ultracode: "xhigh + workflows (prefer multi-agent orchestration)",
+export interface EffortDefinition {
+  summary: string;
+  definition: string;
+  behavior: string;
+  mapping: string;
+}
+
+/** Product-level definition per tier; provider params may be less granular. */
+export const EFFORT_DEFINITIONS: Record<EffortLevel, EffortDefinition> = {
+  low: {
+    summary: "Fastest responses, minimal reasoning",
+    definition: "低努力：优先快速响应，只做必要推理，适合明确、局部、低风险任务。",
+    behavior: "不主动扩展调查范围；偏向少量文件内的直接修改；遇到不确定性时尽快向用户暴露。",
+    mapping: "Anthropic native: low；OpenAI-compatible reasoning_effort: low。",
+  },
+  medium: {
+    summary: "Balanced speed and reasoning",
+    definition: "中等努力：默认平衡速度和可靠性，适合常规编码、解释和小型排障。",
+    behavior: "会做必要上下文核查；不会为低风险任务开启大范围搜索；实现前后做基本验证。",
+    mapping: "Anthropic native: medium；OpenAI-compatible reasoning_effort: medium。",
+  },
+  high: {
+    summary: "Thorough reasoning (default)",
+    definition: "高努力：更重视正确性，适合跨文件变更、复杂 bug、架构影响较明显的任务。",
+    behavior: "会更系统地阅读相关代码；优先补足边界条件；验证覆盖更完整。",
+    mapping: "Anthropic native: high；OpenAI-compatible reasoning_effort: high。",
+  },
+  xhigh: {
+    summary: "Extra reasoning for hard problems",
+    definition: "超高努力：在 high 基础上增加更深入的因果分析与反例检查。",
+    behavior: "会主动寻找隐藏约束、回归风险和替代路径；适合权限、持久化、并发、状态同步类改动。",
+    mapping: "Anthropic native: xhigh（若支持）；OpenAI-compatible 参数层降级为 high。",
+  },
+  max: {
+    summary: "Maximum reasoning, slowest",
+    definition: "最大努力：单代理内的最高深度模式，适合尽量穷尽边界、严谨实现和完整验证。",
+    behavior: "更倾向于先建计划、再实施、再验证；对安全、权限、数据删除类变更执行更严格检查。",
+    mapping: "Anthropic native: max（若支持）；OpenAI-compatible 参数层降级为 high。",
+  },
+  ultracode: {
+    summary: "xhigh + workflows (prefer multi-agent orchestration)",
+    definition:
+      "极限编排：不只是更高 reasoning，而是倾向于用多代理/工作流做广覆盖探索、设计、审查与反向验证。",
+    behavior: "适合大型迁移、复杂审计、需要多视角验证的任务；代价是更慢、更耗 token。",
+    mapping: "供应商 reasoning 参数按最高可用档处理；额外语义由本应用的 agent/workflow 策略承担。",
+  },
 };
+
+/** One-line description per tier, mirroring the Claude Code slider semantics. */
+export const EFFORT_DESCRIPTIONS: Record<EffortLevel, string> = Object.fromEntries(
+  EFFORT_LEVELS.map((level) => [level, EFFORT_DEFINITIONS[level].summary]),
+) as Record<EffortLevel, string>;
 
 /** Narrow an arbitrary string to a valid tier, or null if unrecognized. */
 export function parseEffort(value: string): EffortLevel | null {

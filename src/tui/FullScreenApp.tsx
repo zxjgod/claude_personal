@@ -83,6 +83,7 @@ function selectStatusBar(s: StoreState) {
   return {
     busy: s.busy,
     modelLabel: s.modelLabel,
+    permissionMode: s.permissionMode,
     tokensIn: s.tokensIn,
     tokensOut: s.tokensOut,
   };
@@ -90,17 +91,20 @@ function selectStatusBar(s: StoreState) {
 
 /** Bottom status bar. */
 function FsStatusBar({ store }: { store: TuiStore }) {
-  const { busy, modelLabel, tokensIn, tokensOut } = useStoreSelector(store, selectStatusBar);
+  const { busy, modelLabel, permissionMode, tokensIn, tokensOut } = useStoreSelector(
+    store,
+    selectStatusBar,
+  );
   return (
     <Box>
       <Text dimColor>
         {busy
-          ? "  working… (Ctrl+C to interrupt)"
-          : "  ? for shortcuts · / for commands · @path to attach · PgUp/Ctrl+U to scroll"}
+          ? "  working… (Ctrl+C to interrupt · Shift+Tab mode)"
+          : "  ? for shortcuts · / for commands · @path to attach · PgUp/Ctrl+U to scroll · Shift+Tab mode"}
       </Text>
       <Text dimColor>
         {"   "}
-        {modelLabel} · {tokensIn}↑ {tokensOut}↓ tokens
+        {modelLabel} · mode:{permissionMode} · {tokensIn}↑ {tokensOut}↓ tokens
       </Text>
     </Box>
   );
