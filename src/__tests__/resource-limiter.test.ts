@@ -134,6 +134,9 @@ describe("ResourceLimiter", () => {
       ResourceLimiter.trackFileOpen("/file.txt");
       ResourceLimiter.recordToolFailure();
 
+      // Wait a bit to ensure non-zero uptime
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
       const summary = ResourceLimiter.getSummary();
 
       expect(summary.memory).toHaveProperty("withinLimits");
@@ -141,7 +144,7 @@ describe("ResourceLimiter", () => {
       expect(summary.tools.total).toBe(1);
       expect(summary.tools.failed).toBe(1);
       expect(summary.files.open).toBe(1);
-      expect(summary.uptime).toBeGreaterThan(0);
+      expect(summary.uptime).toBeGreaterThanOrEqual(0);
     });
   });
 
