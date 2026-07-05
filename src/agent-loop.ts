@@ -1213,8 +1213,21 @@ async function handleModelError(error: unknown, state: RecoveryState): Promise<M
     if (state.rateLimitRetries >= state.maxRateLimitRetries) {
       return "abort";
     }
-    const delay = err?.retryAfter || 5000;
-    await sleep(delay);
+
+    // P1 Enhancement: Exponential backoff with jitter
+    const baseDelay = err?.retryAfter || 5000;
+
+    // Apply exponential backoff: baseDelay * 2^retries
+    const exponentialDelay = baseDelay * 2 ** state.rateLimitRetries;
+
+    // Cap at 60 seconds to prevent excessive waiting
+    const cappedDelay = Math.min(exponentialDelay, 60000);
+
+    // Add jitter (±20%) to prevent thundering herd
+    const jitter = cappedDelay * 0.2 * (Math.random() * 2 - 1);
+    const finalDelay = Math.round(cappedDelay + jitter);
+
+    await sleep(finalDelay);
     return "retry";
   }
 

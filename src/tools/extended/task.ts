@@ -22,6 +22,7 @@ import {
 } from "../../subagents.js";
 import type { Message, Tool, ToolResult } from "../../types.js";
 import { CancellationScope } from "../../utils/cancellation.js";
+import { createSubAgentApprover } from "../../utils/subagent-security.js";
 import { createTool } from "../registry.js";
 
 // Register the agent-memory loader once (M35). Done here rather than in
@@ -196,6 +197,11 @@ export const TaskTool: Tool = createTool<TaskInput>({
       // Fork inherits the full core tool set (it IS the current agent); a typed
       // sub-agent is restricted to its declared tools.
       const subagentTools = isFork ? coreTools : resolveSubagentTools(subagentType!, coreTools);
+
+      // P0 Security Fix: Create restricted approver for sub-agent
+      // Dangerous tools (bash/write/edit) require parent approval
+      const subApprover = createSubAgentApprover(context.askUser, true);
+
       const loop = agentLoop(subMessages, subagentTools, subCaller, context.modelConfig, {
         systemPrompt: subSystemPrompt,
         maxTurns: subagentType?.maxTurns ?? SUBAGENT_MAX_TURNS,
@@ -207,14 +213,11 @@ export const TaskTool: Tool = createTool<TaskInput>({
           sessionId: context.sessionId,
           permissionMode: context.permissionMode,
           modelConfig: context.modelConfig,
-          // Forward the parent's interactive approver so the sub-agent's
-          // destructive tools (bash/write/edit) still prompt the user,
-          // instead of being auto-approved by the loop's default askUser.
-          askUser: context.askUser,
+          // Use restricted approver to prevent sub-agents from bypassing permissions
+          askUser: subApprover,
         },
-        // Also pass askUser at the LoopOptions level — the sub-loop's own
-        // permission checks (the ones NOT inside a nested tool) use this.
-        askUser: context.askUser,
+        // Also pass restricted askUser at the LoopOptions level
+        askUser: subApprover,
       });
 
       for await (const event of loop) {
