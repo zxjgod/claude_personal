@@ -19,7 +19,7 @@ import {
   stopAgent,
   type TeamRunContext,
 } from "./team.js";
-import { createTool } from "./tool-registry.js";
+import { createTool } from "./tools/registry.js";
 import type { Tool, ToolContext, ToolResult } from "./types.js";
 
 function runCtx(context: ToolContext): TeamRunContext | { error: string } {

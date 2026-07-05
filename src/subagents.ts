@@ -158,7 +158,7 @@ export function setCoreToolsForSubagents(tools: Tool[]): void {
 export async function getCoreToolsForSubagents(): Promise<Tool[]> {
   if (_coreTools) return _coreTools;
   const { ReadTool, GlobTool, GrepTool, BashTool, WriteTool, EditTool } = await import(
-    "./tools.js"
+    "./tools/index.js"
   );
   _coreTools = [ReadTool, GlobTool, GrepTool, BashTool, WriteTool, EditTool];
   return _coreTools;

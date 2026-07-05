@@ -18,8 +18,8 @@ import {
 } from "./lsp.js";
 import { filterByFile, formatDiagnostics, parseTscOutput } from "./lsp-legacy.js";
 import { checkReadBeforeEdit, refreshRead } from "./read-tracker.js";
-import { createTool } from "./tool-registry.js";
-import { relForDisplay, resolveInWorkspace, statMtimeMs } from "./tools.js";
+import { createTool } from "./tools/registry.js";
+import { relForDisplay, resolveInWorkspace, statMtimeMs } from "./tools/utils/path.js";
 import type { Tool, ToolResult } from "./types.js";
 
 const execFileAsync = promisify(execFile);

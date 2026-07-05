@@ -6,8 +6,8 @@
 // the LLM to synthesize. No API key required.
 // ============================================================
 
-import { createTool } from "./tool-registry.js";
-import type { Tool, ToolResult } from "./types.js";
+import type { Tool, ToolResult } from "../../types.js";
+import { createTool } from "../registry.js";
 
 const TIMEOUT_MS = 15_000;
 const MAX_RESULTS = 10;

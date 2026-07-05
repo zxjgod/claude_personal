@@ -8,8 +8,8 @@ import * as path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { agentLoop } from "../agent-loop.js";
-import { buildTool } from "../tool-registry.js";
-import { SPILL_DIR } from "../tool-result-spill.js";
+import { buildTool } from "../tools/registry.js";
+import { SPILL_DIR } from "../tools/result-spill.js";
 import type { Message, ModelCaller, ModelConfig, StreamEvent, Tool } from "../types.js";
 
 function makeMockCaller(responses: StreamEvent[][]): ModelCaller {

@@ -22,7 +22,7 @@
 //   - A size threshold gates it: tiny batches aren't worth a model round-trip.
 // ============================================================
 
-import type { ToolExecutionResult } from "./types.js";
+import type { Message, ModelCaller, Tool, ToolCall, ToolExecutionResult } from "../types.js";
 
 /** One tool's contribution to the batch digest (what the summarizer sees). */
 export interface ToolDigestEntry {

@@ -6,7 +6,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { clearTodos, getTodos, TodoTool } from "../todo-tool.js";
+import { clearTodos, getTodos, TodoTool } from "../tools/extended/todo.js";
 import type { ToolContext } from "../types.js";
 
 let tmpDir: string;
@@ -113,7 +113,7 @@ describe("TodoTool", () => {
 
 // --- WebFetchTool (static tests, no network) ---
 
-import { WebFetchTool } from "../web-fetch.js";
+import { WebFetchTool } from "../tools/extended/web-fetch.js";
 
 describe("WebFetchTool", () => {
   it("should reject missing url", async () => {
@@ -174,7 +174,7 @@ describe("WebFetchTool", () => {
 
 // --- TaskTool (static tests, no LLM) ---
 
-import { TaskTool } from "../task-tool.js";
+import { TaskTool } from "../tools/extended/task.js";
 
 describe("TaskTool", () => {
   it("does not require parent approval", () => {

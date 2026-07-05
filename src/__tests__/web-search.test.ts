@@ -3,7 +3,7 @@
 // ============================================================
 
 import { describe, expect, it } from "vitest";
-import { parseSearchResults } from "../web-search.js";
+import { parseSearchResults } from "../tools/extended/web-search.js";
 
 const SAMPLE = `
 <div class="result results_links">

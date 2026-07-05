@@ -14,7 +14,7 @@ import {
   GrepTool,
   ReadTool,
   WriteTool,
-} from "../tools.js";
+} from "../tools/index.js";
 import type { ToolContext } from "../types.js";
 
 let tmpDir: string;

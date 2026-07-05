@@ -24,7 +24,7 @@ import * as path from "node:path";
 import { promisify } from "node:util";
 import { runForkSkill } from "./skills/forkSkill.js";
 import { getSkill, listSkills, resolveSkillPrompt } from "./skills.js";
-import { createTool } from "./tool-registry.js";
+import { createTool } from "./tools/registry.js";
 import type { PermissionResult, Tool, ToolResult } from "./types.js";
 
 const execFileAsync = promisify(execFile);

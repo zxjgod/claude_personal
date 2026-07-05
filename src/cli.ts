@@ -38,8 +38,8 @@ import { formatSpeculationLine } from "./speculation.js";
 import { setCoreToolsForSubagents } from "./subagents.js";
 import { buildSystemPrompt, renderSystemPrompt } from "./system-prompt.js";
 import { Telemetry } from "./telemetry.js";
-import { ToolRegistry } from "./tool-registry.js";
-import { CORE_TOOLS } from "./tools.js";
+import { CORE_TOOLS } from "./tools/index.js";
+import { ToolRegistry } from "./tools/registry.js";
 import { createMcpResourceTools, createToolSearchTool } from "./tools-m8.js";
 import type {
   AskUserFn,

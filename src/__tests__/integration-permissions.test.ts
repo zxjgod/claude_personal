@@ -17,7 +17,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { checkPermission, classifyPermissionRisk } from "../permissions.js";
-import { createTool } from "../tool-registry.js";
+import { createTool } from "../tools/registry.js";
 import type {
   Message,
   ModelCaller,

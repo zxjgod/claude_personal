@@ -14,9 +14,9 @@ import {
 } from "./query/token-budget.js";
 import { predictReads, SpeculationCache } from "./speculation.js";
 import { StreamingToolExecutor } from "./streaming-tool-executor.js";
-import { InputValidationError, toolUseError } from "./tool-registry.js";
-import { spillIfLarge } from "./tool-result-spill.js";
-import { startToolSummary } from "./tool-summary.js";
+import { InputValidationError, toolUseError } from "./tools/registry.js";
+import { spillIfLarge } from "./tools/result-spill.js";
+import { startToolSummary } from "./tools/summary.js";
 import type {
   AskUserFn,
   HookRunner,

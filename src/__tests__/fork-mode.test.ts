@@ -23,7 +23,7 @@ vi.mock("../llm-adapter.js", () => ({
     },
 }));
 
-import { TaskTool } from "../task-tool.js";
+import { TaskTool } from "../tools/extended/task.js";
 import type { Message, ModelConfig, ToolContext } from "../types.js";
 
 const modelConfig: ModelConfig = { provider: "deepseek", model: "deepseek-chat", apiKey: "k" };

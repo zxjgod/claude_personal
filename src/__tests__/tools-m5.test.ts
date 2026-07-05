@@ -9,7 +9,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resetReadTracker } from "../read-tracker.js";
-import { EditTool, MultiEditTool, ReadTool } from "../tools.js";
+import { EditTool, MultiEditTool, ReadTool } from "../tools/index.js";
 import type { ToolContext } from "../types.js";
 
 let tmpDir: string;

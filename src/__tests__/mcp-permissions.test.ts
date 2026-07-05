@@ -9,7 +9,7 @@
 // ============================================================
 
 import { describe, expect, it } from "vitest";
-import { createTool } from "../tool-registry.js";
+import { createTool } from "../tools/registry.js";
 import type { ToolContext } from "../types.js";
 
 function mcpLikeTool(name: string, confirmed: Set<string>) {

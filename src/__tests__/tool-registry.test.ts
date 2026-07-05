@@ -11,7 +11,7 @@ import {
   TOOL_DEFAULTS,
   ToolRegistry,
   toolUseError,
-} from "../tool-registry.js";
+} from "../tools/registry.js";
 
 describe("ToolRegistry", () => {
   it("should register a tool", () => {

@@ -161,36 +161,10 @@ export {
   resetSystemPromptCache,
   systemPromptSection,
 } from "./system-prompt.js";
-export { TaskTool } from "./task-tool.js";
-export { TodoTool } from "./todo-tool.js";
-export type { BaseToolConfig, BuildToolConfig } from "./tool-registry.js";
-// Tool Registry
-export {
-  buildTool,
-  createTool,
-  InputValidationError,
-  TOOL_DEFAULTS,
-  ToolRegistry,
-  toolUseError,
-} from "./tool-registry.js";
-// Tool Result Spill (M30)
-export { DEFAULT_MAX_RESULT_CHARS, SPILL_DIR, spillIfLarge } from "./tool-result-spill.js";
-// Tool-result summary (M36, kernel §9)
-export type {
-  ToolBatchDigest,
-  ToolBatchSummarizer,
-  ToolDigestEntry,
-  ToolSummarySources,
-} from "./tool-summary.js";
-export {
-  buildSummaryPrompt,
-  buildToolBatchDigest,
-  DEFAULT_SUMMARY_MIN_BYTES,
-  renderSummaryAttachment,
-  SUMMARY_SNIPPET_CHARS,
-  shouldSummarizeBatch,
-  startToolSummary,
-} from "./tool-summary.js";
+export { TaskTool } from "./tools/extended/task.js";
+export { TodoTool } from "./tools/extended/todo.js";
+export { WebFetchTool } from "./tools/extended/web-fetch.js";
+export { parseSearchResults, WebSearchTool } from "./tools/extended/web-search.js";
 // Tools
 export {
   BashTool,
@@ -201,7 +175,35 @@ export {
   MultiEditTool,
   ReadTool,
   WriteTool,
-} from "./tools.js";
+} from "./tools/index.js";
+export type { BaseToolConfig, BuildToolConfig } from "./tools/registry.js";
+// Tool Registry
+export {
+  buildTool,
+  createTool,
+  InputValidationError,
+  TOOL_DEFAULTS,
+  ToolRegistry,
+  toolUseError,
+} from "./tools/registry.js";
+// Tool Result Spill (M30)
+export { DEFAULT_MAX_RESULT_CHARS, SPILL_DIR, spillIfLarge } from "./tools/result-spill.js";
+// Tool-result summary (M36, kernel §9)
+export type {
+  ToolBatchDigest,
+  ToolBatchSummarizer,
+  ToolDigestEntry,
+  ToolSummarySources,
+} from "./tools/summary.js";
+export {
+  buildSummaryPrompt,
+  buildToolBatchDigest,
+  DEFAULT_SUMMARY_MIN_BYTES,
+  renderSummaryAttachment,
+  SUMMARY_SNIPPET_CHARS,
+  shouldSummarizeBatch,
+  startToolSummary,
+} from "./tools/summary.js";
 // Types
 export type {
   AssistantMessage,
@@ -237,5 +239,3 @@ export {
   interpretCancelReason,
   isInterrupt,
 } from "./utils/cancellation.js";
-export { WebFetchTool } from "./web-fetch.js";
-export { parseSearchResults, WebSearchTool } from "./web-search.js";

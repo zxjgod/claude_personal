@@ -10,7 +10,7 @@ import {
   renderSummaryAttachment,
   shouldSummarizeBatch,
   startToolSummary,
-} from "../tool-summary.js";
+} from "../tools/summary.js";
 import type { ToolExecutionResult } from "../types.js";
 
 function result(overrides: Partial<ToolExecutionResult> = {}): ToolExecutionResult {

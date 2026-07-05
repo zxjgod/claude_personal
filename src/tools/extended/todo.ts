@@ -6,8 +6,8 @@
 // each time (complete replacement).
 // ============================================================
 
-import { createTool } from "./tool-registry.js";
-import type { Tool, ToolResult } from "./types.js";
+import type { Tool, ToolResult } from "../../types.js";
+import { createTool } from "../registry.js";
 
 // --- Types ---
 

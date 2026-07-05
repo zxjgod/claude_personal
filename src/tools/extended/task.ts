@@ -7,9 +7,9 @@
 // so a fan-out of task calls can't exhaust the model's rate limit.
 // ============================================================
 
-import { agentLoop } from "./agent-loop.js";
-import { loadAgentMemoryPrompt } from "./agent-memory.js";
-import { createModelCaller } from "./llm-adapter.js";
+import { agentLoop } from "../../agent-loop.js";
+import { loadAgentMemoryPrompt } from "../../agent-memory.js";
+import { createModelCaller } from "../../llm-adapter.js";
 import {
   buildSubagentSystemPrompt,
   extractLastAssistantText,
@@ -19,10 +19,10 @@ import {
   listSubagentSelectionHints,
   resolveSubagentTools,
   setAgentMemoryLoader,
-} from "./subagents.js";
-import { createTool } from "./tool-registry.js";
-import type { Message, Tool, ToolResult } from "./types.js";
-import { CancellationScope } from "./utils/cancellation.js";
+} from "../../subagents.js";
+import type { Message, Tool, ToolResult } from "../../types.js";
+import { CancellationScope } from "../../utils/cancellation.js";
+import { createTool } from "../registry.js";
 
 // Register the agent-memory loader once (M35). Done here rather than in
 // subagents.ts to keep that module free of a static node:fs dependency.

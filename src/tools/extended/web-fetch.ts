@@ -5,8 +5,8 @@
 // for the LLM to analyze based on a user's fetchInfo prompt.
 // ============================================================
 
-import { createTool } from "./tool-registry.js";
-import type { Tool, ToolResult } from "./types.js";
+import type { Tool, ToolResult } from "../../types.js";
+import { createTool } from "../registry.js";
 
 // --- Constants ---
 
