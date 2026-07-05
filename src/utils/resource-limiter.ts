@@ -187,7 +187,7 @@ export class ResourceLimiter {
    * Get resource usage summary
    */
   static getSummary(): {
-    memory: ReturnType<typeof this.checkMemoryUsage>;
+    memory: { withinLimits: boolean; usage: number; limit: number };
     tools: { running: number; total: number; failed: number };
     files: { open: number; limit: number };
     uptime: number;
