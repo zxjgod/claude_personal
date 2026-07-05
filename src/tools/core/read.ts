@@ -7,6 +7,7 @@ import { z } from "zod";
 import { isBlockedPath } from "../../permissions.js";
 import { markRead } from "../../read-tracker.js";
 import type { Tool, ToolResult } from "../../types.js";
+import { InputValidator } from "../../utils/input-validator.js";
 import { buildTool } from "../registry.js";
 import { formatSize, imageMediaType, isBinary, MAX_IMAGE_BYTES } from "../utils/file.js";
 import { resolveInWorkspace } from "../utils/path.js";
@@ -33,6 +34,12 @@ export const ReadTool: Tool = buildTool({
   getPath: (input) => input.filePath,
 
   async call(input, context): Promise<ToolResult> {
+    // P1: Validate file path input
+    const pathValidation = InputValidator.validateFilePath(input.filePath, context);
+    if (!pathValidation.valid) {
+      return { content: "", error: pathValidation.error };
+    }
+
     const resolution = resolveInWorkspace(input.filePath, context.workspaceRoot);
     if (!resolution.ok) {
       return { content: "", error: resolution.error };

@@ -8,6 +8,7 @@ import { z } from "zod";
 import { recordChange } from "../../change-tracker.js";
 import { checkDangerousPattern, isBlockedPath } from "../../permissions.js";
 import type { Tool, ToolResult } from "../../types.js";
+import { InputValidator } from "../../utils/input-validator.js";
 import { buildTool } from "../registry.js";
 import { formatSize } from "../utils/file.js";
 import { relForDisplay, resolveInWorkspace } from "../utils/path.js";
@@ -28,6 +29,18 @@ export const WriteTool: Tool = buildTool({
   getPath: (input) => input.filePath,
 
   async call(input, context): Promise<ToolResult> {
+    // P1: Validate file path input
+    const pathValidation = InputValidator.validateFilePath(input.filePath, context);
+    if (!pathValidation.valid) {
+      return { content: "", error: pathValidation.error };
+    }
+
+    // P1: Validate content length (10MB limit)
+    const contentValidation = InputValidator.validateContentLength(input.content, 10 * 1024 * 1024);
+    if (!contentValidation.valid) {
+      return { content: "", error: contentValidation.error };
+    }
+
     const resolution = resolveInWorkspace(input.filePath, context.workspaceRoot);
     if (!resolution.ok) {
       return { content: "", error: resolution.error };

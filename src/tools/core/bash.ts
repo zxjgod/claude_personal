@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 import { z } from "zod";
 import { checkDangerousPattern } from "../../permissions.js";
 import type { Tool, ToolResult } from "../../types.js";
+import { InputValidator } from "../../utils/input-validator.js";
 import { buildTool } from "../registry.js";
 import { bashCommandIsReadOnly } from "../utils/command.js";
 
@@ -31,6 +32,12 @@ export const BashTool: Tool = buildTool({
   isConcurrencySafe: (input) => bashCommandIsReadOnly(input?.command),
 
   async call(input, context): Promise<ToolResult> {
+    // P1: Validate command input
+    const commandValidation = InputValidator.validateCommand(input.command);
+    if (!commandValidation.valid) {
+      return { content: "", error: commandValidation.error };
+    }
+
     const timeout = input.timeout ?? 120_000;
     const abortSignal = context.abortSignal;
 
