@@ -392,7 +392,7 @@ describe("workspace boundary", () => {
       fs.writeFileSync(path.join(sibling, "secret.txt"), "owned");
 
       const result = await ReadTool.call({ filePath: path.join(sibling, "secret.txt") }, ctx);
-      expect(result.error).toContain("outside workspace");
+      expect(result.error).toMatch(/dangerous pattern|outside workspace/i);
     } finally {
       fs.rmSync(sibling, { recursive: true, force: true });
     }
@@ -402,12 +402,12 @@ describe("workspace boundary", () => {
     // path.resolve(root, absolute) discards root → must be caught.
     const outside = IS_WINDOWS ? "C:\\Windows\\system.ini" : "/etc/hosts";
     const result = await ReadTool.call({ filePath: outside }, ctx);
-    expect(result.error).toContain("outside workspace");
+    expect(result.error).toMatch(/dangerous pattern|outside workspace/i);
   });
 
   it("rejects a parent traversal via ..", async () => {
     const result = await WriteTool.call({ filePath: "../escaped.txt", content: "x" }, ctx);
-    expect(result.error).toContain("outside workspace");
+    expect(result.error).toMatch(/dangerous pattern|outside workspace/i);
     expect(fs.existsSync(path.join(tmpDir, "..", "escaped.txt"))).toBe(false);
   });
 
