@@ -26,6 +26,7 @@ import { useEffect, useRef, useState } from "react";
 import { actionLabel } from "./../spinner-core.js";
 import { CommandPicker } from "./CommandPicker.js";
 import { EffortPrompt } from "./EffortPrompt.js";
+import { HelpPanel } from "./HelpPanel.js";
 import { type CommandInfo, InputBox } from "./InputBox.js";
 import { PermissionPrompt, QuestionPrompt } from "./Prompts.js";
 import { ProviderPicker } from "./ProviderPicker.js";
@@ -33,6 +34,8 @@ import { bottomScrollTop, clampScrollTop, ScrollView } from "./ScrollView.js";
 import { SessionPicker } from "./SessionPicker.js";
 import { StatusLine } from "./StatusLine.js";
 import type { StoreState, TuiStore } from "./store.js";
+import { Toast } from "./Toast.js";
+import { modeColor } from "./theme.js";
 import { transcriptToLines } from "./transcript-lines.js";
 import { useStoreField, useStoreSelector } from "./useStoreSelector.js";
 import { useTerminalSize } from "./useTerminalSize.js";
@@ -82,7 +85,6 @@ function FsStatusLine({ store }: { store: TuiStore }) {
 function selectStatusBar(s: StoreState) {
   return {
     busy: s.busy,
-    modelLabel: s.modelLabel,
     permissionMode: s.permissionMode,
     tokensIn: s.tokensIn,
     tokensOut: s.tokensOut,
@@ -91,20 +93,17 @@ function selectStatusBar(s: StoreState) {
 
 /** Bottom status bar. */
 function FsStatusBar({ store }: { store: TuiStore }) {
-  const { busy, modelLabel, permissionMode, tokensIn, tokensOut } = useStoreSelector(
-    store,
-    selectStatusBar,
-  );
+  const { busy, permissionMode, tokensIn, tokensOut } = useStoreSelector(store, selectStatusBar);
   return (
     <Box>
       <Text dimColor>
         {busy
-          ? "  working… (Ctrl+C to interrupt · Shift+Tab mode)"
-          : "  ? for shortcuts · / for commands · @path to attach · PgUp/Ctrl+U to scroll · Shift+Tab mode"}
-      </Text>
-      <Text dimColor>
-        {"   "}
-        {modelLabel} · mode:{permissionMode} · {tokensIn}↑ {tokensOut}↓ tokens
+          ? "working… (Ctrl+C interrupt)"
+          : "? shortcuts · / commands · @path attach · PgUp/PgDn scroll"}
+        {" · "}
+        <Text color={modeColor(permissionMode)}>{permissionMode}</Text>
+        {" · "}
+        {tokensIn}↑ {tokensOut}↓ tokens
       </Text>
     </Box>
   );
@@ -112,6 +111,16 @@ function FsStatusBar({ store }: { store: TuiStore }) {
 
 function selectInteraction(s: StoreState) {
   return { overlay: s.overlay, busy: s.busy };
+}
+
+function selectHelp(s: StoreState) {
+  return { showHelp: s.showHelp, permissionMode: s.permissionMode };
+}
+
+function FsHelpRegion({ store }: { store: TuiStore }) {
+  const { showHelp, permissionMode } = useStoreSelector(store, selectHelp);
+  if (!showHelp) return null;
+  return <HelpPanel currentMode={permissionMode} onClose={() => store.setShowHelp(false)} />;
 }
 
 /** Overlay (when present) or the InputBox — pinned to the bottom, no bottom
@@ -155,6 +164,18 @@ function FsInteraction({
       hideBottomRule
     />
   );
+}
+
+/** Mode hotkey — self-contained so FullScreenApp works without App.tsx. */
+function FsModeHotkey({ store }: { store: TuiStore }) {
+  useInput((input, key) => {
+    if (key.tab && key.shift) {
+      store.cyclePermissionMode();
+    } else if (input === "?" && !store.getSnapshot().overlay) {
+      store.setShowHelp(true);
+    }
+  });
+  return null;
 }
 
 export function FullScreenApp({
@@ -237,6 +258,8 @@ export function FullScreenApp({
 
   return (
     <Box flexDirection="column" height={rows}>
+      <FsModeHotkey store={store} />
+      <Toast store={store} />
       <ScrollView
         lines={lines}
         scrollTop={scrollTop}
@@ -249,6 +272,7 @@ export function FullScreenApp({
         <FsStatusLine store={store} />
       )}
       <FsStatusBar store={store} />
+      <FsHelpRegion store={store} />
       {/* InputBox MUST be the last element: the terminal parks the real cursor
           at the end of the final rendered row, so the prompt has to be that row
           (InputBox renders with no bottom rule in this path). */}

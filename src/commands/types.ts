@@ -37,6 +37,8 @@ export interface CommandContext {
   /** The active permission mode (for /status, /config). */
   permissionMode?: string;
   getPermissionMode?: () => string;
+  /** Set the permission mode (for /mode). */
+  setPermissionMode?: (mode: string) => void;
   /** The assembled system prompt (for /context token breakdown). */
   systemPrompt?: string;
   /** Number of connected MCP servers (for /status). */

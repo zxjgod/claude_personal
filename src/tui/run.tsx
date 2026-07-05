@@ -494,6 +494,9 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
             const commandContext = deps.makeCommandContext();
             commandContext.permissionMode = store.getPermissionMode();
             commandContext.getPermissionMode = () => store.getPermissionMode();
+            commandContext.setPermissionMode = (mode: string) => {
+              store.setPermissionMode(mode as PermissionMode);
+            };
             return handleSlashCommand(value, commandContext);
           });
           if (lines.length > 0) store.addLog(lines);

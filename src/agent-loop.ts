@@ -296,7 +296,17 @@ export async function* agentLoop(
       // path. Layer 5: LLM summary. Resets the window, so drop the baseline.
       yield { type: "compacting" };
       messages = await autoCompact(messages, callModel, modelConfig, abortSignal);
-      state = { ...state, usageBaseline: undefined };
+
+      // Rebuild baseline after compaction: re-estimate the compressed messages
+      const newPromptTokens = estimateTokens(messages);
+      state = {
+        ...state,
+        usageBaseline: {
+          promptTokens: newPromptTokens,
+          messageCount: messages.length,
+        },
+      };
+
       yield { type: "compacted", summary: "Context compressed" };
     } else if (
       autoCompactThreshold === Number.POSITIVE_INFINITY &&

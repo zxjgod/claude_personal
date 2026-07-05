@@ -31,6 +31,18 @@ export const palette = {
   success: "#9ece6a",
   /** Errors / removed lines. */
   error: "#f7768e",
+  /** Permission mode badge colors (keyed by mode name). */
+  modeColors: {
+    default: "#e0af68",
+    acceptEdits: "#bb9af7",
+    bypassPermissions: "#f7768e",
+    plan: "#7aa2f7",
+  } as Record<string, string>,
 } as const;
+
+/** Return the badge color for a permission mode. Falls back to accent for unknown modes. */
+export function modeColor(mode: string): string {
+  return palette.modeColors[mode] ?? palette.accent;
+}
 
 export type PaletteColor = (typeof palette)[keyof typeof palette];

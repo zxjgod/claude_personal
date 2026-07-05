@@ -26,8 +26,8 @@ describe("App", () => {
     const { lastFrame } = render(
       <App store={store} commands={commands} onSubmit={noopSubmit} expandedId={null} />,
     );
-    expect(lastFrame()).toContain("deepseek/chat");
-    expect(lastFrame()).toMatch(/for commands/);
+    expect(lastFrame()).toContain("mode:default");
+    expect(lastFrame()).toMatch(/\/ commands/);
   });
 
   it("renders committed transcript items", () => {

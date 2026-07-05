@@ -107,7 +107,7 @@ export function SessionPicker({
         <Text dimColor>{hiddenBelow > 0 ? `  ↓ ${hiddenBelow} more` : " "}</Text>
       </Box>
 
-      <Text dimColor>↑↓ move · PgUp/PgDn page · Enter resume · Esc cancel</Text>
+      <Text dimColor>↑↓ move · PgUp/PgDn page · Enter resume · Esc cancel · Shift+Tab mode</Text>
     </Box>
   );
 }

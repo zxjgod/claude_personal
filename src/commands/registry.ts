@@ -27,6 +27,7 @@ import { initCommand } from "./init.js";
 import { keybindingsCommand } from "./keybindings.js";
 import { mcpCommand } from "./mcp.js";
 import { memoryCommand } from "./memory.js";
+import { modeCommand } from "./mode.js";
 import { modelCommand } from "./model.js";
 import { onboardingCommand } from "./onboarding.js";
 import { permissionsCommand } from "./permissions.js";
@@ -58,6 +59,7 @@ export const COMMANDS: SlashCommand[] = [
   sessionsCommand,
   resumeCommand,
   permissionsCommand,
+  modeCommand,
   statusCommand,
   costCommand,
   toolsCommand,

@@ -6,7 +6,7 @@
 //
 //   1. getMessagesAfterCompactBoundary — physically drop pre-boundary history
 //   2. applyToolResultBudget           — cap total tool-result bytes (cache-safe)
-//   3. microcompact                    — evict whole old tool-result blocks
+//   3. microCompact                    — time-based clearing of old tool results
 //   4. contextCollapse (CollapseStore) — recoverable stash of evicted content
 //   5. autoCompact                     — LLM summary + compact_boundary (in agent-loop)
 //
@@ -17,6 +17,7 @@
 // what was appended since (see agent-loop), not a full re-tokenize each turn.
 // ============================================================
 
+import { microCompact } from "./services/micro-compact.js";
 import type { Message } from "./types.js";
 
 /**
@@ -280,7 +281,16 @@ export function prepareCheapLayers(
       );
     }
 
-    // Layer 3: microcompact whole-block eviction.
+    // Layer 3a: time-based micro-compact (clear old tool results when idle).
+    const timeBased = microCompact(msgs);
+    if (timeBased.cleared > 0) {
+      msgs = timeBased.messages;
+      notes.push(
+        `Time-based micro-compact cleared ${timeBased.cleared} old tool result(s) (~${timeBased.tokensSaved} tokens)`,
+      );
+    }
+
+    // Layer 3b: count-based microcompact (whole-block eviction).
     if (opts.estimateTokens(msgs) > opts.threshold) {
       const micro = microcompact(msgs, { store: opts.store, ...opts.micro });
       if (micro.changed > 0) {

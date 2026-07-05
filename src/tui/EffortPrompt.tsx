@@ -64,6 +64,7 @@ export function EffortPrompt({ overlay }: { overlay: Extract<Overlay, { kind: "e
       {lines.map((ln, i) => (
         <Text key={i}>{ln.length > 0 ? ln : " "}</Text>
       ))}
+      <Text dimColor>←→ move · Enter select · Esc cancel · Shift+Tab mode</Text>
     </Box>
   );
 }

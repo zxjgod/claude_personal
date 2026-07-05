@@ -22,6 +22,7 @@ import { actionLabel } from "./../spinner-core.js";
 import { CommandPicker } from "./CommandPicker.js";
 import { EffortPrompt } from "./EffortPrompt.js";
 import { FullScreenApp } from "./FullScreenApp.js";
+import { HelpPanel } from "./HelpPanel.js";
 import { type CommandInfo, InputBox } from "./InputBox.js";
 import { PermissionPrompt, QuestionPrompt } from "./Prompts.js";
 import { ProviderPicker } from "./ProviderPicker.js";
@@ -29,8 +30,9 @@ import { SessionPicker } from "./SessionPicker.js";
 import { StatusLine } from "./StatusLine.js";
 import { StreamingMarkdown } from "./StreamingMarkdown.js";
 import type { StoreState, TranscriptItem, TuiStore } from "./store.js";
+import { Toast } from "./Toast.js";
 import { ActiveToolCard, CompletedToolCard } from "./ToolCard.js";
-import { palette } from "./theme.js";
+import { modeColor, palette } from "./theme.js";
 import { useStoreField, useStoreSelector } from "./useStoreSelector.js";
 
 /** The orange ● bullet + a markdown body column. Shared by the committed
@@ -227,22 +229,27 @@ function selectInteraction(s: StoreState) {
   return { overlay: s.overlay, busy: s.busy };
 }
 
-/** Bottom status bar. Subscribes to `busy` + model label + token totals. */
+function selectHelp(s: StoreState) {
+  return { showHelp: s.showHelp, permissionMode: s.permissionMode };
+}
+
+function HelpRegion({ store }: { store: TuiStore }) {
+  const { showHelp, permissionMode } = useStoreSelector(store, selectHelp);
+  if (!showHelp) return null;
+  return <HelpPanel currentMode={permissionMode} onClose={() => store.setShowHelp(false)} />;
+}
+
+/** Bottom status bar. Subscribes to `busy` + token totals + permission mode. */
 function StatusBar({ store }: { store: TuiStore }) {
-  const { busy, modelLabel, tokensIn, tokensOut, permissionMode } = useStoreSelector(
-    store,
-    selectStatusBar,
-  );
+  const { busy, permissionMode, tokensIn, tokensOut } = useStoreSelector(store, selectStatusBar);
   return (
     <Box>
       <Text dimColor>
-        {busy
-          ? "  working… (Ctrl+C to interrupt · Shift+Tab mode)"
-          : "  ? for shortcuts · ← for agents · / for commands · Shift+Tab mode"}
-      </Text>
-      <Text dimColor>
-        {"   "}
-        {modelLabel} · mode:{permissionMode} · {tokensIn}↑ {tokensOut}↓ tokens
+        {busy ? "working… (Ctrl+C interrupt)" : "? shortcuts · ← agents · / commands"}
+        {" · "}
+        <Text color={modeColor(permissionMode)}>{permissionMode}</Text>
+        {" · "}
+        {tokensIn}↑ {tokensOut}↓ tokens
       </Text>
     </Box>
   );
@@ -251,7 +258,6 @@ function StatusBar({ store }: { store: TuiStore }) {
 function selectStatusBar(s: StoreState) {
   return {
     busy: s.busy,
-    modelLabel: s.modelLabel,
     permissionMode: s.permissionMode,
     tokensIn: s.tokensIn,
     tokensOut: s.tokensOut,
@@ -259,8 +265,13 @@ function selectStatusBar(s: StoreState) {
 }
 
 function ModeHotkey({ store }: { store: TuiStore }) {
-  useInput((_input, key) => {
-    if (key.tab && key.shift) store.cyclePermissionMode();
+  useInput((input, key) => {
+    if (key.tab && key.shift) {
+      store.cyclePermissionMode();
+    } else if (input === "?" && !store.getSnapshot().overlay) {
+      // Show help panel only when not in an overlay (overlays have their own input).
+      store.setShowHelp(true);
+    }
   });
   return null;
 }
@@ -284,16 +295,14 @@ export function App({
   fullscreen?: boolean;
 }) {
   if (fullscreen) {
+    // FullScreenApp contains its own FsModeHotkey — no need for ModeHotkey wrapper.
     return (
-      <>
-        <ModeHotkey store={store} />
-        <FullScreenApp
-          store={store}
-          commands={commands}
-          onSubmit={onSubmit}
-          editorMode={editorMode}
-        />
-      </>
+      <FullScreenApp
+        store={store}
+        commands={commands}
+        onSubmit={onSubmit}
+        editorMode={editorMode}
+      />
     );
   }
   // The root no longer subscribes to the store at all — each region below owns
@@ -304,10 +313,12 @@ export function App({
   return (
     <Box flexDirection="column">
       <ModeHotkey store={store} />
+      <Toast store={store} />
       <TranscriptRegion store={store} expandedId={expandedId} />
       <StreamingRegion store={store} />
       <ActiveToolsRegion store={store} />
       <StatusLineRegion store={store} />
+      <HelpRegion store={store} />
       <InteractionRegion
         store={store}
         commands={commands}

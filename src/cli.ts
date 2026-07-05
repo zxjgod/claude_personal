@@ -480,6 +480,7 @@ async function main() {
     tools: toolSources,
     permissionMode,
     getPermissionMode: permissionModeState.get,
+    setPermissionMode: (mode: string) => permissionModeState.set(mode as PermissionMode),
     systemPrompt,
     mcpServerCount: mcpManager.serverCount,
     mcpManager,

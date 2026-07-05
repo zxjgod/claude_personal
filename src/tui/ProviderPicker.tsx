@@ -91,7 +91,7 @@ export function ProviderPicker({
         <Text dimColor>{hiddenBelow > 0 ? `  ↓ ${hiddenBelow} more` : " "}</Text>
       </Box>
 
-      <Text dimColor>↑↓ move · PgUp/PgDn page · Enter switch · Esc cancel</Text>
+      <Text dimColor>↑↓ move · PgUp/PgDn page · Enter switch · Esc cancel · Shift+Tab mode</Text>
     </Box>
   );
 }

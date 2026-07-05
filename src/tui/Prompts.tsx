@@ -47,7 +47,7 @@ export function PermissionPrompt({
           </Text>
         ))}
       </Box>
-      <Text dimColor>↑↓ choose · Enter confirm · Esc cancel</Text>
+      <Text dimColor>↑↓ choose · Enter confirm · Esc cancel · Shift+Tab mode</Text>
     </Box>
   );
 }
@@ -113,6 +113,7 @@ export function QuestionPrompt({ overlay }: { overlay: Extract<Overlay, { kind: 
         {multiSelect
           ? "↑↓ move · Space toggle · Enter confirm · Esc cancel"
           : "↑↓ move · Enter select · Esc cancel"}
+        {" · Shift+Tab mode"}
       </Text>
     </Box>
   );

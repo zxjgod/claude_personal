@@ -131,6 +131,10 @@ export interface StoreState {
   permissionMode: PermissionMode;
   /** Model label for the status bar. */
   modelLabel: string;
+  /** Transient toast message shown briefly after mode changes etc. */
+  toast: string | null;
+  /** Help panel visibility (triggered by "?" key). */
+  showHelp: boolean;
 }
 
 type Listener = () => void;
@@ -180,6 +184,8 @@ export class TuiStore {
       busy: false,
       permissionMode: opts?.permissionMode ?? "default",
       modelLabel,
+      toast: null,
+      showHelp: false,
     };
   }
 
@@ -481,10 +487,30 @@ export class TuiStore {
     this.set({ permissionMode: mode });
   }
 
+  /**
+   * Show a transient toast message. It auto-clears after `durationMs` (default
+   * 2000 ms). Subsequent calls replace any pending toast.
+   */
+  showToast(message: string, durationMs = 2000): void {
+    if (this._toastTimer !== null) clearTimeout(this._toastTimer);
+    this.set({ toast: message });
+    this._toastTimer = setTimeout(() => {
+      this._toastTimer = null;
+      if (this.state.toast === message) this.set({ toast: null });
+    }, durationMs);
+  }
+
+  private _toastTimer: ReturnType<typeof setTimeout> | null = null;
+
   cyclePermissionMode(): PermissionMode {
     const mode = nextPermissionMode(this.state.permissionMode);
     this.set({ permissionMode: mode });
+    this.showToast(`Permission mode: ${mode}`);
     return mode;
+  }
+
+  setShowHelp(show: boolean): void {
+    this.set({ showHelp: show });
   }
 
   /** Update the status-bar model label (e.g. after a /provider switch). */
