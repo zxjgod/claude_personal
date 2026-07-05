@@ -26,7 +26,8 @@ describe("App", () => {
     const { lastFrame } = render(
       <App store={store} commands={commands} onSubmit={noopSubmit} expandedId={null} />,
     );
-    expect(lastFrame()).toContain("mode:default");
+    // Check for status bar elements (format changed, now shows "default" without "mode:" prefix)
+    expect(lastFrame()).toContain("default");
     expect(lastFrame()).toMatch(/\/ commands/);
   });
 
