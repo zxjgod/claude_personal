@@ -12,19 +12,25 @@ describe("resolveInWorkspace", () => {
     it("should accept paths inside workspace", () => {
       const result = resolveInWorkspace("src/index.ts", "/workspace");
       expect(result.ok).toBe(true);
-      expect(result.path).toBe(path.resolve("/workspace/src/index.ts"));
+      if (result.ok) {
+        expect(result.path).toBe(path.resolve("/workspace/src/index.ts"));
+      }
     });
 
     it("should reject paths outside workspace (absolute)", () => {
       const result = resolveInWorkspace("/etc/passwd", "/workspace");
       expect(result.ok).toBe(false);
-      expect(result.error).toContain("outside workspace");
+      if (!result.ok) {
+        expect(result.error).toContain("outside workspace");
+      }
     });
 
     it("should reject path traversal escape", () => {
       const result = resolveInWorkspace("../../etc/passwd", "/workspace");
       expect(result.ok).toBe(false);
-      expect(result.error).toContain("outside workspace");
+      if (!result.ok) {
+        expect(result.error).toContain("outside workspace");
+      }
     });
 
     it("should allow workspace root itself", () => {
@@ -86,7 +92,9 @@ describe("resolveInWorkspace", () => {
       // The symlink should be resolvable but blocked because it points outside
       const result = resolveInWorkspace("link-to-outside.txt", tempDir);
       expect(result.ok).toBe(false);
-      expect(result.error).toContain("outside workspace");
+      if (!result.ok) {
+        expect(result.error).toContain("outside workspace");
+      }
     });
 
     it("should allow valid symlinks pointing inside workspace", () => {

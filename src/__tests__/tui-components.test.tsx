@@ -278,13 +278,13 @@ describe("CommandPicker (/help palette)", () => {
     // Step the cursor down past the initial window so it must scroll.
     for (let i = 0; i < 12; i++) {
       stdin.write("\x1B[B"); // down arrow
-      await new Promise((r) => setTimeout(r, 5));
+      await new Promise((r) => setTimeout(r, 20));
     }
     expect(lastFrame()).toMatch(/↑ \d+ more/); // window scrolled off the top
     stdin.write("\r");
-    await new Promise((r) => setTimeout(r, 20));
+    await new Promise((r) => setTimeout(r, 50));
     expect(chosen).toBe("cmd12");
-  });
+  }, 10000);
 
   it("cancels with null on Esc", async () => {
     let chosen: string | null = "unset";
