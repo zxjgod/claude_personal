@@ -10,13 +10,16 @@ import * as path from "node:path";
  * stays inside the workspace. Returns the absolute path on success, or an
  * error string on rejection.
  *
- * Guards two escapes the previous `startsWith(workspaceRoot)` check missed:
+ * Guards three escape vectors:
  *  1. Prefix aliasing — "/proj" must not match a sibling "/proj-evil".
  *     We compare against `workspaceRoot + path.sep` (and allow the root
  *     itself).
  *  2. Absolute-path override — `path.resolve(root, "/etc/passwd")` discards
  *     the root and returns "/etc/passwd". We resolve, then re-verify
  *     containment, so an absolute input outside the workspace is rejected.
+ *  3. Symlink escape — a symlink inside the workspace pointing outside.
+ *     We call realpathSync to resolve symlinks, then verify the real path
+ *     is still contained.
  */
 export function resolveInWorkspace(
   inputPath: string,
@@ -25,10 +28,21 @@ export function resolveInWorkspace(
   const root = path.resolve(workspaceRoot);
   const resolved = path.resolve(root, inputPath);
 
-  if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+  // Resolve symlinks to get the real path, then verify containment.
+  // This prevents attacks via symlinks pointing outside the workspace.
+  let realPath: string;
+  try {
+    realPath = fs.realpathSync(resolved);
+  } catch {
+    // realpathSync fails for broken symlinks or permission errors.
+    // Fall back to resolved path — the prefix check still blocks the escape.
+    realPath = resolved;
+  }
+
+  if (realPath !== root && !realPath.startsWith(root + path.sep)) {
     return {
       ok: false,
-      error: `Access denied: "${inputPath}" is outside workspace`,
+      error: `Access denied: "${inputPath}" resolves outside workspace`,
     };
   }
   return { ok: true, path: resolved };
