@@ -21,9 +21,15 @@ export const BashTool: Tool = buildTool({
   name: "bash",
   description: "Execute a shell command",
   promptDescription:
-    "Execute a shell command. Commands must be non-interactive. Very large output is " +
-    "saved to a file and you receive a preview plus the path (read it for the full output).",
+    "Execute a shell command. Commands must be non-interactive (no stdin prompts). " +
+    "Use for: running build/test commands, git operations, package managers (npm, pip), " +
+    "and CLI tasks without a dedicated tool. " +
+    "Parameters: command (required, the CLI command to execute), " +
+    "description (required, what this command does for the user), " +
+    "timeout (optional, max execution time in milliseconds, default 120000). " +
+    "Very large output is saved to a file and you receive a preview plus the path.",
   schema: BashSchema,
+  searchHint: "shell command execute run script build test git npm",
   // Data-driven (M29): a read-only command (`cat`, `ls`, `git status`…) is
   // auto-approved and safe to parallelize; anything else routes through
   // approval and runs serially. Concurrency-safety mirrors read-only because a

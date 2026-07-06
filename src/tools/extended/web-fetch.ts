@@ -5,8 +5,9 @@
 // for the LLM to analyze based on a user's fetchInfo prompt.
 // ============================================================
 
+import { z } from "zod";
 import type { Tool, ToolResult } from "../../types.js";
-import { createTool } from "../registry.js";
+import { buildTool } from "../registry.js";
 
 // --- Constants ---
 
@@ -28,13 +29,13 @@ const BLOCKED_HOSTS = [
   /^fe80:/i,
 ];
 
-// --- Input ---
+// --- Schema ---
 
-interface WebFetchInput {
-  url: string;
-  fetchInfo: string;
-  [key: string]: unknown;
-}
+const WebFetchSchema = z.strictObject({
+  url: z.string().url().describe("The URL to fetch (must start with http:// or https://)"),
+  fetchInfo: z.string().min(1).describe("What information you want to extract from this page"),
+});
+type WebFetchInput = z.infer<typeof WebFetchSchema>;
 
 // --- Helpers ---
 
@@ -84,51 +85,32 @@ function stripHtml(html: string): string {
 
 // --- Tool ---
 
-export const WebFetchTool: Tool = createTool<WebFetchInput>({
+export const WebFetchTool: Tool = buildTool({
   name: "web_fetch",
   description: "Fetch a web page and extract its content",
   promptDescription:
-    "Fetch content from a URL and analyze it. " +
-    "Provide url (must be http/https) and fetchInfo (what you want to extract from the page). " +
-    "The tool returns plain text content (HTML tags stripped). " +
-    "Use this to read documentation, check API responses, or research topics.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      url: {
-        type: "string",
-        description: "The URL to fetch (must start with http:// or https://)",
-      },
-      fetchInfo: {
-        type: "string",
-        description: "What information you want to extract from this page",
-      },
-    },
-    required: ["url", "fetchInfo"],
-  },
+    "Fetch content from a URL and extract information. " +
+    "Parameters: url (required, must be http/https, blocked: localhost, private IPs), " +
+    "fetchInfo (required, what you want to extract from the page). " +
+    "Returns plain text content with HTML stripped. " +
+    "Use this to read documentation, check API responses, or research topics. " +
+    "Max content: 100KB. Timeouts after 15s.",
+  schema: WebFetchSchema,
   isReadOnly: true,
   isConcurrencySafe: true,
+  searchHint: "fetch web page scrape extract URL",
+  aliases: ["fetch", "scrape"],
 
   async call(input, _context): Promise<ToolResult> {
-    const url = input.url?.trim();
-    const fetchInfo = input.fetchInfo?.trim();
-
-    if (!url) {
-      return { content: "", error: "url is required" };
-    }
-    if (!fetchInfo) {
-      return { content: "", error: "fetchInfo is required" };
-    }
-
-    // --- Validate URL ---
+    // --- SSRF check (after Zod validation but before fetch) ---
 
     let parsed: URL;
     try {
-      parsed = new URL(url);
+      parsed = new URL(input.url);
     } catch {
       return {
         content: "",
-        error: `Invalid URL: "${url}". Must be a valid http/https URL.`,
+        error: `Invalid URL: "${input.url}". Must be a valid http/https URL.`,
       };
     }
 
@@ -138,8 +120,6 @@ export const WebFetchTool: Tool = createTool<WebFetchInput>({
         error: `Unsupported protocol: "${parsed.protocol}". Only http and https are allowed.`,
       };
     }
-
-    // --- SSRF check ---
 
     if (isBlockedHost(parsed.hostname)) {
       return {
@@ -154,7 +134,7 @@ export const WebFetchTool: Tool = createTool<WebFetchInput>({
     const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
     try {
-      const response = await fetch(url, {
+      const response = await fetch(input.url, {
         method: "GET",
         headers: {
           "User-Agent":
@@ -207,12 +187,12 @@ export const WebFetchTool: Tool = createTool<WebFetchInput>({
       }
 
       const header = [
-        `URL: ${url}`,
+        `URL: ${input.url}`,
         `Status: ${response.status} ${response.statusText}`,
         `Content-Type: ${contentType}`,
         `Content-Length: ${content.length} chars${truncated ? " (truncated)" : ""}`,
         ``,
-        `--- Content (extract "${fetchInfo}") ---`,
+        `--- Content (extract "${input.fetchInfo}") ---`,
         ``,
       ].join("\n");
 

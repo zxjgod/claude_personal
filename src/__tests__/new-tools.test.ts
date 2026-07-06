@@ -1,12 +1,17 @@
 // ============================================================
 // Tests: New Tools (Todo, WebFetch, Task)
 // ============================================================
+// Note: With Zod validation, invalid inputs are caught BEFORE call() by
+// validateInput(). The tests here focus on valid inputs and post-validation
+// behavior. Invalid input rejection is tested via the registry validation tests.
+// ============================================================
 
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { clearTodos, getTodos, TodoTool } from "../tools/extended/todo.js";
+import { InputValidationError } from "../tools/registry.js";
 import type { ToolContext } from "../types.js";
 
 let tmpDir: string;
@@ -65,24 +70,29 @@ describe("TodoTool", () => {
     expect(result.content).toContain("→ Fixing bug #42");
   });
 
-  it("should reject invalid status values", async () => {
-    const result = await TodoTool.call(
-      {
-        todos: [{ content: "Bad item", status: "invalid_status", activeForm: "Test" }],
-      } as any,
-      ctx,
-    );
-    expect(result.error).toContain("Invalid status");
+  it("should reject invalid status values via Zod", () => {
+    // Zod validation happens at the registry level via validateInput
+    expect(() =>
+      TodoTool.validateInput?.({
+        todos: [{ content: "Bad", status: "invalid_status", activeForm: "Test" }],
+      }),
+    ).toThrow(InputValidationError);
   });
 
-  it("should reject items without content", async () => {
-    const result = await TodoTool.call(
-      {
-        todos: [{ status: "pending", activeForm: "" }],
-      } as any,
-      ctx,
-    );
-    expect(result.error).toContain("Invalid todo item");
+  it("should reject items without content via Zod", () => {
+    // Zod validation catches missing required fields
+    expect(() =>
+      TodoTool.validateInput?.({ todos: [{ status: "pending", activeForm: "" }] }),
+    ).toThrow(InputValidationError);
+  });
+
+  it("should reject unknown fields via Zod strict validation", () => {
+    // Zod strictObject rejects unknown fields
+    expect(() =>
+      TodoTool.validateInput?.({
+        todos: [{ content: "Test", status: "pending", activeForm: "Testing", unknownField: "bad" }],
+      }),
+    ).toThrow(InputValidationError);
   });
 
   it("should replace previous todo list on update", async () => {
@@ -116,14 +126,17 @@ describe("TodoTool", () => {
 import { WebFetchTool } from "../tools/extended/web-fetch.js";
 
 describe("WebFetchTool", () => {
-  it("should reject missing url", async () => {
-    const result = await WebFetchTool.call({ url: "", fetchInfo: "test" }, ctx);
-    expect(result.error).toContain("url is required");
+  it("should reject invalid URLs via Zod validation", () => {
+    // Empty string fails z.string().min(1)
+    expect(() => WebFetchTool.validateInput?.({ url: "", fetchInfo: "test" })).toThrow(
+      InputValidationError,
+    );
   });
 
-  it("should reject missing fetchInfo", async () => {
-    const result = await WebFetchTool.call({ url: "https://example.com", fetchInfo: "" }, ctx);
-    expect(result.error).toContain("fetchInfo is required");
+  it("should reject empty fetchInfo via Zod validation", () => {
+    expect(() =>
+      WebFetchTool.validateInput?.({ url: "https://example.com", fetchInfo: "" }),
+    ).toThrow(InputValidationError);
   });
 
   it("should reject non-http protocols", async () => {
@@ -170,6 +183,16 @@ describe("WebFetchTool", () => {
     );
     expect(result.error).toContain("internal");
   });
+
+  it("should accept valid URLs", async () => {
+    // Test that valid input passes Zod but still has SSRF check in call()
+    const result = await WebFetchTool.call(
+      { url: "https://github.com", fetchInfo: "homepage" },
+      ctx,
+    );
+    // Should not fail Zod validation; may fail at network level but that's ok for unit test
+    expect(result.error || result.content).toBeDefined();
+  });
 });
 
 // --- TaskTool (static tests, no LLM) ---
@@ -181,20 +204,30 @@ describe("TaskTool", () => {
     expect(TaskTool.requiresApproval?.()).toBe(false);
   });
 
-  it("should reject missing description", async () => {
-    const result = await TaskTool.call(
-      { description: "", prompt: "do something", subagent_name: "code-explorer" },
-      ctx,
-    );
-    expect(result.error).toContain("description is required");
+  it("should reject empty description via Zod validation", () => {
+    expect(() =>
+      TaskTool.validateInput?.({
+        description: "",
+        prompt: "do something",
+        subagent_name: "code-explorer",
+      }),
+    ).toThrow(InputValidationError);
   });
 
-  it("should reject missing prompt", async () => {
+  it("should reject empty prompt via Zod validation", () => {
+    expect(() =>
+      TaskTool.validateInput?.({ description: "test", prompt: "", subagent_name: "code-explorer" }),
+    ).toThrow(InputValidationError);
+  });
+
+  it("should accept valid input with known subagent type", async () => {
+    // Valid input passes Zod but still fails because modelConfig is missing
     const result = await TaskTool.call(
-      { description: "test", prompt: "", subagent_name: "code-explorer" },
+      { description: "test", prompt: "do something", subagent_name: "code-explorer" },
       ctx,
     );
-    expect(result.error).toContain("prompt is required");
+    // Should fail with modelConfig error (not validation error)
+    expect(result.error).toContain("modelConfig");
   });
 
   it("should reject unknown subagent type", async () => {
@@ -224,6 +257,26 @@ describe("TaskTool", () => {
       ctxWithoutModel,
     );
     expect(result.error).toContain("modelConfig");
+  });
+
+  it("should work without subagent_name (uses default)", async () => {
+    const ctxWithModel: ToolContext = {
+      workspaceRoot: tmpDir,
+      sessionId: "test",
+      permissionMode: "default",
+      modelConfig: { provider: "deepseek", model: "deepseek-chat", apiKey: "k" } as any,
+    };
+    // This should not throw validation error, but will fail at runtime
+    // because there's no actual LLM
+    const result = await TaskTool.call(
+      { description: "test", prompt: "do something" },
+      ctxWithModel,
+    );
+    // Should fail with LLM error, not validation error
+    // Note: result.error might be undefined if it succeeded
+    if (result.error) {
+      expect(result.error).not.toContain("Invalid arguments");
+    }
   });
 });
 

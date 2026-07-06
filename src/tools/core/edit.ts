@@ -33,11 +33,19 @@ export const EditTool: Tool = buildTool({
   name: "edit",
   description: "Make precise edits using search/replace",
   promptDescription:
-    "Make precise edits using search/replace. old_string must match exactly including whitespace and indentation. If not unique, add more surrounding context lines.",
+    "Make precise edits using search/replace. " +
+    "IMPORTANT: old_string must match EXACTLY including whitespace and indentation. " +
+    "If the match is not unique, add more surrounding context lines or use replace_all: true. " +
+    "Parameters: filePath (required, absolute path), " +
+    "old_string (required, exact text to find), " +
+    "new_string (required, replacement text, use empty string to delete), " +
+    "replace_all (optional, replace all occurrences). " +
+    "Never use this to rewrite entire files — use for targeted changes only.",
   schema: EditSchema,
   isReadOnly: false,
   isConcurrencySafe: false, // Same file edits must be serial
   getPath: (input) => input.filePath,
+  searchHint: "edit modify replace search change update",
 
   async call(input, context): Promise<ToolResult> {
     const resolution = resolveInWorkspace(input.filePath, context.workspaceRoot);
@@ -171,15 +179,16 @@ export const MultiEditTool: Tool = buildTool({
   description: "Apply multiple search/replace edits to a single file atomically",
   promptDescription:
     "Apply multiple search/replace edits to ONE file in a single atomic operation. " +
-    "Provide filePath and edits (an array of {old_string, new_string, replace_all?}). " +
-    "Edits apply in order, each to the result of the previous one. " +
-    "If ANY edit fails (no match, or a non-unique match without replace_all), " +
-    "NOTHING is written — the file is left untouched. Prefer this over multiple " +
-    "edit calls when changing several places in the same file.",
+    "Use when you need to make several changes to the same file — all edits succeed or none are written. " +
+    "Parameters: filePath (required, absolute path), " +
+    "edits (required, array of {old_string, new_string, replace_all?}). " +
+    "Edits apply in order; each sees the result of previous edits. " +
+    "If ANY edit fails, NO changes are written. Prefer this over multiple edit calls.",
   schema: MultiEditSchema,
   isReadOnly: false,
   isConcurrencySafe: false, // Same file — must be serial
   getPath: (input) => input.filePath,
+  searchHint: "batch edit multiple changes atomic",
 
   async call(input, context): Promise<ToolResult> {
     const resolution = resolveInWorkspace(input.filePath, context.workspaceRoot);

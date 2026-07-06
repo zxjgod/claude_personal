@@ -7,6 +7,7 @@
 // so a fan-out of task calls can't exhaust the model's rate limit.
 // ============================================================
 
+import { z } from "zod";
 import { agentLoop } from "../../agent-loop.js";
 import { loadAgentMemoryPrompt } from "../../agent-memory.js";
 import { createModelCaller } from "../../llm-adapter.js";
@@ -23,7 +24,7 @@ import {
 import type { Message, Tool, ToolResult } from "../../types.js";
 import { CancellationScope } from "../../utils/cancellation.js";
 import { createSubAgentApprover } from "../../utils/subagent-security.js";
-import { createTool } from "../registry.js";
+import { buildTool } from "../registry.js";
 
 // Register the agent-memory loader once (M35). Done here rather than in
 // subagents.ts to keep that module free of a static node:fs dependency.
@@ -42,20 +43,23 @@ const MAX_CONCURRENCY = (() => {
   return Number.isInteger(raw) && raw > 0 ? raw : 3;
 })();
 
-// --- Input ---
+// --- Schema ---
 
-interface TaskInput {
-  description: string;
-  prompt: string;
-  /** Omit to FORK the current agent (kernel §6 mechanism A); name a type otherwise. */
-  subagent_name?: string;
-  [key: string]: unknown;
-}
-
-// Core tools for sub-agent resolution come from the subagents registry, which
-// the CLI injects once at startup (16.9). This avoids the old cycle where
-// task-tool.ts dynamically imported tools.ts (tools.ts → TaskTool → tools.ts).
-// A lazy fallback remains inside getCoreToolsForSubagents for standalone use.
+const TaskSchema = z.strictObject({
+  description: z.string().min(1).describe("A short (3-5 word) description of the task"),
+  prompt: z
+    .string()
+    .min(1)
+    .describe("The detailed task for the sub-agent to perform. Be specific."),
+  subagent_name: z
+    .string()
+    .optional()
+    .describe(
+      `Type of sub-agent to launch. Omit to FORK the current agent (inherits conversation context). ` +
+        `Available types: ${listSubagentNames().join(", ")}`,
+    ),
+});
+type TaskInput = z.infer<typeof TaskSchema>;
 
 // --- Concurrency semaphore ---
 
@@ -79,61 +83,40 @@ function releaseSlot(): void {
 
 // --- Tool ---
 
-export const TaskTool: Tool = createTool<TaskInput>({
+// Build the promptDescription dynamically to include current subagent types
+function buildTaskPromptDescription(): string {
+  const hints = listSubagentSelectionHints()
+    .map((h) => `  - ${h.name}: ${h.whenToUse}`)
+    .join("\n");
+
+  return (
+    "Launch a sub-agent to handle complex, multi-step tasks. " +
+    "Parameters: description (required, short summary), prompt (required, detailed instructions), " +
+    "subagent_name (optional, omit to fork current agent). " +
+    "OMIT subagent_name to FORK: inherits conversation context and prompt cache, returns final report only. " +
+    "Or pick a typed sub-agent:\n" +
+    hints +
+    "\n" +
+    `Multiple sub-agents run concurrently (max ${MAX_CONCURRENCY}). ` +
+    "Only the final report is returned — intermediate tool output is not shown."
+  );
+}
+
+export const TaskTool: Tool = buildTool({
   name: "task",
   description: "Launch a sub-agent to handle complex, multi-step tasks autonomously",
-  promptDescription:
-    "Launch a sub-agent to handle complex, multi-step tasks. " +
-    "Provide description (short summary), prompt (detailed instructions), and optionally subagent_name. " +
-    "OMIT subagent_name to FORK the current agent: the fork inherits this " +
-    "conversation's context and shares the prompt cache, runs the prompt in " +
-    "isolation, and returns only its final report (use a fork for cheap parallel " +
-    "work whose intermediate output you won't need again). Or pick a typed " +
-    "sub-agent by matching your need to its purpose:\n" +
-    listSubagentSelectionHints()
-      .map((h) => `  - ${h.name}: ${h.whenToUse}`)
-      .join("\n") +
-    "\nUse this for broad exploration, review, or research where intermediate " +
-    "tool results don't need user review. Multiple sub-agents run concurrently " +
-    `(capped at ${MAX_CONCURRENCY}). Only the sub-agent's final report is returned — ` +
-    "its intermediate tool output never enters this conversation.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      description: {
-        type: "string",
-        description: "A short (3-5 word) description of the task",
-      },
-      prompt: {
-        type: "string",
-        description:
-          "The detailed task for the sub-agent to perform. Be specific about what to find or do.",
-      },
-      subagent_name: {
-        type: "string",
-        description: "The type of sub-agent to launch. Omit to fork the current agent.",
-        enum: listSubagentNames(),
-      },
-    },
-    required: ["description", "prompt"],
-  },
+  promptDescription: buildTaskPromptDescription(),
+  schema: TaskSchema,
   isReadOnly: false,
   requiresApproval: false,
   isConcurrencySafe: true,
+  searchHint: "task subagent fork parallel agent",
+  aliases: ["subagent", "spawn", "agent"],
 
   async call(input, context): Promise<ToolResult> {
-    const description = input.description?.trim();
-    const prompt = input.prompt?.trim();
+    // --- Setup sub-agent ---
+
     const requestedName = input.subagent_name?.trim();
-
-    // --- Validation ---
-
-    if (!description) {
-      return { content: "", error: "description is required" };
-    }
-    if (!prompt) {
-      return { content: "", error: "prompt is required" };
-    }
 
     // Fork mode (kernel §6 mechanism A): subagent_name omitted AND the loop
     // exposed the parent's context. The fork inherits the parent's message
@@ -158,15 +141,13 @@ export const TaskTool: Tool = createTool<TaskInput>({
       };
     }
 
-    // --- Setup sub-agent ---
-
     // Fork seeds the sub-loop with a copy of the parent's history (inherit
     // context) then appends the fork task; a typed sub-agent starts clean.
     const seed: Message[] = isFork ? context.getParentMessages!() : [];
     const seedLen = seed.length;
     const subMessages: Message[] = [
       ...seed,
-      { role: "user", content: [{ type: "text", text: prompt }] },
+      { role: "user", content: [{ type: "text", text: input.prompt }] },
     ];
 
     const subCaller = createModelCaller(context.modelConfig);
@@ -176,7 +157,7 @@ export const TaskTool: Tool = createTool<TaskInput>({
       ? context.parentSystemPrompt!
       : buildSubagentSystemPrompt(
           subagentType!,
-          [subagentType!.systemPrompt, "", `Your task: ${description}`].join("\n"),
+          [subagentType!.systemPrompt, "", `Your task: ${input.description}`].join("\n"),
           { workspaceRoot: context.workspaceRoot },
         );
 
@@ -281,7 +262,7 @@ export const TaskTool: Tool = createTool<TaskInput>({
 
     const header = [
       isFork ? `[Fork of current agent completed]` : `[Sub-agent "${subagentName}" completed]`,
-      `Task: ${description}`,
+      `Task: ${input.description}`,
       `Tool calls: ${toolCallCount}`,
       `Duration: ${(duration / 1000).toFixed(1)}s`,
       ``,

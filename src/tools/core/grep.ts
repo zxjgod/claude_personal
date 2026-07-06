@@ -24,10 +24,15 @@ export const GrepTool: Tool = buildTool({
   name: "grep",
   description: "Search file contents with regex",
   promptDescription:
-    "Search file contents with regex pattern. Uses ripgrep if available, falls back to Node.js.",
+    "Search file contents with regex pattern. Parameters: pattern (required, regex to search for), " +
+    "path (optional, directory or file to search, defaults to workspace root), " +
+    "include (optional, file pattern filter like '*.ts'). " +
+    "Uses ripgrep for speed when available, falls back to Node.js. " +
+    "Returns matching lines in format 'filepath:line:content'. Max 250 results.",
   schema: GrepSchema,
   isReadOnly: true,
   isConcurrencySafe: true,
+  searchHint: "grep search regex content find text",
 
   async call(input, context): Promise<ToolResult> {
     const searchDir = input.path

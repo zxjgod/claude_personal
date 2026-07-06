@@ -22,11 +22,18 @@ type WriteInput = z.infer<typeof WriteSchema>;
 export const WriteTool: Tool = buildTool({
   name: "write",
   description: "Create or overwrite a file",
-  promptDescription: "Create or overwrite a file. Creates parent directories automatically.",
+  promptDescription:
+    "Create or overwrite a file at the specified absolute path. " +
+    "Creates parent directories automatically if they don't exist. " +
+    "Parameters: filePath (required, absolute path where to write), " +
+    "content (required, the text content to write). " +
+    "Use for creating new files or replacing entire file contents. " +
+    "For partial edits, use the edit tool instead.",
   schema: WriteSchema,
   isReadOnly: false,
   isConcurrencySafe: false, // Same file writes must be serial
   getPath: (input) => input.filePath,
+  searchHint: "file create write new save",
 
   async call(input, context): Promise<ToolResult> {
     // P1: Validate file path input

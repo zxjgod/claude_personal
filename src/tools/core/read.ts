@@ -23,7 +23,10 @@ export const ReadTool: Tool = buildTool({
   name: "read",
   description: "Read a file from the local filesystem",
   promptDescription:
-    "Read a file from the local filesystem. Returns text content with line numbers. " +
+    "Read a file from the local filesystem. Returns text content with line numbers (4-space padded). " +
+    "Parameters: filePath (required, absolute path to the file), " +
+    "offset (optional, line number to start reading from, 1-based), " +
+    "limit (optional, maximum number of lines to read, default 2000). " +
     "Images (PNG/JPG/GIF/WebP) and PDFs are returned as visual content blocks you can see directly.",
   schema: ReadSchema,
   isReadOnly: true,
@@ -32,6 +35,7 @@ export const ReadTool: Tool = buildTool({
   // offset/limit, and spilling would loop "Read → spill file → Read the spill".
   maxResultSizeChars: Number.POSITIVE_INFINITY,
   getPath: (input) => input.filePath,
+  searchHint: "file read view cat open display",
 
   async call(input, context): Promise<ToolResult> {
     // P1: Validate file path input

@@ -6,17 +6,18 @@
 // the LLM to synthesize. No API key required.
 // ============================================================
 
+import { z } from "zod";
 import type { Tool, ToolResult } from "../../types.js";
-import { createTool } from "../registry.js";
+import { buildTool } from "../registry.js";
 
 const TIMEOUT_MS = 15_000;
 const MAX_RESULTS = 10;
 const SEARCH_ENDPOINT = "https://html.duckduckgo.com/html/";
 
-interface WebSearchInput {
-  query: string;
-  [key: string]: unknown;
-}
+const WebSearchSchema = z.strictObject({
+  query: z.string().min(1).describe("The search query"),
+});
+type WebSearchInput = z.infer<typeof WebSearchSchema>;
 
 interface SearchResult {
   title: string;
@@ -78,33 +79,23 @@ export function parseSearchResults(html: string, limit = MAX_RESULTS): SearchRes
   return results;
 }
 
-export const WebSearchTool: Tool = createTool<WebSearchInput>({
+export const WebSearchTool: Tool = buildTool({
   name: "web_search",
   description: "Search the web and return result snippets",
   promptDescription:
-    "Search the web for current information. Provide query (the search terms). " +
-    "Returns a ranked list of results with titles, URLs, and snippets. " +
+    "Search the web for current information using DuckDuckGo. " +
+    "Parameters: query (required, the search terms). " +
+    "Returns up to 10 ranked results with titles, URLs, and snippets. " +
     "Use this to find documentation, recent events, or facts beyond your training data, " +
-    "then optionally follow up with web_fetch to read a specific result in full.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      query: {
-        type: "string",
-        description: "The search query",
-      },
-    },
-    required: ["query"],
-  },
+    "then optionally follow up with web_fetch to read a specific result in full. " +
+    "No API key required — uses DuckDuckGo HTML endpoint.",
+  schema: WebSearchSchema,
   isReadOnly: true,
   isConcurrencySafe: true,
+  searchHint: "search web internet find information",
+  aliases: ["search"],
 
   async call(input): Promise<ToolResult> {
-    const query = input.query?.trim();
-    if (!query) {
-      return { content: "", error: "query is required" };
-    }
-
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
@@ -117,7 +108,7 @@ export const WebSearchTool: Tool = createTool<WebSearchInput>({
           "Content-Type": "application/x-www-form-urlencoded",
           Accept: "text/html",
         },
-        body: new URLSearchParams({ q: query }).toString(),
+        body: new URLSearchParams({ q: input.query }).toString(),
         signal: controller.signal,
       });
       clearTimeout(timeoutId);
@@ -133,7 +124,7 @@ export const WebSearchTool: Tool = createTool<WebSearchInput>({
       const results = parseSearchResults(html);
 
       if (results.length === 0) {
-        return { content: `No results found for "${query}".` };
+        return { content: `No results found for "${input.query}".` };
       }
 
       const body = results
@@ -143,7 +134,7 @@ export const WebSearchTool: Tool = createTool<WebSearchInput>({
         .join("\n\n");
 
       return {
-        content: `Search results for "${query}":\n\n${body}`,
+        content: `Search results for "${input.query}":\n\n${body}`,
         metadata: { linesRead: results.length },
       };
     } catch (err: any) {

@@ -6,8 +6,9 @@
 // each time (complete replacement).
 // ============================================================
 
+import { z } from "zod";
 import type { Tool, ToolResult } from "../../types.js";
-import { createTool } from "../registry.js";
+import { buildTool } from "../registry.js";
 
 // --- Types ---
 
@@ -17,10 +18,18 @@ interface TodoItem {
   activeForm: string;
 }
 
-interface TodoInput {
-  todos: TodoItem[];
-  [key: string]: unknown;
-}
+const TodoItemSchema = z.strictObject({
+  content: z.string().describe("Task description"),
+  status: z.enum(["pending", "in_progress", "completed"]).describe("Current status"),
+  activeForm: z.string().describe("Present-tense label shown while working (e.g. 'Adding tests')"),
+});
+
+const TodoSchema = z.strictObject({
+  todos: z
+    .array(TodoItemSchema)
+    .describe("The COMPLETE todo list. Items not included will be removed."),
+});
+type TodoInput = z.infer<typeof TodoSchema>;
 
 // Module-level session storage
 const sessionTodos: Map<string, TodoItem[]> = new Map();
@@ -51,46 +60,25 @@ function formatTodoList(todos: TodoItem[]): string {
 
 // --- Tool ---
 
-export const TodoTool: Tool = createTool<TodoInput>({
+export const TodoTool: Tool = buildTool({
   name: "todo",
   description: "Create and update a structured task list for the current coding session",
   promptDescription:
     "Create and update a structured task list for your current coding session. " +
-    "Send the FULL list as { todos: [...] } each time — any existing items not " +
-    "in the new list are removed. Each item needs content (description), status " +
-    '(one of "pending" | "in_progress" | "completed"), and activeForm ' +
-    "(a present-tense label shown while in progress, e.g. 'Adding tests').",
-  inputSchema: {
-    type: "object",
-    properties: {
-      todos: {
-        type: "array",
-        description: "The COMPLETE todo list. Items not included will be removed.",
-      },
-    },
-    required: ["todos"],
-  },
+    "Send the FULL list as { todos: [...] } each time — existing items not " +
+    "included will be removed. Each item needs: content (task description), " +
+    "status (one of 'pending' | 'in_progress' | 'completed'), and activeForm " +
+    "(present-tense label shown while working, e.g. 'Adding tests'). " +
+    "Use this to track multi-step tasks and show progress to the user.",
+  schema: TodoSchema,
   isReadOnly: false,
   isConcurrencySafe: false,
+  searchHint: "todo task list track progress checklist",
+  aliases: ["todos", "tasks", "checklist"],
 
   async call(input, context): Promise<ToolResult> {
-    const todos = input.todos ?? [];
-
-    // Validate
-    for (const item of todos) {
-      if (!item.content || typeof item.content !== "string") {
-        return {
-          content: "",
-          error: `Invalid todo item: missing "content" (string)`,
-        };
-      }
-      if (!["pending", "in_progress", "completed"].includes(item.status)) {
-        return {
-          content: "",
-          error: `Invalid status "${item.status}" for "${item.content}". Must be: pending | in_progress | completed`,
-        };
-      }
-    }
+    // Zod validation ensures todos is a valid array with proper item structure
+    const todos: TodoItem[] = input.todos;
 
     // Store
     sessionTodos.set(context.sessionId, todos);

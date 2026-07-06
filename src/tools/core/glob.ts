@@ -18,10 +18,14 @@ export const GlobTool: Tool = buildTool({
   name: "glob",
   description: "Find files matching a glob pattern",
   promptDescription:
-    'Find files matching a glob pattern. Example patterns: "**/*.ts", "src/**/*.test.ts"',
+    "Find files matching a glob pattern. Parameters: pattern (required, glob pattern like '**/*.ts'), " +
+    "path (optional, directory to search in, defaults to workspace root). " +
+    "Returns a sorted list of matching file paths, one per line. " +
+    "Example patterns: '**/*.ts', 'src/**/*.test.ts', '*.json'",
   schema: GlobSchema,
   isReadOnly: true,
   isConcurrencySafe: true,
+  searchHint: "glob find files pattern match search",
 
   async call(input, context): Promise<ToolResult> {
     const searchDir = input.path
