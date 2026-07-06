@@ -58,8 +58,10 @@ export function bashCommandIsReadOnly(command: string | undefined): boolean {
     "sort",
     "uniq",
     "cut",
-    "awk",
-    "sed",
+    // NOTE: sed and awk are intentionally omitted from the read-only list.
+    // - sed -i (--in-place) modifies files in place
+    // - awk can execute arbitrary commands via system(), getline |, etc.
+    // These should always go through approval even for seemingly safe usage.
     "less",
     "more",
     "realpath",

@@ -22,8 +22,15 @@ describe("InputValidator", () => {
       expect(result.error).toContain("illegal control characters");
     });
 
-    it("should reject paths with path traversal", () => {
+    // Path traversal is NOT checked by InputValidator — it's correctly handled
+    // by resolveInWorkspace() which resolves the path and verifies containment.
+    it("should accept paths with path traversal (checked by resolveInWorkspace)", () => {
       const result = InputValidator.validateFilePath("../../etc/passwd", mockContext);
+      expect(result.valid).toBe(true);
+    });
+
+    it("should reject UNC paths", () => {
+      const result = InputValidator.validateFilePath("\\\\server\\share", mockContext);
       expect(result.valid).toBe(false);
       expect(result.error).toContain("dangerous pattern");
     });

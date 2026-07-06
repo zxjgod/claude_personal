@@ -124,14 +124,16 @@ export class InputValidator {
   // ============================================================
 
   /**
-   * Check for dangerous path patterns
+   * Check for dangerous path patterns.
+   *
+   * NOTE: Path traversal (`..`) is NOT checked here — it is correctly handled
+   * by resolveInWorkspace() which resolves the path and verifies containment.
+   * Windows invalid filename chars are NOT checked — valid on Unix.
    */
   private static containsDangerousPathPattern(filePath: string): boolean {
     const dangerous = [
-      /\.\.[/\\]/, // Path traversal
-      /^[/\\]{2,}/, // UNC paths on Windows
-      /[\x00]/, // Null byte
-      /[<>:"|?*]/, // Invalid Windows filename chars
+      /^[/\\]{2,}/, // UNC paths on Windows (\\server\share)
+      /[\x00-\x1F]/, // Control characters (null byte and below)
     ];
 
     return dangerous.some((pattern) => pattern.test(filePath));

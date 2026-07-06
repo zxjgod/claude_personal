@@ -15,7 +15,7 @@ export function createSubAgentApprover(
   parentApprover?: AskUserFn,
   restrictive: boolean = true,
 ): AskUserFn {
-  return async (tool: Tool, input: any, context: any) => {
+  return async (tool: Tool, input: Record<string, unknown>, riskHint?: string) => {
     // Dangerous tools that can modify system state
     const dangerousTools = new Set([
       "bash",
@@ -30,8 +30,8 @@ export function createSubAgentApprover(
     // If this is a dangerous tool, require parent approval
     if (dangerousTools.has(tool.name)) {
       if (parentApprover) {
-        // Forward to parent approver
-        return parentApprover(tool, input, context);
+        // Forward to parent approver with the correct riskHint parameter
+        return parentApprover(tool, input, riskHint);
       }
 
       // No parent approver available
