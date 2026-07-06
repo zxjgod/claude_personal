@@ -47,13 +47,16 @@ describe("resolveInWorkspace", () => {
 
   describe("symlink escape prevention", () => {
     let tempDir: string;
+    let outsideDir: string;
     const tempFiles: string[] = [];
 
     beforeAll(() => {
-      // Create a temp workspace with a symlink pointing outside
-      tempDir = fs.mkdtempSync(
-        path.join(fs.mkdtempSync(path.join(require("os").tmpdir(), "ccr-test-")), "ws"),
-      );
+      // Create a temp workspace and a parent directory outside it
+      const base = fs.mkdtempSync(path.join(require("os").tmpdir(), "ccr-test-"));
+      outsideDir = path.join(base, "outside");
+      fs.mkdirSync(outsideDir);
+      tempDir = path.join(base, "ws");
+      fs.mkdirSync(tempDir);
     });
 
     afterAll(() => {
@@ -70,15 +73,20 @@ describe("resolveInWorkspace", () => {
       } catch {
         // ignore
       }
+      try {
+        fs.rmSync(outsideDir, { recursive: true, force: true });
+      } catch {
+        // ignore
+      }
     });
 
     it("should block symlink pointing outside workspace", () => {
-      // Create a file outside the workspace
-      const outsideFile = path.join(tempDir, "outside.txt");
+      // Create a file OUTSIDE the workspace (in outsideDir, not tempDir)
+      const outsideFile = path.join(outsideDir, "secret.txt");
       fs.writeFileSync(outsideFile, "secret");
       tempFiles.push(outsideFile);
 
-      // Create a symlink inside workspace pointing to it
+      // Create a symlink INSIDE workspace pointing to the outside file
       const linkPath = path.join(tempDir, "link-to-outside.txt");
       try {
         fs.symlinkSync(outsideFile, linkPath);
@@ -89,7 +97,7 @@ describe("resolveInWorkspace", () => {
         return;
       }
 
-      // The symlink should be resolvable but blocked because it points outside
+      // The symlink resolves to a path OUTSIDE tempDir, so it should be blocked
       const result = resolveInWorkspace("link-to-outside.txt", tempDir);
       expect(result.ok).toBe(false);
       if (!result.ok) {

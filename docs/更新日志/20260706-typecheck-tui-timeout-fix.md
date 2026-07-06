@@ -121,4 +121,31 @@ for (let i = 0; i < 12; i++) {
 
 ## 七、二次修复（同日）
 
-无。
+### 符号链接测试设置缺陷（GitHub Actions CI）
+
+**现象**：
+```
+FAIL src/__tests__/path-security.test.ts > should block symlink pointing outside workspace
+expected true to be(false)
+```
+
+**真正根因**：
+测试在 CI（Linux 环境）上失败。原有测试将 `outside.txt` 创建在 `tempDir` 内，然后创建符号链接指向它。但因为两个文件都在同一目录，符号链接解析后的路径仍在工作区内，未能触发 `resolveInWorkspace` 的阻止逻辑。
+
+**改动**：
+```typescript
+// 修复前
+const outsideFile = path.join(tempDir, "outside.txt"); // 仍在 tempDir 内
+
+// 修复后
+const base = fs.mkdtempSync(path.join(require("os").tmpdir(), "ccr-test-"));
+outsideDir = path.join(base, "outside"); // 真正的工作区外目录
+fs.mkdirSync(outsideDir);
+tempDir = path.join(base, "ws");
+fs.mkdirSync(tempDir);
+const outsideFile = path.join(outsideDir, "secret.txt"); // 在工作区外
+```
+
+**验证**：
+- `npm test -- src/__tests__/path-security.test.ts` → 8/8 通过
+- Windows 上符号链接测试正常跳过（文件系统不支持）
