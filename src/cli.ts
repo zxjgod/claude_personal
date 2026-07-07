@@ -487,6 +487,12 @@ async function main() {
     hooks,
     goal: goalHolder,
     editorMode: editorModeHolder,
+    input: {
+      askConfirmation: async (question: string): Promise<boolean> => {
+        const answer = await askQuestion(question);
+        return /^y(es)?$/i.test(answer ?? "");
+      },
+    },
   });
 
   // --- TUI path (9.1, 9.7) ---

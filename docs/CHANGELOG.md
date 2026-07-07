@@ -1,6 +1,29 @@
 # 更新日志 (Changelog)
 
-## [待发布] - 2026-07-06
+## [待发布] - 2026-07-07
+
+### 代码审查与修复
+
+#### 发现并修复的问题
+
+- **`confirm` 覆盖缺失**: `Overlay` 类型中存在 `confirm` 类型，但 TUI 组件中缺少对应的渲染逻辑
+  - `src/tui/Prompts.tsx`: 新增 `ConfirmPrompt` 组件（Yes/No 二选一，←→ 切换）
+  - `src/tui/App.tsx`: 添加 `case "confirm"` 分支
+  - `src/tui/FullScreenApp.tsx`: 添加对应的全屏模式覆盖
+
+#### 遗留 lint 警告（非本次引入）
+
+| 文件 | 问题 |
+|------|------|
+| `src/utils/input-validator.ts` | static-only-class |
+| `src/utils/resource-limiter.ts` | static-only-class |
+| `src/tools/core/read.ts` | unused imports |
+| `src/tools/summary.ts` | unused imports |
+| `src/__tests__/path-security.test.ts` | 使用 `require("os")` 而非 `node:os` |
+
+---
+
+## 2026-07-06
 
 ### 工具系统全面升级
 

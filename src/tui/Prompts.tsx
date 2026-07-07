@@ -118,3 +118,41 @@ export function QuestionPrompt({ overlay }: { overlay: Extract<Overlay, { kind: 
     </Box>
   );
 }
+
+export function ConfirmPrompt({ overlay }: { overlay: Extract<Overlay, { kind: "confirm" }> }) {
+  const [selected, setSelected] = useState(0);
+  const options: Array<{ label: string; value: boolean }> = [
+    { label: "Yes", value: true },
+    { label: "No", value: false },
+  ];
+
+  useInput((input, key) => {
+    if (key.leftArrow || key.rightArrow) {
+      setSelected((s) => (s + 1) % options.length);
+    } else if (key.return) {
+      overlay.resolve(options[selected]!.value);
+    } else if (key.escape) {
+      overlay.resolve(false);
+    } else if (/^[12]$/.test(input)) {
+      overlay.resolve(input === "1");
+    }
+  });
+
+  return (
+    <Box flexDirection="column" borderStyle="round" borderColor={CYAN} paddingX={1}>
+      <Text bold color={CYAN}>
+        {overlay.header}
+      </Text>
+      <Box marginTop={1}>
+        {options.map((opt, i) => (
+          <Text key={opt.label} color={i === selected ? CYAN : undefined}>
+            {i === selected ? "❯ " : "  "}
+            {opt.label}
+            {"  "}
+          </Text>
+        ))}
+      </Box>
+      <Text dimColor>←→ choose · Enter confirm · Esc cancel</Text>
+    </Box>
+  );
+}

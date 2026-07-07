@@ -48,6 +48,13 @@ export interface CommandContext {
   /** Hook registry for /hooks (list registered PreToolUse/PostToolUse). */
   hooks?: import("../hooks.js").HookRegistry;
   /**
+   * Interactive input reader for commands that need user confirmation.
+   * If not provided, destructive operations should require --force flag.
+   */
+  input?: {
+    askConfirmation(question: string): Promise<boolean>;
+  };
+  /**
    * Mutable session goal (for /goal). When set, the CLI injects it into the
    * turn's system prompt so the model keeps the objective in view. Stored as a
    * holder so a command can read and write the same reference the REPL reads.

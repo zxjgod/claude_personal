@@ -16,6 +16,18 @@ import { padAligned, stripAnsi, terminalColumns, visualWidth } from "./terminal-
 
 const EOL = "\n";
 
+/** Decode common HTML entities so terminal output shows actual characters. */
+function decodeHtmlEntities(text: string): string {
+  return text
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(Number(dec)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)));
+}
+
 // --- Table rendering (ported from MarkdownTable.tsx) ---
 
 const SAFETY_MARGIN = 4;
@@ -221,7 +233,7 @@ function formatToken(
         (token.tokens ?? []).map((t) => formatToken(t, 0, null, parent)).join(""),
       );
     case "codespan":
-      return inlineCode((token as Tokens.Codespan).text);
+      return inlineCode(decodeHtmlEntities((token as Tokens.Codespan).text));
     case "code": {
       const code = (token as Tokens.Code).text;
       return (
@@ -267,7 +279,9 @@ function formatToken(
       if (txt.tokens && txt.tokens.length > 0) {
         return txt.tokens.map((t) => formatToken(t, listDepth, orderedNumber, parent)).join("");
       }
-      return txt.text;
+      // text is a leaf node — decode any HTML entities so raw model output like
+      // `&quot;quoted&quot;` renders as `"quoted"` in the terminal.
+      return decodeHtmlEntities(txt.text);
     }
     case "link": {
       const link = token as Tokens.Link;
@@ -283,7 +297,9 @@ function formatToken(
     case "escape":
       return (token as Tokens.Escape).text;
     case "html":
-      return (token as Tokens.HTML).text;
+      // HTML tokens may contain entities (e.g. `&quot;` from LLM output). Decode
+      // them so terminal output shows the actual characters, not entity strings.
+      return decodeHtmlEntities((token as Tokens.HTML).text);
     default:
       // Fall back to the raw text for any unhandled token type.
       return "raw" in token && typeof (token as { raw?: unknown }).raw === "string"
@@ -298,11 +314,11 @@ function formatToken(
  */
 export function renderMarkdown(content: string): string {
   // Fast path: plain prose with no markdown syntax → skip the full GFM lex
-  // (the hot cost when re-rendering a streaming tail every frame). A paragraph
-  // of plain text formats to itself anyway, so just return it trimmed.
-  // Mirrors the reference's hasMarkdownSyntax guard.
+  // (the hot cost when re-rendering a streaming tail every frame). Even plain
+  // text may contain HTML entities from LLM output (e.g. `&quot;` from a model
+  // that escaped a quote), so decode them here before returning.
   if (!hasMarkdownSyntax(content)) {
-    return content.replace(/\n+$/, "");
+    return decodeHtmlEntities(content.replace(/\n+$/, ""));
   }
   const tokens = marked.lexer(content);
   return tokens

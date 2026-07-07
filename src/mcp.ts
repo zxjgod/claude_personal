@@ -269,7 +269,12 @@ export class MCPManager {
           },
 
           formatResult: (r: ToolResult) => {
-            if (r.error) return `Error: ${r.error}`;
+            if (r.error) {
+              // call() always produces error messages without "Error:" prefix
+              // (e.g. "MCP tool error (name): ..."), so we add it here so the
+              // terminal renderer always shows a red "Error: ..." label.
+              return r.error.startsWith("Error:") ? r.error : `Error: ${r.error}`;
+            }
             return r.content;
           },
 

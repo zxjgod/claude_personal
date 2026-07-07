@@ -137,6 +137,11 @@ export const CLAUDE_SHIMMER: RGB = { r: 245, g: 149, b: 117 };
 export const ORANGE_HEX = "#d77757";
 export const SHIMMER_HEX = "#f59575";
 
+/** Status dot colors */
+export const STATUS_GREEN = "#9ece6a"; // AI idle / completed - success green
+export const STATUS_GRAY = "#666666"; // Tool executing - gray
+export const STATUS_GRAY_BRIGHT = "#999999"; // Tool executing flash - lighter gray
+
 // --- Shimmer maths (ported from bridgeStatusUtil.ts) -------------------------
 
 export function computeGlimmerIndex(tick: number, messageWidth: number): number {

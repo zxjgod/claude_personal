@@ -24,7 +24,7 @@ import { EffortPrompt } from "./EffortPrompt.js";
 import { FullScreenApp } from "./FullScreenApp.js";
 import { HelpPanel } from "./HelpPanel.js";
 import { type CommandInfo, InputBox } from "./InputBox.js";
-import { PermissionPrompt, QuestionPrompt } from "./Prompts.js";
+import { ConfirmPrompt, PermissionPrompt, QuestionPrompt } from "./Prompts.js";
 import { ProviderPicker } from "./ProviderPicker.js";
 import { SessionPicker } from "./SessionPicker.js";
 import { StatusLine } from "./StatusLine.js";
@@ -210,6 +210,8 @@ function InteractionRegion({
         return <ProviderPicker overlay={overlay} />;
       case "commandPicker":
         return <CommandPicker overlay={overlay} />;
+      case "confirm":
+        return <ConfirmPrompt overlay={overlay} />;
       default:
         return <EffortPrompt overlay={overlay} />;
     }

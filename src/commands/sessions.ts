@@ -12,7 +12,11 @@ function findSessionByPrefix(sessions: SessionMeta[], idOrPrefix: string): Sessi
   return sessions.filter((s) => s.sessionId === idOrPrefix || s.sessionId.startsWith(idOrPrefix));
 }
 
-async function deleteSession(args: string, ctx: Parameters<SlashCommand["run"]>[1]): Promise<void> {
+async function deleteSession(
+  args: string,
+  force: boolean,
+  ctx: Parameters<SlashCommand["run"]>[1],
+): Promise<void> {
   const idOrPrefix = args.trim();
   if (!idOrPrefix) {
     console.log(chalk.yellow("  Usage: /sessions delete <session-prefix-or-id>"));
@@ -34,6 +38,19 @@ async function deleteSession(args: string, ctx: Parameters<SlashCommand["run"]>[
   }
 
   const match = matches[0]!;
+
+  // Require confirmation before deleting (unless --force flag is used)
+  if (!force && ctx.input) {
+    const shortId = match.sessionId.slice(0, 8);
+    const confirmed = await ctx.input.askConfirmation(
+      `Delete session ${shortId}... (${match.messageCount} msgs)? [y/N] `,
+    );
+    if (!confirmed) {
+      console.log(chalk.gray("  Cancelled."));
+      return;
+    }
+  }
+
   await ctx.persistence!.deleteSession(match.sessionId);
   console.log(chalk.gray(`  Deleted session ${match.sessionId.slice(0, 8)}...`));
 }
@@ -50,7 +67,10 @@ export const sessionsCommand: SlashCommand = {
     const trimmed = args.trim();
     const deleteMatch = trimmed.match(/^(delete|rm|remove)\s+(.+)$/i);
     if (deleteMatch) {
-      await deleteSession(deleteMatch[2]!, ctx);
+      const rawArgs = deleteMatch[2]!;
+      const force = /\s+--force$/i.test(rawArgs);
+      const sessionIdArg = rawArgs.replace(/\s+--force$/i, "");
+      await deleteSession(sessionIdArg, force, ctx);
       return;
     }
     if (/^(delete|rm|remove)$/i.test(trimmed)) {

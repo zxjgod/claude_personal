@@ -4,13 +4,17 @@
 // A completed tool is shown as "● Name(detail)" followed by a "⎿ result"
 // branch. Long results (read/grep) collapse to a preview with a hint; the
 // active row (ctrl+r) can toggle expansion via the App's expanded set.
+//
+// M26: Tool status indicator:
+// - Active tool (executing): gray blinking dot
+// - Completed tool: green static dot
 // ============================================================
 
 import { Box, Text } from "ink";
 import type React from "react";
-import { actionLabel } from "./../spinner-core.js";
+import { useEffect, useState } from "react";
+import { actionLabel, STATUS_GRAY, STATUS_GRAY_BRIGHT, STATUS_GREEN } from "./../spinner-core.js";
 import type { ToolExecutionResult } from "./../types.js";
-import { SpinnerGlyph } from "./SpinnerGlyph.js";
 import { palette } from "./theme.js";
 
 const PREVIEW_LINES = 12;
@@ -22,11 +26,29 @@ function colorizeLine(line: string): React.ReactNode {
   return <Text>{line}</Text>;
 }
 
-/** The live "tool is running" card: shared orange glyph + concrete action. */
+/** Tool status glyph: gray blinking while executing, green static when done */
+function ToolStatusGlyph({ isActive }: { isActive: boolean }) {
+  const [flash, setFlash] = useState(false);
+
+  useEffect(() => {
+    if (!isActive) return;
+    // Blink between gray and bright-gray at ~500ms interval
+    const t = setInterval(() => setFlash((f) => !f), 500);
+    return () => clearInterval(t);
+  }, [isActive]);
+
+  if (isActive) {
+    return <Text color={flash ? STATUS_GRAY_BRIGHT : STATUS_GRAY}>●</Text>;
+  } else {
+    return <Text color={STATUS_GREEN}>●</Text>;
+  }
+}
+
+/** The live "tool is running" card: gray blinking glyph + concrete action. */
 export function ActiveToolCard({ name, detail }: { name: string; detail: string }) {
   return (
     <Box>
-      <SpinnerGlyph />
+      <ToolStatusGlyph isActive={true} />
       <Text> {actionLabel(name, detail)}</Text>
     </Box>
   );
@@ -43,7 +65,7 @@ export function CompletedToolCard({
 }) {
   const title = (
     <Box>
-      <Text color={palette.accent}>●</Text>
+      <ToolStatusGlyph isActive={false} />
       <Text bold color={palette.tool}>
         {" "}
         {capitalize(result.toolName)}

@@ -100,6 +100,11 @@ export type Overlay =
       kind: "commandPicker";
       commands: CommandPickerItem[];
       resolve: (name: string | null) => void;
+    }
+  | {
+      kind: "confirm";
+      header: string;
+      resolve: (confirmed: boolean) => void;
     };
 
 export interface StoreState {
@@ -532,6 +537,25 @@ export class TuiStore {
           resolve: (name) => {
             this.set({ overlay: null });
             resolve(name);
+          },
+        },
+      });
+    });
+  }
+
+  /**
+   * Show a yes/no confirmation overlay; resolves with true for "yes", false
+   * for "no" or cancel (Esc).
+   */
+  askConfirmation(header: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      this.set({
+        overlay: {
+          kind: "confirm",
+          header,
+          resolve: (confirmed) => {
+            this.set({ overlay: null });
+            resolve(confirmed);
           },
         },
       });

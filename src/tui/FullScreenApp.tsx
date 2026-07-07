@@ -28,7 +28,7 @@ import { CommandPicker } from "./CommandPicker.js";
 import { EffortPrompt } from "./EffortPrompt.js";
 import { HelpPanel } from "./HelpPanel.js";
 import { type CommandInfo, InputBox } from "./InputBox.js";
-import { PermissionPrompt, QuestionPrompt } from "./Prompts.js";
+import { ConfirmPrompt, PermissionPrompt, QuestionPrompt } from "./Prompts.js";
 import { ProviderPicker } from "./ProviderPicker.js";
 import { bottomScrollTop, clampScrollTop, ScrollView } from "./ScrollView.js";
 import { SessionPicker } from "./SessionPicker.js";
@@ -149,6 +149,8 @@ function FsInteraction({
         return <ProviderPicker overlay={overlay} />;
       case "commandPicker":
         return <CommandPicker overlay={overlay} />;
+      case "confirm":
+        return <ConfirmPrompt overlay={overlay} />;
       default:
         return <EffortPrompt overlay={overlay} />;
     }

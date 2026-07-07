@@ -75,6 +75,11 @@ async function runTurn(
   store.setSpinner("thinking");
   store.startTurnClock();
 
+  // Each tool lands the instant it finishes — no artificial display delay. The
+  // UI shows tools as they complete, which is the natural behaviour users expect.
+  // Previously a MIN_TOOL_DISPLAY_MS delay made abort responsiveness lag by up to
+  // 800ms × N tools; removing it also makes single-tool turns feel snappier.
+
   // M18.12: append the session goal (if set) to this turn's system prompt.
   const goal = deps.makeCommandContext().goal?.value;
   const turnSystemPrompt = goal
@@ -165,12 +170,10 @@ async function runTurn(
           store.setSpinner("tool");
           break;
         }
-        case "tool_result":
-          // A single tool finished — commit it the instant it lands (this is
-          // what keeps Reads in sync with the spinner instead of arriving as
-          // one late batch).
+        case "tool_result": {
           store.finishTool(event.result, toolDetails.get(event.id) ?? "", event.id);
           break;
+        }
         case "tool_results":
           // Batch boundary: every tool in this turn is done. Persist now.
           deps.onSave();
@@ -496,6 +499,9 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
             commandContext.getPermissionMode = () => store.getPermissionMode();
             commandContext.setPermissionMode = (mode: string) => {
               store.setPermissionMode(mode as PermissionMode);
+            };
+            commandContext.input = {
+              askConfirmation: (question: string) => store.askConfirmation(question),
             };
             return handleSlashCommand(value, commandContext);
           });
