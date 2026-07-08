@@ -16,6 +16,7 @@
 
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
+import * as fsPromises from "node:fs/promises";
 import * as path from "node:path";
 import type { Message } from "./types.js";
 
@@ -103,73 +104,63 @@ export class SessionMemory {
     return next;
   }
 
-  private saveSerialized(
+  private async saveSerialized(
     sessionId: string,
     messages: Message[],
     options: { completed?: boolean } | undefined,
   ): Promise<void> {
-    return new Promise((resolve, reject) => {
-      try {
-        this.ensureDir();
+    try {
+      this.ensureDir();
 
-        const filePath = this.sessionPath(sessionId);
-        const now = new Date().toISOString();
+      const filePath = this.sessionPath(sessionId);
+      const now = new Date().toISOString();
 
-        let data: SessionData;
+      let data: SessionData;
 
-        // Try to load existing session to preserve createdAt
-        const existing = this.loadSync(sessionId);
-        if (existing) {
-          data = {
-            ...existing,
-            updatedAt: now,
-            messages,
-            messageCount: messages.length,
-            completed: options?.completed ?? existing.completed,
-          };
-        } else {
-          data = {
-            version: 1,
-            sessionId,
-            createdAt: now,
-            updatedAt: now,
-            workspaceRoot: path.dirname(this.sessionsDir),
-            messages,
-            messageCount: messages.length,
-            completed: options?.completed ?? false,
-          };
-        }
-
-        const json = JSON.stringify(data, null, 2);
-
-        // Atomic write: temp file + rename. A direct writeFileSync can leave a
-        // truncated file if the process is killed (Ctrl+C / OOM) mid-write;
-        // rename is atomic on the same filesystem, so readers always see either
-        // the old or the new complete file, never a partial one.
-        const tmpPath = `${filePath}.${process.pid}.tmp`;
-        fs.writeFileSync(tmpPath, json, "utf-8");
-        fs.renameSync(tmpPath, filePath);
-        resolve();
-      } catch (error) {
-        reject(error);
+      // Try to load existing session to preserve createdAt
+      const existing = await this.load(sessionId);
+      if (existing) {
+        data = {
+          ...existing,
+          updatedAt: now,
+          messages,
+          messageCount: messages.length,
+          completed: options?.completed ?? existing.completed,
+        };
+      } else {
+        data = {
+          version: 1,
+          sessionId,
+          createdAt: now,
+          updatedAt: now,
+          workspaceRoot: path.dirname(this.sessionsDir),
+          messages,
+          messageCount: messages.length,
+          completed: options?.completed ?? false,
+        };
       }
-    });
+
+      const json = JSON.stringify(data, null, 2);
+
+      // Atomic write: temp file + rename. A direct writeFile can leave a
+      // truncated file if the process is killed (Ctrl+C / OOM) mid-write;
+      // rename is atomic on the same filesystem, so readers always see either
+      // the old or the new complete file, never a partial one.
+      const tmpPath = `${filePath}.${process.pid}.tmp`;
+      await fsPromises.writeFile(tmpPath, json, "utf-8");
+      await fsPromises.rename(tmpPath, filePath);
+    } catch (error) {
+      throw error;
+    }
   }
 
   /**
    * Load a session from disk (async)
    */
   async load(sessionId: string): Promise<SessionData | null> {
-    return this.loadSync(sessionId);
-  }
-
-  /**
-   * Load a session synchronously
-   */
-  private loadSync(sessionId: string): SessionData | null {
     const filePath = this.sessionPath(sessionId);
     try {
-      const raw = fs.readFileSync(filePath, "utf-8");
+      const raw = await fsPromises.readFile(filePath, "utf-8");
       const data: SessionData = JSON.parse(raw);
 
       // Basic validation
@@ -203,7 +194,7 @@ export class SessionMemory {
         if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
 
         const sessionId = entry.name.replace(/\.json$/, "");
-        const data = this.loadSync(sessionId);
+        const data = await this.load(sessionId);
         if (!data) continue;
 
         sessions.push({

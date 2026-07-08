@@ -400,14 +400,15 @@ export async function* agentLoop(
           case "done": {
             usage = event.usage;
             lastTurnOutput = event.usage.output_tokens;
-            // M31: record the usage baseline. promptTokens = everything the
-            // provider counted as input for this call (fresh + cached). The
-            // next turn estimates context as this + delta(messages since), so
-            // we stop re-tokenizing the whole history every turn.
-            const promptTokens =
-              event.usage.input_tokens +
-              (event.usage.cache_read_input_tokens ?? 0) +
-              (event.usage.cache_creation_input_tokens ?? 0);
+            // M31: record the usage baseline. promptTokens = the actual context
+            // window size as reported by the provider. Both adapters now set
+            // input_tokens to the non-cached portion only (Anthropic: its own field,
+            // which already excludes cache; OpenAI: prompt_tokens from the API).
+            // Adding cache_read/creation here would double-count Anthropic's
+            // input_tokens (which already reflects the post-cache window size).
+            // S-4 fix: use input_tokens as-is — it's the authoritative live context
+            // size from the provider.
+            const promptTokens = event.usage.input_tokens;
             state = {
               ...state,
               totalTokens: state.totalTokens + usage.input_tokens + usage.output_tokens,

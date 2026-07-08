@@ -210,108 +210,119 @@ export class MCPManager {
 
       // --- Discover tools ---
       const toolsResult = await withTimeout("listTools", client.listTools(), LIST_TOOLS_TIMEOUT_MS);
-      const mcpTools: Tool[] = toolsResult.tools.map((remoteTool: any) => {
-        // Build input schema, ensuring it's a valid JSON Schema object
-        const rawSchema = remoteTool.inputSchema || {};
-        const inputSchema: Tool["inputSchema"] = {
-          type: "object",
-          properties:
-            rawSchema.properties && typeof rawSchema.properties === "object"
-              ? rawSchema.properties
-              : {},
-          required: Array.isArray(rawSchema.required) ? rawSchema.required : [],
-        };
+      const mcpTools: Tool[] = toolsResult.tools
+        .map((remoteTool: any) => {
+          // P1-4: Build input schema with type-safe validation to prevent
+          // malicious schema injection. Reject non-object properties.
+          const rawSchema = remoteTool.inputSchema || {};
+          const rawProperties = rawSchema.properties;
 
-        const toolName = `mcp__${name}__${remoteTool.name}`;
+          // Validate properties is a plain object (not an array, function, etc.)
+          if (
+            rawProperties !== null &&
+            (typeof rawProperties !== "object" || Array.isArray(rawProperties))
+          ) {
+            console.warn(`MCP tool "${remoteTool.name}": invalid schema.properties type, skipping`);
+            return null;
+          }
 
-        return {
-          name: toolName,
-          description: `MCP tool: ${remoteTool.name} (from ${name} server)`,
-          promptDescription:
-            remoteTool.description || `MCP tool "${remoteTool.name}" from server "${name}"`,
-          inputSchema,
-          isEnabled: () => true,
-          isReadOnly: () => false, // Conservative — assume destructive
-          isConcurrencySafe: () => true, // Separate process, safe to run in parallel
-          // 16.10: MCP servers can execute arbitrary external actions (drop a
-          // DB, send mail), so trusting them sight-unseen is risky. We now
-          // require interactive approval in default mode for the FIRST call to
-          // each MCP tool, then remember the user's choice for the rest of the
-          // session. plan/bypass/acceptEdits still flow through the system-level
-          // checkPermission on top of this. The "always" choice is sticky so a
-          // confirmed tool stops prompting.
-          requiresApproval: () => true,
+          const inputSchema: Tool["inputSchema"] = {
+            type: "object",
+            properties: rawProperties ?? {},
+            required: Array.isArray(rawSchema.required) ? rawSchema.required : [],
+          };
 
-          async call(input: Record<string, unknown>): Promise<ToolResult> {
-            try {
-              const result = await withTimeout(
-                `callTool(${toolName})`,
-                client.callTool({
-                  name: remoteTool.name,
-                  arguments: input,
-                }),
-                CALL_TOOL_TIMEOUT_MS,
-              );
+          const toolName = `mcp__${name}__${remoteTool.name}`;
 
-              // Extract text content from result
-              const content = (result.content as any[])
-                .filter((c: any) => c.type === "text")
-                .map((c: any) => c.text)
-                .join("\n");
+          return {
+            name: toolName,
+            description: `MCP tool: ${remoteTool.name} (from ${name} server)`,
+            promptDescription:
+              remoteTool.description || `MCP tool "${remoteTool.name}" from server "${name}"`,
+            inputSchema,
+            isEnabled: () => true,
+            isReadOnly: () => false, // Conservative — assume destructive
+            isConcurrencySafe: () => true, // Separate process, safe to run in parallel
+            // 16.10: MCP servers can execute arbitrary external actions (drop a
+            // DB, send mail), so trusting them sight-unseen is risky. We now
+            // require interactive approval in default mode for the FIRST call to
+            // each MCP tool, then remember the user's choice for the rest of the
+            // session. plan/bypass/acceptEdits still flow through the system-level
+            // checkPermission on top of this. The "always" choice is sticky so a
+            // confirmed tool stops prompting.
+            requiresApproval: () => true,
 
-              return { content: content || "(no text output)" };
-            } catch (error: any) {
+            async call(input: Record<string, unknown>): Promise<ToolResult> {
+              try {
+                const result = await withTimeout(
+                  `callTool(${toolName})`,
+                  client.callTool({
+                    name: remoteTool.name,
+                    arguments: input,
+                  }),
+                  CALL_TOOL_TIMEOUT_MS,
+                );
+
+                // Extract text content from result
+                const content = (result.content as any[])
+                  .filter((c: any) => c.type === "text")
+                  .map((c: any) => c.text)
+                  .join("\n");
+
+                return { content: content || "(no text output)" };
+              } catch (error: any) {
+                return {
+                  content: "",
+                  error: `MCP tool error (${toolName}): ${error.message}`,
+                };
+              }
+            },
+
+            formatResult: (r: ToolResult) => {
+              if (r.error) {
+                // call() always produces error messages without "Error:" prefix
+                // (e.g. "MCP tool error (name): ..."), so we add it here so the
+                // terminal renderer always shows a red "Error: ..." label.
+                return r.error.startsWith("Error:") ? r.error : `Error: ${r.error}`;
+              }
+              return r.content;
+            },
+
+            checkPermissions: async (
+              _input: Record<string, unknown>,
+              context: ToolContext,
+            ): Promise<PermissionResult> => {
+              // 16.10: prompt on the first call to each MCP tool per session,
+              // then honor the sticky "always" decision. In plan mode the
+              // system-level checkPermission hard-blocks anyway; here we only
+              // gate the default-mode first use. bypassPermissions/acceptEdits
+              // are likewise handled by the system level, so this returns
+              // allowed:true there and lets the loop proceed.
+              if (context.permissionMode === "bypassPermissions") {
+                return { allowed: true };
+              }
+              if (this.confirmedMcpTools.has(toolName)) {
+                return { allowed: true };
+              }
+              const allowed = context.askUser
+                ? await context.askUser(
+                    { name: toolName } as Tool,
+                    _input,
+                    `First call to MCP tool "${toolName}" — confirm to trust this server action`,
+                  )
+                : true;
+              if (allowed) {
+                this.confirmedMcpTools.add(toolName);
+                return { allowed: true };
+              }
               return {
-                content: "",
-                error: `MCP tool error (${toolName}): ${error.message}`,
+                allowed: false,
+                reason: `MCP tool "${toolName}" not approved by user`,
               };
-            }
-          },
-
-          formatResult: (r: ToolResult) => {
-            if (r.error) {
-              // call() always produces error messages without "Error:" prefix
-              // (e.g. "MCP tool error (name): ..."), so we add it here so the
-              // terminal renderer always shows a red "Error: ..." label.
-              return r.error.startsWith("Error:") ? r.error : `Error: ${r.error}`;
-            }
-            return r.content;
-          },
-
-          checkPermissions: async (
-            _input: Record<string, unknown>,
-            context: ToolContext,
-          ): Promise<PermissionResult> => {
-            // 16.10: prompt on the first call to each MCP tool per session,
-            // then honor the sticky "always" decision. In plan mode the
-            // system-level checkPermission hard-blocks anyway; here we only
-            // gate the default-mode first use. bypassPermissions/acceptEdits
-            // are likewise handled by the system level, so this returns
-            // allowed:true there and lets the loop proceed.
-            if (context.permissionMode === "bypassPermissions") {
-              return { allowed: true };
-            }
-            if (this.confirmedMcpTools.has(toolName)) {
-              return { allowed: true };
-            }
-            const allowed = context.askUser
-              ? await context.askUser(
-                  { name: toolName } as Tool,
-                  _input,
-                  `First call to MCP tool "${toolName}" — confirm to trust this server action`,
-                )
-              : true;
-            if (allowed) {
-              this.confirmedMcpTools.add(toolName);
-              return { allowed: true };
-            }
-            return {
-              allowed: false,
-              reason: `MCP tool "${toolName}" not approved by user`,
-            };
-          },
-        } as Tool;
-      });
+            },
+          } as Tool;
+        })
+        .filter((t): t is Tool => t !== null);
 
       this.servers.set(name, { config, client, tools: mcpTools });
       console.log(`MCP server "${name}" connected (${config.type}) — ${mcpTools.length} tool(s)`);

@@ -144,7 +144,7 @@ describe("WebFetchTool", () => {
       { url: "ftp://example.com/file", fetchInfo: "test" },
       ctx,
     );
-    expect(result.error).toContain("Unsupported protocol");
+    expect(result.error).toContain("not allowed");
   });
 
   it("should reject invalid URLs", async () => {
@@ -157,7 +157,7 @@ describe("WebFetchTool", () => {
       { url: "http://localhost:3000/api", fetchInfo: "test" },
       ctx,
     );
-    expect(result.error).toContain("internal");
+    expect(result.error).toContain("private");
   });
 
   it("should reject 127.0.0.1", async () => {
@@ -165,7 +165,7 @@ describe("WebFetchTool", () => {
       { url: "http://127.0.0.1:8080/data", fetchInfo: "test" },
       ctx,
     );
-    expect(result.error).toContain("internal");
+    expect(result.error).toContain("private");
   });
 
   it("should reject 192.168.x.x addresses", async () => {
@@ -173,7 +173,7 @@ describe("WebFetchTool", () => {
       { url: "http://192.168.1.1/admin", fetchInfo: "test" },
       ctx,
     );
-    expect(result.error).toContain("internal");
+    expect(result.error).toContain("private");
   });
 
   it("should reject 10.x.x.x addresses", async () => {
@@ -181,7 +181,7 @@ describe("WebFetchTool", () => {
       { url: "http://10.0.0.1/secret", fetchInfo: "test" },
       ctx,
     );
-    expect(result.error).toContain("internal");
+    expect(result.error).toContain("private");
   });
 
   it("should accept valid URLs", async () => {

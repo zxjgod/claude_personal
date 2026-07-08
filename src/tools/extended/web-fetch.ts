@@ -7,6 +7,7 @@
 
 import { z } from "zod";
 import type { Tool, ToolResult } from "../../types.js";
+import { InputValidator } from "../../utils/input-validator.js";
 import { buildTool } from "../registry.js";
 
 // --- Constants ---
@@ -14,20 +15,6 @@ import { buildTool } from "../registry.js";
 const MAX_CONTENT_LENGTH = 100_000; // 100KB output
 const MAX_RESPONSE_SIZE = 5 * 1024 * 1024; // 5MB max download
 const TIMEOUT_MS = 15_000; // 15 seconds
-const MAX_REDIRECTS = 5;
-
-// Private/internal network patterns to block (SSRF prevention)
-const BLOCKED_HOSTS = [
-  /^localhost$/i,
-  /^127\.\d+\.\d+\.\d+$/,
-  /^10\.\d+\.\d+\.\d+$/,
-  /^172\.(1[6-9]|2\d|3[01])\.\d+\.\d+$/,
-  /^192\.168\.\d+\.\d+$/,
-  /^0\.0\.0\.0$/,
-  /^::1$/,
-  /^fc00:/i,
-  /^fe80:/i,
-];
 
 // --- Schema ---
 
@@ -38,12 +25,6 @@ const WebFetchSchema = z.strictObject({
 type WebFetchInput = z.infer<typeof WebFetchSchema>;
 
 // --- Helpers ---
-
-function isBlockedHost(hostname: string): boolean {
-  // Strip brackets from IPv6 addresses
-  const host = hostname.replace(/^\[|\]$/g, "");
-  return BLOCKED_HOSTS.some((pattern) => pattern.test(host));
-}
 
 function stripHtml(html: string): string {
   // Remove scripts and styles completely
@@ -102,29 +83,13 @@ export const WebFetchTool: Tool = buildTool({
   aliases: ["fetch", "scrape"],
 
   async call(input, _context): Promise<ToolResult> {
-    // --- SSRF check (after Zod validation but before fetch) ---
+    // P1-1: Use InputValidator for consistent URL validation (SSRF prevention)
 
-    let parsed: URL;
-    try {
-      parsed = new URL(input.url);
-    } catch {
+    const validation = InputValidator.validateUrl(input.url);
+    if (!validation.valid) {
       return {
         content: "",
-        error: `Invalid URL: "${input.url}". Must be a valid http/https URL.`,
-      };
-    }
-
-    if (!["http:", "https:"].includes(parsed.protocol)) {
-      return {
-        content: "",
-        error: `Unsupported protocol: "${parsed.protocol}". Only http and https are allowed.`,
-      };
-    }
-
-    if (isBlockedHost(parsed.hostname)) {
-      return {
-        content: "",
-        error: `Access denied: "${parsed.hostname}" is an internal/private address.`,
+        error: validation.error ?? "Invalid URL",
       };
     }
 

@@ -25,6 +25,7 @@ import {
 } from "./subagents.js";
 import type { AskUserFn, Message, ModelConfig, PermissionMode, SubAgentProgress } from "./types.js";
 import { CancellationScope } from "./utils/cancellation.js";
+import { createSubAgentApprover } from "./utils/subagent-security.js";
 
 const AGENT_MAX_TURNS = 10;
 const AGENT_COMPACT_THRESHOLD = 50_000;
@@ -222,6 +223,11 @@ export async function runAgentTurn(
   try {
     const coreTools = await getCoreToolsForSubagents();
     const tools = resolveSubagentTools(role, coreTools);
+
+    // P0 Security Fix: Use restricted approver to prevent sub-agents
+    // from bypassing permissions on dangerous tools (bash/write/edit)
+    const subApprover = createSubAgentApprover(ctx.askUser, true);
+
     const loop = agentLoop(agent.messages, tools, caller, ctx.modelConfig, {
       systemPrompt,
       maxTurns: role.maxTurns ?? AGENT_MAX_TURNS,
@@ -232,11 +238,11 @@ export async function runAgentTurn(
         sessionId: ctx.sessionId,
         permissionMode: ctx.permissionMode,
         modelConfig: ctx.modelConfig,
-        // Forward the parent's approver so this agent's destructive tools
-        // (bash/write/edit) prompt the user instead of auto-approving.
-        askUser: ctx.askUser,
+        // Use restricted approver to prevent dangerous tool bypass
+        askUser: subApprover,
       },
-      askUser: ctx.askUser,
+      // Also pass restricted askUser at the LoopOptions level
+      askUser: subApprover,
     });
 
     for await (const event of loop) {
