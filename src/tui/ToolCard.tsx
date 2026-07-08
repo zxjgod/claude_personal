@@ -13,6 +13,7 @@
 import { Box, Text } from "ink";
 import type React from "react";
 import { useEffect, useState } from "react";
+import { parseError } from "../markdown.js";
 import { actionLabel, STATUS_GRAY, STATUS_GRAY_BRIGHT, STATUS_GREEN } from "./../spinner-core.js";
 import type { ToolExecutionResult } from "./../types.js";
 import { palette } from "./theme.js";
@@ -78,10 +79,7 @@ export function CompletedToolCard({
     return (
       <Box flexDirection="column">
         {title}
-        <Box>
-          <Text dimColor>{"  ⎿ "}</Text>
-          <Text color={palette.error}>{result.error}</Text>
-        </Box>
+        <StructuredError error={result.error} />
       </Box>
     );
   }
@@ -114,4 +112,45 @@ function truncate(value: string, max: number): string {
 
 function capitalize(name: string): string {
   return name.length === 0 ? name : name[0]!.toUpperCase() + name.slice(1);
+}
+
+/** Get error color based on type */
+function getErrorColor(type: string): string {
+  if (type.includes("Permission")) return palette.error;
+  if (type.includes("TypeScript")) return "#f0883e"; // amber
+  return palette.error;
+}
+
+/** Structured error display with type, message, and optional stack.
+ *  Uses the shared parseError function from markdown.ts. */
+function StructuredError({ error }: { error: string }) {
+  const parsed = parseError(error);
+  const errorColor = getErrorColor(parsed.type);
+
+  // Extract stack trace if present (max 3 lines)
+  const stackMatch = error.match(/\n\s+at\s+.+/g);
+  const stack = stackMatch ? stackMatch.slice(0, 3) : undefined;
+
+  return (
+    <Box flexDirection="column" paddingLeft={2}>
+      <Box>
+        <Text dimColor>{"  ⎿ "}</Text>
+        <Text color={errorColor} bold>
+          {parsed.type}
+        </Text>
+      </Box>
+      <Box paddingLeft={4}>
+        <Text>{parsed.message}</Text>
+      </Box>
+      {stack && (
+        <Box flexDirection="column" paddingLeft={4}>
+          {stack.map((line, i) => (
+            <Text key={i} dimColor>
+              {line.trim()}
+            </Text>
+          ))}
+        </Box>
+      )}
+    </Box>
+  );
 }

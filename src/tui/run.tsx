@@ -41,6 +41,20 @@ import type { CommandInfo } from "./InputBox.js";
 import { type ProviderPickerItem, type SessionPickerItem, TuiStore } from "./store.js";
 import { StreamBuffer } from "./stream-buffer.js";
 
+// Debug monitoring - enabled via DEBUG_STREAM env var
+const DEBUG_STREAM = process.env.DEBUG_STREAM;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let runtimeMonitor: any = null;
+
+async function ensureDebugMonitor() {
+  if (DEBUG_STREAM && DEBUG_STREAM !== "off" && !runtimeMonitor) {
+    const mod = await import("../debug-logs/runtime-monitor.js");
+    runtimeMonitor = mod.runtimeMonitor;
+    runtimeMonitor.enable(DEBUG_STREAM);
+    runtimeMonitor.info("tui", "TUI debug mode enabled", { env: DEBUG_STREAM });
+  }
+}
+
 export interface TuiDeps {
   messages: Message[];
   tools: Tool[];
@@ -71,6 +85,9 @@ async function runTurn(
   askUserQuestion: (q: UserQuestion) => Promise<string[] | null>,
   queue: InputQueue,
 ): Promise<void> {
+  // Initialize debug monitoring
+  await ensureDebugMonitor();
+
   store.setBusy(true);
   store.setSpinner("thinking");
   store.startTurnClock();
@@ -160,6 +177,8 @@ async function runTurn(
           store.setSpinner("responding");
           streamedCharsThisCall += event.delta.length;
           streamBuffer.push(event.delta);
+          // Log delta for debugging
+          runtimeMonitor?.logDelta(event.delta, streamedCharsThisCall);
           break;
         case "tool_use": {
           streamBuffer.flush();
@@ -201,6 +220,8 @@ async function runTurn(
         case "done":
           streamBuffer.flush();
           store.commitStreaming();
+          // Log commit for debugging
+          runtimeMonitor?.logCommit(store.getSnapshot().streamingText, streamedCharsThisCall);
           // M15.2: surface speculation cost/benefit (only if prefetched anything).
           if (event.speculation) {
             const line = formatSpeculationLine(event.speculation);
@@ -220,6 +241,11 @@ async function runTurn(
     // input re-enabled) paints immediately rather than waiting on a trailing
     // frame after the turn ends.
     store.flush();
+    // Log turn summary
+    runtimeMonitor?.info("tui", "Turn ended", {
+      streamedChars: streamedCharsThisCall,
+      committedOutputTokens,
+    });
   }
 }
 

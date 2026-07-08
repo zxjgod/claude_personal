@@ -26,6 +26,27 @@ import { marked } from "marked";
 import { memo, useRef } from "react";
 import { renderMarkdown } from "./../markdown.js";
 
+// Debug monitoring - lazily imported to avoid circular deps
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let runtimeMonitor: any = null;
+
+async function getRuntimeMonitor() {
+  if (runtimeMonitor === undefined || runtimeMonitor === null) {
+    try {
+      const mod = await import("../debug-logs/runtime-monitor.js");
+      runtimeMonitor = mod.runtimeMonitor;
+    } catch {
+      runtimeMonitor = null;
+    }
+  }
+  return runtimeMonitor;
+}
+
+// Trigger monitor check on module load
+if (process.env.DEBUG_STREAM) {
+  getRuntimeMonitor();
+}
+
 /**
  * Renders one settled chunk of markdown. Memoized on `content`: while the
  * unstable tail grows the stable prefix string is unchanged, so React reuses
@@ -39,37 +60,101 @@ export function StreamingMarkdown({ children }: { children: string }) {
   // Monotonic boundary into `children` up to which blocks have settled. Read
   // and written during render by design (idempotent because it only advances).
   const stablePrefixRef = useRef("");
+  const renderCountRef = useRef(0);
 
   // Defensive: if the text was replaced rather than appended (e.g. a reset
   // without unmount), the old prefix is no longer a prefix — start over.
   if (!children.startsWith(stablePrefixRef.current)) {
     stablePrefixRef.current = "";
+    renderCountRef.current = 0;
+  }
+
+  // Guard: if children is empty, render nothing and reset
+  if (!children) {
+    stablePrefixRef.current = "";
+    return null;
   }
 
   // Lex only the unsettled tail — O(tail length), not O(full message).
   const boundary = stablePrefixRef.current.length;
-  const tokens = marked.lexer(children.substring(boundary));
+  const tailText = children.substring(boundary);
+
+  // Guard: if tail is empty, render only the stable prefix
+  if (!tailText) {
+    return stablePrefixRef.current ? <MarkdownChunk content={stablePrefixRef.current} /> : null;
+  }
+
+  const tokens = marked.lexer(tailText);
+  const tokenCount = tokens.length;
 
   // The last non-space token is the block still growing; everything before it
   // is final. Advance the boundary past those final tokens' raw text.
   let lastContentIdx = tokens.length - 1;
-  while (lastContentIdx >= 0 && tokens[lastContentIdx]!.type === "space") {
+  while (
+    lastContentIdx >= 0 &&
+    (tokens[lastContentIdx]!.type === "space" || tokens[lastContentIdx]!.type === "hr")
+  ) {
     lastContentIdx--;
   }
+
+  // Guard: if there's only one content token, it's still growing — don't settle.
+  // We need at least 2 content tokens to settle the first one.
+  if (lastContentIdx <= 0) {
+    return (
+      <>
+        {stablePrefixRef.current ? <MarkdownChunk content={stablePrefixRef.current} /> : null}
+        <MarkdownChunk content={tailText} />
+      </>
+    );
+  }
+
+  // Calculate how much of the tail has settled
   let advance = 0;
   for (let i = 0; i < lastContentIdx; i++) {
     advance += tokens[i]!.raw.length;
   }
+
+  // Advance the stable boundary (monotonic, so this is always safe)
   if (advance > 0) {
     stablePrefixRef.current = children.substring(0, boundary + advance);
   }
 
-  const stablePrefix = stablePrefixRef.current;
-  const unstableSuffix = children.substring(stablePrefix.length);
+  const stableRender = stablePrefixRef.current;
+  const unstableSuffix = children.substring(stableRender.length);
+
+  // Debug logging
+  renderCountRef.current++;
+  getRuntimeMonitor().then((mon) => {
+    if (mon) {
+      mon.logRender({
+        text: children,
+        textLen: children.length,
+        stablePrefix: stableRender,
+        stablePrefixLen: stableRender.length,
+        unstableSuffix,
+        unstableSuffixLen: unstableSuffix.length,
+        tokenCount,
+        blockCount: lastContentIdx,
+      });
+
+      // Warn about suspicious patterns
+      if (stableRender.length > children.length) {
+        mon.warn("boundary", "Stable prefix longer than text", {
+          textLen: children.length,
+          stableLen: stableRender.length,
+        });
+      }
+      if (renderCountRef.current > 100 && renderCountRef.current % 50 === 0) {
+        mon.warn("render", `Excessive renders: ${renderCountRef.current}`, {
+          textLen: children.length,
+        });
+      }
+    }
+  });
 
   return (
     <>
-      {stablePrefix ? <MarkdownChunk content={stablePrefix} /> : null}
+      {stableRender ? <MarkdownChunk content={stableRender} /> : null}
       {unstableSuffix ? <MarkdownChunk content={unstableSuffix} /> : null}
     </>
   );

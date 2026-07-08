@@ -1,6 +1,27 @@
 # 更新日志 (Changelog)
 
-## [待发布] - 2026-07-07
+## [待发布] - 2026-07-08
+
+### 代码审查修复（M41 改动复审）
+
+对未提交的 M41 改动（输入历史导航 + Emacs 行编辑 + highlight.js 语法高亮 + 结构化错误显示）进行代码审查，修复 4 个问题并清理死代码。详见 [`更新日志/20260708-code-review-fixes.md`](./更新日志/20260708-code-review-fixes.md)。
+
+#### 修复
+
+- **代码块 HTML 实体未解码**（`src/markdown.ts`）：`parseHljsOutput` 逐字符解析 highlight.js 输出时未识别 HTML 实体，导致 `<`/`>`/`&` 显示为 `&lt;`/`&gt;`/`&amp;`。新增实体匹配分支调用 `decodeHtmlEntities` 解码，并增加未闭合 span 的防御性 drain。
+- **历史浏览输入位置错误**（`src/tui/InputBox.tsx`）：浏览历史条目时输入字符被插入到缓冲区开头（位置 0）而非光标位置。移除 `historyIndex >= 0 ? 0 : cursorRef.current` 特殊分支，统一在 `cursorRef.current` 插入。
+- **换行符绕过只读命令判定**（`src/tools/utils/command.ts`）：`bashCommandIsReadOnly` 只按 `|`/`&&`/`||`/`;` 分割，不处理换行符。`ls\nrm -rf /` 第一段通过只读检查但实际执行 `rm`。新增 `[\r\n]` 检查，含换行的命令一律判为非只读。
+- **死代码清理**：删除无调用方的 `formatError`、`unescapeHtml`（`src/markdown.ts`）和 `getInputHistory`/`pushInputHistory`（`src/tui/store.ts`）；简化语言别名查找（3 次 `toLowerCase` → 1 次 + `??`）。
+
+#### 测试
+
+- 修正 `input-box.test.tsx` 历史输入断言（`"xhistory item"` → `"history itemx"`）
+- 新增 `tools.test.ts` 换行符绕过回归用例
+- 全部 994 个测试通过（+1），`tsc --noEmit` 通过
+
+---
+
+## 2026-07-07
 
 ### 代码审查与修复
 

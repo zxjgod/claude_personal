@@ -322,6 +322,12 @@ describe("bashCommandIsReadOnly (M29)", () => {
     expect(bashCommandIsReadOnly("   ")).toBe(false);
     expect(bashCommandIsReadOnly(undefined as unknown as string)).toBe(false);
   });
+
+  it("rejects newlines that could chain a write command", () => {
+    expect(bashCommandIsReadOnly("ls\nrm -rf /")).toBe(false);
+    expect(bashCommandIsReadOnly("ls\rrm -rf /")).toBe(false);
+    expect(bashCommandIsReadOnly("cat a.txt\n\necho done")).toBe(false);
+  });
 });
 
 // --- Glob Tool ---

@@ -110,7 +110,7 @@ function FsStatusBar({ store }: { store: TuiStore }) {
 }
 
 function selectInteraction(s: StoreState) {
-  return { overlay: s.overlay, busy: s.busy };
+  return { overlay: s.overlay, busy: s.busy, inputHistory: s.inputHistory };
 }
 
 function selectHelp(s: StoreState) {
@@ -136,7 +136,7 @@ function FsInteraction({
   onSubmit: (value: string) => void;
   editorMode?: { value: "default" | "vim" };
 }) {
-  const { overlay, busy } = useStoreSelector(store, selectInteraction);
+  const { overlay, busy, inputHistory } = useStoreSelector(store, selectInteraction);
   if (overlay) {
     switch (overlay.kind) {
       case "permission":
@@ -164,6 +164,8 @@ function FsInteraction({
       editorMode={editorMode}
       keepColorWhenDisabled
       hideBottomRule
+      history={inputHistory}
+      onHistoryChange={(history) => store.setInputHistory(history)}
     />
   );
 }

@@ -25,6 +25,10 @@ export function bashCommandIsReadOnly(command: string | undefined): boolean {
   // Any of these shell features can write or hide side effects — bail out.
   if (/[`]|\$\(|<\(|>>|>|\btee\b/.test(cmd)) return false;
 
+  // Newlines can chain commands (e.g. "ls\nrm -rf /") and bypass the
+  // per-segment read-only check below, which only splits on |, &&, ||, ;.
+  if (/[\r\n]/.test(cmd)) return false;
+
   // Read-only command leaders. Kept tight; expand deliberately.
   const READONLY = new Set([
     "cat",

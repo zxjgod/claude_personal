@@ -11,6 +11,38 @@ import type { Overlay } from "./store.js";
 
 const CYAN = "cyan";
 
+/** Risk level visual indicators */
+const RISK_LEVELS = {
+  low: { icon: "⚡", color: "#9ece6a", label: "Low Risk" },
+  medium: { icon: "⚠️", color: "#e0af68", label: "Medium Risk" },
+  high: { icon: "🔴", color: "#f7768e", label: "High Risk" },
+} as const;
+
+/** Get risk level from riskHint */
+function getRiskLevel(riskHint?: string): keyof typeof RISK_LEVELS | null {
+  if (!riskHint) return null;
+  const lower = riskHint.toLowerCase();
+  // Check for explicit high risk indicators
+  if (
+    lower.includes("high") ||
+    lower.includes("dangerous") ||
+    lower.includes("destructive") ||
+    lower.includes("recursive delete") ||
+    lower.includes("rm -rf") ||
+    lower.includes("sudo") ||
+    lower.includes("fork bomb")
+  ) {
+    return "high";
+  }
+  if (lower.includes("medium") || lower.includes("moderate")) {
+    return "medium";
+  }
+  if (lower.includes("low") || lower.includes("safe") || lower.includes("read")) {
+    return "low";
+  }
+  return null;
+}
+
 export function PermissionPrompt({
   overlay,
 }: {
@@ -31,13 +63,30 @@ export function PermissionPrompt({
     else if (/^[1-3]$/.test(input)) overlay.resolve(options[parseInt(input, 10) - 1]!.value);
   });
 
+  const riskLevel = getRiskLevel(overlay.riskHint);
+
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={CYAN} paddingX={1}>
-      <Text bold color={CYAN}>
-        {overlay.header}
-      </Text>
+      <Box>
+        <Text bold color={CYAN}>
+          {overlay.header}
+        </Text>
+        {riskLevel && (
+          <Text color={RISK_LEVELS[riskLevel].color} bold>
+            {" "}
+            {RISK_LEVELS[riskLevel].icon}
+          </Text>
+        )}
+      </Box>
       {overlay.detail ? <Text>{overlay.detail}</Text> : null}
-      {overlay.riskHint ? <Text color="yellow">{overlay.riskHint}</Text> : null}
+      {riskLevel ? (
+        <Box>
+          <Text color={RISK_LEVELS[riskLevel].color}>{RISK_LEVELS[riskLevel].label}</Text>
+          <Text dimColor>: {overlay.riskHint}</Text>
+        </Box>
+      ) : overlay.riskHint ? (
+        <Text color="yellow">{overlay.riskHint}</Text>
+      ) : null}
       <Box marginTop={1} flexDirection="column">
         <Text>Do you want to proceed?</Text>
         {options.map((opt, i) => (

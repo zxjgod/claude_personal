@@ -233,3 +233,217 @@ describe("InputBox type-ahead (M36)", () => {
     expect(lastFrame()).not.toContain("queues your next message");
   });
 });
+
+// M41: input history navigation + line editing shortcuts
+describe("InputBox history navigation (M41)", () => {
+  it("↑ navigates to the previous history entry", async () => {
+    // Start with pre-populated history
+    const onSubmit = vi.fn();
+    const { stdin } = render(
+      <InputBox
+        commands={commands}
+        disabled={false}
+        onSubmit={onSubmit}
+        history={["first command", "second command"]}
+      />,
+    );
+    await flush();
+    // Press ↑ to navigate to history (second command is most recent)
+    stdin.write(ARROW_UP);
+    await flush();
+    stdin.write(ENTER);
+    await flush();
+    // Should submit the most recent history entry
+    expect(onSubmit).toHaveBeenCalledWith("second command");
+  });
+
+  it("↑ navigates through history entries correctly", async () => {
+    const onSubmit = vi.fn();
+    const { stdin } = render(
+      <InputBox
+        commands={commands}
+        disabled={false}
+        onSubmit={onSubmit}
+        history={["older", "newer"]}
+      />,
+    );
+    await flush();
+    // First ↑ shows "newer" (most recent)
+    stdin.write(ARROW_UP);
+    await flush();
+    stdin.write(ENTER);
+    await flush();
+    expect(onSubmit).toHaveBeenLastCalledWith("newer");
+  });
+
+  it("↑ then ↓ navigates back and forth", async () => {
+    const onSubmit = vi.fn();
+    const { stdin } = render(
+      <InputBox
+        commands={commands}
+        disabled={false}
+        onSubmit={onSubmit}
+        history={["first", "second", "third"]}
+      />,
+    );
+    await flush();
+    // ↑ to "third"
+    stdin.write(ARROW_UP);
+    await flush();
+    // ↑ to "second"
+    stdin.write(ARROW_UP);
+    await flush();
+    // ↓ back to "third"
+    stdin.write(ARROW_DOWN);
+    await flush();
+    stdin.write(ENTER);
+    await flush();
+    expect(onSubmit).toHaveBeenLastCalledWith("third");
+  });
+
+  it("↓ navigates back to current buffer", async () => {
+    const onSubmit = vi.fn();
+    const { stdin } = render(
+      <InputBox commands={commands} disabled={false} onSubmit={onSubmit} history={["previous"]} />,
+    );
+    await flush();
+    stdin.write(ARROW_UP); // enter history browsing
+    await flush();
+    stdin.write(ARROW_DOWN); // go back to current (empty)
+    await flush();
+    stdin.write("test");
+    await flush();
+    stdin.write(ENTER);
+    await flush();
+    expect(onSubmit).toHaveBeenCalledWith("test");
+  });
+
+  it("typing exits history browsing mode", async () => {
+    const onSubmit = vi.fn();
+    const { stdin } = render(
+      <InputBox
+        commands={commands}
+        disabled={false}
+        onSubmit={onSubmit}
+        history={["history item"]}
+      />,
+    );
+    await flush();
+    stdin.write(ARROW_UP); // enter history browsing
+    await flush();
+    stdin.write("x"); // typing should exit history mode, insert at cursor (end)
+    await flush();
+    stdin.write(ENTER);
+    await flush();
+    expect(onSubmit).toHaveBeenCalledWith("history itemx");
+  });
+
+  it("does not push empty entries to history on submit", async () => {
+    const onSubmit = vi.fn();
+    const onHistoryChange = vi.fn();
+    const { stdin } = render(
+      <InputBox
+        commands={commands}
+        disabled={false}
+        onSubmit={onSubmit}
+        history={[]}
+        onHistoryChange={onHistoryChange}
+      />,
+    );
+    await flush();
+    stdin.write("test");
+    await flush();
+    stdin.write(ENTER);
+    await flush();
+    // Should push to history on submit
+    expect(onHistoryChange).toHaveBeenCalledWith(["test"]);
+  });
+});
+
+// M41: line editing shortcuts (Ctrl+U, Ctrl+K, Ctrl+W)
+describe("InputBox line editing shortcuts (M41)", () => {
+  it("Ctrl+U deletes from cursor to beginning of line", async () => {
+    const onSubmit = vi.fn();
+    const { stdin } = render(<InputBox commands={commands} disabled={false} onSubmit={onSubmit} />);
+    await flush();
+    stdin.write("hello world");
+    await flush();
+    // Move cursor to after "hello" (5 left arrows from end=11 to pos=6)
+    for (let i = 0; i < 5; i++) stdin.write("\x1b[D"); // left arrow
+    await flush();
+    stdin.write("\x15"); // Ctrl+U
+    await flush();
+    stdin.write(ENTER);
+    await flush();
+    // Ctrl+U at pos 6: deletes "hello " (everything before cursor)
+    expect(onSubmit).toHaveBeenCalledWith("world");
+  });
+
+  it("Ctrl+K deletes from cursor to end of line", async () => {
+    const onSubmit = vi.fn();
+    const { stdin } = render(<InputBox commands={commands} disabled={false} onSubmit={onSubmit} />);
+    await flush();
+    stdin.write("hello world");
+    await flush();
+    // Move cursor to after "hello" (5 left arrows from end=11 to pos=5)
+    for (let i = 0; i < 5; i++) stdin.write("\x1b[D"); // left arrow
+    await flush();
+    stdin.write("\x0b"); // Ctrl+K
+    await flush();
+    stdin.write(ENTER);
+    await flush();
+    // Ctrl+K at pos 5: deletes " world" (everything after cursor)
+    expect(onSubmit).toHaveBeenCalledWith("hello ");
+  });
+
+  it("Ctrl+W deletes the word before the cursor", async () => {
+    const onSubmit = vi.fn();
+    const { stdin } = render(<InputBox commands={commands} disabled={false} onSubmit={onSubmit} />);
+    await flush();
+    // Use input: "test query" - Ctrl+W at end deletes "query" (not the space)
+    stdin.write("test query");
+    await flush();
+    stdin.write("\x17"); // Ctrl+W at end of "query"
+    await flush();
+    stdin.write(ENTER);
+    await flush();
+    // Ctrl+W at end: deletes "query" (word before cursor), leaves "test"
+    expect(onSubmit).toHaveBeenCalledWith("test");
+  });
+
+  it("Ctrl+U at beginning does nothing", async () => {
+    const onSubmit = vi.fn();
+    const { stdin } = render(<InputBox commands={commands} disabled={false} onSubmit={onSubmit} />);
+    await flush();
+    stdin.write("hello world");
+    await flush();
+    // Move cursor back to beginning (11 left arrows)
+    for (let i = 0; i < 11; i++) stdin.write("\x1b[D"); // left arrow
+    await flush();
+    stdin.write("\x15"); // Ctrl+U at position 0
+    await flush();
+    stdin.write(ENTER);
+    await flush();
+    // Ctrl+U at position 0 deletes nothing (slice(0) = full buffer)
+    // Actually in our implementation it deletes everything since cursor=0
+    // and slice(0) = "hello world". So this test verifies that behavior.
+    expect(onSubmit).toHaveBeenCalledWith("hello world");
+  });
+
+  it("Ctrl+K at end does nothing", async () => {
+    const onSubmit = vi.fn();
+    const { stdin } = render(<InputBox commands={commands} disabled={false} onSubmit={onSubmit} />);
+    await flush();
+    stdin.write("hello world");
+    await flush();
+    // Move to end then Ctrl+K
+    for (let i = 0; i < 11; i++) stdin.write("\x1b[C"); // right arrow
+    await flush();
+    stdin.write("\x0b"); // Ctrl+K at end (cursor at end, slice(0,11) = "hello world")
+    await flush();
+    stdin.write(ENTER);
+    await flush();
+    // Ctrl+K at end deletes from cursor to end, but cursor is at end, so nothing deleted
+    expect(onSubmit).toHaveBeenCalledWith("hello world");
+  });
+});

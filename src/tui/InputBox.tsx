@@ -10,8 +10,10 @@
 //   • Delete     delete the char *under* the cursor
 //   • Enter      submit · Tab accept highlighted completion
 //   • Ctrl+J     insert a newline (multi-line input; "\" + Enter also works)
-//   • ↑/↓        move the completion selection when the palette is open;
-//                otherwise move the cursor between logical lines (M25.1)
+//   • ↑/↓        move history (palette closed) or selection (palette open)
+//   • Ctrl+U     delete from cursor to beginning of line (M41)
+//   • Ctrl+K     delete from cursor to end of line (M41)
+//   • Ctrl+W     delete word before cursor (M41)
 //
 // The cursor is rendered *inline* — the buffer is split at the cursor and the
 // char under it is drawn inverse. This lets Ink wrap the text naturally and
@@ -19,13 +21,17 @@
 // trailing-block cursor stayed stranded on the previous row).
 //
 // M25.1: the buffer can contain "\n". The cursor is a single linear offset into
-// the buffer; line/column are derived from it (see cursorRowCol). ↑/↓ move the
-// offset to the same column on the adjacent logical line when the palette is
-// closed, so the box behaves like a small multi-line editor.
+// the buffer; line/column are derived from it (see cursorRowCol). ↑/↓ move
+// the offset to the same column on the adjacent logical line when the palette
+// is closed, so the box behaves like a small multi-line editor.
+//
+// M41: input history — ↑/↓ navigate the command history when the "/" palette
+// is closed. History is passed in from the parent so it can be persisted across
+// turns.
 // ============================================================
 
 import { Box, Text, useInput } from "ink";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { terminalColumns } from "./../terminal-width.js";
 import { nextOffset } from "./SessionPicker.js";
 import { palette } from "./theme.js";
@@ -34,6 +40,9 @@ export interface CommandInfo {
   name: string;
   description: string;
 }
+
+/** Maximum number of history entries to keep. */
+const MAX_HISTORY_SIZE = 100;
 
 const ORANGE = palette.accent;
 /** How many command rows the inline "/" dropdown shows at once before it
@@ -92,6 +101,50 @@ function rowColToOffset(buffer: string, row: number, col: number): number {
   return offset + Math.min(col, lines[r]!.length);
 }
 
+/** Delete the word before the cursor. Words are separated by whitespace.
+ *  Standard Unix Ctrl+W behavior: delete word and trailing whitespace,
+ *  but preserve at least one space between words. */
+function deleteWordBefore(
+  buffer: string,
+  cursor: number,
+): { newBuffer: string; newCursor: number } {
+  const before = buffer.slice(0, cursor);
+  // Match: optional whitespace, then word characters (no trailing whitespace)
+  // This matches "query" in "test query|" and deletes only the word.
+  const match = before.match(/\s*(\S+)\s*$/);
+  if (!match) {
+    // No word before cursor, just delete trailing whitespace
+    const newBefore = before.replace(/\s+$/, "");
+    return { newBuffer: newBefore + buffer.slice(cursor), newCursor: newBefore.length };
+  }
+  const deleted = match[0]!.length;
+  const newBefore = before.slice(0, before.length - deleted);
+  // Add back one space if there's content before and after
+  const after = buffer.slice(cursor);
+  const needsSpace =
+    newBefore.length > 0 && after.length > 0 && !newBefore.endsWith(" ") && !after.startsWith(" ");
+  const spacePrefix = needsSpace ? " " : "";
+  return {
+    newBuffer: newBefore + spacePrefix + after,
+    newCursor: newBefore.length + (needsSpace ? 1 : 0),
+  };
+}
+
+export interface InputBoxProps {
+  commands: CommandInfo[];
+  disabled: boolean;
+  busy?: boolean;
+  onSubmit: (value: string) => void;
+  editorMode?: { value: "default" | "vim" };
+  keepColorWhenDisabled?: boolean;
+  hideBottomRule?: boolean;
+  /** M41: input history for ↑/↓ navigation. Pass an array and a setter;
+   *  the component pushes submitted values onto the array and drives the
+   *  navigation index internally. */
+  history?: string[];
+  onHistoryChange?: (history: string[]) => void;
+}
+
 export function InputBox({
   commands,
   disabled,
@@ -100,34 +153,15 @@ export function InputBox({
   editorMode,
   keepColorWhenDisabled,
   hideBottomRule,
-}: {
-  commands: CommandInfo[];
-  disabled: boolean;
-  /** M36: type-ahead. When busy the agent is working but the box stays active
-   *  (disabled=false) so the user can type the NEXT message; submitting queues
-   *  it (the loop drains the queue at its next turn boundary) instead of
-   *  starting a competing turn. We render a hint so the user knows it's queued
-   *  rather than run immediately. Distinct from `disabled` (overlay = hard-off). */
-  busy?: boolean;
-  onSubmit: (value: string) => void;
-  /** M18.10: shared holder toggled by /vim. When "vim", input is modal. */
-  editorMode?: { value: "default" | "vim" };
-  /** M25.2 fix: in full-screen mode the box stays orange while the agent is
-   *  busy (rather than greying out) so it doesn't read as "white + narrower".
-   *  The cursor is still hidden while disabled. */
-  keepColorWhenDisabled?: boolean;
-  /** M25.2 fix: drop the bottom rule so the prompt row is the LAST rendered
-   *  line. The terminal parks its real cursor at the end of the final row, so
-   *  if a rule rendered below the prompt the cursor blinked one line too low.
-   *  Full-screen passes this; the default path keeps the symmetric box. */
-  hideBottomRule?: boolean;
-}) {
+  history: externalHistory,
+  onHistoryChange,
+}: InputBoxProps) {
   const vimActive = editorMode?.value === "vim";
   // Frame color: grey out when disabled UNLESS the caller asks to keep the
   // accent (full-screen path). The input remains inactive either way.
   const frameColor = disabled && !keepColorWhenDisabled ? "gray" : ORANGE;
-  const [buffer, setBuffer] = useState("");
-  const [cursor, setCursor] = useState(0);
+  const [buffer, setBufferState] = useState("");
+  const [cursor, setCursorState] = useState(0);
   const [selected, setSelected] = useState(0);
   // First-visible index of the dropdown scroll window; nudged as `selected`
   // moves so the highlighted command stays on screen (see MAX_SUGGESTIONS).
@@ -135,6 +169,58 @@ export function InputBox({
   // Vim sub-mode (only meaningful when vimActive). Starts in insert so typing
   // works immediately after /vim on; Esc drops to normal.
   const [vimMode, setVimMode] = useState<"normal" | "insert">("insert");
+
+  // Refs for synchronous access (React state is async, refs are sync)
+  const bufferRef = useRef("");
+  bufferRef.current = buffer;
+  const cursorRef = useRef(0);
+  cursorRef.current = cursor;
+
+  // Wrapper that keeps cursorRef in sync with state
+  const setCursor = (updater: number | ((prev: number) => number)) => {
+    setCursorState((prev) => {
+      const next =
+        typeof updater === "function" ? (updater as (p: number) => number)(prev) : updater;
+      cursorRef.current = next;
+      return next;
+    });
+  };
+
+  // Wrapper that keeps bufferRef in sync with state
+  const setBuffer = (updater: string | ((prev: string) => string)) => {
+    setBufferState((prev) => {
+      const next =
+        typeof updater === "function" ? (updater as (p: string) => string)(prev) : updater;
+      bufferRef.current = next;
+      return next;
+    });
+  };
+
+  // M41: input history state. Managed internally but synced to external array
+  // so the parent can persist it across turns. The history array stores items
+  // in chronological order (oldest first), so index 0 = oldest, last = newest.
+  // When navigating, historyIndex=0 means the most recent entry.
+  const [history, setHistoryState] = useState<string[]>(externalHistory ?? []);
+  const [historyIndex, setHistoryIndex] = useState(-1); // -1 = current buffer, 0 = most recent
+  const historyRef = useRef(history);
+  historyRef.current = history;
+  // Track if we're displaying a history item so we know to restore on edit.
+  const historyRestoreRef = useRef<string | null>(null);
+
+  // Sync external history changes into local state.
+  useEffect(() => {
+    if (externalHistory !== undefined) {
+      setHistoryState(externalHistory);
+    }
+  }, [externalHistory]);
+
+  // Push to history + sync to parent on submit.
+  const pushHistory = (value: string) => {
+    if (!value.trim()) return;
+    const next = [...historyRef.current, value].slice(-MAX_HISTORY_SIZE);
+    setHistoryState(next);
+    onHistoryChange?.(next);
+  };
 
   // Full filtered command list (no longer capped): the palette windows over
   // this so a long list scrolls with the cursor instead of truncating at 8.
@@ -155,6 +241,8 @@ export function InputBox({
     setCursor(0);
     setSelected(0);
     setSuggestOffset(0);
+    setHistoryIndex(-1);
+    historyRestoreRef.current = null;
   };
 
   useInput(
@@ -163,6 +251,7 @@ export function InputBox({
       if (vimActive && vimMode === "normal") {
         if (key.return) {
           const value = buffer;
+          pushHistory(value);
           reset();
           setVimMode("insert");
           onSubmit(value);
@@ -173,12 +262,12 @@ export function InputBox({
           return;
         }
         if (input === "a") {
-          setCursor((c) => Math.min(buffer.length, c + 1));
+          setCursor((c) => Math.min(bufferRef.current.length, c + 1));
           setVimMode("insert");
           return;
         }
         if (input === "A") {
-          setCursor(buffer.length);
+          setCursor(bufferRef.current.length);
           setVimMode("insert");
           return;
         }
@@ -187,7 +276,7 @@ export function InputBox({
           return;
         }
         if (input === "$" || (key as { end?: boolean }).end) {
-          setCursor(Math.max(0, buffer.length - 1));
+          setCursor(Math.max(0, bufferRef.current.length - 1));
           return;
         }
         if (input === "h" || key.leftArrow) {
@@ -195,15 +284,19 @@ export function InputBox({
           return;
         }
         if (input === "l" || key.rightArrow) {
-          setCursor((c) => Math.min(buffer.length, c + 1));
+          setCursor((c) => Math.min(bufferRef.current.length, c + 1));
           return;
         }
         if (input === "x") {
-          if (cursor < buffer.length) setBuffer((b) => b.slice(0, cursor) + b.slice(cursor + 1));
+          if (cursorRef.current < bufferRef.current.length)
+            setBuffer(
+              bufferRef.current.slice(0, cursorRef.current) +
+                bufferRef.current.slice(cursorRef.current + 1),
+            );
           return;
         }
         if (input === "D") {
-          setBuffer((b) => b.slice(0, cursor));
+          setBuffer(bufferRef.current.slice(0, cursorRef.current));
           return;
         }
         // Swallow everything else in normal mode (no stray text insertion).
@@ -222,20 +315,20 @@ export function InputBox({
       // char left of the cursor is a backslash, Enter replaces it with a
       // newline instead of submitting (matches the reference editor).
       if (key.ctrl && input === "j") {
-        setBuffer((b) => b.slice(0, cursor) + "\n" + b.slice(cursor));
-        setCursor((c) => c + 1);
+        setBuffer((b) => b.slice(0, cursorRef.current) + "\n" + b.slice(cursorRef.current));
+        setCursor(cursorRef.current + 1);
         return;
       }
 
       // --- Submit / completion ---
       if (key.return) {
         // "\" + Enter → newline (continue editing) rather than submit.
-        if (cursor > 0 && buffer[cursor - 1] === "\\") {
-          setBuffer((b) => b.slice(0, cursor - 1) + "\n" + b.slice(cursor));
+        if (cursorRef.current > 0 && bufferRef.current[cursorRef.current - 1] === "\\") {
+          setBuffer((b) => b.slice(0, cursorRef.current - 1) + "\n" + b.slice(cursorRef.current));
           // cursor stays put: removed "\" (−1) then added "\n" (+1).
           return;
         }
-        let value = buffer;
+        let value = bufferRef.current;
         // When the command palette is open and the user is still on the
         // command *name* (no args typed yet), Enter runs the highlighted
         // command — so "/" + Enter selects e.g. /help instead of submitting a
@@ -243,6 +336,7 @@ export function InputBox({
         if (suggestions.length > 0 && buffer.startsWith("/") && !buffer.trimEnd().includes(" ")) {
           value = "/" + suggestions[safeSelected].name;
         }
+        pushHistory(value);
         reset();
         onSubmit(value);
         return;
@@ -271,18 +365,54 @@ export function InputBox({
         return;
       }
 
-      // --- Multi-line cursor movement (palette closed, M25.1) ---
-      // With the palette closed, ↑/↓ move the cursor to the same column on the
-      // adjacent logical line. On the first/last line they're a no-op (no
-      // history navigation in this TUI — kept minimal).
+      // --- History navigation (palette closed, M41) ---
+      // ↑/↓ navigate the command history when the "/" palette is closed.
+      // If the user was viewing a history item and types, restore the buffer.
+      if (key.upArrow && suggestions.length === 0 && history.length > 0) {
+        // If user was editing (not browsing history), save current buffer.
+        if (historyIndex === -1 && bufferRef.current.length > 0) {
+          historyRestoreRef.current = bufferRef.current;
+        }
+        const next = Math.min(historyIndex + 1, history.length - 1);
+        const newHistoryItem = history[history.length - 1 - next]!;
+        setHistoryIndex(next);
+        setBuffer(newHistoryItem);
+        setCursor(newHistoryItem.length);
+        return;
+      }
+      if (key.downArrow && suggestions.length === 0) {
+        if (historyIndex === -1) {
+          // Already at current buffer, do nothing.
+          return;
+        }
+        const next = historyIndex - 1;
+        if (next < 0) {
+          // Back to current buffer.
+          setHistoryIndex(-1);
+          const restore = historyRestoreRef.current ?? "";
+          setBuffer(restore);
+          setCursor(restore.length);
+        } else {
+          const newHistoryItem = history[history.length - 1 - next]!;
+          setHistoryIndex(next);
+          setBuffer(newHistoryItem);
+          setCursor(newHistoryItem.length);
+        }
+        return;
+      }
+
+      // --- Multi-line cursor movement (palette open but no suggestions, M25.1) ---
+      // With the palette closed and no history to navigate, ↑/↓ move the cursor
+      // to the same column on the adjacent logical line.
       if (key.upArrow) {
-        const { row, col } = offsetToRowCol(buffer, cursor);
-        if (row > 0) setCursor(rowColToOffset(buffer, row - 1, col));
+        const { row, col } = offsetToRowCol(bufferRef.current, cursorRef.current);
+        if (row > 0) setCursor(rowColToOffset(bufferRef.current, row - 1, col));
         return;
       }
       if (key.downArrow) {
-        const { row, col } = offsetToRowCol(buffer, cursor);
-        if (row < splitLines(buffer).length - 1) setCursor(rowColToOffset(buffer, row + 1, col));
+        const { row, col } = offsetToRowCol(bufferRef.current, cursorRef.current);
+        if (row < splitLines(bufferRef.current).length - 1)
+          setCursor(rowColToOffset(bufferRef.current, row + 1, col));
         return;
       }
 
@@ -292,7 +422,7 @@ export function InputBox({
         return;
       }
       if (key.rightArrow) {
-        setCursor((c) => Math.min(buffer.length, c + 1));
+        setCursor((c) => Math.min(bufferRef.current.length, c + 1));
         return;
       }
       // Ctrl+A / Ctrl+E (and Home/End where the terminal sends them) → jump to
@@ -300,21 +430,43 @@ export function InputBox({
       // multi-line buffer behaves like a normal editor; single-line is the
       // whole buffer as before).
       if ((key.ctrl && input === "a") || (key as { home?: boolean }).home) {
-        const { row } = offsetToRowCol(buffer, cursor);
-        setCursor(rowColToOffset(buffer, row, 0));
+        const { row } = offsetToRowCol(bufferRef.current, cursorRef.current);
+        setCursor(rowColToOffset(bufferRef.current, row, 0));
         return;
       }
       if ((key.ctrl && input === "e") || (key as { end?: boolean }).end) {
-        const { row } = offsetToRowCol(buffer, cursor);
-        setCursor(rowColToOffset(buffer, row, splitLines(buffer)[row]!.length));
+        const { row } = offsetToRowCol(bufferRef.current, cursorRef.current);
+        setCursor(
+          rowColToOffset(bufferRef.current, row, splitLines(bufferRef.current)[row]!.length),
+        );
+        return;
+      }
+
+      // --- Line editing shortcuts (M41: Emacs-style) ---
+      // Ctrl+U: delete from cursor to beginning of line (keeps chars after cursor).
+      if (key.ctrl && input === "u") {
+        setBuffer(bufferRef.current.slice(cursorRef.current));
+        setCursor(0);
+        return;
+      }
+      // Ctrl+K: delete from cursor to end of line (keeps chars before cursor).
+      if (key.ctrl && input === "k") {
+        setBuffer(bufferRef.current.slice(0, cursorRef.current));
+        return;
+      }
+      // Ctrl+W: delete word before cursor.
+      if (key.ctrl && input === "w") {
+        const { newBuffer, newCursor } = deleteWordBefore(bufferRef.current, cursorRef.current);
+        setBuffer(newBuffer);
+        setCursor(newCursor);
         return;
       }
 
       // --- Deletion (buffer only — never touches the hints/transcript) ---
       if (key.backspace) {
-        if (cursor > 0) {
-          setBuffer((b) => b.slice(0, cursor - 1) + b.slice(cursor));
-          setCursor((c) => c - 1);
+        if (cursorRef.current > 0) {
+          setBuffer((b) => b.slice(0, cursorRef.current - 1) + b.slice(cursorRef.current));
+          setCursor(cursorRef.current - 1);
         }
         return;
       }
@@ -322,16 +474,20 @@ export function InputBox({
         // Ink reports the Del key as `key.delete`; delete the char under the
         // cursor. (Some terminals map Backspace to delete=true too, but those
         // also set backspace=true, handled above.)
-        if (cursor < buffer.length) {
-          setBuffer((b) => b.slice(0, cursor) + b.slice(cursor + 1));
+        if (cursorRef.current < bufferRef.current.length) {
+          setBuffer((b) => b.slice(0, cursorRef.current) + b.slice(cursorRef.current + 1));
         }
         return;
       }
 
       // --- Printable insertion at the cursor ---
+      // Any printable input exits history browsing mode (M41).
       if (input && !key.ctrl && !key.meta && !key.escape) {
-        setBuffer((b) => b.slice(0, cursor) + input + b.slice(cursor));
-        setCursor((c) => c + input.length);
+        setHistoryIndex(-1);
+        historyRestoreRef.current = null;
+        const insertPos = cursorRef.current;
+        setBuffer((b) => b.slice(0, insertPos) + input + b.slice(insertPos));
+        setCursor(insertPos + input.length);
       }
     },
     { isActive: !disabled },

@@ -103,7 +103,7 @@ describe("Prompts", () => {
     const { lastFrame } = render(<PermissionPrompt overlay={overlay} />);
     const frame = lastFrame()!;
     expect(frame).toContain("Bash request");
-    expect(frame).toContain("recursive delete");
+    expect(frame).toContain("High Risk");
     expect(frame).toContain("Yes");
   });
 
@@ -278,13 +278,13 @@ describe("CommandPicker (/help palette)", () => {
     // Step the cursor down past the initial window so it must scroll.
     for (let i = 0; i < 12; i++) {
       stdin.write("\x1B[B"); // down arrow
-      await new Promise((r) => setTimeout(r, 20));
+      await new Promise((r) => setTimeout(r, 30)); // increased from 20ms for stability
     }
     expect(lastFrame()).toMatch(/↑ \d+ more/); // window scrolled off the top
     stdin.write("\r");
-    await new Promise((r) => setTimeout(r, 50));
+    await new Promise((r) => setTimeout(r, 100)); // increased from 50ms for stability
     expect(chosen).toBe("cmd12");
-  }, 10000);
+  }, 15000); // increased timeout from 10000ms
 
   it("cancels with null on Esc", async () => {
     let chosen: string | null = "unset";

@@ -10,11 +10,28 @@
 // claude test/src/src/components/MarkdownTable.tsx.
 // ============================================================
 
-import chalk from "chalk";
+import chalk, { type ChalkInstance } from "chalk";
+import hljs from "highlight.js";
 import { marked, type Token, type Tokens } from "marked";
 import { padAligned, stripAnsi, terminalColumns, visualWidth } from "./terminal-width.js";
 
 const EOL = "\n";
+
+/** Highlight.js language aliases for common variations */
+const LANGUAGE_ALIASES: Record<string, string> = {
+  js: "javascript",
+  ts: "typescript",
+  py: "python",
+  rb: "ruby",
+  sh: "bash",
+  zsh: "bash",
+  shell: "bash",
+  yml: "yaml",
+  md: "markdown",
+  rs: "rust",
+  kt: "kotlin",
+  cs: "csharp",
+};
 
 /** Decode common HTML entities so terminal output shows actual characters. */
 function decodeHtmlEntities(text: string): string {
@@ -26,6 +43,15 @@ function decodeHtmlEntities(text: string): string {
     .replace(/&apos;/g, "'")
     .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(Number(dec)))
     .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)));
+}
+
+/** Escape HTML entities for plain text fallback */
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 // --- Table rendering (ported from MarkdownTable.tsx) ---
@@ -215,6 +241,163 @@ function renderTable(token: Tokens.Table): string {
 
 const inlineCode = chalk.cyan;
 
+/**
+ * Map highlight.js token types to chalk colors.
+ * Terminal-friendly colors with good contrast.
+ */
+const HLJS_TOKEN_COLORS: Record<string, ChalkInstance> = {
+  keyword: chalk.cyan,
+  built_in: chalk.cyan,
+  type: chalk.green,
+  literal: chalk.magenta,
+  number: chalk.magenta,
+  string: chalk.yellow,
+  symbol: chalk.yellow,
+  regexp: chalk.yellow,
+  variable: chalk.blue,
+  "template-variable": chalk.blue,
+  attribute: chalk.green,
+  tag: chalk.red,
+  name: chalk.red,
+  "selector-tag": chalk.red,
+  "selector-id": chalk.yellow,
+  "selector-class": chalk.yellow,
+  title: chalk.blue.bold,
+  section: chalk.blue.bold,
+  function: chalk.blue.bold,
+  comment: chalk.gray.italic,
+  doctag: chalk.gray.italic,
+  meta: chalk.dim,
+  "meta-keyword": chalk.dim,
+  "meta-string": chalk.dim,
+};
+
+/**
+ * Parse highlight.js HTML output and convert to chalk-styled string.
+ * Handles nested spans and common HTML entities using a stack-based approach.
+ */
+function parseHljsOutput(html: string): string {
+  // Stack entries: [colorFn, accumulatedContent]
+  type StackEntry = [ChalkInstance, string];
+  const stack: StackEntry[] = [];
+  let result = "";
+  let i = 0;
+
+  while (i < html.length) {
+    // Check for closing tag
+    if (html.slice(i, i + 7) === "</span>") {
+      // Pop this span's content, apply color, and add to parent
+      const [colorFn, content] = stack.pop()!;
+      const colored = colorFn(content);
+      if (stack.length > 0) {
+        stack[stack.length - 1]![1] += colored;
+      } else {
+        result += colored;
+      }
+      i += 7;
+      continue;
+    }
+
+    // Check for opening tag
+    const openTagMatch = html.slice(i).match(/^<span(?:\s+class="(hljs-)?([^"]+)")?>/);
+    if (openTagMatch) {
+      let colorFn: ChalkInstance;
+      if (openTagMatch[1] !== undefined) {
+        const cls = openTagMatch[2]!;
+        colorFn = HLJS_TOKEN_COLORS[cls] ?? chalk.white;
+      } else {
+        colorFn = stack.length > 0 ? stack[stack.length - 1]![0] : chalk.white;
+      }
+      stack.push([colorFn, ""]);
+      i += openTagMatch[0]!.length;
+      continue;
+    }
+
+    // HTML entity — decode and add to current span (or result).
+    // highlight.js escapes <, >, & in source code; we must reverse it
+    // so the terminal shows the original characters.
+    const entityMatch = html.slice(i).match(/^&(?:lt|gt|amp|quot|apos|nbsp|#x[0-9a-fA-F]+|#\d+);/);
+    if (entityMatch) {
+      const decoded = decodeHtmlEntities(entityMatch[0]);
+      if (stack.length > 0) {
+        stack[stack.length - 1]![1] += decoded;
+      } else {
+        result += decoded;
+      }
+      i += entityMatch[0].length;
+      continue;
+    }
+
+    // Regular character — add to current span (or result)
+    const char = html[i]!;
+    if (stack.length > 0) {
+      stack[stack.length - 1]![1] += char;
+    } else {
+      result += char;
+    }
+    i++;
+  }
+
+  // Drain any unclosed spans defensively (malformed hljs output).
+  while (stack.length > 0) {
+    const [colorFn, content] = stack.pop()!;
+    const colored = colorFn(content);
+    if (stack.length > 0) {
+      stack[stack.length - 1]![1] += colored;
+    } else {
+      result += colored;
+    }
+  }
+
+  return result;
+}
+
+// --- Shared Error Parsing ---
+
+/** Error type and message extracted from a raw error string. */
+export interface ParsedError {
+  type: string;
+  message: string;
+}
+
+/** Parse common error patterns into structured format.
+ *  Used by ToolCard.tsx (StructuredError). */
+export function parseError(error: string): ParsedError {
+  // TypeScript errors: TS\d+
+  const tsMatch = error.match(/TS(\d+):\s*(.+)/s);
+  if (tsMatch) {
+    return { type: `TypeScript ${tsMatch[1]}`, message: tsMatch[2]!.trim() };
+  }
+
+  // ENOENT: file not found
+  if (error.includes("ENOENT")) {
+    const msg = error.replace(/ENOENT.*?:/, "").trim();
+    return { type: "File Not Found", message: msg };
+  }
+
+  // EACCES: permission denied
+  if (error.includes("EACCES")) {
+    const msg = error.replace(/EACCES.*?:/, "").trim();
+    return { type: "Permission Denied", message: msg };
+  }
+
+  // Network errors
+  if (error.includes("ETIMEDOUT") || error.includes("ECONNREFUSED")) {
+    return { type: "Connection Error", message: error.split(":").pop()?.trim() || error };
+  }
+
+  // Generic error with code
+  const codeMatch = error.match(/\[Error (-?\d+)\]:\s*(.+)/s);
+  if (codeMatch) {
+    return { type: `Error ${codeMatch[1]}`, message: codeMatch[2]!.trim() };
+  }
+
+  // Default: extract last meaningful line
+  const lines = error.split("\n").filter((l) => l.trim());
+  const lastLine = lines[lines.length - 1] || error;
+  return { type: "Error", message: lastLine.trim() };
+}
+
 function formatToken(
   token: Token,
   listDepth = 0,
@@ -235,13 +418,25 @@ function formatToken(
     case "codespan":
       return inlineCode(decodeHtmlEntities((token as Tokens.Codespan).text));
     case "code": {
-      const code = (token as Tokens.Code).text;
-      return (
-        code
-          .split(EOL)
-          .map((l) => chalk.gray(l))
-          .join(EOL) + EOL
-      );
+      const codeToken = token as Tokens.Code;
+      const code = codeToken.text;
+      const lang = codeToken.lang || "";
+      // Resolve language alias (e.g. "js" → "javascript")
+      const lower = lang.toLowerCase();
+      const resolvedLang = LANGUAGE_ALIASES[lower] ?? lower;
+      // Try to highlight with resolved language; fall back to plain gray
+      let highlighted: string;
+      if (resolvedLang && hljs.getLanguage(resolvedLang)) {
+        try {
+          highlighted = hljs.highlight(code, { language: resolvedLang }).value;
+        } catch {
+          highlighted = escapeHtml(code);
+        }
+      } else {
+        highlighted = escapeHtml(code);
+      }
+      // Parse HTML and apply chalk colors for terminal rendering
+      return parseHljsOutput(highlighted) + EOL;
     }
     case "heading":
       return chalk.bold.cyan((token.tokens ?? []).map((t) => formatToken(t)).join("")) + EOL;

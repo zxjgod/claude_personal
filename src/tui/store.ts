@@ -140,6 +140,8 @@ export interface StoreState {
   toast: string | null;
   /** Help panel visibility (triggered by "?" key). */
   showHelp: boolean;
+  /** M41: input command history for ↑/↓ navigation. */
+  inputHistory: string[];
 }
 
 type Listener = () => void;
@@ -191,6 +193,7 @@ export class TuiStore {
       modelLabel,
       toast: null,
       showHelp: false,
+      inputHistory: [],
     };
   }
 
@@ -516,6 +519,11 @@ export class TuiStore {
 
   setShowHelp(show: boolean): void {
     this.set({ showHelp: show });
+  }
+
+  /** Set the input history (e.g. after loading from a session). */
+  setInputHistory(history: string[]): void {
+    this.set({ inputHistory: history.slice(-100) }); // Keep max 100 items
   }
 
   /** Update the status-bar model label (e.g. after a /provider switch). */

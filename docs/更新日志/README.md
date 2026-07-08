@@ -57,6 +57,7 @@ docs/更新日志/
 
 | 日期 | 类型 | 模块 | 主题 | commit | 关联 |
 |---|---|---|---|---|---|
+| 2026-07-08 | fix | markdown / InputBox / command / store | [代码审查修复（语法高亮 HTML 实体、历史输入位置、命令换行绕过、死代码清理）](./20260708-code-review-fixes.md) | 待提交 | [项目评审报告](../项目评审报告.md) |
 | 2026-07-06 | fix | TypeScript / TUI 测试 | [修复类型收窄错误和 TUI 滚动测试超时问题](./20260706-typecheck-tui-timeout-fix.md) | 待提交 | — |
 | 2026-07-04 | feature | TUI / commands / theme | [Shift+Tab 模式切换体验优化（Toast 反馈、帮助面板、/mode 命令、状态栏颜色）](./20260704-m38-mode-switch-ux.md) | 待提交 | [M38 计划表](../archive/M38计划表-指令深化与权限模式.md) |
 | 2026-07-02 | feature | commands / sessions / compact / effort / permissions / TUI | [M38 `/` 指令深化（effort 定义、sessions 删除、compact 进度条）+ Shift+Tab 权限模式即时切换](./20260702-m38-command-permission-mode.md) | 待提交 | [M38 计划表](../archive/M38计划表-指令深化与权限模式.md) |
@@ -82,13 +83,14 @@ docs/更新日志/
 
 > 某个子功能再出问题时，先在这里找它涉及过哪些日志，再顺藤摸瓜到 commit 与设计决策。
 
-- **BashTool / 进程管理**：`bash-deadlock-fix-20260626`（spawn + taskkill 进程树 + timedOut 标志 + 非并发安全）、`bash-deadlock-analysis`（根因）。
+- **BashTool / 进程管理 / 命令验证**：`bash-deadlock-fix-20260626`（spawn + taskkill 进程树 + timedOut 标志 + 非并发安全）、`bash-deadlock-analysis`（根因）、`20260708-code-review-fixes`（`bashCommandIsReadOnly` 增加换行符检查，防 `ls\nrm -rf /` 绕过只读判定）。
 - **agent-loop 并行 / abort**：`bash-deadlock-fix-20260626`（并行路径加 abort 竞速）。
 - **permissions 危险命令拦截 / 权限模式**：`bash-deadlock-fix-20260626`（补充易致死命令静态拦截）、`20260702-m38-command-permission-mode`（M38：`ToolContext.getPermissionMode`/`setPermissionMode` 实时模式；TUI Shift+Tab 循环 `default → acceptEdits → bypassPermissions → plan`；安全地板仍在 bypassPermissions 前执行）、`20260704-m38-mode-switch-ux`（Toast 视觉反馈、`?` 帮助面板、`/mode` 命令、状态栏模式颜色区分）。
 - **TUI 启动 / 渲染**：`终端界面bug修复-20260626`、`更新日志-终端界面`（渲染层对齐）、`20260628-m23-tui-statusline`（状态行对齐参考版：`spinner-core` / `StatusLine` / `SpinnerGlyph` / `StreamBuffer`，删除 `ParticleSpinner` 与 `ink-spinner`）、`20260628-m24-tui-smoothing`（M24：帧合批 `scheduleEmit`/`flush`/`setBatching`、字段切片订阅 `useStoreSelector`、`App` 拆六区域组件、流式区隔离、分隔线 `cols-1` 治 DECAWM 跳位；同时去 `/keybindings` 不实宣传、标注 M15.1/M17 漂移已回退）、`20260702-tui-role-color-verb-command-palette`（新增 `theme.ts` 统一角色分色；`spinner-core` 新增 `verbAt`/`VERB_CYCLE_MS` 时间驱动趣味动词循环接入 `StatusLine`）、`20260702-m38-command-permission-mode`（状态栏显示当前 mode，Shift+Tab 忙碌中也可即时切换权限模式）、`20260704-m38-mode-switch-ux`（FullScreenApp 独立 Shift+Tab 处理；Toast 居中通知；`?` 键弹出帮助面板含模式说明；`/mode` 命令；状态栏单行显示，模式名称带颜色区分）。
+- **TUI 输入框 / 历史导航 / markdown 渲染**：`20260708-code-review-fixes`（修复历史浏览时输入插入位置 0→光标处；`parseHljsOutput` 增加 HTML 实体解码分支，代码块不再显示 `&lt;`；删除死代码 `formatError`/`unescapeHtml`/`getInputHistory`/`pushInputHistory`；简化语言别名查找）。
 - **TUI 多行输入 / 全屏布局（M25）**：`M25计划表-全屏TUI`（M25.1 InputBox 多行 Ctrl+J / `\`+Enter / 行间光标 / 行内 Home·End；M25.2 可选全屏 `--fullscreen`：自造 `ScrollView` + `useTerminalSize` + `transcript-lines`，alt-screen 生命周期退出必复位）、`20260629-fullscreen-tui-fixes`（实测三修：① prompt 做成最后渲染行根治光标漂移；② `keepColorWhenDisabled`/`hideBottomRule` + 撤固定 width 治变色缩小；③ flex+`measureElement` 自测高度 + Ctrl+U/D/B/F/G 滚动兜底；并抽 `FullScreenApp.tsx` 独立模块，App.tsx 仅一委托分支，默认路径零回归）。
 - **工程基建 / CI / 构建**：`20260628-m20-engineering`（M20：Biome 替 eslint+prettier、esbuild 转译构建、免 key 冒烟脚本、husky+lint-staged pre-commit、GitHub Actions CI、`.gitattributes` 强制 LF、cli `--version/--help`）。
-- **测试基建 / TypeScript 类型 / TUI 测试**：`20260706-typecheck-tui-timeout-fix`（修复 `path-security.test.ts` discriminated union 类型收窄问题 + `tui-components.test.tsx` 滚动测试超时问题，978/978 测试全过）。
+- **测试基建 / TypeScript 类型 / TUI 测试**：`20260706-typecheck-tui-timeout-fix`（修复 `path-security.test.ts` discriminated union 类型收窄问题 + `tui-components.test.tsx` 滚动测试超时问题，978/978 测试全过）、`20260708-code-review-fixes`（修正历史输入断言 + 新增换行符绕过回归用例，994/994 全过）。
 - **测试基建 / 集成测试**：`20260628-m21-testing`（M21：tools/permissions/persistence/MCP/TUI 五大集成测试 + CI 冒烟元测试，508→613；真 git worktree 提交隔离、真 MCP SDK stdio/http mock server、分类器短路顺序、resume 折叠、30 轮长会话 store 不变量）。
 - **TUI overlay / resume**：`20260628-resume-session-picker`（裸 `/resume` 弹 sessionPicker overlay、`nextOffset` 滚动窗口、`history-replay` 把 `Message[]` 回放进 transcript、零 token 恢复）。
 - **provider 路由 / 配置**：`20260628-provider-profiles`（`/provider`：`.claude/providers.json` 存多套 `(provider/baseURL/apiKey/model)` 档案，TUI 方向键 overlay / `/provider <name>` 直切，`applyProfile` 原地改 `modelConfig`；`cli.ts` 把 `callModel` 改为按 provider 现解析以支持家族切换；不做 M22）。
@@ -105,4 +107,4 @@ docs/更新日志/
 
 `已落地` / `进行中` / `已回滚` / `已知未修`。
 
-当前已知未修缺口（详见 [`../项目评审报告.md`](../项目评审报告.md) 与 [`../模块维护方案.md`](../模块维护方案.md) 的「高风险区」）：default 模式 bash 审批链、子代理 askUser 透传、MCP 默认免审批、web-fetch SSRF、generateSimpleDiff、TUI expandedId 未接上。
+当前已知未修缺口（详见 [`../项目评审报告.md`](../项目评审报告.md) 与 [`../模块维护方案.md`](../模块维护方案.md) 的「高风险区」）：default 模式 bash 审批链、子代理 askUser 透传、MCP 默认免审批、web-fetch SSRF、generateSimpleDiff、TUI expandedId 未接上。（`bashCommandIsReadOnly` 换行符绕过已于 2026-07-08 修复，见 `20260708-code-review-fixes`。）
