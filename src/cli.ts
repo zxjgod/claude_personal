@@ -672,7 +672,7 @@ async function main() {
     // returns to the prompt; a second (at the idle prompt) exits.
     const controller = new AbortController();
     const onSigint = () => {
-      controller.abort("用户中断");
+      controller.abort("User interrupted");
     };
     process.on("SIGINT", onSigint);
 

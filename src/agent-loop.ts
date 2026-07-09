@@ -14,6 +14,7 @@ import {
 } from "./query/token-budget.js";
 import { predictReads, SpeculationCache } from "./speculation.js";
 import { StreamingToolExecutor } from "./streaming-tool-executor.js";
+import { estimateTokens } from "./token-estimator.js";
 import { InputValidationError, toolUseError } from "./tools/registry.js";
 import { spillIfLarge } from "./tools/result-spill.js";
 import { startToolSummary } from "./tools/summary.js";
@@ -955,7 +956,7 @@ async function executeSingleTool(
         return {
           toolName: tool.name,
           error: reason,
-          formatted: `工具被 hook 拦截: ${reason}`,
+          formatted: `Tool blocked by hook: ${reason}`,
           isError: true,
         };
       }
@@ -978,7 +979,7 @@ async function executeSingleTool(
       return {
         toolName: tool.name,
         error: reason,
-        formatted: `权限被拒绝: ${reason}`,
+        formatted: `Permission denied: ${reason}`,
         isError: true,
       };
     }
@@ -991,7 +992,7 @@ async function executeSingleTool(
       return {
         toolName: tool.name,
         error: reason,
-        formatted: `权限被拒绝: ${reason}`,
+        formatted: `Permission denied: ${reason}`,
         isError: true,
       };
     }
@@ -1049,36 +1050,8 @@ async function executeSingleTool(
   }
 }
 
-// --- Token Estimation (Simple Heuristic) ---
-
-function estimateTokens(messages: Message[]): number {
-  let total = 0;
-  for (const msg of messages) {
-    switch (msg.role) {
-      case "user":
-        for (const block of msg.content) {
-          if (block.type === "text") total += block.text.length;
-        }
-        break;
-      case "assistant":
-        if (msg.content) total += msg.content.length;
-        if (msg.tool_calls) {
-          for (const tc of msg.tool_calls) {
-            total += tc.function.arguments.length + tc.function.name.length;
-          }
-        }
-        break;
-      case "tool":
-        total += msg.content.length;
-        break;
-      case "system":
-        total += msg.content.length;
-        break;
-    }
-  }
-  // Rough estimate: ~1 token per 4 characters
-  return Math.ceil(total / 4);
-}
+// --- Context Token Estimation ---
+// Uses the improved token-estimator.ts module for better accuracy on code content.
 
 /**
  * Estimate the prepared context's token count (M31, kernel §6). When a usage
@@ -1098,94 +1071,42 @@ function estimateContextTokens(messages: Message[], baseline: LoopState["usageBa
   return estimateTokens(messages);
 }
 
-// --- Auto-Compaction ---
+// --- Helper Utilities ---
 
 /**
- * Choose a split point so the retained tail never begins with an orphan tool
- * result. Starts at `messages.length - tailSize` and walks the boundary
- * earlier while the first tail message is a tool result (whose originating
- * assistant message would otherwise be stranded in the summarized half).
- * Returns an index into `messages` (the start of the tail).
+ * Find a safe split index in messages that avoids splitting mid-conversation.
+ * Used by auto-compaction to preserve recent conversation context.
  */
 function findSafeSplitIndex(messages: Message[], tailSize: number): number {
+  // Keep at least tailSize messages, but never split in the middle of a
+  // tool-result → tool-call pair. Walk backwards from the tail and stop at
+  // the first assistant turn that has no unpaired tool result.
   let split = Math.max(0, messages.length - tailSize);
-  while (split > 0 && messages[split]?.role === "tool") {
+  while (split > 0) {
+    const prev = messages[split - 1];
+    if (prev.role === "assistant") {
+      // Check if this assistant message has tool results that would be orphaned
+      const hasOrphanedToolResult = messages[split]?.role === "tool";
+      if (!hasOrphanedToolResult) break;
+    }
     split--;
   }
   return split;
 }
 
-export async function autoCompact(
-  messages: Message[],
-  callModel: ModelCaller,
-  modelConfig: ModelConfig,
-  abortSignal?: AbortSignal,
-): Promise<Message[]> {
-  const TAIL_SIZE = 20;
-  // Find a safe split point. Slicing at a fixed offset can leave the tail
-  // starting with an orphan tool result whose assistant (with tool_calls)
-  // landed in oldMessages — the provider rejects that ("tool message must
-  // follow tool_calls"). Move the boundary earlier until the tail no longer
-  // begins with a tool message.
-  const splitIndex = findSafeSplitIndex(messages, TAIL_SIZE);
-
-  const oldMessages = messages.slice(0, splitIndex);
-  const tailMessages = messages.slice(splitIndex);
-
-  if (oldMessages.length === 0) return messages;
-
-  // Summarize old messages
-  const summaryPrompt = `Summarize the conversation so far. Include:
-1. What the user asked for (the main task)
-2. Key decisions made
-3. Files that were modified (with paths)
-4. What still needs to be done
-5. Any important context for continuing the work
-
-Be concise but complete. This summary will replace the old messages
-so the conversation can continue with a fresh context window.`;
-
-  const summaryMessages: Message[] = [
-    ...oldMessages,
-    { role: "user", content: [{ type: "text", text: summaryPrompt }] },
-  ];
-
-  // Call model without tools for summarization
-  const chunks: string[] = [];
-  for await (const event of callModel(
-    summaryMessages,
-    [],
-    "You are a helpful assistant that summarizes conversations.",
-    modelConfig,
-    abortSignal,
-  )) {
-    if (event.type === "text_delta") {
-      chunks.push(event.delta);
-    }
-  }
-  const summary = chunks.join("");
-
-  // Rebuild: system summary + tail. The summary is tagged with
-  // COMPACT_BOUNDARY_MARKER so the pipeline's layer 1
-  // (getMessagesAfterCompactBoundary) can physically drop everything before it
-  // on subsequent turns (kernel §6).
-  return [
-    {
-      role: "system",
-      content: `${COMPACT_BOUNDARY_MARKER}\n${summary}`,
-    },
-    ...tailMessages,
-  ];
-}
-
-// --- Error Recovery ---
-
-/** True when an error looks like the model rejecting an over-long context. */
+/** Check if an error is a context-length error (400 with context_length). */
 function isContextLengthError(error: unknown): boolean {
   const err = error as { status?: number; message?: string } | null;
   const msg = err?.message ?? "";
   return err?.status === 400 && (msg.includes("context_length") || msg.includes("maximum context"));
 }
+
+/** Sleep utility. */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// --- Error Recovery ---
 
 /**
  * Decision returned by handleModelError.
@@ -1204,6 +1125,10 @@ interface RecoveryState {
   maxContextLengthRetries: number;
 }
 
+/**
+ * Main error recovery decision function.
+ * Returns the recovery action to take based on error type and state.
+ */
 async function handleModelError(error: unknown, state: RecoveryState): Promise<ModelErrorRecovery> {
   const err = error as any;
 
@@ -1282,6 +1207,74 @@ async function handleModelError(error: unknown, state: RecoveryState): Promise<M
   return "abort";
 }
 
+// Re-export for external use
+export { handleModelError, isContextLengthError } from "./error-recovery.js";
+
+// --- Auto-Compaction ---
+
+export async function autoCompact(
+  messages: Message[],
+  callModel: ModelCaller,
+  modelConfig: ModelConfig,
+  abortSignal?: AbortSignal,
+): Promise<Message[]> {
+  const TAIL_SIZE = 20;
+  // Find a safe split point. Slicing at a fixed offset can leave the tail
+  // starting with an orphan tool result whose assistant (with tool_calls)
+  // landed in oldMessages — the provider rejects that ("tool message must
+  // follow tool_calls"). Move the boundary earlier until the tail no longer
+  // begins with a tool message.
+  const splitIndex = findSafeSplitIndex(messages, TAIL_SIZE);
+
+  const oldMessages = messages.slice(0, splitIndex);
+  const tailMessages = messages.slice(splitIndex);
+
+  if (oldMessages.length === 0) return messages;
+
+  // Summarize old messages
+  const summaryPrompt = `Summarize the conversation so far. Include:
+1. What the user asked for (the main task)
+2. Key decisions made
+3. Files that were modified (with paths)
+4. What still needs to be done
+5. Any important context for continuing the work
+
+Be concise but complete. This summary will replace the old messages
+so the conversation can continue with a fresh context window.`;
+
+  const summaryMessages: Message[] = [
+    ...oldMessages,
+    { role: "user", content: [{ type: "text", text: summaryPrompt }] },
+  ];
+
+  // Call model without tools for summarization
+  const chunks: string[] = [];
+  for await (const event of callModel(
+    summaryMessages,
+    [],
+    "You are a helpful assistant that summarizes conversations.",
+    modelConfig,
+    abortSignal,
+  )) {
+    if (event.type === "text_delta") {
+      chunks.push(event.delta);
+    }
+  }
+  const summary = chunks.join("");
+
+  // Rebuild: system summary + tail. The summary is tagged with
+  // COMPACT_BOUNDARY_MARKER so the pipeline's layer 1
+  // (getMessagesAfterCompactBoundary) can physically drop everything before it
+  // on subsequent turns (kernel §6).
+  return [
+    {
+      role: "system",
+      content: `${COMPACT_BOUNDARY_MARKER}\n${summary}`,
+    },
+    ...tailMessages,
+  ];
+}
+
 /**
  * Inject queued type-ahead input as follow-up user messages (M36, kernel §9).
  * Returns true when anything was injected. Called at turn boundaries so input
@@ -1295,10 +1288,6 @@ function injectQueuedInput(messages: Message[], drain?: () => string[]): boolean
     messages.push({ role: "user", content: [{ type: "text", text }] });
   }
   return true;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**

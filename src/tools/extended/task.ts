@@ -277,12 +277,14 @@ export const TaskTool: Tool = buildTool({
     };
   },
 
-  async checkPermissions(_input, _context) {
-    // The `task` tool itself just spawns a sub-agent; the user explicitly
-    // requested it, so spawning needs no separate prompt. The sub-agent's
-    // own tool calls (bash/write/edit) are permission-checked inside the
-    // sub-loop, where the parent's askUser is forwarded so destructive
-    // actions still surface for confirmation.
+  async checkPermissions(_input, context) {
+    // Plan mode: never spawn sub-agents (they run their own loop).
+    if (context.permissionMode === "plan") {
+      return {
+        allowed: false,
+        reason: "Plan mode: task tool is disabled.",
+      };
+    }
     return { allowed: true };
   },
 });

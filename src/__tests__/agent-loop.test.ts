@@ -354,7 +354,7 @@ describe("agentLoop", () => {
 
     expect(executed).toBe(false);
     const toolResults = events.find((e) => e.type === "tool_results");
-    expect(toolResults.results[0].formatted).toContain("权限被拒绝");
+    expect(toolResults.results[0].formatted).toContain("Permission denied");
   });
 
   it("should block destructive tools in plan mode", async () => {
@@ -418,7 +418,7 @@ describe("agentLoop", () => {
 
     expect(executed).toBe(false);
     const toolResults = events.find((e) => e.type === "tool_results");
-    expect(toolResults.results[0].formatted).toContain("权限被拒绝");
+    expect(toolResults.results[0].formatted).toContain("Permission denied");
   });
 
   it("refuses a tool when its own checkPermissions denies (tool-level policy wins)", async () => {
@@ -485,7 +485,7 @@ describe("agentLoop", () => {
     expect(executed).toBe(false);
     expect(askUser).not.toHaveBeenCalled();
     const toolResults = events.find((e) => e.type === "tool_results");
-    expect(toolResults.results[0].formatted).toContain("权限被拒绝");
+    expect(toolResults.results[0].formatted).toContain("Permission denied");
   });
 
   it("should pass toolContext (sessionId/workspaceRoot) into tool.call", async () => {
