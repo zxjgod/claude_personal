@@ -10,9 +10,9 @@
 // ============================================================
 
 import chalk from "chalk";
+import type { SubAgentProgress, ToolExecutionResult } from "../types.js";
 import { renderMarkdown } from "./markdown.js";
 import { terminalColumns, visualWidth } from "./terminal-width.js";
-import type { SubAgentProgress, ToolExecutionResult } from "./types.js";
 
 // Windows-safe glyphs (see constants/figures.ts in the reference source).
 const BLACK_CIRCLE = "●"; // assistant message / tool-start bullet
@@ -200,19 +200,55 @@ export function renderPermissionPrompt(
   const width = Math.min(terminalColumns() - 2, 100);
   const top = "┌" + "─".repeat(width - 2) + "┐";
   const bottom = "└" + "─".repeat(width - 2) + "┘";
-  const header = `${capitalize(toolName)} command`;
-  process.stdout.write("\n" + chalk.dim(top) + "\n");
-  process.stdout.write(boxLine(chalk.bold.cyan(header), width) + "\n");
+  // P1-4: Enhanced permission prompt with Chinese text
+  process.stdout.write("\n" + chalk.yellow(top) + "\n");
+  process.stdout.write(boxLine(chalk.bold.yellow("⚠️  权限请求"), width) + "\n");
   process.stdout.write(boxLine("", width) + "\n");
+
+  const toolLabels: Record<string, string> = {
+    bash: "Shell 命令",
+    write: "写入文件",
+    edit: "编辑文件",
+    read: "读取文件",
+    glob: "搜索文件",
+    grep: "搜索内容",
+    task: "子代理任务",
+  };
+  const header = toolLabels[toolName] || capitalize(toolName) + " 操作";
+  process.stdout.write(boxLine("  " + chalk.bold(header), width) + "\n");
+  process.stdout.write(boxLine("", width) + "\n");
+
   const detail = formatToolDetail(input);
   if (detail) {
-    process.stdout.write(boxLine("  " + detail, width) + "\n");
+    process.stdout.write(boxLine("  📄 " + detail, width) + "\n");
   }
   if (riskHint) {
-    process.stdout.write(boxLine("  " + chalk.yellow(riskHint), width) + "\n");
+    process.stdout.write(boxLine("", width) + "\n");
+    // P1-4: Better formatting for risk hints
+    const wrapped = wrapText(riskHint, width - 6);
+    for (const line of wrapped) {
+      process.stdout.write(boxLine("  " + chalk.yellow("⚠️ " + line), width) + "\n");
+    }
   }
   process.stdout.write(chalk.dim(bottom) + "\n");
-  process.stdout.write(chalk.dim("  Esc to cancel\n"));
+  process.stdout.write(chalk.dim("  输入 y 允许 / a 始终允许 / n 拒绝 (Esc 取消)\n"));
+}
+
+// Helper function to wrap text
+function wrapText(text: string, maxWidth: number): string[] {
+  const words = text.split(/\s+/);
+  const lines: string[] = [];
+  let current = "";
+  for (const word of words) {
+    if (visualWidth(current + " " + word) > maxWidth && current) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = current ? current + " " + word : word;
+    }
+  }
+  if (current) lines.push(current);
+  return lines.length > 0 ? lines : [""];
 }
 
 function boxLine(content: string, width: number): string {

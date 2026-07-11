@@ -10,8 +10,8 @@ import {
   renderToolResult,
   renderToolStart,
   StreamingRenderer,
-} from "../cli-renderer.js";
-import { renderMarkdown } from "../markdown.js";
+} from "../tui/cli-renderer.js";
+import { renderMarkdown } from "../tui/markdown.js";
 import type { ToolExecutionResult } from "../types.js";
 
 // Force chalk on so color codes are deterministic in CI.
@@ -182,7 +182,8 @@ describe("renderToolStart / renderPermissionPrompt", () => {
     const out = captureStdout(() =>
       renderPermissionPrompt("write", { filePath: "a.txt" }, "overwrites file"),
     );
-    expect(out).toContain("Write");
+    // P1-4: Updated to expect Chinese output
+    expect(out).toContain("写入文件");
     expect(out).toContain("overwrites file");
     expect(out).toContain("a.txt");
     expect(out).toMatch(/[┌┐└┘│─]/);

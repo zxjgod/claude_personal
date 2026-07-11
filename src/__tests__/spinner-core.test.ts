@@ -14,7 +14,7 @@ import {
   SPINNER_VERBS,
   VERB_CYCLE_MS,
   verbAt,
-} from "../spinner-core.js";
+} from "../tui/spinner-core.js";
 
 describe("SPINNER_VERBS / pickVerb", () => {
   it("are all gerunds and include the canonical ones", () => {

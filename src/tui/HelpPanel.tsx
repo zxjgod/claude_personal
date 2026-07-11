@@ -9,7 +9,7 @@
 
 import { Box, Text, useInput } from "ink";
 import type { ReactNode } from "react";
-import { terminalColumns } from "./../terminal-width.js";
+import { terminalColumns } from "./terminal-width.js";
 import { palette } from "./theme.js";
 
 const MODES: Array<{ name: string; description: string }> = [

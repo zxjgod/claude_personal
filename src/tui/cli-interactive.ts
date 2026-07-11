@@ -354,10 +354,11 @@ export function promptPermissionMenu(opts: {
 }): Promise<PermissionChoice> {
   const input = opts.input ?? process.stdin;
   const output = opts.output ?? process.stdout;
-  const options: Array<{ label: string; value: PermissionChoice }> = [
-    { label: "Yes", value: "yes" },
-    { label: "Yes, and always allow this", value: "always" },
-    { label: "No", value: "no" },
+  // P1-4: Enhanced permission menu with Chinese text
+  const options: Array<{ label: string; value: PermissionChoice; desc: string }> = [
+    { label: "允许", value: "yes", desc: "仅本次允许" },
+    { label: "始终允许", value: "always", desc: "本会话内不再询问" },
+    { label: "拒绝", value: "no", desc: "取消操作" },
   ];
 
   return new Promise((resolve) => {
@@ -369,27 +370,41 @@ export function promptPermissionMenu(opts: {
       const top = chalk.dim("┌" + "─".repeat(width - 2) + "┐");
       const bottom = chalk.dim("└" + "─".repeat(width - 2) + "┘");
       const lines: string[] = [top];
-      lines.push(boxLine(chalk.bold.cyan(opts.header), width));
+      // P1-4: Use Chinese header
+      lines.push(boxLine(chalk.bold.cyan("⚠️ 权限请求"), width));
+      lines.push(boxLine("", width));
+
+      if (opts.header) {
+        lines.push(boxLine("  " + chalk.bold(opts.header), width));
+      }
+
       if (opts.detail) {
         lines.push(boxLine("", width));
         for (const dl of wrapPlain(opts.detail, width - 4)) {
-          lines.push(boxLine("  " + dl, width));
+          lines.push(boxLine("  📄 " + dl, width));
         }
       }
+
       if (opts.riskHint) {
         lines.push(boxLine("", width));
-        lines.push(boxLine("  " + chalk.yellow(opts.riskHint), width));
+        // P1-4: Better formatting for risk hints
+        lines.push(boxLine("  " + chalk.yellow("⚠️ " + opts.riskHint), width));
       }
+
       lines.push(bottom);
       lines.push("");
-      lines.push("  Do you want to proceed?");
+      lines.push(chalk.gray("  选择操作:"));
+
       options.forEach((opt, i) => {
         const marker = i === selected ? chalk.cyan("❯ ") : "  ";
-        const label = `${i + 1}. ${opt.label}`;
-        lines.push(`${marker}${i === selected ? chalk.cyan(label) : label}`);
+        const label = `[${i + 1}] ${opt.label}`;
+        const desc = chalk.dim(` — ${opt.desc}`);
+        lines.push(`${marker}${i === selected ? chalk.cyan(label) : label}${desc}`);
       });
+
       lines.push("");
-      lines.push(chalk.dim("  Esc to cancel · ↑↓ to choose · Enter to confirm"));
+      lines.push(chalk.dim("  ↑↓ 选择 · Enter 确认 · Esc 取消"));
+      lines.push("");
       region.paint(lines);
     };
 

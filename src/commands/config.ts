@@ -1,6 +1,6 @@
 // /config — show the active runtime configuration
 import chalk from "chalk";
-import { getEffort } from "../effort.js";
+import { getEffort } from "../tui/effort.js";
 import type { SlashCommand } from "./types.js";
 
 export const configCommand: SlashCommand = {

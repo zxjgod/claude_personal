@@ -22,10 +22,11 @@
 import { execFile } from "node:child_process";
 import * as path from "node:path";
 import { promisify } from "node:util";
-import { runForkSkill } from "./skills/forkSkill.js";
-import { getSkill, listSkills, resolveSkillPrompt } from "./skills.js";
-import { createTool } from "./tools/registry.js";
-import type { PermissionResult, Tool, ToolResult } from "./types.js";
+import { z } from "zod";
+import { runForkSkill } from "../../skills/forkSkill.js";
+import { getSkill, listSkills, resolveSkillPrompt } from "../../skills.js";
+import type { Tool, ToolResult } from "../../types.js";
+import { buildTool } from "../registry.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -50,17 +51,13 @@ interface WorktreeEntry {
 const WORKTREES = new Map<string, WorktreeEntry[]>();
 
 function worktreeDir(sessionId: string): string {
-  // Park worktrees under .claude/worktrees/ in the repo, matching real
-  // Claude Code's convention. git worktree add handles creation.
   return path.join(".claude", "worktrees");
 }
 
-/** Test/util: clear the worktree stack for a session. */
 export function resetWorktrees(sessionId: string): void {
   WORKTREES.delete(sessionId);
 }
 
-/** Best-effort git invocation; returns null on any failure. */
 async function git(args: string[], cwd: string, timeoutMs = 8000): Promise<string | null> {
   try {
     const { stdout } = await execFileAsync("git", args, {
@@ -74,22 +71,20 @@ async function git(args: string[], cwd: string, timeoutMs = 8000): Promise<strin
   }
 }
 
-interface EnterWorktreeInput {
-  /** Optional branch name; a random one is generated if omitted. */
-  name?: string;
-  /** Base ref to branch from: "fresh" (origin/<default>) or "head" (current HEAD). */
-  baseRef?: "fresh" | "head";
-  [key: string]: unknown;
-}
-
 function randomName(): string {
-  // Deterministic-free suffix from a counter + timestamp-ish hex. Avoids
-  // Math.random (banned in some harnesses) by mixing process.hrtime.
   const t = process.hrtime.bigint().toString(16).slice(-8);
   return `wt-${t}`;
 }
 
-export const EnterWorktreeTool: Tool = createTool<EnterWorktreeInput>({
+const EnterWorktreeSchema = z.strictObject({
+  name: z.string().optional().describe("Branch/worktree name (optional)"),
+  baseRef: z
+    .enum(["fresh", "head"])
+    .optional()
+    .describe("fresh = origin default branch, head = current HEAD (default: fresh)"),
+});
+
+export const EnterWorktreeTool: Tool = buildTool({
   name: "enter_worktree",
   description: "Create a git worktree and switch the session into it",
   promptDescription:
@@ -98,27 +93,9 @@ export const EnterWorktreeTool: Tool = createTool<EnterWorktreeInput>({
     "(a random one is used otherwise); baseRef=fresh branches from the " +
     "upstream default branch, head from current HEAD. Returns the worktree " +
     "path — operate there until exit_worktree.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      name: { type: "string", description: "Branch/worktree name (optional)" },
-      baseRef: {
-        type: "string",
-        enum: ["fresh", "head"],
-        description: "fresh = origin default branch, head = current HEAD (default: fresh)",
-      },
-    },
-    required: [],
-  },
+  schema: EnterWorktreeSchema,
   isReadOnly: false,
   isConcurrencySafe: false,
-
-  async checkPermissions(_input, _context): Promise<PermissionResult> {
-    // Creating a worktree writes to .claude/worktrees/ and creates a branch.
-    // Default mode prompts; bypass/acceptEdits proceed. No path traversal
-    // risk since the path is computed, not user-supplied.
-    return { allowed: true };
-  },
 
   async call(input, context): Promise<ToolResult> {
     const root = context.workspaceRoot;
@@ -130,7 +107,6 @@ export const EnterWorktreeTool: Tool = createTool<EnterWorktreeInput>({
     const baseRef = input.baseRef ?? "fresh";
     let startPoint = "HEAD";
     if (baseRef === "fresh") {
-      // Resolve the default upstream branch's HEAD. Fall back to HEAD.
       const def = await git(["rev-parse", "--abbrev-ref", "refs/remotes/origin/HEAD"], root);
       if (def) {
         const resolved = await git(["rev-parse", def.trim()], root);
@@ -141,7 +117,6 @@ export const EnterWorktreeTool: Tool = createTool<EnterWorktreeInput>({
     const branch = (input.name?.trim() || randomName()).replace(/[^A-Za-z0-9._-]/g, "-");
     const wtPath = path.join(root, worktreeDir(context.sessionId), branch);
 
-    // git worktree add -b <branch> <path> <startpoint>
     const out = await git(["worktree", "add", "-b", branch, wtPath, startPoint], root, 15_000);
     if (out === null) {
       return {
@@ -164,15 +139,12 @@ export const EnterWorktreeTool: Tool = createTool<EnterWorktreeInput>({
   },
 });
 
-interface ExitWorktreeInput {
-  /** keep leaves the worktree + branch on disk; remove deletes both. */
-  action?: "keep" | "remove";
-  /** Required when action=remove and the worktree has uncommitted changes. */
-  discardChanges?: boolean;
-  [key: string]: unknown;
-}
+const ExitWorktreeSchema = z.strictObject({
+  action: z.enum(["keep", "remove"]).optional().describe("keep (default) or remove"),
+  discardChanges: z.boolean().optional().describe("Force-remove with uncommitted changes"),
+});
 
-export const ExitWorktreeTool: Tool = createTool<ExitWorktreeInput>({
+export const ExitWorktreeTool: Tool = buildTool({
   name: "exit_worktree",
   description: "Leave the active worktree, keeping or removing it",
   promptDescription:
@@ -180,14 +152,7 @@ export const ExitWorktreeTool: Tool = createTool<ExitWorktreeInput>({
     "directory on disk; action=remove deletes them (use discardChanges=true " +
     "to force-remove even with uncommitted changes). Returns to the main " +
     "working tree.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      action: { type: "string", enum: ["keep", "remove"], description: "keep (default) or remove" },
-      discardChanges: { type: "boolean", description: "Force-remove with uncommitted changes" },
-    },
-    required: [],
-  },
+  schema: ExitWorktreeSchema,
   isReadOnly: false,
   isConcurrencySafe: false,
 
@@ -201,7 +166,6 @@ export const ExitWorktreeTool: Tool = createTool<ExitWorktreeInput>({
     const root = context.workspaceRoot;
 
     if (action === "remove") {
-      // Check for uncommitted changes unless explicitly discarded.
       const dirty = await git(["status", "--porcelain"], entry.path);
       const hasChanges = !!dirty && dirty.trim().length > 0;
       if (hasChanges && !input.discardChanges) {
@@ -213,7 +177,6 @@ export const ExitWorktreeTool: Tool = createTool<ExitWorktreeInput>({
         };
       }
       const removed = await git(["worktree", "remove", "--force", entry.path], root, 15_000);
-      // Drop the branch too (best-effort; -d refuses if not merged).
       await git(["branch", "-D", entry.branch], root, 8000);
       if (removed === null) {
         return { content: "", error: `git worktree remove failed for ${entry.path}` };
@@ -235,13 +198,12 @@ export const ExitWorktreeTool: Tool = createTool<ExitWorktreeInput>({
 // 14.2 SkillTool — resolve + surface a registered skill
 // ============================================================
 
-interface SkillInput {
-  skill: string;
-  args?: string;
-  [key: string]: unknown;
-}
+const SkillSchema = z.strictObject({
+  skill: z.string().describe("Skill name (kebab-case)"),
+  args: z.string().optional().describe("Optional arguments for the skill"),
+});
 
-export const SkillTool: Tool = createTool<SkillInput>({
+export const SkillTool: Tool = buildTool({
   name: "skill",
   description: "Invoke a registered skill by name and load its instructions",
   promptDescription:
@@ -251,19 +213,12 @@ export const SkillTool: Tool = createTool<SkillInput>({
     "sub-agent and return only their final report. If the skill name is unknown, " +
     "the result lists available skills. Only invoke skills from the available-" +
     "skills list or one the user explicitly named.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      skill: { type: "string", description: "Skill name (kebab-case)" },
-      args: { type: "string", description: "Optional arguments for the skill" },
-    },
-    required: ["skill"],
-  },
+  schema: SkillSchema,
   isReadOnly: true,
   isConcurrencySafe: true,
 
   async call(input, context): Promise<ToolResult> {
-    const name = input.skill?.trim();
+    const name = input.skill.trim();
     if (!name) {
       return { content: "", error: "skill is required" };
     }
@@ -401,15 +356,14 @@ function validateCronField(field: string, min: number, max: number): string | nu
   return null;
 }
 
-interface ScheduleCronInput {
-  cron: string;
-  prompt: string;
-  recurring?: boolean;
-  durable?: boolean;
-  [key: string]: unknown;
-}
+const ScheduleCronSchema = z.strictObject({
+  cron: z.string().describe("5-field cron expression, local time"),
+  prompt: z.string().describe("Prompt to enqueue at each fire"),
+  recurring: z.boolean().optional().describe("Fire repeatedly (default true)"),
+  durable: z.boolean().optional().describe("Persist across restarts (default false)"),
+});
 
-export const ScheduleCronTool: Tool = createTool<ScheduleCronInput>({
+export const ScheduleCronTool: Tool = buildTool({
   name: "schedule_cron",
   description: "Schedule a prompt to fire on a cron schedule",
   promptDescription:
@@ -417,16 +371,7 @@ export const ScheduleCronTool: Tool = createTool<ScheduleCronInput>({
     "cron is a 5-field expression (min hour dom mon dow, local time). The " +
     "prompt fires only while the REPL is idle. durable=true persists the " +
     "job across restarts. Avoid the :00 and :30 minute marks to spread load.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      cron: { type: "string", description: "5-field cron expression, local time" },
-      prompt: { type: "string", description: "Prompt to enqueue at each fire" },
-      recurring: { type: "boolean", description: "Fire repeatedly (default true)" },
-      durable: { type: "boolean", description: "Persist across restarts (default false)" },
-    },
-    required: ["cron", "prompt"],
-  },
+  schema: ScheduleCronSchema,
   isReadOnly: false,
   isConcurrencySafe: true,
 
@@ -451,14 +396,13 @@ export const ScheduleCronTool: Tool = createTool<ScheduleCronInput>({
   },
 });
 
-interface SleepInput {
-  delaySeconds: number;
-  reason: string;
-  prompt?: string;
-  [key: string]: unknown;
-}
+const SleepSchema = z.strictObject({
+  delaySeconds: z.number().describe("Seconds to wait (60-3600)"),
+  reason: z.string().describe("Why you are waiting"),
+  prompt: z.string().optional().describe("Optional prompt to enqueue after the delay"),
+});
 
-export const SleepTool: Tool = createTool<SleepInput>({
+export const SleepTool: Tool = buildTool({
   name: "sleep",
   description: "Pause for N seconds, optionally enqueuing a prompt afterward",
   promptDescription:
@@ -466,15 +410,7 @@ export const SleepTool: Tool = createTool<SleepInput>({
     "shown to the user. If prompt is provided, it is enqueued after the " +
     "delay. Use for self-paced loops; for external polling prefer waiting " +
     "on the actual signal rather than a fixed short interval.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      delaySeconds: { type: "number", description: "Seconds to wait (60-3600)" },
-      reason: { type: "string", description: "Why you are waiting" },
-      prompt: { type: "string", description: "Optional prompt to enqueue after the delay" },
-    },
-    required: ["delaySeconds", "reason"],
-  },
+  schema: SleepSchema,
   isReadOnly: true,
   isConcurrencySafe: true,
 
@@ -484,9 +420,6 @@ export const SleepTool: Tool = createTool<SleepInput>({
       return { content: "", error: "delaySeconds must be a positive number" };
     }
     const delay = Math.min(Math.max(Math.round(raw), 60), 3600);
-    // We do not actually block the agent loop here — sleeping would freeze
-    // the REPL. We register the prompt as a one-shot scheduled job and let
-    // the CLI's scheduler fire it. Without a prompt this is a no-op note.
     if (input.prompt?.trim()) {
       const job: ScheduledJob = {
         id: nextJobId(),
@@ -513,14 +446,13 @@ export const SleepTool: Tool = createTool<SleepInput>({
 // 14.4 PowerShell — Windows-only explicit shell
 // ============================================================
 
-interface PowerShellInput {
-  command: string;
-  description: string;
-  timeout?: number;
-  [key: string]: unknown;
-}
+const PowerShellSchema = z.strictObject({
+  command: z.string().describe("PowerShell command or script"),
+  description: z.string().describe("What the command does"),
+  timeout: z.number().optional().describe("Max runtime in ms (default 120000)"),
+});
 
-export const PowerShellTool: Tool = createTool<PowerShellInput>({
+export const PowerShellTool: Tool = buildTool({
   name: "powershell",
   description: "Run a PowerShell command (Windows only)",
   promptDescription:
@@ -528,15 +460,7 @@ export const PowerShellTool: Tool = createTool<PowerShellInput>({
     "(e.g. Windows-specific cmdlets, registry, COM objects). Disabled off " +
     "Windows. Provide a description of what the command does. Returns stdout " +
     "and exit code; non-zero exit is surfaced as an error.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      command: { type: "string", description: "PowerShell command or script" },
-      description: { type: "string", description: "What the command does" },
-      timeout: { type: "number", description: "Max runtime in ms (default 120000)" },
-    },
-    required: ["command", "description"],
-  },
+  schema: PowerShellSchema,
   isReadOnly: false,
   isConcurrencySafe: false,
 
@@ -545,7 +469,6 @@ export const PowerShellTool: Tool = createTool<PowerShellInput>({
       return { content: "", error: "PowerShell tool is only available on Windows." };
     }
     const timeout = Math.min(input.timeout ?? 120_000, 600_000);
-    // Prefer pwsh (PowerShell 7+) when present, fall back to powershell.exe.
     const bin = "powershell.exe";
     try {
       const { stdout, stderr } = await execFileAsync(
@@ -567,7 +490,6 @@ export const PowerShellTool: Tool = createTool<PowerShellInput>({
   },
 });
 
-// Override isEnabled off the factory (createTool hard-codes it to true).
 PowerShellTool.isEnabled = () => process.platform === "win32";
 
 // ============================================================

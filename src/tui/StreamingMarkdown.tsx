@@ -24,28 +24,10 @@
 import { Text } from "ink";
 import { marked } from "marked";
 import { memo, useRef } from "react";
-import { renderMarkdown } from "./../markdown.js";
+import { renderMarkdown } from "./markdown.js";
 
-// Debug monitoring - lazily imported to avoid circular deps
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let runtimeMonitor: any = null;
-
-async function getRuntimeMonitor() {
-  if (runtimeMonitor === undefined || runtimeMonitor === null) {
-    try {
-      const mod = await import("../debug-logs/runtime-monitor.js");
-      runtimeMonitor = mod.runtimeMonitor;
-    } catch {
-      runtimeMonitor = null;
-    }
-  }
-  return runtimeMonitor;
-}
-
-// Trigger monitor check on module load
-if (process.env.DEBUG_STREAM) {
-  getRuntimeMonitor();
-}
+// Debug logging is handled by run.tsx via the debugLogger module.
+// This component only handles markdown rendering.
 
 /**
  * Renders one settled chunk of markdown. Memoized on `content`: while the
@@ -121,36 +103,6 @@ export function StreamingMarkdown({ children }: { children: string }) {
 
   const stableRender = stablePrefixRef.current;
   const unstableSuffix = children.substring(stableRender.length);
-
-  // Debug logging
-  renderCountRef.current++;
-  getRuntimeMonitor().then((mon) => {
-    if (mon) {
-      mon.logRender({
-        text: children,
-        textLen: children.length,
-        stablePrefix: stableRender,
-        stablePrefixLen: stableRender.length,
-        unstableSuffix,
-        unstableSuffixLen: unstableSuffix.length,
-        tokenCount,
-        blockCount: lastContentIdx,
-      });
-
-      // Warn about suspicious patterns
-      if (stableRender.length > children.length) {
-        mon.warn("boundary", "Stable prefix longer than text", {
-          textLen: children.length,
-          stableLen: stableRender.length,
-        });
-      }
-      if (renderCountRef.current > 100 && renderCountRef.current % 50 === 0) {
-        mon.warn("render", `Excessive renders: ${renderCountRef.current}`, {
-          textLen: children.length,
-        });
-      }
-    }
-  });
 
   return (
     <>

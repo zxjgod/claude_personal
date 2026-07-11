@@ -18,6 +18,10 @@
 //     otherwise "Read → spill → Read the spill" would loop forever.
 //   - Write failures NEVER throw or lose the turn: we fall back to an in-memory
 //     head+tail truncation so the model still gets a bounded, usable result.
+//   - CRITICAL FIX (P0-1): truncation now happens at API call time, NOT in
+//     STEP 6. The message history and session snapshot always store the FULL
+//     result. This ensures resume after a spill correctly restores the full
+//     tool output for the next model call.
 // ============================================================
 
 import * as fs from "node:fs";
@@ -64,10 +68,44 @@ function preview(content: string, budget: number, note: string): string {
 }
 
 /**
+ * P0-1 Fix: Truncate a tool result text for the API call, returning a
+ * preview if it exceeds maxChars. This is called at API-call time (in the
+ * adapters), NOT when storing results in message history.
+ *
+ * Unlike spillIfLarge, this never writes to disk — it is a pure in-memory
+ * truncation. The full `formatted` text is returned when under budget.
+ *
+ * Used by: llm-adapter.ts, anthropic-adapter.ts (truncate tool result content
+ * in the messages array before sending to the LLM API).
+ */
+export function truncateToolResult(
+  content: string,
+  maxChars: number,
+): { truncated: false } | { truncated: true; preview: string; originalLength: number } {
+  if (content.length <= maxChars) {
+    return { truncated: false };
+  }
+  return {
+    truncated: true,
+    preview: preview(
+      content,
+      maxChars,
+      `result too long (${content.length} chars), shown head + tail only`,
+    ),
+    originalLength: content.length,
+  };
+}
+
+/**
  * Return the model-facing text for a tool result, spilling to disk when it
  * exceeds `maxChars`. Pure passthrough when under budget or when maxChars is
  * Infinity. Never throws: on a write error it degrades to an in-memory
  * head+tail truncation.
+ *
+ * NOTE: This function is kept for backward compatibility with any external
+ * callers that still want a spill-to-disk path. For the agent loop's message
+ * history, see the note in the file header — the loop now stores the FULL
+ * result and the adapters call truncateToolResult() at API time instead.
  */
 export function spillIfLarge(formatted: string, opts: SpillOptions): string {
   const maxChars = opts.maxChars ?? DEFAULT_MAX_RESULT_CHARS;

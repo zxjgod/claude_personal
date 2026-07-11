@@ -8,7 +8,7 @@ import {
   type CommandInfo,
   createRawInputReader,
   promptPermissionMenu,
-} from "../cli-interactive.js";
+} from "../tui/cli-interactive.js";
 
 // A fake raw-mode TTY stdin we can push keystrokes into.
 class FakeStdin extends EventEmitter {

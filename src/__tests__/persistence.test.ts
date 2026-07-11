@@ -7,6 +7,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { PersistenceManager } from "../persistence.js";
+import { SESSION_FORMAT_VERSION } from "../session-memory.js";
 import type { Message } from "../types.js";
 
 let tmpDir: string;
@@ -70,7 +71,7 @@ describe("PersistenceManager", () => {
     await pm.save(sessionId, [{ role: "user", content: [{ type: "text", text: "Test" }] }]);
 
     const loaded = await pm.load(sessionId);
-    expect(loaded!.version).toBe(1);
+    expect(loaded!.version).toBe(SESSION_FORMAT_VERSION);
     expect(loaded!.sessionId).toBe(sessionId);
     expect(loaded!.createdAt).toBeTruthy();
     expect(loaded!.updatedAt).toBeTruthy();

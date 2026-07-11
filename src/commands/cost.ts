@@ -1,6 +1,6 @@
 // /cost — show token usage and estimated cost this session
 import chalk from "chalk";
-import { formatUsd } from "../session-stats.js";
+import { formatUsd } from "../tui/session-stats.js";
 import type { SlashCommand } from "./types.js";
 
 export const costCommand: SlashCommand = {

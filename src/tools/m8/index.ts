@@ -10,17 +10,18 @@ import { execFile } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { promisify } from "node:util";
-import { recordChange } from "./change-tracker.js";
+import { z } from "zod";
+import { recordChange } from "../../change-tracker.js";
 import {
   getLspClient,
   filterByFile as lspFilterByFile,
   formatDiagnostics as lspFormatDiagnostics,
-} from "./lsp.js";
-import { filterByFile, formatDiagnostics, parseTscOutput } from "./lsp-legacy.js";
-import { checkReadBeforeEdit, refreshRead } from "./read-tracker.js";
-import { createTool } from "./tools/registry.js";
-import { relForDisplay, resolveInWorkspace, statMtimeMs } from "./tools/utils/path.js";
-import type { Tool, ToolResult } from "./types.js";
+} from "../../lsp.js";
+import { filterByFile, formatDiagnostics, parseTscOutput } from "../../lsp-legacy.js";
+import { checkReadBeforeEdit, refreshRead } from "../../read-tracker.js";
+import type { Tool, ToolResult } from "../../types.js";
+import { buildTool } from "../registry.js";
+import { relForDisplay, resolveInWorkspace, statMtimeMs } from "../utils/path.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -28,18 +29,20 @@ const execFileAsync = promisify(execFile);
 // 8.3 NotebookEdit — insert / replace / delete a Jupyter cell
 // ============================================================
 
-interface NotebookEditInput {
-  filePath: string;
-  /** 0-based index of the cell to operate on. */
-  cellIndex: number;
-  /** insert adds a new cell AFTER cellIndex (or at 0 if cellIndex < 0). */
-  mode?: "replace" | "insert" | "delete";
-  /** New source for replace/insert. Ignored for delete. */
-  source?: string;
-  /** Cell type for insert (defaults to "code"). */
-  cellType?: "code" | "markdown";
-  [key: string]: unknown;
-}
+const NotebookSchema = z.strictObject({
+  filePath: z.string().describe("Path to the .ipynb file"),
+  cellIndex: z.number().int().describe("0-based index of the cell to operate on"),
+  mode: z
+    .enum(["replace", "insert", "delete"])
+    .optional()
+    .describe("Operation; defaults to replace"),
+  source: z.string().optional().describe("New cell source (replace/insert)"),
+  cellType: z
+    .enum(["code", "markdown"])
+    .optional()
+    .describe("Cell type for insert; defaults to code"),
+});
+type NotebookEditInput = z.infer<typeof NotebookSchema>;
 
 interface NotebookCell {
   cell_type: string;
@@ -63,7 +66,7 @@ function toSourceLines(source: string): string[] {
   return parts.map((line, i) => (i < parts.length - 1 ? line + "\n" : line));
 }
 
-export const NotebookEditTool: Tool = createTool<NotebookEditInput>({
+export const NotebookEditTool: Tool = buildTool({
   name: "notebook_edit",
   description: "Edit a Jupyter notebook cell (replace / insert / delete)",
   promptDescription:
@@ -71,25 +74,7 @@ export const NotebookEditTool: Tool = createTool<NotebookEditInput>({
     "cellIndex; mode=insert adds a new cell after cellIndex (use -1 to prepend); " +
     "mode=delete removes it. source is the new cell text for replace/insert. " +
     "cellType (code|markdown) applies to insert. cellIndex is 0-based.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      filePath: { type: "string", description: "Path to the .ipynb file" },
-      cellIndex: { type: "number", description: "0-based cell index" },
-      mode: {
-        type: "string",
-        enum: ["replace", "insert", "delete"],
-        description: "Operation; defaults to replace",
-      },
-      source: { type: "string", description: "New cell source (replace/insert)" },
-      cellType: {
-        type: "string",
-        enum: ["code", "markdown"],
-        description: "Cell type for insert; defaults to code",
-      },
-    },
-    required: ["filePath", "cellIndex"],
-  },
+  schema: NotebookSchema,
   isReadOnly: false,
   isConcurrencySafe: false,
 
@@ -187,29 +172,18 @@ export const NotebookEditTool: Tool = createTool<NotebookEditInput>({
 // 8.4 LSPTool — TypeScript diagnostics (lightweight, via tsc)
 // ============================================================
 
-interface LspDiagnosticsInput {
-  /** Optional file path; when set, diagnostics are filtered to that file. */
-  filePath?: string;
-  [key: string]: unknown;
-}
+const LspDiagnosticsSchema = z.strictObject({
+  filePath: z.string().optional().describe("Optional file to filter diagnostics to"),
+});
 
-export const LspDiagnosticsTool: Tool = createTool<LspDiagnosticsInput>({
+export const LspDiagnosticsTool: Tool = buildTool({
   name: "lsp_diagnostics",
   description: "Get TypeScript diagnostics for the project or a single file",
   promptDescription:
     "Run TypeScript diagnostics (tsc --noEmit) over the project and return " +
     "errors/warnings. Pass filePath to filter to one file. Use this to verify " +
     "a change type-checks before declaring it done. Requires a tsconfig.json.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      filePath: {
-        type: "string",
-        description: "Optional file to filter diagnostics to",
-      },
-    },
-    required: [],
-  },
+  schema: LspDiagnosticsSchema,
   isReadOnly: true,
   isConcurrencySafe: true,
 
@@ -278,31 +252,22 @@ export const LspDiagnosticsTool: Tool = createTool<LspDiagnosticsInput>({
 // substring/keyword search over name + description + prompt description.
 
 export function createToolSearchTool(getTools: () => Tool[]): Tool {
-  interface ToolSearchInput {
-    query: string;
-    [key: string]: unknown;
-  }
-  return createTool<ToolSearchInput>({
+  const ToolSearchSchema = z.strictObject({
+    query: z.string().describe("Keywords describing what you want to do"),
+  });
+  return buildTool({
     name: "tool_search",
     description: "Search available tools by keyword",
     promptDescription:
       "Search the available tools by keyword when you're unsure which tool fits. " +
       "Returns matching tool names with their descriptions. Useful as the tool " +
       "set grows (core + MCP).",
-    inputSchema: {
-      type: "object",
-      properties: {
-        query: { type: "string", description: "Keywords describing what you want to do" },
-      },
-      required: ["query"],
-    },
+    schema: ToolSearchSchema,
     isReadOnly: true,
     isConcurrencySafe: true,
 
     async call(input): Promise<ToolResult> {
-      const query = String(input.query || "")
-        .toLowerCase()
-        .trim();
+      const query = input.query.toLowerCase().trim();
       if (!query) return { content: "", error: "query is required" };
       const terms = query.split(/\s+/).filter(Boolean);
 
@@ -344,13 +309,14 @@ export interface MCPResourceProvider {
 }
 
 export function createMcpResourceTools(provider: MCPResourceProvider): Tool[] {
-  const listTool = createTool({
+  const ListMcpResourcesSchema = z.strictObject({});
+  const listTool = buildTool({
     name: "mcp_list_resources",
     description: "List resources exposed by connected MCP servers",
     promptDescription:
       "List all resources exposed by connected MCP servers (uri, name, server). " +
       "Use mcp_read_resource to fetch one by uri.",
-    inputSchema: { type: "object", properties: {}, required: [] },
+    schema: ListMcpResourcesSchema,
     isReadOnly: true,
     isConcurrencySafe: true,
     async call(): Promise<ToolResult> {
@@ -366,23 +332,18 @@ export function createMcpResourceTools(provider: MCPResourceProvider): Tool[] {
     },
   });
 
-  interface ReadResourceInput {
-    uri: string;
-    [key: string]: unknown;
-  }
-  const readTool = createTool<ReadResourceInput>({
+  const ReadMcpResourceSchema = z.strictObject({
+    uri: z.string().describe("Resource URI to read"),
+  });
+  const readTool = buildTool({
     name: "mcp_read_resource",
     description: "Read an MCP resource by URI",
     promptDescription: "Read the contents of an MCP resource by its uri (from mcp_list_resources).",
-    inputSchema: {
-      type: "object",
-      properties: { uri: { type: "string", description: "Resource URI to read" } },
-      required: ["uri"],
-    },
+    schema: ReadMcpResourceSchema,
     isReadOnly: true,
     isConcurrencySafe: true,
     async call(input): Promise<ToolResult> {
-      const uri = String(input.uri || "").trim();
+      const uri = input.uri.trim();
       if (!uri) return { content: "", error: "uri is required" };
       const text = await provider.readResource(uri);
       if (text === null) {

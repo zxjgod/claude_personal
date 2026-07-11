@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 import { formatToolsForAnthropic, withMessageCacheBreakpoint } from "../anthropic-adapter.js";
-import { SessionStats } from "../session-stats.js";
+import { SessionStats } from "../tui/session-stats.js";
 import type { Tool } from "../types.js";
 
 function fakeTool(name: string): Tool {

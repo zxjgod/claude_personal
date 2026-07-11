@@ -19,7 +19,7 @@ import {
   SkillTool,
   SleepTool,
   validateCron,
-} from "../tools-m9.js";
+} from "../tools/m8/m9.js";
 import type { ToolContext } from "../types.js";
 
 let repo: string;

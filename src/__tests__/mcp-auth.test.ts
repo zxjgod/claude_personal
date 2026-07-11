@@ -10,7 +10,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { FileTokenOAuthProvider } from "../mcp-auth.js";
+import { FileTokenOAuthProvider } from "../mcp/auth.js";
 
 let dir: string;
 

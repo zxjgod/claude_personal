@@ -7,8 +7,8 @@
 
 import chalk from "chalk";
 import { beforeAll, describe, expect, it } from "vitest";
-import { stripAnsi } from "../terminal-width.js";
 import { buildEffortFrame, ORDER } from "../tui/effort-fx.js";
+import { stripAnsi } from "../tui/terminal-width.js";
 
 beforeAll(() => {
   chalk.level = 3;

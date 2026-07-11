@@ -210,7 +210,7 @@ describe("classifier verdicts in the pipeline", () => {
       askUser,
       classifier: { callModel: caller, modelConfig: classifierConfig },
     });
-    expect(askUser.mock.calls[0]![2]).toBe("Command includes recursive deletion (rm -r)");
+    expect(askUser.mock.calls[0]![2]).toBe("递归删除命令 (rm -rf) — 将强制删除所有内容且无法恢复");
   });
 
   it("no classifier configured leaves the dangerous path unchanged", async () => {
@@ -218,7 +218,7 @@ describe("classifier verdicts in the pipeline", () => {
     const r = await checkPermission(bashTool(), { command: "sudo rm" }, makeContext(), { askUser });
     expect(askUser).toHaveBeenCalledTimes(1);
     // sudo is matched first in checkDangerousPattern.
-    expect(askUser.mock.calls[0]![2]).toBe("Command uses sudo (privilege escalation)");
+    expect(askUser.mock.calls[0]![2]).toBe("提权命令 (sudo) — 尝试获取管理员权限");
     expect(r.allowed).toBe(false);
   });
 
@@ -252,7 +252,7 @@ describe("classifier fail-safe paths", () => {
     });
     // With no key the classifier short-circuits before consuming the caller.
     expect(calls.count).toBe(0);
-    expect(askUser.mock.calls[0]![2]).toBe("Command includes recursive deletion (rm -r)");
+    expect(askUser.mock.calls[0]![2]).toBe("递归删除命令 (rm -rf) — 将强制删除所有内容且无法恢复");
   });
 
   it("caller throws → defers to the regex reason and prompts", async () => {
@@ -265,7 +265,7 @@ describe("classifier fail-safe paths", () => {
       askUser,
       classifier: { callModel: thrower, modelConfig: classifierConfig },
     });
-    expect(askUser.mock.calls[0]![2]).toBe("Command includes recursive deletion (rm -r)");
+    expect(askUser.mock.calls[0]![2]).toBe("递归删除命令 (rm -rf) — 将强制删除所有内容且无法恢复");
     expect(r.allowed).toBe(false);
   });
 
@@ -276,7 +276,7 @@ describe("classifier fail-safe paths", () => {
       askUser,
       classifier: { callModel: caller, modelConfig: classifierConfig },
     });
-    expect(askUser.mock.calls[0]![2]).toBe("Command includes disk/filesystem operations");
+    expect(askUser.mock.calls[0]![2]).toBe("磁盘操作命令 — 可能损坏文件系统或清除数据");
   });
 
   it("classifyPermissionRisk times out a slow stream mid-verdict and reports unavailable", async () => {

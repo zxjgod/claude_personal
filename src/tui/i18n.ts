@@ -102,7 +102,7 @@ const translations: Record<Language, Record<string, string>> = {
  */
 export function t(key: string, values?: Record<string, string | number>): string {
   const lang = detectLanguage();
-  let message = translations[lang][key] || translations["en"][key] || key;
+  let message = translations[lang][key] || translations.en[key] || key;
 
   if (values) {
     for (const [k, v] of Object.entries(values)) {

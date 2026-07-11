@@ -21,7 +21,7 @@ import { effortCommand } from "./effort.js";
 import { exportCommand } from "./export.js";
 import { forkCommand } from "./fork.js";
 import { goalCommand } from "./goal.js";
-import { bindCommandList, helpCommand } from "./help.js";
+import helpCommand, { bindCommandList } from "./help.js";
 import { hooksCommand } from "./hooks.js";
 import { initCommand } from "./init.js";
 import { keybindingsCommand } from "./keybindings.js";
@@ -94,5 +94,3 @@ export const COMMANDS: SlashCommand[] = [
 
 // /help iterates COMMANDS at run time; bind it now that the array exists.
 bindCommandList(() => COMMANDS);
-
-export { default as helpCommand } from "./help.js";

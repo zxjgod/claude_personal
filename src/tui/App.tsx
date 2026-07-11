@@ -17,18 +17,18 @@
 
 import { Box, Static, Text, useInput } from "ink";
 import type { ReactNode } from "react";
-import { renderMarkdown } from "./../markdown.js";
-import { actionLabel } from "./../spinner-core.js";
 import { CommandPicker } from "./CommandPicker.js";
 import { EffortPrompt } from "./EffortPrompt.js";
 import { FullScreenApp } from "./FullScreenApp.js";
 import { HelpPanel } from "./HelpPanel.js";
 import { type CommandInfo, InputBox } from "./InputBox.js";
+import { renderMarkdown } from "./markdown.js";
 import { ConfirmPrompt, PermissionPrompt, QuestionPrompt } from "./Prompts.js";
 import { ProviderPicker } from "./ProviderPicker.js";
 import { SessionPicker } from "./SessionPicker.js";
 import { StatusLine } from "./StatusLine.js";
 import { StreamingMarkdown } from "./StreamingMarkdown.js";
+import { actionLabel } from "./spinner-core.js";
 import type { StoreState, TranscriptItem, TuiStore } from "./store.js";
 import { Toast } from "./Toast.js";
 import { ActiveToolCard, CompletedToolCard } from "./ToolCard.js";

@@ -28,8 +28,8 @@ import {
   SHIMMER_INTERVAL_MS,
   UP_ARROW,
   verbAt,
-} from "./../spinner-core.js";
-import { visualWidth } from "./../terminal-width.js";
+} from "./spinner-core.js";
+import { visualWidth } from "./terminal-width.js";
 
 // Redraw cadence for the status row's own clock. 80ms ≈ 12.5fps — enough for a
 // smooth glyph/shimmer without spamming re-renders.

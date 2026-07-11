@@ -12,6 +12,27 @@ import type {
   ToolContext,
 } from "./types.js";
 
+// --- Debug Logging ---
+
+const PERMISSION_DEBUG = process.env.DEBUG_PERMISSIONS === "1";
+
+function logPermissionDecision(
+  step: number,
+  toolName: string,
+  action: string,
+  result: { allowed: boolean; reason?: string; decisionReason?: PermissionDecisionReason },
+  extra?: Record<string, unknown>,
+): void {
+  if (!PERMISSION_DEBUG) return;
+  const timestamp = new Date().toISOString().split("T")[1]?.slice(0, 8) ?? "";
+  console.error(
+    `${timestamp} [perm] Step ${step}: ${toolName}(${action}) → ${result.allowed ? "ALLOW" : "DENY"}` +
+      (result.reason ? ` (${result.reason})` : "") +
+      (result.decisionReason ? ` [${result.decisionReason}]` : "") +
+      (extra ? ` ${JSON.stringify(extra)}` : ""),
+  );
+}
+
 // --- Dangerous Pattern Detection ---
 
 interface DangerousCheck {
@@ -44,10 +65,16 @@ export function checkDangerousPattern(
     const cmd = input.command as string;
 
     // Recursive deletion
-    if (/\brm\s+.*-r/.test(cmd) || /\brm\s+.*-rf\b/.test(cmd)) {
+    if (/\brm\s+.*-rf\b/.test(cmd)) {
       return {
         dangerous: true,
-        reason: "Command includes recursive deletion (rm -r)",
+        reason: "递归删除命令 (rm -rf) — 将强制删除所有内容且无法恢复",
+      };
+    }
+    if (/\brm\s+.*-r/.test(cmd)) {
+      return {
+        dangerous: true,
+        reason: "递归删除命令 (rm -r) — 将删除目录及其所有子内容",
       };
     }
 
@@ -55,7 +82,7 @@ export function checkDangerousPattern(
     if (/\bsudo\b/.test(cmd)) {
       return {
         dangerous: true,
-        reason: "Command uses sudo (privilege escalation)",
+        reason: "提权命令 (sudo) — 尝试获取管理员权限",
       };
     }
 
@@ -63,7 +90,7 @@ export function checkDangerousPattern(
     if (/(curl|wget).*\|.*(bash|sh|zsh)/.test(cmd)) {
       return {
         dangerous: true,
-        reason: "Command pipes downloaded content to a shell",
+        reason: "管道到 Shell — 执行从网络下载的未知代码 (严重安全风险)",
       };
     }
 
@@ -71,7 +98,7 @@ export function checkDangerousPattern(
     if (/\bgit\s+push\s+.*--force/.test(cmd)) {
       return {
         dangerous: true,
-        reason: "Force pushing to git",
+        reason: "强制推送 (git push --force) — 可能覆盖远程分支的提交历史",
       };
     }
 
@@ -79,7 +106,7 @@ export function checkDangerousPattern(
     if (/\bgit\s+reset\s+--hard/.test(cmd)) {
       return {
         dangerous: true,
-        reason: "Git hard reset — this discards changes",
+        reason: "强制重置 (git reset --hard) — 将丢弃所有未提交的更改",
       };
     }
 
@@ -87,7 +114,7 @@ export function checkDangerousPattern(
     if (/\b(mkfs|dd|fdisk)\b/.test(cmd)) {
       return {
         dangerous: true,
-        reason: "Command includes disk/filesystem operations",
+        reason: "磁盘操作命令 — 可能损坏文件系统或清除数据",
       };
     }
 
@@ -301,19 +328,25 @@ export async function checkPermission(
   context: ToolContext,
   options: PermissionCheckOptions,
 ): Promise<{ allowed: boolean; reason?: string; decisionReason?: PermissionDecisionReason }> {
+  const action = formatActionForClassifier(tool.name, input).slice(0, 100);
+
   // Step 1: Read-only tools are always allowed. Pass input so data-driven
   // tools (Bash: `cat` read-only, `rm` not) decide per call (M29).
   if (tool.isReadOnly(input)) {
-    return { allowed: true };
+    const result = { allowed: true as const };
+    logPermissionDecision(1, tool.name, action, result);
+    return result;
   }
 
   // Step 2: Plan mode — never execute destructive tools.
   if (context.permissionMode === "plan") {
-    return {
-      allowed: false,
+    const result = {
+      allowed: false as const,
       reason: `Plan mode: ${tool.name} is a destructive tool. Not executing.`,
-      decisionReason: "mode",
+      decisionReason: "mode" as const,
     };
+    logPermissionDecision(2, tool.name, action, result, { permissionMode: context.permissionMode });
+    return result;
   }
 
   // ============================================================
@@ -325,11 +358,13 @@ export async function checkPermission(
   // Step 3a (safetyCheck): blocked paths — hard deny in every mode.
   if (input.filePath && typeof input.filePath === "string") {
     if (isBlockedPath(input.filePath as string)) {
-      return {
-        allowed: false,
+      const result = {
+        allowed: false as const,
         reason: `Path "${input.filePath}" is blocked for security reasons.`,
-        decisionReason: "safetyCheck",
+        decisionReason: "safetyCheck" as const,
       };
+      logPermissionDecision(3, tool.name, action, result, { path: input.filePath });
+      return result;
     }
   }
 
@@ -341,22 +376,43 @@ export async function checkPermission(
   if (dangerousCheck.dangerous) {
     let riskHint = dangerousCheck.reason;
     if (options.classifier) {
+      logPermissionDecision(3, tool.name, action, { allowed: true }, { stage: "classifier-start" });
       const classified = await classifyPermissionRisk(tool.name, input, options.classifier);
+      logPermissionDecision(
+        3,
+        tool.name,
+        action,
+        { allowed: !classified.block, reason: classified.reason },
+        { stage: "classifier-done", classified },
+      );
       if (classified.block) {
-        return {
-          allowed: false,
+        const result = {
+          allowed: false as const,
           reason: classified.reason ?? dangerousCheck.reason,
-          decisionReason: "classifier",
+          decisionReason: "classifier" as const,
         };
+        return result;
       }
       if (classified.reason) {
         riskHint = classified.reason;
       }
     }
+    logPermissionDecision(
+      3,
+      tool.name,
+      action,
+      { allowed: true },
+      { stage: "awaiting-user-confirm", riskHint },
+    );
     const allowed = await options.askUser(tool, input, riskHint);
-    return allowed
-      ? { allowed: true, decisionReason: "safetyCheck" }
-      : { allowed: false, reason: riskHint, decisionReason: "safetyCheck" };
+    const result = allowed
+      ? { allowed: true as const, decisionReason: "safetyCheck" as const }
+      : { allowed: false as const, reason: riskHint, decisionReason: "safetyCheck" as const };
+    logPermissionDecision(3, tool.name, action, result, {
+      stage: "user-confirmed",
+      userAllowed: allowed,
+    });
+    return result;
   }
 
   // ============================================================
@@ -365,24 +421,35 @@ export async function checkPermission(
 
   // Step 4: Bypass mode — allow anything the safety floor didn't already stop.
   if (context.permissionMode === "bypassPermissions") {
-    return { allowed: true, decisionReason: "mode" };
+    const result = { allowed: true, decisionReason: "mode" as const };
+    logPermissionDecision(4, tool.name, action, result, { permissionMode: context.permissionMode });
+    return result;
   }
 
   // Step 5: acceptEdits — auto-approve file operations.
   if (context.permissionMode === "acceptEdits") {
     if (["edit", "write"].includes(tool.name)) {
-      return { allowed: true, decisionReason: "mode" };
+      const result = { allowed: true, decisionReason: "mode" as const };
+      logPermissionDecision(5, tool.name, action, result, {
+        permissionMode: context.permissionMode,
+      });
+      return result;
     }
   }
 
   // Step 6: Default — ask only for tools that require interactive approval.
   const needsApproval = tool.requiresApproval ? tool.requiresApproval() : !tool.isReadOnly(input);
   if (!needsApproval) {
-    return { allowed: true };
+    const result = { allowed: true };
+    logPermissionDecision(6, tool.name, action, result);
+    return result;
   }
 
+  logPermissionDecision(6, tool.name, action, { allowed: true }, { stage: "awaiting-user" });
   const allowed = await options.askUser(tool, input);
-  return allowed
+  const result = allowed
     ? { allowed: true }
-    : { allowed: false, reason: "User denied permission", decisionReason: "mode" };
+    : { allowed: false, reason: "User denied permission", decisionReason: "mode" as const };
+  logPermissionDecision(6, tool.name, action, result, { userAllowed: allowed });
+  return result;
 }

@@ -13,7 +13,7 @@
 
 import { Text } from "ink";
 import { useEffect, useState } from "react";
-import { GLYPH_FRAME_MS, SPINNER_FRAMES } from "./../spinner-core.js";
+import { GLYPH_FRAME_MS, SPINNER_FRAMES } from "./spinner-core.js";
 
 export type AnimationMode = "blink" | "static";
 

@@ -22,7 +22,7 @@
 //   - A size threshold gates it: tiny batches aren't worth a model round-trip.
 // ============================================================
 
-import type { Message, ModelCaller, Tool, ToolCall, ToolExecutionResult } from "../types.js";
+import type { ToolExecutionResult } from "../types.js";
 
 /** One tool's contribution to the batch digest (what the summarizer sees). */
 export interface ToolDigestEntry {
@@ -46,9 +46,9 @@ export const DEFAULT_SUMMARY_MIN_BYTES = 2000;
 /** Cap each entry's snippet so the summary prompt itself stays small. */
 export const SUMMARY_SNIPPET_CHARS = 600;
 
-/** Model-facing text for a result (mirrors the loop's modelContent ?? formatted). */
+/** P0-1 Fix: now mirrors the loop's formatted result (truncation is in adapters). */
 function modelText(r: ToolExecutionResult): string {
-  return r.modelContent ?? r.formatted ?? "";
+  return r.formatted ?? "";
 }
 
 /**

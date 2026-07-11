@@ -10,7 +10,7 @@ import {
   formatTokens,
   SPINNER_VERBS,
   Spinner,
-} from "../cli-spinner.js";
+} from "../tui/cli-spinner.js";
 
 describe("SPINNER_VERBS", () => {
   it("includes the canonical gerunds and ends in -ing", () => {

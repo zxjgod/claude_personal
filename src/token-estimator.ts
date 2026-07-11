@@ -99,24 +99,14 @@ function isStructuredData(content: string): boolean {
  * Uses different ratios based on content type detection.
  */
 function estimateBlockTokens(block: ContentBlock, sourceFile?: string): number {
-  let text: string;
-
-  switch (block.type) {
-    case "text":
-      text = block.text;
-      break;
-    case "tool_result":
-      text = typeof block.content === "string" ? block.content : JSON.stringify(block.content);
-      break;
-    case "tool_use":
-      text = block.input ? JSON.stringify(block.input) : "";
-      break;
-    case "image":
-      // Images are expensive: 85 tokens base + pixels/750
-      return 85 + Math.ceil((block.source.data.length * 4) / 750);
-    default:
-      return 0;
+  if (block.type === "image") {
+    // Images are expensive: 85 tokens base + pixels/750
+    const data = block.source.data ?? "";
+    return 85 + Math.ceil((data.length * 4) / 750);
   }
+
+  // block.type === "text"
+  const text = block.text ?? "";
 
   if (!text) return 0;
 
@@ -147,7 +137,7 @@ function estimateMessageTokens(msg: Message): number {
         if (typeof msg.content === "string") {
           total += Math.ceil(msg.content.length / 3.5);
         } else {
-          for (const block of msg.content) {
+          for (const block of msg.content as ContentBlock[]) {
             total += estimateBlockTokens(block);
           }
         }

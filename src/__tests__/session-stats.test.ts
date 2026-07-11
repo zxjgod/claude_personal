@@ -9,7 +9,7 @@ import {
   formatUsd,
   lookupPricing,
   SessionStats,
-} from "../session-stats.js";
+} from "../tui/session-stats.js";
 
 describe("session-stats", () => {
   it("accumulates token usage and api calls", () => {

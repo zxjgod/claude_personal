@@ -23,7 +23,6 @@
 
 import { Box, Text, useInput } from "ink";
 import { useEffect, useRef, useState } from "react";
-import { actionLabel } from "./../spinner-core.js";
 import { CommandPicker } from "./CommandPicker.js";
 import { EffortPrompt } from "./EffortPrompt.js";
 import { HelpPanel } from "./HelpPanel.js";
@@ -33,6 +32,7 @@ import { ProviderPicker } from "./ProviderPicker.js";
 import { bottomScrollTop, clampScrollTop, ScrollView } from "./ScrollView.js";
 import { SessionPicker } from "./SessionPicker.js";
 import { StatusLine } from "./StatusLine.js";
+import { actionLabel } from "./spinner-core.js";
 import type { StoreState, TuiStore } from "./store.js";
 import { Toast } from "./Toast.js";
 import { modeColor } from "./theme.js";

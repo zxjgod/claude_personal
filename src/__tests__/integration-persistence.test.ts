@@ -22,8 +22,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FileChange } from "../change-tracker.js";
 import { extractMemoriesHeuristic, MemoryStore } from "../memory-extract.js";
 import { SessionMemory } from "../session-memory.js";
-import { SessionTranscript } from "../session-transcript.js";
 import { messagesToTranscript } from "../tui/history-replay.js";
+import { SessionTranscript } from "../tui/session-transcript.js";
 import type { Message, ToolCall } from "../types.js";
 
 let ws: string;

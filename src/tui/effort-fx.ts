@@ -26,7 +26,7 @@ import {
   gradientColorAt,
   hslToHex,
   rainbowColors,
-} from "./../effort.js";
+} from "./effort.js";
 
 // --- Track geometry (track-local columns) ---
 const GRAD_START = 4;

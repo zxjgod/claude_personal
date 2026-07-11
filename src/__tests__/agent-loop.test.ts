@@ -9,7 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { agentLoop } from "../agent-loop.js";
 import { buildTool } from "../tools/registry.js";
-import { SPILL_DIR } from "../tools/result-spill.js";
+import { SPILL_DIR } from "../tools/truncation.js";
 import type { Message, ModelCaller, ModelConfig, StreamEvent, Tool } from "../types.js";
 
 function makeMockCaller(responses: StreamEvent[][]): ModelCaller {
@@ -1156,7 +1156,11 @@ describe("agentLoop", () => {
     expect(peak).toBeGreaterThan(1); // they actually overlapped
   });
 
-  it("spills an oversized tool result: model history bounded, UI result full (M30)", async () => {
+  it("stores full tool result in message history; truncation is in adapters (P0-1 fix)", async () => {
+    // This test verifies the P0-1 fix: the agent loop stores the FULL tool output
+    // in message history. The spill-to-disk / truncation now happens at API-call
+    // time in llm-adapter / anthropic-adapter — so a session snapshot (session-memory)
+    // always preserves complete tool results for resume.
     const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-loop-spill-"));
     try {
       const huge = "Z".repeat(50_000); // well over the 30k default cap
@@ -1194,21 +1198,19 @@ describe("agentLoop", () => {
         events.push(e);
       }
 
-      // The model history copy is bounded and points at the spill file.
+      // P0-1 Fix: message history stores the FULL huge result (no truncation in loop).
+      // The adapters (llm-adapter / anthropic-adapter) truncate at API-call time.
       const toolMsg = msgs.find((m) => m.role === "tool") as any;
-      expect(toolMsg.content.length).toBeLessThan(huge.length);
-      expect(toolMsg.content).toContain("read tool");
+      expect(toolMsg.content.length).toBeGreaterThan(huge.length);
 
-      // The UI-facing result is still the full output.
+      // The UI-facing result is also the full output.
       const tr = events.find((e) => e.type === "tool_results");
       expect(tr.results[0].formatted).toContain(huge);
-      expect(tr.results[0].modelContent.length).toBeLessThan(huge.length);
+      expect(tr.results[0].modelContent).toBeUndefined();
 
-      // The full result was written to disk and is recoverable.
+      // No spill file should be created by the agent loop.
       const dir = path.join(workspaceRoot, SPILL_DIR);
-      const files = fs.readdirSync(dir);
-      expect(files).toHaveLength(1);
-      expect(fs.readFileSync(path.join(dir, files[0]!), "utf-8")).toContain(huge);
+      expect(fs.existsSync(dir)).toBe(false);
     } finally {
       fs.rmSync(workspaceRoot, { recursive: true, force: true });
     }

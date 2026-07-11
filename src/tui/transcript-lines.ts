@@ -9,7 +9,7 @@
 // height measurement. The default (non-fullscreen) path keeps full color.
 // ============================================================
 
-import { renderMarkdown } from "./../markdown.js";
+import { renderMarkdown } from "./markdown.js";
 import type { TranscriptItem } from "./store.js";
 
 const PREVIEW_LINES = 12;

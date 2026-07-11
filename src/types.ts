@@ -1,8 +1,23 @@
 // ============================================================
 // Core Types for Claude Code Replica
 // ============================================================
+//
+// This file contains all core types for the project. When splitting:
+//   - messages.ts: Message, ContentBlock, ToolCall
+//   - tools.ts: Tool, ToolResult, ToolContext, ToolExecutionResult
+//   - events.ts: StreamEvent, LoopEvent, Terminal
+//   - permission.ts: PermissionMode, ClassifierResult, PermissionResult
+//   - model.ts: ModelConfig, ModelCaller
+//   - index.ts: Re-exports from all sub-modules
+//
+// NOTE: Cross-module dependencies create circular reference challenges.
+// When splitting, use 'import type' for type-only imports and restructure
+// shared base types to avoid circular dependencies.
+// ============================================================
 
-// --- Messages (Internal Format) ---
+// ============================================================================
+// SECTION 1: Messages (Internal Format)
+// ============================================================================
 
 export type Message = UserMessage | AssistantMessage | ToolResultMessage | SystemMessage;
 
@@ -30,6 +45,7 @@ export interface SystemMessage {
 }
 
 // --- Content Blocks ---
+// ============================================================================
 
 export type ContentBlock = TextContent | ImageContent;
 
@@ -49,6 +65,7 @@ export interface ImageContent {
 }
 
 // --- Tool Calls ---
+// ============================================================================
 
 export interface ToolCall {
   id: string;
@@ -60,6 +77,7 @@ export interface ToolCall {
 }
 
 // --- Tool System ---
+// ============================================================================
 
 export interface ToolInput {
   [key: string]: unknown;
@@ -293,6 +311,7 @@ export interface Tool<T extends ToolInput = ToolInput> {
 }
 
 // --- Model Config ---
+// ============================================================================
 
 export interface ModelConfig {
   provider: "anthropic" | "openai" | "deepseek" | "qwen" | "moonshot" | "zhipu" | "custom";
@@ -305,6 +324,7 @@ export interface ModelConfig {
 }
 
 // --- Stream Events ---
+// ============================================================================
 
 export type StreamEvent =
   | { type: "text_delta"; delta: string }
@@ -325,6 +345,7 @@ export type StreamEvent =
   | { type: "error"; error: Error };
 
 // --- Agent Loop ---
+// ============================================================================
 
 export type LoopEvent =
   | { type: "text_delta"; delta: string }
@@ -410,11 +431,10 @@ export interface ToolExecutionResult {
   error?: string;
   formatted: string;
   /**
-   * Model-facing copy of the result (M30). The agent loop sends THIS (not
-   * `formatted`) to the model history, after spilling oversized output to disk.
-   * Absent → the model sees `formatted` verbatim. The UI always renders
-   * `formatted`, so the split keeps the context window bounded while terminal
-   * output stays full and rich.
+   * P0-1 Fix: modelContent has been removed. The full `formatted` result is now
+   * stored in message history; truncation for the API call happens in the
+   * adapters (llm-adapter / anthropic-adapter) via truncateToolResult().
+   * @deprecated Use `formatted` directly.
    */
   modelContent?: string;
   durationMs?: number;
@@ -521,6 +541,7 @@ export type AskUserFn = (
 ) => Promise<boolean>;
 
 // --- Model Caller ---
+// ============================================================================
 
 export type ModelCaller = (
   messages: Message[],

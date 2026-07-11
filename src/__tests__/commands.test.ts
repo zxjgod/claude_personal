@@ -8,8 +8,8 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { recordChange, resetChangeTracker } from "../change-tracker.js";
 import { type CommandContext, handleSlashCommand } from "../commands.js";
-import { SessionStats } from "../session-stats.js";
 import { registerSkill, resetSkills } from "../skills.js";
+import { SessionStats } from "../tui/session-stats.js";
 import type { Message, ModelCaller, ModelConfig } from "../types.js";
 
 // A model caller that yields a single text + done (used by /compact).
@@ -572,7 +572,7 @@ describe("handleSlashCommand", () => {
 
   describe("/schedule (M18.14)", () => {
     it("reports no jobs when none are scheduled", async () => {
-      const { resetScheduledJobs } = await import("../tools-m9.js");
+      const { resetScheduledJobs } = await import("../tools/m8/m9.js");
       resetScheduledJobs();
       const r = await handleSlashCommand("/schedule", makeCtx([]));
       expect(r.handled).toBe(true);
@@ -582,7 +582,7 @@ describe("handleSlashCommand", () => {
 
     it("lists and cancels a scheduled job", async () => {
       const { ScheduleCronTool, resetScheduledJobs, listScheduledJobs } = await import(
-        "../tools-m9.js"
+        "../tools/m8/m9.js"
       );
       resetScheduledJobs();
       await ScheduleCronTool.call(

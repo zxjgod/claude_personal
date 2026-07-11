@@ -3,6 +3,7 @@
 // ============================================================
 
 import { spawn } from "node:child_process";
+import chalk from "chalk";
 import { z } from "zod";
 import { checkDangerousPattern } from "../../permissions.js";
 import type { Tool, ToolResult } from "../../types.js";
@@ -174,16 +175,35 @@ export const BashTool: Tool = buildTool({
     // code alone. The explicit flag is the only reliable signal that WE killed it
     // for running too long.
     if (timedOut) {
+      const timeoutSecs = Math.round(timeout / 1000);
       return {
-        content: output || `Command timed out after ${timeout}ms.`,
+        content: output || `命令在 ${timeoutSecs} 秒后超时`,
         truncated: outTruncated,
-        error: `Command timed out after ${timeout}ms`,
+        error:
+          `命令执行超时 (${timeoutSecs}s)\n` +
+          chalk.gray(`   提示: 如果这是正常行为，可以增加 timeout 参数`) +
+          (output ? `\n${chalk.gray("   前部分输出:")}\n${output.slice(0, 500)}` : ""),
         metadata: { exitCode: -1, timedOut: true },
       };
     }
 
+    // Non-zero exit code indicates command failure
+    if (exitCode !== null && exitCode !== 0) {
+      const truncatedNote = outTruncated
+        ? `\n${chalk.yellow("   ⚠️ 输出被截断 (超过 10MB 限制)")}`
+        : "";
+      return {
+        content: output || "(无输出)",
+        truncated: outTruncated,
+        error:
+          `命令执行失败 (退出码: ${exitCode})${truncatedNote}\n` +
+          chalk.gray("   提示: 检查命令语法和参数是否正确"),
+        metadata: { exitCode },
+      };
+    }
+
     return {
-      content: output || "(no output)",
+      content: output || "(无输出)",
       truncated: outTruncated,
       metadata: { exitCode },
     };

@@ -6,7 +6,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { SessionTranscript } from "../session-transcript.js";
+import { SessionTranscript } from "../tui/session-transcript.js";
 
 let tmpDir: string;
 let t: SessionTranscript;

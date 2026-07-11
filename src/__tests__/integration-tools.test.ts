@@ -32,7 +32,7 @@ import {
   ScheduleCronTool,
   SkillTool,
   SleepTool,
-} from "../tools-m9.js";
+} from "../tools/m8/m9.js";
 import type { ToolContext } from "../types.js";
 
 const SESSION = "sess-int-m21";

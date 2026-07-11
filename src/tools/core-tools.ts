@@ -3,14 +3,14 @@
 // ============================================================
 
 // Import from other tool modules
-import { LspDiagnosticsTool, NotebookEditTool } from "../tools-m8.js";
+import { LspDiagnosticsTool, NotebookEditTool } from "../tools/m8/index.js";
 import {
   AskUserQuestionTool,
   EnterPlanModeTool,
   ExitPlanModeTool,
-} from "../tools-m8-interactive.js";
-import { M14_TOOLS } from "../tools-m9.js";
-import { TEAM_TOOLS } from "../tools-team.js";
+} from "../tools/m8/interactive.js";
+import { M14_TOOLS } from "../tools/m8/m9.js";
+import { TEAM_TOOLS } from "../tools/m8/team.js";
 import type { Tool } from "../types.js";
 import { BashTool } from "./core/bash.js";
 import { EditTool, MultiEditTool } from "./core/edit.js";

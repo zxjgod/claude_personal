@@ -1,8 +1,8 @@
 // /status — show session status
 import chalk from "chalk";
 import { listChanges } from "../change-tracker.js";
-import { getEffort } from "../effort.js";
-import { formatDuration } from "../session-stats.js";
+import { getEffort } from "../tui/effort.js";
+import { formatDuration } from "../tui/session-stats.js";
 import type { SlashCommand } from "./types.js";
 
 export const statusCommand: SlashCommand = {

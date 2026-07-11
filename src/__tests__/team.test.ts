@@ -32,7 +32,7 @@ import {
   TaskListTool,
   TaskStopTool,
   TeamCreateTool,
-} from "../tools-team.js";
+} from "../tools/m8/team.js";
 import type { ModelConfig, ToolContext } from "../types.js";
 
 const modelConfig: ModelConfig = { provider: "deepseek", model: "deepseek-chat", apiKey: "k" };
@@ -190,7 +190,7 @@ describe("team_delete + parent-signal cascade (M35)", () => {
   });
 
   it("TeamDeleteTool deletes via the tool surface", async () => {
-    const { TeamDeleteTool } = await import("../tools-team.js");
+    const { TeamDeleteTool } = await import("../tools/m8/team.js");
     createAgents("team-sess", [{ role: "general", name: "w" }]);
     const r = await TeamDeleteTool.call({ agent_id: "w" }, ctx());
     expect(r.content).toContain("deleted");

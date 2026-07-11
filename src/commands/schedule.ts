@@ -7,7 +7,7 @@
 // context plumbing is needed.
 // ============================================================
 import chalk from "chalk";
-import { listScheduledJobs, removeScheduledJob } from "../tools-m9.js";
+import { listScheduledJobs, removeScheduledJob } from "../tools/m8/m9.js";
 import type { SlashCommand } from "./types.js";
 
 export const scheduleCommand: SlashCommand = {

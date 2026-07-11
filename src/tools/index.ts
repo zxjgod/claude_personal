@@ -18,8 +18,8 @@ export { WebFetchTool } from "./extended/web-fetch.js";
 export { WebSearchTool } from "./extended/web-search.js";
 // Export infrastructure
 export * from "./registry.js";
-export * from "./result-spill.js";
 export * from "./summary.js";
+export * from "./truncation.js";
 export * from "./utils/command.js";
 export * from "./utils/diff.js";
 export * from "./utils/file.js";

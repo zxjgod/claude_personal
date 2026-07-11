@@ -11,20 +11,21 @@
 //     it returns a clear "not available" result instead of hanging.
 // ============================================================
 
-import { createTool } from "./tools/registry.js";
-import type { PermissionMode, Tool, ToolResult } from "./types.js";
+import { z } from "zod";
+import type { PermissionMode, Tool, ToolResult } from "../../types.js";
+import { buildTool } from "../registry.js";
 
 // --- 8.2 EnterPlanMode -------------------------------------------------------
 
-export const EnterPlanModeTool: Tool = createTool({
+export const EnterPlanModeTool: Tool = buildTool({
   name: "enter_plan_mode",
   description: "Switch the session into read-only plan mode",
   promptDescription:
     "Enter plan mode: the session becomes read-only — research/read tools still " +
     "work, but destructive tools (write/edit/bash) are blocked until you call " +
     "exit_plan_mode. Use this while investigating before you've agreed on an approach.",
-  inputSchema: { type: "object", properties: {}, required: [] },
-  isReadOnly: true, // entering a safer mode is itself non-destructive
+  schema: z.strictObject({}),
+  isReadOnly: true,
   isConcurrencySafe: false,
   async call(_input, context): Promise<ToolResult> {
     context.setPermissionMode?.("plan");
@@ -39,29 +40,17 @@ export const EnterPlanModeTool: Tool = createTool({
 
 // --- 8.2 ExitPlanMode --------------------------------------------------------
 
-interface ExitPlanModeInput {
-  /** Mode to return to; defaults to "default". */
-  to?: "default" | "acceptEdits";
-  [key: string]: unknown;
-}
+const ExitPlanModeSchema = z.strictObject({
+  to: z.enum(["default", "acceptEdits"]).optional().describe("Mode to return to (default)"),
+});
 
-export const ExitPlanModeTool: Tool = createTool<ExitPlanModeInput>({
+export const ExitPlanModeTool: Tool = buildTool({
   name: "exit_plan_mode",
   description: "Leave plan mode and resume normal (or accept-edits) operation",
   promptDescription:
     "Exit plan mode once the user has approved the plan. Optionally pass to=" +
     "acceptEdits to auto-approve file edits afterward; otherwise returns to default.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      to: {
-        type: "string",
-        enum: ["default", "acceptEdits"],
-        description: "Mode to return to (default)",
-      },
-    },
-    required: [],
-  },
+  schema: ExitPlanModeSchema,
   isReadOnly: true,
   isConcurrencySafe: false,
   async call(input, context): Promise<ToolResult> {
@@ -74,24 +63,23 @@ export const ExitPlanModeTool: Tool = createTool<ExitPlanModeInput>({
 
 // --- 8.1 AskUserQuestion -----------------------------------------------------
 
-interface AskUserQuestionInput {
-  question: string;
-  header?: string;
-  options: Array<{ label: string; description?: string }> | string[];
-  multiSelect?: boolean;
-  [key: string]: unknown;
-}
+const AskUserQuestionOptionSchema = z.strictObject({
+  label: z.string().describe("Option label shown to the user"),
+  description: z.string().optional().describe("Additional context about this option"),
+});
 
-/** Normalize options that may arrive as plain strings. */
-function normalizeOptions(
-  options: AskUserQuestionInput["options"],
-): Array<{ label: string; description?: string }> {
-  return (options ?? []).map((o) =>
-    typeof o === "string" ? { label: o } : { label: o.label, description: o.description },
-  );
-}
+const AskUserQuestionSchema = z.strictObject({
+  question: z.string().describe("The question to ask"),
+  header: z.string().optional().describe("Short category label"),
+  options: z
+    .array(z.union([AskUserQuestionOptionSchema, z.string()]))
+    .min(2)
+    .max(4)
+    .describe("Selectable options (objects with label/description, or strings)"),
+  multiSelect: z.boolean().optional().describe("Allow choosing more than one"),
+});
 
-export const AskUserQuestionTool: Tool = createTool<AskUserQuestionInput>({
+export const AskUserQuestionTool: Tool = buildTool({
   name: "ask_user_question",
   description: "Ask the user a structured single/multi-select question",
   promptDescription:
@@ -99,30 +87,17 @@ export const AskUserQuestionTool: Tool = createTool<AskUserQuestionInput>({
     "their answer. Use when you need a decision only the user can make (choosing " +
     "between valid approaches, confirming scope). Provide 2-4 concise options. " +
     "Set multiSelect:true to allow multiple selections. Returns the chosen label(s).",
-  inputSchema: {
-    type: "object",
-    properties: {
-      question: { type: "string", description: "The question to ask" },
-      header: { type: "string", description: "Short category label" },
-      options: {
-        type: "array",
-        description: "Selectable options (objects with label/description, or strings)",
-        items: { type: "object" },
-      },
-      multiSelect: { type: "boolean", description: "Allow choosing more than one" },
-    },
-    required: ["question", "options"],
-  },
+  schema: AskUserQuestionSchema,
   isReadOnly: true,
   isConcurrencySafe: false,
   async call(input, context): Promise<ToolResult> {
-    const options = normalizeOptions(input.options);
+    const options = (input.options ?? []).map((o) =>
+      typeof o === "string" ? { label: o } : { label: o.label, description: o.description },
+    );
     if (options.length === 0) {
       return { content: "", error: "ask_user_question requires at least one option" };
     }
     if (!context.askUserQuestion) {
-      // No interactive channel (sub-agent / non-interactive). Surface the
-      // question as text so the model can decide or defer rather than hang.
       const list = options.map((o, i) => `${i + 1}. ${o.label}`).join("\n");
       return {
         content:

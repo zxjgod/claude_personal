@@ -13,7 +13,27 @@ import dotenv from "dotenv";
 import { agentLoop } from "./agent-loop.js";
 import { formatCliError } from "./cli-errors.js";
 import { createCliInputReader } from "./cli-input.js";
-import { createRawInputReader, promptPermissionMenu, promptSelectMenu } from "./cli-interactive.js";
+import type { ToolSource } from "./commands.js";
+import { COMMANDS, handleSlashCommand } from "./commands.js";
+import { formatGitContext, gatherGitContext } from "./git-context.js";
+import { HookRegistry } from "./hooks.js";
+import { createModelCaller, resolveProviderConfig } from "./llm-adapter.js";
+import { discoverMCPConfigs, MCPManager } from "./mcp/index.js";
+import { PersistenceManager } from "./persistence.js";
+import { loadSkillsDir } from "./skills/loadSkillsDir.js";
+import { formatSpeculationLine } from "./speculation.js";
+import { setCoreToolsForSubagents } from "./subagents.js";
+import { buildSystemPrompt, renderSystemPrompt } from "./system-prompt.js";
+import { Telemetry } from "./telemetry.js";
+import { CORE_TOOLS } from "./tools/index.js";
+import { createMcpResourceTools, createToolSearchTool } from "./tools/m8/index.js";
+import { ToolRegistry } from "./tools/registry.js";
+import { expandFileRefs } from "./tools/utils/file-refs.js";
+import {
+  createRawInputReader,
+  promptPermissionMenu,
+  promptSelectMenu,
+} from "./tui/cli-interactive.js";
 import {
   renderPermissionPrompt,
   renderSubAgentActivity,
@@ -21,26 +41,10 @@ import {
   renderToolStart,
   renderWelcome,
   StreamingRenderer,
-} from "./cli-renderer.js";
-import { Spinner } from "./cli-spinner.js";
-import type { ToolSource } from "./commands.js";
-import { COMMANDS, handleSlashCommand } from "./commands.js";
-import { expandFileRefs } from "./file-refs.js";
-import { formatGitContext, gatherGitContext } from "./git-context.js";
-import { HookRegistry } from "./hooks.js";
-import { createModelCaller, resolveProviderConfig } from "./llm-adapter.js";
-import { discoverMCPConfigs, MCPManager } from "./mcp.js";
-import { PersistenceManager } from "./persistence.js";
-import { SessionStats } from "./session-stats.js";
-import { SessionTranscript } from "./session-transcript.js";
-import { loadSkillsDir } from "./skills/loadSkillsDir.js";
-import { formatSpeculationLine } from "./speculation.js";
-import { setCoreToolsForSubagents } from "./subagents.js";
-import { buildSystemPrompt, renderSystemPrompt } from "./system-prompt.js";
-import { Telemetry } from "./telemetry.js";
-import { CORE_TOOLS } from "./tools/index.js";
-import { ToolRegistry } from "./tools/registry.js";
-import { createMcpResourceTools, createToolSearchTool } from "./tools-m8.js";
+} from "./tui/cli-renderer.js";
+import { Spinner } from "./tui/cli-spinner.js";
+import { SessionStats } from "./tui/session-stats.js";
+import { SessionTranscript } from "./tui/session-transcript.js";
 import type {
   AskUserFn,
   Message,
@@ -69,6 +73,144 @@ function readPackageVersion(): string {
     return pkg.version ?? "0.0.0";
   } catch {
     return "0.0.0";
+  }
+}
+
+/**
+ * Check if .env exists, and if not, guide the user to create it.
+ * Returns true if we should continue (env exists or was just created),
+ * false if the user wants to exit.
+ */
+async function checkOrCreateEnv(): Promise<boolean> {
+  const envPath = ".env";
+  const envExamplePath = ".env.example";
+
+  // .env already exists, nothing to do
+  if (fs.existsSync(envPath)) {
+    return true;
+  }
+
+  // .env doesn't exist - show onboarding message
+  console.log("");
+  console.log(chalk.bold.cyan("╭────────────────────────────────────────╮"));
+  console.log(
+    chalk.bold.cyan("│") +
+      chalk.bold.white("  Claude Code Replica — 首次设置") +
+      " ".repeat(14) +
+      chalk.bold.cyan("│"),
+  );
+  console.log(chalk.bold.cyan("╰────────────────────────────────────────╯"));
+  console.log("");
+  console.log(chalk.yellow("  ⚠️  未检测到 .env 配置文件"));
+  console.log("");
+
+  // Check if .env.example exists
+  if (!fs.existsSync(envExamplePath)) {
+    console.log(chalk.red("  ✗ .env.example 模板文件不存在"));
+    console.log(chalk.gray("  请手动创建 .env 文件，参考文档: docs/快速开始.md"));
+    return false;
+  }
+
+  console.log(chalk.green("  ✓ 找到 .env.example 模板文件"));
+  console.log("");
+
+  // For interactive mode, offer to create the file
+  if (process.stdin.isTTY) {
+    console.log("  请选择操作:");
+    console.log(chalk.cyan("    1.") + " 复制模板并编辑 (推荐)");
+    console.log(chalk.cyan("    2.") + " 仅复制模板，稍后手动编辑");
+    console.log(chalk.cyan("    3.") + " 退出");
+    console.log("");
+
+    const readline = await import("node:readline");
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+
+    const promptUser = () =>
+      new Promise<string>((resolve) => {
+        rl.question(chalk.cyan("  请输入选项 [1]: "), (answer) => {
+          resolve(answer.trim() || "1");
+        });
+      });
+
+    const choice = await promptUser();
+    rl.close();
+
+    if (choice === "3" || choice.toLowerCase() === "q" || choice.toLowerCase() === "exit") {
+      console.log(chalk.gray("\n  已退出。请手动创建 .env 文件后重新启动。\n"));
+      return false;
+    }
+
+    if (choice === "2" || choice === "") {
+      // Just copy the template
+      fs.copyFileSync(envExamplePath, envPath);
+      console.log(chalk.green("\n  ✓ 已复制 .env.example → .env"));
+      console.log(chalk.gray("  请编辑 .env 文件填入您的 API Key 后重新启动。\n"));
+      return false;
+    }
+
+    // Default: choice === "1" or any other input - copy and guide
+    fs.copyFileSync(envExamplePath, envPath);
+    console.log(chalk.green("\n  ✓ 已复制 .env.example → .env"));
+    console.log("");
+    console.log(chalk.bold("  📝 下一步操作:"));
+    console.log(chalk.gray("  ──────────────────────────────────────"));
+    console.log("  1. 编辑 .env 文件:");
+    console.log(chalk.cyan(`     code .env`) + chalk.gray(" (或使用您喜欢的编辑器)"));
+    console.log("");
+    console.log("  2. 填写以下必填项:");
+    console.log(chalk.cyan("     LLM_API_KEY=sk-your-api-key-here"));
+    console.log(chalk.gray("     (支持: Anthropic / OpenAI / DeepSeek / Qwen 等)"));
+    console.log("");
+    console.log("  3. 可选配置:");
+    console.log(chalk.cyan("     LLM_PROVIDER=anthropic  # 或 openai/deepseek/qwen"));
+    console.log(chalk.cyan("     LLM_MODEL=             # 留空使用默认模型"));
+    console.log("");
+    console.log(chalk.gray("  ──────────────────────────────────────"));
+    console.log(chalk.cyan("  重新启动 ccr 即可开始使用！\n"));
+    return false;
+  }
+
+  // Non-interactive mode - just copy the template
+  fs.copyFileSync(envExamplePath, envPath);
+  console.log(chalk.green("  ✓ 已复制 .env.example → .env"));
+  console.log(chalk.yellow("  请编辑 .env 文件填入 API Key 后重新启动。\n"));
+  return false;
+}
+
+/** P1-3: Get a human-readable action label for a tool */
+function getToolActionLabel(toolName: string, target: string): string {
+  const key = toolName.toLowerCase();
+  const t = target.trim();
+
+  switch (key) {
+    case "read":
+      return t ? `正在读取 ${t}` : "正在读取文件";
+    case "write":
+      return t ? `正在写入 ${t}` : "正在写入文件";
+    case "edit":
+      return t ? `正在编辑 ${t}` : "正在编辑文件";
+    case "notebookedit":
+      return t ? `正在编辑 Notebook ${t}` : "正在编辑 Notebook";
+    case "bash":
+      return t ? `正在执行 ${t.slice(0, 40)}` : "正在执行命令";
+    case "glob":
+      return t ? `正在搜索文件 ${t}` : "正在搜索文件";
+    case "grep":
+      return t ? `正在搜索内容 ${t.slice(0, 30)}` : "正在搜索内容";
+    case "websearch":
+      return t ? `正在搜索网络 ${t.slice(0, 30)}` : "正在搜索网络";
+    case "webfetch":
+      return t ? `正在获取 ${t.slice(0, 40)}` : "正在获取内容";
+    case "task":
+    case "agent":
+      return "正在委托子代理";
+    case "mcp__":
+      return "正在调用 MCP 工具";
+    default:
+      return t ? `正在执行 ${toolName} (${t.slice(0, 20)})` : `正在执行 ${toolName}`;
   }
 }
 
@@ -180,6 +322,11 @@ function loadClaudeMd(workspaceRoot: string): string | undefined {
 async function main() {
   // Info flags first — print + return before touching config / API key / stdin.
   if (maybeHandleInfoFlags(process.argv)) return;
+
+  // P0-1: First-run onboarding - guide user to create .env if missing
+  if (!(await checkOrCreateEnv())) {
+    return;
+  }
 
   const verbose = process.argv.includes("--verbose") || process.env.CCR_VERBOSE === "1";
   const quiet = process.argv.includes("--quiet") || process.env.CCR_QUIET === "1" || !verbose;
@@ -556,6 +703,9 @@ async function main() {
       });
       if (choice === "always") {
         alwaysAllow.add(key);
+        // P2-2: Show confirmation feedback for "always allow"
+        const target = detail || tool.name;
+        console.log(chalk.green(`  ✓ 已记住: ${target} (本会话内不再询问)`));
         return true;
       }
       return choice === "yes";
@@ -569,6 +719,12 @@ async function main() {
 
     if (answer === "a" || answer === "always") {
       alwaysAllow.add(key);
+      // P2-2: Show confirmation feedback for "always allow"
+      const target =
+        (typeof input.command === "string" && input.command) ||
+        (typeof input.filePath === "string" && input.filePath) ||
+        tool.name;
+      console.log(chalk.green(`  ✓ 已记住: ${target.slice(0, 50)} (本会话内不再询问)`));
       return true;
     }
     return answer === "y" || answer === "yes";
@@ -744,23 +900,43 @@ async function main() {
     let streamedChars = 0;
     let thinkingStart = 0;
     let thoughtReported = false;
+    // P2-1: Track idle time for long response warning
+    let lastActivityTime = Date.now();
+    let idleWarningShown = false;
+
+    // Helper to reset idle tracking
+    const resetIdleTimer = () => {
+      lastActivityTime = Date.now();
+      idleWarningShown = false;
+    };
 
     for await (const event of loop) {
       switch (event.type) {
         case "thinking":
           thinkingStart = Date.now();
           thoughtReported = false;
+          resetIdleTimer();
           spinner.setMode("thinking");
           spinner.start();
           break;
 
-        case "text_delta":
+        case "text_delta": {
           // First visible text ends the "thinking" phase: print the
           // "Thought for Ns" line, then switch the spinner to responding.
           if (!thoughtReported && thinkingStart > 0) {
             const secs = Math.max(1, Math.round((Date.now() - thinkingStart) / 1000));
             spinner.stop();
-            console.log(chalk.dim(`  Thought for ${secs}s (ctrl+o to expand)`));
+            // P1-3: Enhanced thinking report with context
+            const contextTip =
+              secs > 30
+                ? chalk.gray(" (模型正在推理复杂任务)")
+                : secs > 10
+                  ? chalk.gray(" (等待模型响应)")
+                  : "";
+            console.log(
+              chalk.dim(`  ⏱ 推理耗时 ${secs}s${contextTip}`) +
+                chalk.gray(" (ctrl+o 查看完整思考过程)"),
+            );
             thoughtReported = true;
           }
           spinner.stop();
@@ -768,12 +944,32 @@ async function main() {
           streamedChars += event.delta.length;
           spinner.update({ tokens: Math.round(streamedChars / 4) });
           lastText += event.delta;
+          // P2-1: Check for long idle (model streaming slowly)
+          const idleMs = Date.now() - lastActivityTime;
+          if (idleMs > 45000 && !idleWarningShown) {
+            idleWarningShown = true;
+            console.log(chalk.cyan("\n  💡 模型响应时间较长，请稍候..."));
+          }
           break;
+        }
 
-        case "tool_use":
+        case "tool_use": {
+          resetIdleTimer();
           spinner.stop();
           renderer.flush();
-          renderToolStart(event.name, event.input);
+          // P1-3: Enhanced tool start with clearer action label
+          const toolName = event.name;
+          const toolDetail = event.input;
+          const toolTarget =
+            typeof toolDetail?.filePath === "string"
+              ? toolDetail.filePath.split(/[/\\]/).pop()
+              : typeof toolDetail?.command === "string"
+                ? toolDetail.command.split(" ").slice(0, 3).join(" ")
+                : typeof toolDetail?.pattern === "string"
+                  ? toolDetail.pattern
+                  : "";
+          const actionLabel = getToolActionLabel(toolName, toolTarget ?? "");
+          console.log(chalk.dim(`  ${chalk.cyan("▶")} ${actionLabel}`));
           recordTranscript({
             type: "tool_use",
             id: event.id,
@@ -783,10 +979,23 @@ async function main() {
           spinner.setMode("tool");
           spinner.start();
           break;
+        }
 
-        case "tool_results":
+        case "tool_results": {
+          resetIdleTimer();
           spinner.stop();
           renderer.flush();
+          // P1-3: Show tool results summary
+          const successCount = event.results.filter((r) => !r.error).length;
+          const errorCount = event.results.length - successCount;
+          if (errorCount > 0) {
+            console.log(chalk.yellow(`  ${chalk.dim("◀")} ${errorCount} 个工具执行出错`));
+          } else if (successCount > 0) {
+            const totalMs = event.results.reduce((sum, r) => sum + (r.durationMs ?? 0), 0);
+            console.log(
+              chalk.dim(`  ${chalk.green("✓")} ${successCount} 个工具执行完成 (${totalMs}ms)`),
+            );
+          }
           for (const result of event.results) {
             renderToolResult(result);
             recordTranscript({
@@ -806,11 +1015,24 @@ async function main() {
           });
           spinner.start();
           break;
+        }
 
         case "compacting":
           spinner.stop();
           renderer.flush();
-          console.log("\n  Compacting context…");
+          console.log("\n  " + chalk.cyan("⏳") + " " + chalk.gray("正在压缩上下文…"));
+          break;
+
+        case "compacted":
+          // P1-1: Enhanced compaction summary with detailed statistics
+          spinner.stop();
+          renderer.flush();
+          console.log("\n  " + chalk.green("✓") + " " + chalk.bold("上下文已压缩"));
+          if (event.summary) {
+            console.log("  " + chalk.gray("  ") + event.summary);
+          }
+          console.log(chalk.gray("  ──────────────────────────────────────"));
+          console.log(chalk.gray("  提示: /context 可查看当前上下文状态"));
           break;
 
         case "usage":

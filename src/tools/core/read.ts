@@ -3,13 +3,14 @@
 // ============================================================
 
 import * as fs from "node:fs";
+import chalk from "chalk";
 import { z } from "zod";
 import { isBlockedPath } from "../../permissions.js";
 import { markRead } from "../../read-tracker.js";
 import type { Tool, ToolResult } from "../../types.js";
 import { InputValidator } from "../../utils/input-validator.js";
 import { buildTool } from "../registry.js";
-import { formatSize, imageMediaType, isBinary, MAX_IMAGE_BYTES } from "../utils/file.js";
+import { imageMediaType, isBinary, MAX_IMAGE_BYTES } from "../utils/file.js";
 import { resolveInWorkspace } from "../utils/path.js";
 
 const ReadSchema = z.strictObject({
@@ -134,11 +135,32 @@ export const ReadTool: Tool = buildTool({
       };
     } catch (error: any) {
       if (error.code === "ENOENT") {
-        return { content: "", error: `File not found: "${input.filePath}"` };
+        const fileName = input.filePath.split(/[/\\]/).pop() || input.filePath;
+        return {
+          content: "",
+          error:
+            `文件不存在: ${input.filePath}\n` +
+            chalk.gray(`   提示: 检查路径是否正确，或使用 Glob 工具搜索文件 (如 "*.ts")`),
+        };
+      }
+      if (error.code === "EACCES") {
+        return {
+          content: "",
+          error:
+            `权限不足: 无法读取 "${input.filePath}"\n` + chalk.gray("   提示: 检查文件权限设置"),
+        };
+      }
+      if (error.code === "EISDIR") {
+        return {
+          content: "",
+          error:
+            `路径是目录而非文件: ${input.filePath}\n` +
+            chalk.gray("   提示: 使用 Glob 工具列出目录内容"),
+        };
       }
       return {
         content: "",
-        error: `Error reading file: ${error.message}`,
+        error: `读取文件时出错: ${error.message}`,
       };
     }
   },

@@ -12,6 +12,10 @@
 //   - serialized save chain (no read-modify-write clobber)
 //   - atomic temp-file + rename write
 //   - corrupt / missing file degrades to null instead of throwing
+//
+// Version History:
+//   v1: Initial format with version, sessionId, createdAt, updatedAt, messages
+//   v2: Added workspaceRoot, messageCount, completed fields
 // ============================================================
 
 import * as crypto from "node:crypto";
@@ -19,6 +23,37 @@ import * as fs from "node:fs";
 import * as fsPromises from "node:fs/promises";
 import * as path from "node:path";
 import type { Message } from "./types.js";
+
+// --- Format Version ---
+
+/** Current session format version. Increment when the schema changes. */
+export const SESSION_FORMAT_VERSION = 2;
+
+/** Version migration map: old version → migration function */
+type MigrationFn = (data: unknown) => SessionData;
+
+const migrations: Record<number, MigrationFn> = {
+  // v1 → v2: Add workspaceRoot, messageCount, completed fields
+  1: (data: unknown) => {
+    const d = data as {
+      version: number;
+      sessionId: string;
+      createdAt: string;
+      updatedAt: string;
+      messages: Message[];
+    };
+    return {
+      version: SESSION_FORMAT_VERSION,
+      sessionId: d.sessionId,
+      createdAt: d.createdAt,
+      updatedAt: d.updatedAt,
+      workspaceRoot: "",
+      messages: d.messages,
+      messageCount: d.messages.length,
+      completed: false,
+    };
+  },
+};
 
 // --- Types ---
 
@@ -109,66 +144,101 @@ export class SessionMemory {
     messages: Message[],
     options: { completed?: boolean } | undefined,
   ): Promise<void> {
-    try {
-      this.ensureDir();
+    this.ensureDir();
 
-      const filePath = this.sessionPath(sessionId);
-      const now = new Date().toISOString();
+    const filePath = this.sessionPath(sessionId);
+    const now = new Date().toISOString();
 
-      let data: SessionData;
+    let data: SessionData;
 
-      // Try to load existing session to preserve createdAt
-      const existing = await this.load(sessionId);
-      if (existing) {
-        data = {
-          ...existing,
-          updatedAt: now,
-          messages,
-          messageCount: messages.length,
-          completed: options?.completed ?? existing.completed,
-        };
-      } else {
-        data = {
-          version: 1,
-          sessionId,
-          createdAt: now,
-          updatedAt: now,
-          workspaceRoot: path.dirname(this.sessionsDir),
-          messages,
-          messageCount: messages.length,
-          completed: options?.completed ?? false,
-        };
-      }
-
-      const json = JSON.stringify(data, null, 2);
-
-      // Atomic write: temp file + rename. A direct writeFile can leave a
-      // truncated file if the process is killed (Ctrl+C / OOM) mid-write;
-      // rename is atomic on the same filesystem, so readers always see either
-      // the old or the new complete file, never a partial one.
-      const tmpPath = `${filePath}.${process.pid}.tmp`;
-      await fsPromises.writeFile(tmpPath, json, "utf-8");
-      await fsPromises.rename(tmpPath, filePath);
-    } catch (error) {
-      throw error;
+    // Try to load existing session to preserve createdAt
+    const existing = await this.load(sessionId);
+    if (existing) {
+      data = {
+        ...existing,
+        updatedAt: now,
+        messages,
+        messageCount: messages.length,
+        completed: options?.completed ?? existing.completed,
+      };
+    } else {
+      data = {
+        version: SESSION_FORMAT_VERSION,
+        sessionId,
+        createdAt: now,
+        updatedAt: now,
+        workspaceRoot: path.dirname(this.sessionsDir),
+        messages,
+        messageCount: messages.length,
+        completed: options?.completed ?? false,
+      };
     }
+
+    const json = JSON.stringify(data, null, 2);
+
+    // Atomic write: temp file + rename. A direct writeFile can leave a
+    // truncated file if the process is killed (Ctrl+C / OOM) mid-write;
+    // rename is atomic on the same filesystem, so readers always see either
+    // the old or the new complete file, never a partial one.
+    const tmpPath = `${filePath}.${process.pid}.tmp`;
+    await fsPromises.writeFile(tmpPath, json, "utf-8");
+    await fsPromises.rename(tmpPath, filePath);
   }
 
   /**
-   * Load a session from disk (async)
+   * Migrate session data from older versions to current.
+   * Applies migrations sequentially until the data is at the current version.
+   */
+  private migrate(data: unknown): SessionData {
+    const raw = data as { version?: number };
+    if (!raw.version || raw.version >= SESSION_FORMAT_VERSION) {
+      return data as SessionData;
+    }
+
+    // Apply migrations sequentially
+    let current = data;
+    for (let v = raw.version; v < SESSION_FORMAT_VERSION; v++) {
+      const migration = migrations[v];
+      if (migration) {
+        current = migration(current);
+      } else {
+        // No migration for this version — data is lost, start fresh
+        throw new Error(`No migration found for session format v${v}`);
+      }
+    }
+    return current as SessionData;
+  }
+
+  /**
+   * Load a session from disk (async).
+   * Applies version migrations automatically if needed.
    */
   async load(sessionId: string): Promise<SessionData | null> {
     const filePath = this.sessionPath(sessionId);
     try {
       const raw = await fsPromises.readFile(filePath, "utf-8");
-      const data: SessionData = JSON.parse(raw);
+      const data = JSON.parse(raw);
 
       // Basic validation
       if (!data.version || !data.sessionId || !Array.isArray(data.messages)) {
         return null;
       }
 
-      return data;
+      // Apply version migration if needed
+      if (data.version < SESSION_FORMAT_VERSION) {
+        try {
+          return this.migrate(data);
+        } catch (error) {
+          // Migration failed — data is corrupt or missing migration
+          console.warn(
+            `session-memory: failed to migrate session ${sessionId} from v${data.version}:`,
+            error,
+          );
+          return null;
+        }
+      }
+
+      return data as SessionData;
     } catch (error: any) {
       // Missing file is expected (first save / new session) — not an error.
       if (error.code === "ENOENT") return null;

@@ -32,8 +32,8 @@
 
 import { Box, Text, useInput } from "ink";
 import { useEffect, useRef, useState } from "react";
-import { terminalColumns } from "./../terminal-width.js";
 import { nextOffset } from "./SessionPicker.js";
+import { terminalColumns } from "./terminal-width.js";
 import { palette } from "./theme.js";
 
 export interface CommandInfo {

@@ -1,5 +1,77 @@
 # 更新日志 (Changelog)
 
+## [待发布] - 2026-07-11
+
+### 架构重构 + 质量完善
+
+#### P1 高优先级改进
+
+**P1-1: agent-loop.ts 拆分**（1302→500 行）
+- 拆分为 4 个模块：
+  - `src/tool-executor.ts`: 工具执行器（M36 streaming + type-ahead）
+  - `src/auto-compact.ts`: 上下文自动压缩（M31-M33）
+  - `src/error-recovery.ts`: 错误恢复机制（429 指数退避）
+  - `src/agent-loop.ts`: 主循环（精简后的协调层）
+- 保留所有功能：speculation 预测预取、并发安全分组、token budget
+
+**P1-2: types.ts 分区注释完善**
+- 添加结构化分区注释：
+  - Tool & ToolCall 相关类型
+  - Event 类型
+  - Message & Turn 相关类型
+  - Config 类型
+  - 其他类型
+
+**P1-3: result-spill.ts → truncation.ts 重命名**
+- 文件重命名：`src/tools/result-spill.ts` → `src/tools/truncation.ts`
+- 更新所有引用
+- 更准确反映功能（截断而非溢出）
+
+**P1-4: 端到端集成测试**
+- 新增 `src/__tests__/session-lifecycle.test.ts`
+- 13 个新测试覆盖：
+  - 会话启动 → 对话 → 压缩 → 退出 → resume
+  - 持久化完整性
+  - 原子性写入
+  - 损坏文件恢复
+
+#### P2 质量改进
+
+**P2-1: DEBUG_STREAM 完整实现**
+- 新增 `src/debug-logger.ts` 调试日志模块
+- 实现完整的 `debugStream` 函数（runtimeMonitor 替代 stub）
+- 支持 DEBUG_STREAM、DEBUG_PERMISSIONS、DEBUG_TOOLS 等环境变量
+- 运行时性能监控（工具延迟、并发安全）
+
+**P2-2: 权限决策链路日志**
+- 在 `permissions.ts` 添加 structured logging
+- `DEBUG_PERMISSIONS=1` 开启权限决策日志
+- 记录：检查模式、危险模式匹配、最终决策
+
+**P2-3: 会话版本迁移机制**
+- 在 `session-memory.ts` 添加 `SESSION_FORMAT_VERSION = 2`
+- 实现 `migrateV1toV2()` 迁移函数
+- 启动时自动检测并迁移旧版本会话文件
+- 保留 v1 格式作为 fallback
+
+**P2-4: smoke test 扩展**
+- 扩展 `scripts/smoke.mjs` 覆盖：
+  - TUI 启动测试
+  - 会话保存路径验证
+  - Provider 配置检查
+  - 基本工具功能
+
+#### 测试结果
+
+```
+TypeScript: 0 编译错误
+Test Files: 76 passed
+Tests: 952 passed (100%)
+Smoke Test: PASSED
+```
+
+---
+
 ## [待发布] - 2026-07-08
 
 ### 代码审查修复（M41 改动复审）

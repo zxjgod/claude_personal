@@ -3,6 +3,7 @@
 // ============================================================
 
 import * as fs from "node:fs";
+import chalk from "chalk";
 import { z } from "zod";
 import { recordChange } from "../../change-tracker.js";
 import { checkDangerousPattern, isBlockedPath } from "../../permissions.js";
@@ -132,11 +133,31 @@ export const EditTool: Tool = buildTool({
       };
     } catch (error: any) {
       if (error.code === "ENOENT") {
-        return { content: "", error: `File not found: "${input.filePath}"` };
+        return {
+          content: "",
+          error:
+            `文件不存在: ${input.filePath}\n` +
+            chalk.gray("   提示: 无法编辑不存在的文件，请先使用 Write 工具创建它"),
+        };
+      }
+      if (error.code === "EACCES") {
+        return {
+          content: "",
+          error:
+            `权限不足: 无法编辑 "${input.filePath}"\n` + chalk.gray("   提示: 检查文件权限设置"),
+        };
+      }
+      if (error.code === "EBUSY" || error.code === "ETXTBSY") {
+        return {
+          content: "",
+          error:
+            `文件正被占用: ${input.filePath}\n` +
+            chalk.gray("   提示: 文件可能被其他程序打开，请关闭后再试"),
+        };
       }
       return {
         content: "",
-        error: `Error editing file: ${error.message}`,
+        error: `编辑文件时出错: ${error.message}`,
       };
     }
   },
@@ -280,9 +301,29 @@ export const MultiEditTool: Tool = buildTool({
       };
     } catch (error: any) {
       if (error.code === "ENOENT") {
-        return { content: "", error: `File not found: "${input.filePath}"` };
+        return {
+          content: "",
+          error:
+            `文件不存在: ${input.filePath}\n` +
+            chalk.gray("   提示: 无法编辑不存在的文件，请先使用 Write 工具创建它"),
+        };
       }
-      return { content: "", error: `Error editing file: ${error.message}` };
+      if (error.code === "EACCES") {
+        return {
+          content: "",
+          error:
+            `权限不足: 无法编辑 "${input.filePath}"\n` + chalk.gray("   提示: 检查文件权限设置"),
+        };
+      }
+      if (error.code === "EBUSY" || error.code === "ETXTBSY") {
+        return {
+          content: "",
+          error:
+            `文件正被占用: ${input.filePath}\n` +
+            chalk.gray("   提示: 文件可能被其他程序打开，请关闭后再试"),
+        };
+      }
+      return { content: "", error: `编辑文件时出错: ${error.message}` };
     }
   },
 

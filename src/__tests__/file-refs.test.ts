@@ -6,7 +6,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { expandFileRefs } from "../file-refs.js";
+import { expandFileRefs } from "../tools/utils/file-refs.js";
 
 let workspace: string;
 

@@ -3,7 +3,7 @@
 // ============================================================
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { detectLanguage, formatError, getLanguage, setLanguage, t } from "../i18n.js";
+import { detectLanguage, formatError, getLanguage, setLanguage, t } from "../tui/i18n.js";
 
 describe("i18n", () => {
   describe("detectLanguage", () => {

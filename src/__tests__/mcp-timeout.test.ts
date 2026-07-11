@@ -9,7 +9,7 @@
 // ============================================================
 
 import { describe, expect, it } from "vitest";
-import { TimeoutError, withTimeout } from "../mcp.js";
+import { TimeoutError, withTimeout } from "../mcp/index.js";
 
 describe("mcp withTimeout", () => {
   it("resolves with the operation's value when it finishes in time", async () => {

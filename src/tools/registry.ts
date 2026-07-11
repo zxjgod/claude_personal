@@ -5,7 +5,7 @@
 import type { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import type { PermissionResult, Tool, ToolContext, ToolInput, ToolResult } from "../types.js";
-import { DEFAULT_MAX_RESULT_CHARS } from "./result-spill.js";
+import { DEFAULT_MAX_RESULT_CHARS } from "./truncation.js";
 
 export class ToolRegistry {
   private tools: Map<string, Tool> = new Map();

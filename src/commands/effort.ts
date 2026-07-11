@@ -7,7 +7,7 @@ import {
   getEffort,
   parseEffort,
   renderEffortSlider,
-} from "../effort.js";
+} from "../tui/effort.js";
 import type { SlashCommand } from "./types.js";
 
 function printEffortDefinition(level: EffortLevel): void {

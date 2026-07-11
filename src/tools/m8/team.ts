@@ -8,7 +8,8 @@
 // fire-and-forget, then poll with task_get / task_list.
 // ============================================================
 
-import { listSubagentNames } from "./subagents.js";
+import { z } from "zod";
+import { listSubagentNames } from "../../subagents.js";
 import {
   type AgentStatus,
   createAgents,
@@ -18,9 +19,9 @@ import {
   runAgentTurn,
   stopAgent,
   type TeamRunContext,
-} from "./team.js";
-import { createTool } from "./tools/registry.js";
-import type { Tool, ToolContext, ToolResult } from "./types.js";
+} from "../../team.js";
+import type { Tool, ToolContext, ToolResult } from "../../types.js";
+import { buildTool } from "../registry.js";
 
 function runCtx(context: ToolContext): TeamRunContext | { error: string } {
   if (!context.modelConfig) {
@@ -47,12 +48,14 @@ function preview(text: string, max = 200): string {
 
 // --- 10.1 TeamCreate ---
 
-interface TeamCreateInput {
-  agents: Array<{ role: string; name?: string }>;
-  [key: string]: unknown;
-}
+const TeamCreateSchema = z.strictObject({
+  agents: z
+    .array(z.strictObject({ role: z.string(), name: z.string().optional() }))
+    .min(1)
+    .describe("Agents to create: each { role, name? }"),
+});
 
-export const TeamCreateTool: Tool = createTool<TeamCreateInput>({
+export const TeamCreateTool: Tool = buildTool({
   name: "team_create",
   description: "Create a team of named, stateful collaborator agents",
   promptDescription:
@@ -60,17 +63,7 @@ export const TeamCreateTool: Tool = createTool<TeamCreateInput>({
     "one-shot `task` tool). Pass agents: [{role, name?}]. Each keeps its own " +
     `conversation history. Available roles: ${listSubagentNames().join(", ")}. ` +
     "After creating, use send_message to talk to a member by id.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      agents: {
-        type: "array",
-        description: "Agents to create: each { role, name? }",
-        items: { type: "object" },
-      },
-    },
-    required: ["agents"],
-  },
+  schema: TeamCreateSchema,
   isReadOnly: false,
   requiresApproval: false,
   isConcurrencySafe: false,
@@ -93,14 +86,16 @@ export const TeamCreateTool: Tool = createTool<TeamCreateInput>({
 
 // --- 10.2 / 10.4 SendMessage ---
 
-interface SendMessageInput {
-  agent_id: string;
-  message: string;
-  background?: boolean;
-  [key: string]: unknown;
-}
+const SendMessageSchema = z.strictObject({
+  agent_id: z.string().describe("Target agent id (from team_create)"),
+  message: z.string().describe("Message / instructions for the agent"),
+  background: z
+    .boolean()
+    .optional()
+    .describe("Run without waiting; check later with task_get. Defaults false."),
+});
 
-export const SendMessageTool: Tool = createTool<SendMessageInput>({
+export const SendMessageTool: Tool = buildTool({
   name: "send_message",
   description: "Send a message to a team agent and get its reply",
   promptDescription:
@@ -108,25 +103,14 @@ export const SendMessageTool: Tool = createTool<SendMessageInput>({
     "history and returns its reply. Set background:true to run without waiting " +
     "(fire-and-forget) — then poll with task_get/task_list. Create members first " +
     "with team_create.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      agent_id: { type: "string", description: "Target agent id (from team_create)" },
-      message: { type: "string", description: "Message / instructions for the agent" },
-      background: {
-        type: "boolean",
-        description: "Run without waiting; check later with task_get. Defaults false.",
-      },
-    },
-    required: ["agent_id", "message"],
-  },
+  schema: SendMessageSchema,
   isReadOnly: false,
   requiresApproval: false,
   isConcurrencySafe: false,
 
   async call(input, context): Promise<ToolResult> {
-    const agentId = String(input.agent_id || "").trim();
-    const message = String(input.message || "").trim();
+    const agentId = input.agent_id.trim();
+    const message = input.message.trim();
     if (!agentId) return { content: "", error: "agent_id is required" };
     if (!message) return { content: "", error: "message is required" };
 
@@ -145,11 +129,8 @@ export const SendMessageTool: Tool = createTool<SendMessageInput>({
     const ctx = runCtx(context);
     if ("error" in ctx) return { content: "", error: ctx.error };
 
-    // 10.4 lightweight background: fire-and-forget, poll via task_get.
     if (input.background === true) {
-      void runAgentTurn(ctx, agentId, message).catch(() => {
-        /* status/error captured on the agent inside runAgentTurn */
-      });
+      void runAgentTurn(ctx, agentId, message).catch(() => {});
       return {
         content: `Sent to "${agentId}" in background. Use task_get ${agentId} to check progress.`,
       };
@@ -181,13 +162,13 @@ function statusGlyph(status: AgentStatus): string {
   }
 }
 
-export const TaskListTool: Tool = createTool({
+export const TaskListTool: Tool = buildTool({
   name: "task_list",
   description: "List all team agents and their status",
   promptDescription:
     "List every agent in the team with id, role, status, tool-call count, and a " +
     "preview of its last output. Use to see what background agents are doing.",
-  inputSchema: { type: "object", properties: {}, required: [] },
+  schema: z.strictObject({}),
   isReadOnly: true,
   isConcurrencySafe: true,
   async call(_input, context): Promise<ToolResult> {
@@ -204,26 +185,21 @@ export const TaskListTool: Tool = createTool({
   },
 });
 
-interface TaskGetInput {
-  agent_id: string;
-  [key: string]: unknown;
-}
+const TaskGetSchema = z.strictObject({
+  agent_id: z.string().describe("Agent id"),
+});
 
-export const TaskGetTool: Tool = createTool<TaskGetInput>({
+export const TaskGetTool: Tool = buildTool({
   name: "task_get",
   description: "Get a team agent's status and last output",
   promptDescription:
     "Get one agent's current status and full last output by id. Use after a " +
     "background send_message to read the result once status is done.",
-  inputSchema: {
-    type: "object",
-    properties: { agent_id: { type: "string", description: "Agent id" } },
-    required: ["agent_id"],
-  },
+  schema: TaskGetSchema,
   isReadOnly: true,
   isConcurrencySafe: true,
   async call(input, context): Promise<ToolResult> {
-    const agent = getAgent(context.sessionId, String(input.agent_id || ""));
+    const agent = getAgent(context.sessionId, input.agent_id);
     if (!agent) return { content: "", error: `No agent "${input.agent_id}"` };
     const head = `[${agent.id}] role=${agent.role} status=${agent.status} toolCalls=${agent.toolCalls}`;
     const err = agent.error ? `\nError: ${agent.error}` : "";
@@ -234,54 +210,44 @@ export const TaskGetTool: Tool = createTool<TaskGetInput>({
   },
 });
 
-interface TaskStopInput {
-  agent_id: string;
-  [key: string]: unknown;
-}
+const TaskStopSchema = z.strictObject({
+  agent_id: z.string().describe("Agent id"),
+});
 
-export const TaskStopTool: Tool = createTool<TaskStopInput>({
+export const TaskStopTool: Tool = buildTool({
   name: "task_stop",
   description: "Stop a team agent (abort if running)",
   promptDescription:
     "Stop an agent by id. If it's running, its current turn is aborted; the agent " +
     "is marked stopped. Its history is preserved.",
-  inputSchema: {
-    type: "object",
-    properties: { agent_id: { type: "string", description: "Agent id" } },
-    required: ["agent_id"],
-  },
+  schema: TaskStopSchema,
   isReadOnly: false,
   requiresApproval: false,
   isConcurrencySafe: false,
   async call(input, context): Promise<ToolResult> {
-    const ok = stopAgent(context.sessionId, String(input.agent_id || ""));
+    const ok = stopAgent(context.sessionId, input.agent_id);
     if (!ok) return { content: "", error: `No agent "${input.agent_id}"` };
     return { content: `Agent "${input.agent_id}" stopped.` };
   },
 });
 
-interface TeamDeleteInput {
-  agent_id: string;
-  [key: string]: unknown;
-}
+const TeamDeleteSchema = z.strictObject({
+  agent_id: z.string().describe("Agent id"),
+});
 
-export const TeamDeleteTool: Tool = createTool<TeamDeleteInput>({
+export const TeamDeleteTool: Tool = buildTool({
   name: "team_delete",
-  description: "Delete a team agent (aborts it if running)",
+  description: "Delete a team agent (aborts if running)",
   promptDescription:
     "Remove an agent from the team by id. If it's running, its current turn is " +
     "aborted first. Its history is discarded — use task_stop instead if you want " +
     "to keep the agent for later.",
-  inputSchema: {
-    type: "object",
-    properties: { agent_id: { type: "string", description: "Agent id" } },
-    required: ["agent_id"],
-  },
+  schema: TeamDeleteSchema,
   isReadOnly: false,
   requiresApproval: false,
   isConcurrencySafe: false,
   async call(input, context): Promise<ToolResult> {
-    const ok = deleteAgent(context.sessionId, String(input.agent_id || ""));
+    const ok = deleteAgent(context.sessionId, input.agent_id);
     if (!ok) return { content: "", error: `No agent "${input.agent_id}"` };
     return { content: `Agent "${input.agent_id}" deleted.` };
   },

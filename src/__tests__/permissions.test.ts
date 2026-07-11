@@ -447,7 +447,7 @@ describe("checkPermission + classifier integration", () => {
     });
     expect(askUser).toHaveBeenCalledTimes(1);
     // ALLOW → no model annotation; the original regex reason is shown.
-    expect(askUser.mock.calls[0]![2]).toBe("Command includes recursive deletion (rm -r)");
+    expect(askUser.mock.calls[0]![2]).toBe("递归删除命令 (rm -rf) — 将强制删除所有内容且无法恢复");
   });
 
   it("classifier unavailable (unparseable) falls back to the regex reason", async () => {
@@ -461,7 +461,7 @@ describe("checkPermission + classifier integration", () => {
       },
     });
     expect(askUser).toHaveBeenCalledTimes(1);
-    expect(askUser.mock.calls[0]![2]).toBe("Command includes recursive deletion (rm -r)");
+    expect(askUser.mock.calls[0]![2]).toBe("递归删除命令 (rm -rf) — 将强制删除所有内容且无法恢复");
   });
 
   it("without a classifier, the dangerous-bash path is unchanged", async () => {
@@ -471,7 +471,7 @@ describe("checkPermission + classifier integration", () => {
       askUser,
     });
     expect(askUser).toHaveBeenCalledTimes(1);
-    expect(askUser.mock.calls[0]![2]).toBe("Command includes recursive deletion (rm -r)");
+    expect(askUser.mock.calls[0]![2]).toBe("递归删除命令 (rm -rf) — 将强制删除所有内容且无法恢复");
     expect(result.allowed).toBe(false);
   });
 });

@@ -1,85 +1,36 @@
 // ============================================================
-// Error Recovery — Structured error handling and retry strategies
+// Error Recovery — model error handling with retry budgets (M31)
 // ============================================================
-// Centralizes all error classification and recovery logic that was
-// previously scattered throughout the agent loop.
+// Centralizes error classification and recovery logic for the agent loop.
+// Handles: 429 rate limits, context_length errors, timeouts, auth failures.
 // ============================================================
-
-export interface RecoveryState {
-  compactCount: number;
-  maxCompacts: number;
-  retries: number;
-  maxRetries: number;
-  rateLimitRetries: number;
-  maxRateLimitRetries: number;
-  abortSignal?: AbortSignal;
-}
-
-export type ModelErrorRecovery =
-  | { action: "retry" }
-  | { action: "compact-then-retry" }
-  | { action: "abort"; reason: string }
-  | { action: "skip"; message: string };
-
-/** Check if error is a context length error. */
-export function isContextLengthError(error: unknown): boolean {
-  if (error instanceof Error) {
-    const msg = error.message.toLowerCase();
-    return (
-      msg.includes("context") ||
-      msg.includes("length") ||
-      msg.includes("limit") ||
-      msg.includes("maximum") ||
-      msg.includes("too long") ||
-      msg.includes("tokens")
-    );
-  }
-  return false;
-}
-
-/** Check if error is a rate limit error. */
-export function isRateLimitError(error: unknown): boolean {
-  if (error instanceof Error) {
-    const msg = error.message.toLowerCase();
-    return msg.includes("429") || msg.includes("rate limit") || msg.includes("too many requests");
-  }
-  return false;
-}
-
-/** Check if error indicates a temporary failure that can be retried. */
-export function isRetryableError(error: unknown): boolean {
-  if (error instanceof Error) {
-    const msg = error.message.toLowerCase();
-    return (
-      msg.includes("timeout") ||
-      msg.includes("econnreset") ||
-      msg.includes("econnrefused") ||
-      msg.includes("network") ||
-      msg.includes("503") ||
-      msg.includes("502")
-    );
-  }
-  return false;
-}
 
 /**
- * Get retry delay with exponential backoff and jitter.
+ * Decision returned by handleModelError.
+ * - "retry": wait then re-call the model with the same messages (429).
+ * - "compact_and_retry": compress context once, then re-call the model
+ *   (context_length exceeded).
+ * - "abort": unrecoverable (auth, unknown, or retry budget exhausted).
  */
-export function calculateRetryDelay(error: unknown, attempt: number, maxDelay = 60000): number {
-  let baseDelay = 5000; // 5 seconds default
+export type ModelErrorRecovery = "retry" | "compact_and_retry" | "abort";
 
-  // Try to extract retry-after from error
-  if (error instanceof Error) {
-    const match = error.message.match(/retry[_-]?after[:\s]*(\d+)/i);
-    if (match) {
-      baseDelay = parseInt(match[1], 10) * 1000;
-    }
-  }
+export interface RecoveryState {
+  rateLimitRetries: number;
+  contextLengthRetries: number;
+  maxRateLimitRetries: number;
+  maxContextLengthRetries: number;
+}
 
-  const exponentialDelay = baseDelay * 2 ** attempt;
-  const cappedDelay = Math.min(exponentialDelay, maxDelay);
-  const jitter = cappedDelay * 0.2 * (Math.random() * 2 - 1);
-  return Math.round(cappedDelay + jitter);
+/** Sleep utility. */
+export function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Check if an error is a context-length error (400 with context_length). */
+export function isContextLengthError(error: unknown): boolean {
+  const err = error as { status?: number; message?: string } | null;
+  const msg = err?.message ?? "";
+  return err?.status === 400 && (msg.includes("context_length") || msg.includes("maximum context"));
 }
 
 /**
@@ -90,102 +41,65 @@ export async function handleModelError(
   error: unknown,
   state: RecoveryState,
 ): Promise<ModelErrorRecovery> {
-  const errorMessage = error instanceof Error ? error.message : String(error);
+  const err = error as Record<string, unknown> | null;
 
-  // Abort signal check
-  if (state.abortSignal?.aborted) {
-    return { action: "abort", reason: "Aborted by user" };
-  }
-
-  // Context length error: compact and retry
-  if (isContextLengthError(error)) {
-    if (state.compactCount >= state.maxCompacts) {
-      return {
-        action: "abort",
-        reason: `Context too long after ${state.maxCompacts} compactions`,
-      };
-    }
-    return { action: "compact-then-retry" };
-  }
-
-  // Rate limit error: wait and retry
-  if (isRateLimitError(error)) {
+  // Rate limit → wait and retry (bounded).
+  if (err?.status === 429) {
     if (state.rateLimitRetries >= state.maxRateLimitRetries) {
-      return {
-        action: "abort",
-        reason: `Rate limit exceeded after ${state.maxRateLimitRetries} retries`,
-      };
+      return "abort";
     }
 
-    const delay = calculateRetryDelay(error, state.rateLimitRetries);
+    // P1 Enhancement: Exponential backoff with jitter
+    const baseDelay = (err?.retryAfter as number) || 5000;
+    const exponentialDelay = baseDelay * 2 ** state.rateLimitRetries;
+    const cappedDelay = Math.min(exponentialDelay, 60000);
+    const jitter = cappedDelay * 0.2 * (Math.random() * 2 - 1);
+    const finalDelay = Math.round(cappedDelay + jitter);
 
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => resolve(), delay);
-        state.abortSignal?.addEventListener(
-          "abort",
-          () => {
-            clearTimeout(timer);
-            reject(new Error("Aborted"));
-          },
-          { once: true },
-        );
-      });
-    } catch {
-      return { action: "abort", reason: "Aborted during rate limit wait" };
-    }
-
-    return { action: "retry" };
+    await sleep(finalDelay);
+    return "retry";
   }
 
-  // Retryable error: retry with backoff
-  if (isRetryableError(error)) {
-    if (state.retries >= state.maxRetries) {
-      return {
-        action: "abort",
-        reason: `Retry limit reached after ${state.maxRetries} attempts`,
-      };
+  // Context too long → compact once and retry (bounded).
+  if (
+    err?.status === 400 &&
+    ((err?.message as string | undefined) ?? "").match(/context_length|maximum context/)
+  ) {
+    if (state.contextLengthRetries >= state.maxContextLengthRetries) {
+      return "abort";
     }
-
-    const delay = calculateRetryDelay(error, state.retries);
-
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => resolve(), delay);
-        state.abortSignal?.addEventListener(
-          "abort",
-          () => {
-            clearTimeout(timer);
-            reject(new Error("Aborted"));
-          },
-          { once: true },
-        );
-      });
-    } catch {
-      return { action: "abort", reason: "Aborted during retry wait" };
-    }
-
-    return { action: "retry" };
+    return "compact_and_retry";
   }
 
-  // Unknown error: abort
-  return {
-    action: "abort",
-    reason: `Unknown error: ${errorMessage.slice(0, 200)}`,
-  };
-}
+  // Auth error → abort
+  if (err?.status === 401 || err?.status === 403) {
+    return "abort";
+  }
 
-/** Sleep utility with optional abort signal. */
-export async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => resolve(), ms);
-    signal?.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        reject(new Error("Aborted"));
-      },
-      { once: true },
-    );
-  });
+  // User-initiated abort (Ctrl+C / turn abort) → never retry.
+  const name = err?.name as string | undefined;
+  const msg = (err?.message as string | undefined) ?? "";
+  if (name === "AbortError" || msg === "Aborted" || msg.includes("aborted")) {
+    return "abort";
+  }
+
+  // Transient timeout / connection error → retry once (bounded).
+  if (
+    name === "TimeoutError" ||
+    name === "ETIMEDOUT" ||
+    err?.code === "ETIMEDOUT" ||
+    err?.code === "ECONNRESET" ||
+    err?.code === "ECONNREFUSED" ||
+    msg.includes("timeout") ||
+    msg.includes("socket hang up")
+  ) {
+    if (state.rateLimitRetries >= state.maxRateLimitRetries) {
+      return "abort";
+    }
+    await sleep(2000);
+    return "retry";
+  }
+
+  // Unknown error → abort
+  return "abort";
 }

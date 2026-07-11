@@ -10,7 +10,7 @@
 
 import { render } from "ink-testing-library";
 import { describe, expect, it } from "vitest";
-import { renderMarkdown } from "../markdown.js";
+import { renderMarkdown } from "../tui/markdown.js";
 import { StreamingMarkdown } from "../tui/StreamingMarkdown.js";
 
 describe("StreamingMarkdown", () => {

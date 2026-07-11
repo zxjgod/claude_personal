@@ -5,7 +5,8 @@
 import OpenAI from "openai";
 import { anthropicCaller } from "./anthropic-adapter.js";
 import { isCloudGateway, resolveGateway } from "./cloud-gateway.js";
-import { getEffort, modelSupportsReasoningEffort, openaiReasoningEffort } from "./effort.js";
+import { truncateToolResult } from "./tools/truncation.js";
+import { getEffort, modelSupportsReasoningEffort, openaiReasoningEffort } from "./tui/effort.js";
 import type { Message, ModelCaller, ModelConfig, StreamEvent, Tool } from "./types.js";
 
 // --- Provider Default Configurations ---
@@ -41,7 +42,30 @@ const PROVIDER_CONFIGS: Record<string, { baseURL: string; defaultModel: string }
   },
 };
 
+/** Exported provider defaults for use by other modules (e.g. /provider command) */
+export const PROVIDER_DEFAULTS = PROVIDER_CONFIGS;
+
 // --- Message Conversion (Internal → OpenAI) ---
+
+/**
+ * P0-1 Fix: Map tool names to their maxResultSizeChars cap so the truncation
+ * matches what the agent loop uses when formatting results. Keep in sync with
+ * the tool definitions in src/tools/. Default = DEFAULT_MAX_RESULT_CHARS.
+ */
+const TOOL_MAX_CHARS: Record<string, number | undefined> = {};
+// Resolved lazily on first use via getToolMaxChars() below.
+
+/** Get the max chars cap for a tool. Returns DEFAULT_MAX_RESULT_CHARS as fallback. */
+function getToolMaxChars(toolName: string): number {
+  // Lazy: resolve from the Tool registry on first call, then cache.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const reg = (globalThis as any).__ccr_toolRegistry;
+  if (reg) {
+    const tool = reg.findByName?.(toolName);
+    if (tool?.maxResultSizeChars) return tool.maxResultSizeChars;
+  }
+  return 30_000; // DEFAULT_MAX_RESULT_CHARS
+}
 
 function convertToOpenAIMessage(msg: Message): OpenAI.Chat.Completions.ChatCompletionMessageParam {
   switch (msg.role) {
@@ -73,12 +97,18 @@ function convertToOpenAIMessage(msg: Message): OpenAI.Chat.Completions.ChatCompl
         tool_calls: msg.tool_calls as any,
       };
 
-    case "tool":
+    case "tool": {
+      // P0-1 Fix: truncate tool result at API-call time, not in message history.
+      // The full result is preserved in messages[] for session snapshot / resume.
+      const maxChars = getToolMaxChars(msg.name ?? "");
+      const truncated = truncateToolResult(msg.content, maxChars);
+      const apiContent = truncated.truncated ? truncated.preview : msg.content;
       return {
         role: "tool",
         tool_call_id: msg.tool_call_id,
-        content: msg.content,
+        content: apiContent,
       };
+    }
 
     case "system":
       return {

@@ -15,7 +15,7 @@
 // Everything else (large, old tool results) is trimmed to head + tail.
 // ============================================================
 
-import type { Message } from "./types.js";
+import type { Message } from "../types.js";
 
 export interface SnipOptions {
   /** Messages at the tail that are never touched. Default 10. */

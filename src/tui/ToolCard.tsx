@@ -13,9 +13,9 @@
 import { Box, Text } from "ink";
 import type React from "react";
 import { useEffect, useState } from "react";
-import { parseError } from "../markdown.js";
-import { actionLabel, STATUS_GRAY, STATUS_GRAY_BRIGHT, STATUS_GREEN } from "./../spinner-core.js";
+import { parseError } from "../tui/markdown.js";
 import type { ToolExecutionResult } from "./../types.js";
+import { actionLabel, STATUS_GRAY, STATUS_GRAY_BRIGHT, STATUS_GREEN } from "./spinner-core.js";
 import { palette } from "./theme.js";
 
 const PREVIEW_LINES = 12;

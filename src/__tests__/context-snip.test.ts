@@ -3,7 +3,7 @@
 // ============================================================
 
 import { describe, expect, it } from "vitest";
-import { SNIP_MARKER, snipContext } from "../context-snip.js";
+import { SNIP_MARKER, snipContext } from "../context/context-snip.js";
 import type { Message } from "../types.js";
 
 function toolMsg(content: string, name = "grep"): Message {

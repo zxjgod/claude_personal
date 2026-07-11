@@ -9,8 +9,8 @@
 // testable. Components read snapshots via useSyncExternalStore.
 // ============================================================
 
-import type { EffortLevel } from "./../effort.js";
 import type { PermissionMode, ToolExecutionResult } from "./../types.js";
+import type { EffortLevel } from "./effort.js";
 
 export type TranscriptItem =
   | { kind: "user"; id: number; text: string }

@@ -14,15 +14,14 @@ import { agentLoop } from "./../agent-loop.js";
 import { formatCliError } from "./../cli-errors.js";
 import type { CommandContext } from "./../commands.js";
 import { handleSlashCommand } from "./../commands.js";
-import { EFFORT_DESCRIPTIONS, getEffort } from "./../effort.js";
-import { expandFileRefs } from "./../file-refs.js";
-import { InputQueue } from "./../input-queue.js";
+import { debugLogger } from "../debug-logger.js";
 import {
   applyProfile,
   loadProviderProfiles,
   type ProviderProfile,
 } from "./../provider-profiles.js";
 import { formatSpeculationLine } from "./../speculation.js";
+import { expandFileRefs } from "../tools/utils/file-refs.js";
 import type {
   AskUserFn,
   HookRunner,
@@ -36,24 +35,15 @@ import type {
 } from "./../types.js";
 import { App } from "./App.js";
 import { printBanner, renderBannerLines } from "./banner.js";
+import { EFFORT_DESCRIPTIONS, getEffort } from "./effort.js";
 import { firstUserPreview, messagesToTranscript } from "./history-replay.js";
 import type { CommandInfo } from "./InputBox.js";
+import { InputQueue } from "./input-queue.js";
 import { type ProviderPickerItem, type SessionPickerItem, TuiStore } from "./store.js";
 import { StreamBuffer } from "./stream-buffer.js";
 
 // Debug monitoring - enabled via DEBUG_STREAM env var
 const DEBUG_STREAM = process.env.DEBUG_STREAM;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let runtimeMonitor: any = null;
-
-async function ensureDebugMonitor() {
-  if (DEBUG_STREAM && DEBUG_STREAM !== "off" && !runtimeMonitor) {
-    const mod = await import("../debug-logs/runtime-monitor.js");
-    runtimeMonitor = mod.runtimeMonitor;
-    runtimeMonitor.enable(DEBUG_STREAM);
-    runtimeMonitor.info("tui", "TUI debug mode enabled", { env: DEBUG_STREAM });
-  }
-}
 
 export interface TuiDeps {
   messages: Message[];
@@ -85,8 +75,11 @@ async function runTurn(
   askUserQuestion: (q: UserQuestion) => Promise<string[] | null>,
   queue: InputQueue,
 ): Promise<void> {
-  // Initialize debug monitoring
-  await ensureDebugMonitor();
+  // Initialize debug monitoring if enabled via DEBUG_STREAM env var
+  if (DEBUG_STREAM && DEBUG_STREAM !== "off") {
+    debugLogger.enable(DEBUG_STREAM);
+    debugLogger.info("tui", "TUI debug mode enabled", { env: DEBUG_STREAM });
+  }
 
   store.setBusy(true);
   store.setSpinner("thinking");
@@ -178,7 +171,7 @@ async function runTurn(
           streamedCharsThisCall += event.delta.length;
           streamBuffer.push(event.delta);
           // Log delta for debugging
-          runtimeMonitor?.logDelta(event.delta, streamedCharsThisCall);
+          debugLogger.logDelta(event.delta, streamedCharsThisCall);
           break;
         case "tool_use": {
           streamBuffer.flush();
@@ -221,7 +214,7 @@ async function runTurn(
           streamBuffer.flush();
           store.commitStreaming();
           // Log commit for debugging
-          runtimeMonitor?.logCommit(store.getSnapshot().streamingText, streamedCharsThisCall);
+          debugLogger.logCommit(store.getSnapshot().streamingText, streamedCharsThisCall);
           // M15.2: surface speculation cost/benefit (only if prefetched anything).
           if (event.speculation) {
             const line = formatSpeculationLine(event.speculation);
@@ -242,7 +235,7 @@ async function runTurn(
     // frame after the turn ends.
     store.flush();
     // Log turn summary
-    runtimeMonitor?.info("tui", "Turn ended", {
+    debugLogger.info("tui", "Turn ended", {
       streamedChars: streamedCharsThisCall,
       committedOutputTokens,
     });

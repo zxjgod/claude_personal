@@ -11,7 +11,7 @@
 
 import * as os from "node:os";
 import chalk from "chalk";
-import { graphemes, padAligned, terminalColumns, visualWidth } from "./../terminal-width.js";
+import { graphemes, padAligned, terminalColumns, visualWidth } from "./terminal-width.js";
 
 const ORANGE = chalk.rgb(215, 119, 87);
 const ORANGE_DIM = chalk.rgb(150, 82, 60);

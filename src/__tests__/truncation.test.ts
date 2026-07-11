@@ -6,7 +6,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DEFAULT_MAX_RESULT_CHARS, SPILL_DIR, spillIfLarge } from "../tools/result-spill.js";
+import { DEFAULT_MAX_RESULT_CHARS, SPILL_DIR, spillIfLarge } from "../tools/truncation.js";
 
 describe("spillIfLarge (M30)", () => {
   let workspaceRoot: string;

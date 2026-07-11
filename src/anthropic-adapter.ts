@@ -8,8 +8,9 @@
 // ============================================================
 
 import Anthropic from "@anthropic-ai/sdk";
-import { anthropicEffort, getEffort } from "./effort.js";
 import { DYNAMIC_BOUNDARY } from "./system-prompt.js";
+import { truncateToolResult } from "./tools/truncation.js";
+import { anthropicEffort, getEffort } from "./tui/effort.js";
 import type { Message, ModelCaller, ModelConfig, StreamEvent, Tool } from "./types.js";
 
 // --- Types kept intentionally local ---
@@ -61,6 +62,17 @@ export function formatSystemForAnthropic(
 }
 
 // --- Message conversion ---
+
+/** Get the max chars cap for a tool. Returns DEFAULT_MAX_RESULT_CHARS as fallback. */
+function getToolMaxChars(toolName: string): number {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const reg = (globalThis as any).__ccr_toolRegistry;
+  if (reg) {
+    const tool = reg.findByName?.(toolName);
+    if (tool?.maxResultSizeChars) return tool.maxResultSizeChars;
+  }
+  return 30_000;
+}
 
 export function convertMessagesToAnthropic(messages: Message[]): AnthropicMessage[] {
   const out: AnthropicMessage[] = [];
@@ -138,7 +150,12 @@ export function convertMessagesToAnthropic(messages: Message[]): AnthropicMessag
         break;
       }
 
-      case "tool":
+      case "tool": {
+        // P0-1 Fix: truncate tool result at API-call time, not in message history.
+        // The full result is preserved in messages[] for session snapshot / resume.
+        const maxChars = getToolMaxChars(msg.name ?? "");
+        const truncated = truncateToolResult(msg.content, maxChars);
+        const apiContent = truncated.truncated ? truncated.preview : msg.content;
         // Anthropic requires tool results in a user message.
         out.push({
           role: "user",
@@ -146,11 +163,12 @@ export function convertMessagesToAnthropic(messages: Message[]): AnthropicMessag
             {
               type: "tool_result",
               tool_use_id: msg.tool_call_id,
-              content: msg.content,
+              content: apiContent,
             },
           ],
         });
         break;
+      }
     }
   }
 

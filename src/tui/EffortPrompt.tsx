@@ -10,9 +10,9 @@
 
 import { Box, Text, useInput } from "ink";
 import { useEffect, useRef, useState } from "react";
-import { terminalColumns } from "./../terminal-width.js";
 import { buildEffortFrame, ORDER } from "./effort-fx.js";
 import type { Overlay } from "./store.js";
+import { terminalColumns } from "./terminal-width.js";
 
 // Frames of fade-in diffusion when switching INTO ultracode. Larger = the
 // initial circle grows out from ▲ more slowly before the ripples take over.

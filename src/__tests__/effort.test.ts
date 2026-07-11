@@ -16,7 +16,7 @@ import {
   parseEffort,
   rainbowColors,
   renderEffortSlider,
-} from "../effort.js";
+} from "../tui/effort.js";
 
 describe("effort tiers", () => {
   it("exposes the low→max gradient plus ultracode", () => {

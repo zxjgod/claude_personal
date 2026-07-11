@@ -7,7 +7,7 @@
 // ============================================================
 
 import type { PersistenceManager } from "../persistence.js";
-import type { SessionStats } from "../session-stats.js";
+import type { SessionStats } from "../tui/session-stats.js";
 import type { Message, ModelCaller, ModelConfig, Tool } from "../types.js";
 
 /** Source label for a tool listed by /tools. */
@@ -44,7 +44,7 @@ export interface CommandContext {
   /** Number of connected MCP servers (for /status). */
   mcpServerCount?: number;
   /** MCP manager for /mcp (server/tool/auth status). */
-  mcpManager?: import("../mcp.js").MCPManager;
+  mcpManager?: import("../mcp/index.js").MCPManager;
   /** Hook registry for /hooks (list registered PreToolUse/PostToolUse). */
   hooks?: import("../hooks.js").HookRegistry;
   /**

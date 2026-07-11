@@ -14,8 +14,8 @@ import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { WebSocketClientTransport } from "@modelcontextprotocol/sdk/client/websocket.js";
-import { FileTokenOAuthProvider, type MCPOAuthConfig } from "./mcp-auth.js";
-import type { PermissionResult, Tool, ToolContext, ToolResult } from "./types.js";
+import type { PermissionResult, Tool, ToolContext, ToolResult } from "../types.js";
+import { FileTokenOAuthProvider, type MCPOAuthConfig } from "./auth.js";
 
 // --- Timeout helper ---
 //

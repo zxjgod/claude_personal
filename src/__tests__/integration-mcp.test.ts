@@ -20,8 +20,8 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { MCPServerConfig } from "../mcp.js";
-import { MCPManager } from "../mcp.js";
+import type { MCPServerConfig } from "../mcp/index.js";
+import { MCPManager } from "../mcp/index.js";
 import type { ToolContext } from "../types.js";
 
 const STDIO_FIXTURE = fileURLToPath(

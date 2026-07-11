@@ -32,11 +32,14 @@ describe("buildToolBatchDigest", () => {
     expect(digest.entries[0]!.snippet.endsWith("…")).toBe(true);
   });
 
-  it("prefers modelContent over formatted (the model-facing copy)", () => {
-    const r = result({ formatted: "FULL".repeat(100), modelContent: "small" });
+  it("uses formatted directly (truncation moved to adapters, P0-1 fix)", () => {
+    // P0-1 Fix: modelText() now returns formatted directly. Truncation happens
+    // in the adapters at API-call time, not in the agent loop.
+    // "FULL".repeat(100) = 400 bytes (4 chars × 100).
+    const r = result({ formatted: "FULL".repeat(100) });
     const digest = buildToolBatchDigest([r]);
-    expect(digest.entries[0]!.bytes).toBe(5);
-    expect(digest.entries[0]!.snippet).toBe("small");
+    expect(digest.entries[0]!.bytes).toBe(400);
+    expect(digest.entries[0]!.snippet).toBe("FULL".repeat(100));
   });
 
   it("flags errors", () => {

@@ -1,6 +1,6 @@
 // /compact — summarize and compress the conversation now
 import chalk from "chalk";
-import { autoCompact } from "../agent-loop.js";
+import { autoCompact } from "../auto-compact.js";
 import { resetSystemPromptCache } from "../system-prompt.js";
 import type { SlashCommand } from "./types.js";
 

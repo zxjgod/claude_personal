@@ -3,7 +3,7 @@
 // ============================================================
 
 import { describe, expect, it } from "vitest";
-import { InputQueue } from "../input-queue.js";
+import { InputQueue } from "../tui/input-queue.js";
 
 describe("InputQueue", () => {
   it("starts empty", () => {
