@@ -39,6 +39,23 @@ export function isContextLengthError(error: unknown): boolean {
 }
 
 /**
+ * Whether a model error is worth retrying on a DIFFERENT model (fallback chain).
+ * Auth (401/403) and rate-limit (429) are account-level, and user aborts must
+ * never fall through to another model — switching wouldn't help or would be
+ * wrong. Everything else (5xx, 404 model-not-found, 400 non-context, connection
+ * errors) is model-specific enough that a fallback model may succeed.
+ */
+export function isFallbackableModelError(error: unknown): boolean {
+  const err = error as { status?: number; name?: string; message?: string } | null;
+  const status = err?.status;
+  if (status === 401 || status === 403 || status === 429) return false;
+  const name = err?.name ?? "";
+  const msg = err?.message ?? "";
+  if (name === "AbortError" || msg === "Aborted" || msg.includes("aborted")) return false;
+  return true;
+}
+
+/**
  * Main error recovery decision function.
  * Returns the recovery action to take based on error type and state.
  */

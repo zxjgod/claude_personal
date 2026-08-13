@@ -12,7 +12,6 @@ import {
   EnterWorktreeTool,
   ExitWorktreeTool,
   listScheduledJobs,
-  PowerShellTool,
   resetScheduledJobs,
   resetWorktrees,
   ScheduleCronTool,
@@ -221,23 +220,6 @@ describe("Sleep", () => {
 });
 
 // --- 14.4 PowerShell -------------------------------------------------------
-
-describe("PowerShellTool", () => {
-  it("is disabled off Windows", async () => {
-    if (process.platform === "win32") return;
-    const enabled = PowerShellTool.isEnabled();
-    expect(enabled).toBe(false);
-    const r = await PowerShellTool.call({ command: "Get-Date", description: "now" }, ctx());
-    expect(r.error).toContain("Windows");
-  });
-
-  it("runs a simple command on Windows", async () => {
-    if (process.platform !== "win32") return;
-    const r = await PowerShellTool.call(
-      { command: "Write-Output hello", description: "echo" },
-      ctx(),
-    );
-    expect(r.error).toBeUndefined();
-    expect(r.content).toContain("hello");
-  });
-});
+// PowerShellTool now lives in src/tools/core/powershell.ts (read-only detection
+// + danger patterns + process-tree-kill); its read-only heuristic is covered in
+// tools.test.ts. The execution path itself is exercised only on Windows.

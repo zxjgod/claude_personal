@@ -4,6 +4,7 @@
 // Handles tool call grouping, early execution, and result formatting.
 // ============================================================
 
+import { logToolExecution } from "./audit-log.js";
 import { checkPermission } from "./permissions.js";
 import type { SpeculationCache } from "./speculation.js";
 import type { StreamingToolExecutor } from "./streaming-tool-executor.js";
@@ -191,6 +192,21 @@ export async function executeSingleTool(
       askUser,
       classifier: context.permissionClassifier,
     });
+
+    // Auto mode: the interactive prompt is replaced by a background safety
+    // check, so every destructive decision must leave an audit trail for later
+    // review. Fire-and-forget — a log write failure never blocks the turn.
+    if (context.permissionMode === "auto" && !tool.isReadOnly(input)) {
+      void logToolExecution({
+        toolName: tool.name,
+        workspaceRoot: context.workspaceRoot,
+        userConfirmed: false,
+        outcome: permission.allowed ? "success" : "denied",
+        sessionId: context.sessionId,
+        metadata: { mode: "auto", reason: permission.reason },
+      }).catch(() => {});
+    }
+
     if (!permission.allowed) {
       const reason = permission.reason ?? "denied by permission policy";
       return {

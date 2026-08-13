@@ -113,3 +113,55 @@ export function bashCommandIsReadOnly(command: string | undefined): boolean {
   }
   return true;
 }
+
+/**
+ * Decide whether a PowerShell command is read-only. FAR more conservative than
+ * the bash heuristic — PowerShell's aliases, `&` call operator, `.` dot-sourcing,
+ * and object pipelines make static analysis treacherous, so only a small set of
+ * clearly-read-only `Get-*`/`Test-*` cmdlets (plus safe aliases) is trusted.
+ * Anything with `|` (pipeline could run a mutating cmdlet), redirection, `$(...)`,
+ * backticks, or `&`/`.` invocation is treated as mutating.
+ */
+export function powershellCommandIsReadOnly(command: string | undefined): boolean {
+  if (typeof command !== "string") return false;
+  const cmd = command.trim();
+  if (!cmd) return false;
+
+  // Shell features that can write or hide side effects → not read-only.
+  if (/[`]|\$\(|>>|>|<\(|&\b|;\b|\n|\r/.test(cmd)) return false;
+
+  const segments = cmd.split(/\|/g);
+  const READONLY_PREFIXES = [
+    "get-",
+    "test-",
+    "where-object",
+    "select-object",
+    "sort-object",
+    "group-object",
+    "measure-object",
+    "compare-object",
+    "format-",
+    "convertto-json",
+    "convertfrom-json",
+    "out-string",
+    "resolve-path",
+    "split-path",
+    "join-path",
+    "write-output",
+    "write-host",
+    "write-verbose",
+    "echo",
+  ];
+  const READONLY_ALIASES = new Set(["cat", "gc", "ls", "dir", "pwd", "gl", "gci", "type"]);
+
+  for (const seg of segments) {
+    const trimmed = seg.trim();
+    if (!trimmed) continue;
+    const tokens = trimmed.split(/\s+/);
+    const leader = (tokens[0] ?? "").toLowerCase();
+    if (!leader) return false;
+    if (READONLY_ALIASES.has(leader)) continue;
+    if (!READONLY_PREFIXES.some((p) => leader.startsWith(p))) return false;
+  }
+  return true;
+}

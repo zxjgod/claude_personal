@@ -9,7 +9,11 @@
 
 import { autoCompact, latestUserText } from "./auto-compact.js";
 import { CollapseStore, prepareCheapLayers } from "./context-pipeline.js";
-import { handleModelError, isContextLengthError } from "./error-recovery.js";
+import {
+  handleModelError,
+  isContextLengthError,
+  isFallbackableModelError,
+} from "./error-recovery.js";
 import {
   buildContinuationNudge,
   checkTokenBudget,
@@ -62,6 +66,11 @@ interface LoopState {
    * Token accounting baseline from the last model call (M31, kernel §6).
    */
   usageBaseline?: { promptTokens: number; messageCount: number };
+  /**
+   * Index into modelConfig.fallbackModels. Monotonically advances as the loop
+   * degrades through the fallback chain; 0 = still on the primary model.
+   */
+  fallbackIndex: number;
   /**
    * Output-token accounting for the turn-output budget (M32, kernel §7).
    */
@@ -126,6 +135,7 @@ export async function* agentLoop(
     transition: { reason: "start" },
     budget: createTokenBudgetState(),
     stopHookActive: false,
+    fallbackIndex: 0,
   };
 
   const budgetConfig = { ...DEFAULT_TOKEN_BUDGET, maxOutputTokens: turnOutputBudget };
@@ -308,6 +318,26 @@ export async function* agentLoop(
               }
               break;
             }
+
+            // Fallback model chain (Phase 1.2): when the primary model fails with
+            // a model-specific error (5xx / 404 / unknown — NOT auth/rate-limit/
+            // abort), degrade to the next configured fallback model and retry.
+            // Monotonic: each fallback is tried at most once per session.
+            const fallbacks = modelConfig.fallbackModels ?? [];
+            if (
+              recovery === "abort" &&
+              state.fallbackIndex < fallbacks.length &&
+              isFallbackableModelError(event.error)
+            ) {
+              const next = fallbacks[state.fallbackIndex]!;
+              state = { ...state, fallbackIndex: state.fallbackIndex + 1 };
+              modelConfig = { ...modelConfig, model: next };
+              yield { type: "compacted", summary: `Switched to fallback model: ${next}` };
+              nextAction = "retry";
+              streamEnded = true;
+              break;
+            }
+
             nextAction = "abort";
             abortError = event.error;
             streamEnded = true;

@@ -201,7 +201,7 @@ export interface SubAgentProgress {
   results?: ToolExecutionResult[];
 }
 
-export type PermissionMode = "default" | "acceptEdits" | "bypassPermissions" | "plan";
+export type PermissionMode = "default" | "acceptEdits" | "bypassPermissions" | "plan" | "auto";
 
 /**
  * Why a permission decision was reached (kernel §4 decisionReason union).
@@ -225,6 +225,12 @@ export interface ClassifierResult {
   block: boolean;
   reason?: string;
   unavailable?: boolean;
+  /**
+   * The raw classifier verdict (BLOCK / CONFIRM / ALLOW), when it parsed. Auto
+   * mode needs this to distinguish CONFIRM ("human should decide" — no human in
+   * auto mode, so deny) from ALLOW ("benign over-flag" — safe to proceed).
+   */
+  verdict?: "BLOCK" | "CONFIRM" | "ALLOW";
 }
 
 /**
@@ -335,6 +341,13 @@ export interface ModelConfig {
   maxTokens?: number;
   temperature?: number;
   options?: Record<string, unknown>;
+  /**
+   * Optional fallback model chain (same provider, different model names). When
+   * the primary model fails with a model-specific error (5xx / 404 / unknown),
+   * the loop switches to the next entry and retries, up to the chain's length.
+   * Populated from LLM_FALLBACK_MODELS (comma-separated).
+   */
+  fallbackModels?: string[];
 }
 
 // --- Stream Events ---

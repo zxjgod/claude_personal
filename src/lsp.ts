@@ -28,6 +28,12 @@ export interface Diagnostic {
   message: string;
 }
 
+export interface CompletionItem {
+  name: string;
+  kind: string;
+  insertText?: string;
+}
+
 /** Re-export the old pure helpers so existing callers/tests keep working. */
 export { filterByFile, formatDiagnostics, parseTscOutput } from "./lsp-legacy.js";
 
@@ -150,6 +156,49 @@ export class LspClient {
     const out: Diagnostic[] = [];
     for (const d of [...asDiags(syntactic), ...asDiags(semantic)]) {
       out.push(toDiagnostic(abs, d));
+    }
+    return out;
+  }
+
+  /**
+   * Fetch code completions at a cursor position. tsserver's `completionInfo`
+   * request takes 1-based `line` and 1-based `offset` (column), matching the
+   * Diagnostic coordinate convention. Returns up to 50 items.
+   */
+  async getCompletions(
+    filePath: string,
+    line: number,
+    column: number,
+    timeoutMs = 15000,
+  ): Promise<CompletionItem[]> {
+    await this.ensureInitialized();
+    const abs = path.isAbsolute(filePath) ? filePath : path.resolve(this.rootPath, filePath);
+    const text = fs.existsSync(abs) ? fs.readFileSync(abs, "utf-8") : "";
+    const scriptKindName = abs.endsWith(".tsx") ? "TSX" : abs.endsWith(".ts") ? "TS" : "JS";
+
+    await this.request("open", { file: abs, fileContent: text, scriptKindName }).catch(
+      () => undefined,
+    );
+
+    const body = await this.request("completionInfo", {
+      file: abs,
+      line,
+      offset: column,
+      includeExternalModuleExports: true,
+      includeInsertTextCompletions: true,
+    });
+
+    const entries = (body as { entries?: unknown[] })?.entries ?? [];
+    const out: CompletionItem[] = [];
+    for (const e of entries) {
+      if (out.length >= 50) break;
+      const entry = e as { name?: string; kind?: string; insertText?: string } | null;
+      if (!entry || typeof entry.name !== "string") continue;
+      out.push({
+        name: entry.name,
+        kind: entry.kind ?? "",
+        insertText: typeof entry.insertText === "string" ? entry.insertText : undefined,
+      });
     }
     return out;
   }

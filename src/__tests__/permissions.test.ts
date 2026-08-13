@@ -17,7 +17,7 @@ import type {
 const WORKSPACE = "/home/user/project";
 
 function makeContext(
-  mode: "default" | "acceptEdits" | "bypassPermissions" | "plan" = "default",
+  mode: "default" | "acceptEdits" | "bypassPermissions" | "plan" | "auto" = "default",
 ): ToolContext {
   return {
     workspaceRoot: WORKSPACE,
@@ -303,11 +303,63 @@ function makeTextCaller(text: string): ModelCaller {
   };
 }
 
+describe("checkPermission auto mode", () => {
+  const bashTool = createTool({
+    name: "bash",
+    description: "Bash",
+    promptDescription: "Run shell",
+    inputSchema: { type: "object", properties: {}, required: [] },
+    isReadOnly: () => false,
+    isConcurrencySafe: false,
+    call: async () => ({ content: "" }),
+  });
+
+  const classifierFor = (text: string) => ({
+    callModel: makeTextCaller(text),
+    modelConfig: classifierConfig,
+    timeoutMs: 1000,
+  });
+
+  it("allows a dangerous command when the classifier says ALLOW", async () => {
+    const res = await checkPermission(
+      bashTool,
+      { command: "rm -rf node_modules" },
+      makeContext("auto"),
+      {
+        askUser: alwaysDeny, // must NOT be consulted in auto mode
+        classifier: classifierFor("ALLOW|routine clean"),
+      },
+    );
+    expect(res.allowed).toBe(true);
+  });
+
+  it("denies a dangerous command on CONFIRM (no human to confirm in auto mode)", async () => {
+    const res = await checkPermission(
+      bashTool,
+      { command: "rm -rf ./build" },
+      makeContext("auto"),
+      {
+        askUser: alwaysAllow,
+        classifier: classifierFor("CONFIRM|deletes the build directory"),
+      },
+    );
+    expect(res.allowed).toBe(false);
+  });
+
+  it("denies a dangerous command when no classifier is available (fail-safe)", async () => {
+    const res = await checkPermission(bashTool, { command: "rm -rf /" }, makeContext("auto"), {
+      askUser: alwaysAllow,
+    });
+    expect(res.allowed).toBe(false);
+  });
+});
+
 describe("parseClassifierVerdict", () => {
   it("parses BLOCK with a reason", () => {
     expect(parseClassifierVerdict("BLOCK|wipes the workspace root")).toEqual({
       block: true,
       reason: "wipes the workspace root",
+      verdict: "BLOCK",
     });
   });
 
@@ -315,6 +367,7 @@ describe("parseClassifierVerdict", () => {
     expect(parseClassifierVerdict("CONFIRM|deletes ./build recursively")).toEqual({
       block: false,
       reason: "deletes ./build recursively",
+      verdict: "CONFIRM",
     });
   });
 
@@ -322,6 +375,7 @@ describe("parseClassifierVerdict", () => {
     expect(parseClassifierVerdict("ALLOW|routine node_modules clean")).toEqual({
       block: false,
       reason: undefined,
+      verdict: "ALLOW",
     });
   });
 
@@ -329,6 +383,7 @@ describe("parseClassifierVerdict", () => {
     expect(parseClassifierVerdict("  block | danger  ")).toEqual({
       block: true,
       reason: "danger",
+      verdict: "BLOCK",
     });
   });
 
@@ -343,6 +398,7 @@ describe("parseClassifierVerdict", () => {
     expect(parseClassifierVerdict("Looking at the command...\nBLOCK|rm -rf /")).toEqual({
       block: true,
       reason: "rm -rf /",
+      verdict: "BLOCK",
     });
   });
 });

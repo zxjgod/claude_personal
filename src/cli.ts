@@ -200,6 +200,7 @@ Options:
   --no-tui                   Force the line-based REPL (skip the Ink TUI)
   --no-speculation           Disable speculative prefetch
   --llm-perm-classifier      Use the LLM permission-risk classifier
+  --safe-mode                Read-only session (force plan mode)
 
 Configuration:
   .env                       LLM_PROVIDER, LLM_API_KEY, LLM_MODEL, LLM_BASE_URL
@@ -236,7 +237,7 @@ function loadConfig(): ModelConfig {
     return {} as ModelConfig;
   }
 
-  return resolveProviderConfig({
+  const config = resolveProviderConfig({
     provider,
     apiKey,
     model: process.env.LLM_MODEL || undefined,
@@ -253,6 +254,16 @@ function loadConfig(): ModelConfig {
         }
       : undefined,
   });
+
+  // Fallback model chain (same provider): LLM_FALLBACK_MODELS="a,b,c".
+  const fallbackModels = (process.env.LLM_FALLBACK_MODELS || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (fallbackModels.length > 0) {
+    config.fallbackModels = fallbackModels;
+  }
+  return config;
 }
 
 // --- Workspace ---
@@ -266,9 +277,14 @@ const VALID_PERMISSION_MODES: PermissionMode[] = [
   "acceptEdits",
   "bypassPermissions",
   "plan",
+  "auto",
 ];
 
 function getPermissionMode(): PermissionMode {
+  // --safe-mode: force a read-only (plan) session regardless of env/config.
+  if (process.argv.includes("--safe-mode")) {
+    return "plan";
+  }
   const mode = process.env.PERMISSION_MODE as PermissionMode | undefined;
   if (mode && VALID_PERMISSION_MODES.includes(mode)) {
     return mode;
@@ -321,7 +337,7 @@ async function main() {
   // (which would otherwise fail deep inside the agent loop). Also makes the
   // no-key path deterministic for the smoke test.
   if (!modelConfig.provider) return;
-  const workspaceRoot = getWorkspaceRoot();
+  let workspaceRoot = getWorkspaceRoot();
   let permissionMode = getPermissionMode();
   const permissionModeState = {
     get: () => permissionMode,
@@ -329,7 +345,7 @@ async function main() {
       permissionMode = mode;
     },
   };
-  const claudeMdContent = loadClaudeMd(workspaceRoot);
+  let claudeMdContent = loadClaudeMd(workspaceRoot);
 
   if (verbose) {
     console.log(`Provider: ${modelConfig.provider}`);
@@ -505,11 +521,33 @@ async function main() {
 
   // 12.4: a compact git snapshot (branch / dirty files / recent commits) is
   // gathered once at startup and injected into the dynamic suffix. Read-only,
-  // best-effort — null in non-git dirs.
-  const gitSnapshot = await (async () => {
+  // best-effort — null in non-git dirs. Mutable so /cd re-gathers it.
+  let gitSnapshot = await (async () => {
     const ctx = await gatherGitContext(workspaceRoot);
     return ctx ? formatGitContext(ctx) : undefined;
   })();
+
+  // /cd support: move the session to a new directory mid-conversation. Updates
+  // the workspace root + CLAUDE.md + git snapshot; the system-prompt env section
+  // recomputes each turn, so it picks up the new root on the next turn.
+  const setWorkspaceRoot = (next: string): boolean => {
+    try {
+      if (!fs.statSync(next).isDirectory()) return false;
+    } catch {
+      return false;
+    }
+    workspaceRoot = next;
+    claudeMdContent = loadClaudeMd(next);
+    // Re-gather git context in the background (best-effort; may lag a turn).
+    gatherGitContext(next)
+      .then((ctx) => {
+        gitSnapshot = ctx ? formatGitContext(ctx) : undefined;
+      })
+      .catch(() => {
+        gitSnapshot = undefined;
+      });
+    return true;
+  };
 
   // Build the full turn system prompt from the live goal + output-style
   // holders. buildSystemPrompt memoizes its static sections (the output-style
@@ -593,15 +631,20 @@ async function main() {
   // the regex reason) on any API/timeout/unavailable error.
   const llmPermClassifierEnabled =
     process.argv.includes("--llm-perm-classifier") || process.env.CCR_PERM_CLASSIFIER === "1";
-  const permissionClassifier: PermissionClassifier | undefined = llmPermClassifierEnabled
-    ? {
-        callModel,
-        modelConfig,
-        // Bound classifier latency so a slow/hung provider can't stall the
-        // approval flow; on timeout we defer to the regex reason.
-        timeoutMs: 4000,
-      }
-    : undefined;
+  // Auto mode needs the LLM classifier as its background safety check, so
+  // starting in auto mode implies the classifier is on. (Switching to auto at
+  // runtime without the flag still works — but conservatively denies anything
+  // the classifier can't clear, since no classifier is available.)
+  const permissionClassifier: PermissionClassifier | undefined =
+    llmPermClassifierEnabled || permissionMode === "auto"
+      ? {
+          callModel,
+          modelConfig,
+          // Bound classifier latency so a slow/hung provider can't stall the
+          // approval flow; on timeout we defer to the regex reason.
+          timeoutMs: 4000,
+        }
+      : undefined;
 
   // --- Conversation ---
 
@@ -682,6 +725,7 @@ async function main() {
     modelConfig,
     callModel,
     workspaceRoot,
+    setWorkspaceRoot,
     sessionId: sessionId!,
     persistence,
     ui: uiState,
@@ -727,6 +771,7 @@ async function main() {
       modelConfig,
       systemPrompt,
       workspaceRoot,
+      getWorkspaceRoot: () => workspaceRoot,
       sessionId: sessionId!,
       permissionMode,
       commands: COMMANDS.map((c) => ({ name: c.name, description: c.description })),
@@ -1195,6 +1240,12 @@ async function main() {
       await disposeAllLspClients();
     } catch {
       /* LSP teardown is best-effort */
+    }
+    try {
+      const { disposeAllReplSessions } = await import("./tools/extended/repl.js");
+      disposeAllReplSessions();
+    } catch {
+      /* REPL teardown is best-effort */
     }
   }
 

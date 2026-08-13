@@ -12,6 +12,7 @@ import {
   EditTool,
   GlobTool,
   GrepTool,
+  powershellCommandIsReadOnly,
   ReadTool,
   WriteTool,
 } from "../tools/index.js";
@@ -327,6 +328,25 @@ describe("bashCommandIsReadOnly (M29)", () => {
     expect(bashCommandIsReadOnly("ls\nrm -rf /")).toBe(false);
     expect(bashCommandIsReadOnly("ls\rrm -rf /")).toBe(false);
     expect(bashCommandIsReadOnly("cat a.txt\n\necho done")).toBe(false);
+  });
+});
+
+describe("powershellCommandIsReadOnly", () => {
+  it("accepts clearly read-only PowerShell cmdlets", () => {
+    expect(powershellCommandIsReadOnly("Get-ChildItem")).toBe(true);
+    expect(powershellCommandIsReadOnly("Get-Content foo.txt")).toBe(true);
+    expect(powershellCommandIsReadOnly("Test-Path x")).toBe(true);
+    expect(powershellCommandIsReadOnly("pwd")).toBe(true);
+    expect(powershellCommandIsReadOnly("Get-ChildItem | Where-Object Name -eq 'a'")).toBe(true);
+  });
+
+  it("rejects mutating cmdlets and shell features", () => {
+    expect(powershellCommandIsReadOnly("Remove-Item foo")).toBe(false);
+    expect(powershellCommandIsReadOnly("Set-Content foo bar")).toBe(false);
+    expect(powershellCommandIsReadOnly("New-Item foo")).toBe(false);
+    expect(powershellCommandIsReadOnly("Get-Content foo > out.txt")).toBe(false);
+    expect(powershellCommandIsReadOnly("Invoke-Expression 'x'")).toBe(false);
+    expect(powershellCommandIsReadOnly("")).toBe(false);
   });
 });
 

@@ -60,6 +60,9 @@ export interface CommandContext {
    * holder so a command can read and write the same reference the REPL reads.
    */
   goal?: { value: string };
+  /** Change the workspace root mid-session (for /cd). Returns false if the path
+   *  is not a directory. */
+  setWorkspaceRoot?: (path: string) => boolean;
   /** Editor input mode (for /vim). Toggled between "default" and "vim". */
   editorMode?: { value: "default" | "vim" };
   /**

@@ -9,6 +9,7 @@
 import { agentsCommand } from "./agents.js";
 // M18 new commands
 import { branchCommand } from "./branch.js";
+import { cdCommand } from "./cd.js";
 import { clearCommand } from "./clear.js";
 import { commitCommand } from "./commit.js";
 import { compactCommand } from "./compact.js";
@@ -49,6 +50,7 @@ import { tokensCommand } from "./tokens.js";
 import { toolsCommand } from "./tools.js";
 import type { SlashCommand } from "./types.js";
 import { vimCommand } from "./vim.js";
+import { workflowsCommand } from "./workflows.js";
 
 /** All built-in slash commands, in display order. */
 export const COMMANDS: SlashCommand[] = [
@@ -63,6 +65,7 @@ export const COMMANDS: SlashCommand[] = [
   permissionsCommand,
   modeCommand,
   statusCommand,
+  cdCommand,
   costCommand,
   toolsCommand,
   contextCommand,
@@ -93,6 +96,7 @@ export const COMMANDS: SlashCommand[] = [
   goalCommand,
   vimCommand,
   outputStyleCommand,
+  workflowsCommand,
 ];
 
 // /help iterates COMMANDS at run time; bind it now that the array exists.

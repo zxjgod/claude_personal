@@ -245,6 +245,53 @@ export const LspDiagnosticsTool: Tool = buildTool({
 });
 
 // ============================================================
+// 8.4b LSP completions — code completion via the live tsserver
+// ============================================================
+
+const LspCompletionsSchema = z.strictObject({
+  filePath: z.string().describe("File to request completions for"),
+  line: z.number().int().describe("1-based line number of the cursor"),
+  column: z.number().int().describe("1-based column (character offset) of the cursor"),
+});
+
+export const LspCompletionsTool: Tool = buildTool({
+  name: "lsp_completions",
+  description: "Get TypeScript code completions at a cursor position",
+  promptDescription:
+    "Request code completions at a specific cursor position from the live " +
+    "tsserver. filePath is the file; line and column are 1-based. Returns up to " +
+    "50 completion names (with kind and insertText). Requires a tsconfig.json.",
+  schema: LspCompletionsSchema,
+  isReadOnly: true,
+  isConcurrencySafe: true,
+
+  async call(input, context): Promise<ToolResult> {
+    const cwd = context.workspaceRoot;
+    if (!fs.existsSync(`${cwd}/tsconfig.json`)) {
+      return {
+        content: "",
+        error: "No tsconfig.json in workspace — lsp_completions needs a TypeScript project.",
+      };
+    }
+    const client = getLspClient(cwd);
+    if (!client) {
+      return { content: "", error: "tsserver unavailable — cannot fetch completions." };
+    }
+    try {
+      const items = await client.getCompletions(input.filePath, input.line, input.column);
+      if (items.length === 0) return { content: "No completions." };
+      const lines = items.map(
+        (i) =>
+          `- ${i.name}${i.kind ? ` [${i.kind}]` : ""}${i.insertText ? ` → ${i.insertText}` : ""}`,
+      );
+      return { content: `Completions (${items.length}):\n${lines.join("\n")}` };
+    } catch (e: any) {
+      return { content: "", error: `Completion failed: ${e?.message ?? e}` };
+    }
+  },
+});
+
+// ============================================================
 // 8.5 ToolSearch — discover tools by description (factory)
 // ============================================================
 // ToolSearch needs the live tool list, so it's built via a factory that the

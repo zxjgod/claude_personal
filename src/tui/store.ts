@@ -157,6 +157,7 @@ export const PERMISSION_MODE_CYCLE: PermissionMode[] = [
   "acceptEdits",
   "bypassPermissions",
   "plan",
+  "auto",
 ];
 
 export function nextPermissionMode(current: PermissionMode): PermissionMode {

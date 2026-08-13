@@ -1,5 +1,5 @@
 // ============================================================
-// M14 Tools — Worktree, Skill, Cron/Sleep, PowerShell
+// M14 Tools — Worktree, Skill, Cron/Sleep
 // ============================================================
 // Breadth tools added in milestone M14. Kept in a separate file so
 // tools.ts stays focused on the core file/shell tools.
@@ -11,7 +11,9 @@
 //        surface its prompt to the model.
 //   14.3 ScheduleCron / Sleep — register cron-scheduled prompts and a
 //        one-shot delay. Session-scoped unless durable.
-//   14.4 PowerShell — Windows-only explicit PowerShell execution path.
+//
+//   (PowerShell moved to src/tools/core/powershell.ts — a fuller tool with
+//    read-only detection, danger patterns, and process-tree-kill.)
 //
 // Worktree / cron are potentially destructive or long-running; they
 // require interactive approval in default mode (createTool derives
@@ -443,56 +445,6 @@ export const SleepTool: Tool = buildTool({
 });
 
 // ============================================================
-// 14.4 PowerShell — Windows-only explicit shell
-// ============================================================
-
-const PowerShellSchema = z.strictObject({
-  command: z.string().describe("PowerShell command or script"),
-  description: z.string().describe("What the command does"),
-  timeout: z.number().optional().describe("Max runtime in ms (default 120000)"),
-});
-
-export const PowerShellTool: Tool = buildTool({
-  name: "powershell",
-  description: "Run a PowerShell command (Windows only)",
-  promptDescription:
-    "Execute a PowerShell command on Windows when bash semantics won't do " +
-    "(e.g. Windows-specific cmdlets, registry, COM objects). Disabled off " +
-    "Windows. Provide a description of what the command does. Returns stdout " +
-    "and exit code; non-zero exit is surfaced as an error.",
-  schema: PowerShellSchema,
-  isReadOnly: false,
-  isConcurrencySafe: false,
-
-  async call(input): Promise<ToolResult> {
-    if (process.platform !== "win32") {
-      return { content: "", error: "PowerShell tool is only available on Windows." };
-    }
-    const timeout = Math.min(input.timeout ?? 120_000, 600_000);
-    const bin = "powershell.exe";
-    try {
-      const { stdout, stderr } = await execFileAsync(
-        bin,
-        ["-NoProfile", "-NonInteractive", "-Command", input.command],
-        { timeout, windowsHide: true, maxBuffer: 10 * 1024 * 1024 },
-      );
-      const out = (stdout + (stderr ? "\n[stderr]\n" + stderr : "")).trimEnd();
-      return { content: out || "(no output)", metadata: { exitCode: 0 } };
-    } catch (error: any) {
-      const code = error.code ?? 1;
-      const out = (error.stdout ?? "") + (error.stderr ? "\n[stderr]\n" + error.stderr : "");
-      return {
-        content: out.trimEnd() || "(no output)",
-        error: `PowerShell exited with code ${code}`,
-        metadata: { exitCode: code },
-      };
-    }
-  },
-});
-
-PowerShellTool.isEnabled = () => process.platform === "win32";
-
-// ============================================================
 // Exports bundle
 // ============================================================
 
@@ -502,5 +454,4 @@ export const M14_TOOLS: Tool[] = [
   SkillTool,
   ScheduleCronTool,
   SleepTool,
-  PowerShellTool,
 ];

@@ -60,6 +60,30 @@ export function checkDangerousPattern(
     }
   }
 
+  // PowerShell-specific dangerous patterns (Windows shell). Kept tight: the
+  // destructive equivalents of the bash checks below.
+  if (toolName === "powershell" && input.command && typeof input.command === "string") {
+    const cmd = input.command as string;
+    if (/\bRemove-Item\b[^|;]*\s+-Recurse/i.test(cmd) || /\brm\s+[^|;]*-r/i.test(cmd)) {
+      return { dangerous: true, reason: "Recursive delete (Remove-Item -Recurse / rm -r)" };
+    }
+    if (/\bInvoke-Expression\b|\biex\b/i.test(cmd)) {
+      return { dangerous: true, reason: "Invoke-Expression — executes arbitrary code" };
+    }
+    if (/\bSet-ExecutionPolicy\b/i.test(cmd)) {
+      return { dangerous: true, reason: "Set-ExecutionPolicy — changes script execution policy" };
+    }
+    if (/\bStart-Process\b[^|;]*\s+-Verb\s+RunAs|\bsudo\b/i.test(cmd)) {
+      return { dangerous: true, reason: "Privilege escalation (Start-Process -Verb RunAs / sudo)" };
+    }
+    if (/(curl|wget|iwr|Invoke-WebRequest)[^|;]*\|[^|;]*(iex|Invoke-Expression)/i.test(cmd)) {
+      return { dangerous: true, reason: "Pipe downloaded content to a shell (code execution)" };
+    }
+    if (/\bwhile\s*\(\s*\$?true\s*\)/i.test(cmd) || /\bfor\s*\(\s*;\s*;\s*\)/i.test(cmd)) {
+      return { dangerous: true, reason: "Command may run forever (blocking the agent loop)" };
+    }
+  }
+
   // Bash-specific dangerous patterns
   if (toolName === "bash" && input.command && typeof input.command === "string") {
     const cmd = input.command as string;
@@ -230,9 +254,13 @@ export function parseClassifierVerdict(text: string): ClassifierResult {
   }
   const verdict = m[1]!.toUpperCase();
   const reason = m[2]!.trim();
-  if (verdict === "BLOCK") return { block: true, reason: reason || undefined };
-  if (verdict === "CONFIRM") return { block: false, reason: reason || undefined };
-  return { block: false, reason: undefined }; // ALLOW → defer (regex reason stands)
+  if (verdict === "BLOCK") {
+    return { block: true, reason: reason || undefined, verdict: "BLOCK" };
+  }
+  if (verdict === "CONFIRM") {
+    return { block: false, reason: reason || undefined, verdict: "CONFIRM" };
+  }
+  return { block: false, reason: undefined, verdict: "ALLOW" }; // ALLOW → defer (regex reason stands)
 }
 
 /**
@@ -375,9 +403,10 @@ export async function checkPermission(
   const dangerousCheck = checkDangerousPattern(tool.name, input, context.workspaceRoot);
   if (dangerousCheck.dangerous) {
     let riskHint = dangerousCheck.reason;
+    let classified: ClassifierResult | undefined;
     if (options.classifier) {
       logPermissionDecision(3, tool.name, action, { allowed: true }, { stage: "classifier-start" });
-      const classified = await classifyPermissionRisk(tool.name, input, options.classifier);
+      classified = await classifyPermissionRisk(tool.name, input, options.classifier);
       logPermissionDecision(
         3,
         tool.name,
@@ -397,6 +426,19 @@ export async function checkPermission(
         riskHint = classified.reason;
       }
     }
+
+    // Auto mode: no interactive prompt. The classifier is the background safety
+    // check — only an explicit ALLOW proceeds; BLOCK / CONFIRM / unavailable all
+    // deny (fail-safe, since there is no human to confirm).
+    if (context.permissionMode === "auto") {
+      const autoAllowed = classified?.verdict === "ALLOW";
+      const result = autoAllowed
+        ? { allowed: true as const, decisionReason: "mode" as const }
+        : { allowed: false as const, reason: riskHint, decisionReason: "mode" as const };
+      logPermissionDecision(3, tool.name, action, result, { stage: "auto-mode", riskHint });
+      return result;
+    }
+
     logPermissionDecision(
       3,
       tool.name,
@@ -421,6 +463,16 @@ export async function checkPermission(
 
   // Step 4: Bypass mode — allow anything the safety floor didn't already stop.
   if (context.permissionMode === "bypassPermissions") {
+    const result = { allowed: true, decisionReason: "mode" as const };
+    logPermissionDecision(4, tool.name, action, result, { permissionMode: context.permissionMode });
+    return result;
+  }
+
+  // Step 4.5: Auto mode — allow anything the safety floor didn't already stop,
+  // without an interactive prompt. (Dangerous patterns were already resolved by
+  // the classifier in Step 3b above; what reaches here are ordinary destructive
+  // tools like write/edit/mkdir.)
+  if (context.permissionMode === "auto") {
     const result = { allowed: true, decisionReason: "mode" as const };
     logPermissionDecision(4, tool.name, action, result, { permissionMode: context.permissionMode });
     return result;

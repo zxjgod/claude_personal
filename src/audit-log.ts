@@ -41,11 +41,15 @@ export interface AuditLogOptions {
 }
 
 const DEFAULT_OPTIONS: Required<AuditLogOptions> = {
-  logFilePath: path.join(
-    process.env.HOME || process.env.USERPROFILE || ".",
-    ".claude-code-replica",
-    "audit.log",
-  ),
+  // CCR_AUDIT_LOG overrides the path so tests (and multi-profile setups) can
+  // keep audit output hermetic instead of always writing to the home dir.
+  logFilePath:
+    process.env.CCR_AUDIT_LOG ||
+    path.join(
+      process.env.HOME || process.env.USERPROFILE || ".",
+      ".claude-code-replica",
+      "audit.log",
+    ),
   maxEntries: 10000,
   includeReadOperations: false,
 };

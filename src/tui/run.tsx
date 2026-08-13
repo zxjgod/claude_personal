@@ -52,6 +52,8 @@ export interface TuiDeps {
   modelConfig: ModelConfig;
   systemPrompt: string;
   workspaceRoot: string;
+  /** Live workspace-root reader (for /cd). Falls back to `workspaceRoot` when absent. */
+  getWorkspaceRoot?: () => string;
   sessionId: string;
   permissionMode: PermissionMode;
   commands: CommandInfo[];
@@ -103,7 +105,7 @@ async function runTurn(
     systemPrompt: turnSystemPrompt,
     maxTurns: 50,
     toolContext: {
-      workspaceRoot: deps.workspaceRoot,
+      workspaceRoot: deps.getWorkspaceRoot?.() ?? deps.workspaceRoot,
       sessionId: deps.sessionId,
       permissionMode: store.getPermissionMode(),
       getPermissionMode: () => store.getPermissionMode(),
@@ -542,7 +544,10 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
         const inputText = effectiveText ?? value;
 
         // Expand @file refs, then push the user message + run the loop.
-        const { attachments, notes } = expandFileRefs(inputText, deps.workspaceRoot);
+        const { attachments, notes } = expandFileRefs(
+          inputText,
+          deps.getWorkspaceRoot?.() ?? deps.workspaceRoot,
+        );
         for (const note of notes) store.addNotice(note);
         const contentText =
           attachments.length > 0 ? `${inputText}\n\n${attachments.join("\n\n")}` : inputText;
