@@ -17,7 +17,8 @@
 
 /** Named role/element colors. Values are Ink `color` prop inputs (hex or name). */
 export const palette = {
-  /** Claude orange — the assistant bullet, input frame, primary accent. */
+  /** Claude orange — the assistant bullet, input frame, primary accent.
+   *  Matches Claude Code's `claude` color rgb(215,119,87). */
   accent: "#d77757",
   /** Lighter orange used for the status-line shimmer sweep. */
   accentBright: "#f59575",
@@ -25,10 +26,8 @@ export const palette = {
   user: "#7aa2f7",
   /** Slash-command names in the palette / autocomplete. */
   command: "#7dcfff",
-  /** Tool names in tool cards (distinct from the assistant's orange). */
-  tool: "#bb9af7",
-  /** Added lines / positive diffs. */
-  success: "#9ece6a",
+  /** Added lines / positive diffs — Claude Code dark success green rgb(78,186,101). */
+  success: "#4EBA65",
   /** Errors / removed lines. */
   error: "#f7768e",
   /** Permission mode badge colors (keyed by mode name). */

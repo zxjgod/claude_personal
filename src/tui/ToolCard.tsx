@@ -17,6 +17,7 @@ import { parseError } from "../tui/markdown.js";
 import type { ToolExecutionResult } from "./../types.js";
 import { actionLabel, STATUS_GRAY, STATUS_GRAY_BRIGHT, STATUS_GREEN } from "./spinner-core.js";
 import { palette } from "./theme.js";
+import { toolResultSummary } from "./tool-result-summary.js";
 
 const PREVIEW_LINES = 12;
 
@@ -67,10 +68,7 @@ export function CompletedToolCard({
   const title = (
     <Box>
       <ToolStatusGlyph isActive={false} />
-      <Text bold color={palette.tool}>
-        {" "}
-        {capitalize(result.toolName)}
-      </Text>
+      <Text bold> {capitalize(result.toolName)}</Text>
       {detail ? <Text dimColor>({truncate(detail, 100)})</Text> : null}
     </Box>
   );
@@ -86,7 +84,16 @@ export function CompletedToolCard({
 
   const allLines = (result.formatted ?? "").split("\n");
   const isLong = allLines.length > PREVIEW_LINES;
-  const shown = expanded || !isLong ? allLines : allLines.slice(0, PREVIEW_LINES);
+
+  // Read/Grep/Glob collapse to a single summary line ("Read N lines"); expanding
+  // (or a tool whose output IS the point, like Bash/Edit/Write) shows content.
+  const summary = toolResultSummary(result);
+  const collapsedToSummary = !!summary && !expanded;
+  const shown = collapsedToSummary
+    ? [summary]
+    : expanded || !isLong
+      ? allLines
+      : allLines.slice(0, PREVIEW_LINES);
 
   return (
     <Box flexDirection="column">
@@ -98,7 +105,9 @@ export function CompletedToolCard({
             {colorizeLine(line)}
           </Box>
         ))}
-        {isLong && !expanded ? (
+        {collapsedToSummary && allLines.length > 0 ? (
+          <Text dimColor>{`  (ctrl+r to expand)`}</Text>
+        ) : isLong && !expanded ? (
           <Text dimColor>{`  … +${allLines.length - PREVIEW_LINES} lines (ctrl+r to expand)`}</Text>
         ) : null}
       </Box>

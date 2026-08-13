@@ -38,6 +38,8 @@ export const GlobTool: Tool = buildTool({
         ignore: ["**/node_modules/**", "**/.git/**"],
         absolute: false,
         dot: false,
+        // Align with the official Glob tool: match FILES only, never dirs.
+        onlyFiles: true,
       });
 
       const MAX_RESULTS = 500;
@@ -52,7 +54,10 @@ export const GlobTool: Tool = buildTool({
       return {
         content,
         truncated,
-        metadata: { linesRead: resultFiles.length },
+        metadata: {
+          linesRead: resultFiles.length,
+          summary: resultFiles.length === 1 ? "1 file" : `${resultFiles.length} files`,
+        },
       };
     } catch (error: any) {
       return {

@@ -53,7 +53,6 @@ import type {
   ModelConfig,
   PermissionClassifier,
   PermissionMode,
-  Tool,
   UserQuestion,
 } from "./types.js";
 
@@ -179,40 +178,6 @@ async function checkOrCreateEnv(): Promise<boolean> {
   console.log(chalk.green("  ✓ 已复制 .env.example → .env"));
   console.log(chalk.yellow("  请编辑 .env 文件填入 API Key 后重新启动。\n"));
   return false;
-}
-
-/** P1-3: Get a human-readable action label for a tool */
-function getToolActionLabel(toolName: string, target: string): string {
-  const key = toolName.toLowerCase();
-  const t = target.trim();
-
-  switch (key) {
-    case "read":
-      return t ? `正在读取 ${t}` : "正在读取文件";
-    case "write":
-      return t ? `正在写入 ${t}` : "正在写入文件";
-    case "edit":
-      return t ? `正在编辑 ${t}` : "正在编辑文件";
-    case "notebookedit":
-      return t ? `正在编辑 Notebook ${t}` : "正在编辑 Notebook";
-    case "bash":
-      return t ? `正在执行 ${t.slice(0, 40)}` : "正在执行命令";
-    case "glob":
-      return t ? `正在搜索文件 ${t}` : "正在搜索文件";
-    case "grep":
-      return t ? `正在搜索内容 ${t.slice(0, 30)}` : "正在搜索内容";
-    case "websearch":
-      return t ? `正在搜索网络 ${t.slice(0, 30)}` : "正在搜索网络";
-    case "webfetch":
-      return t ? `正在获取 ${t.slice(0, 40)}` : "正在获取内容";
-    case "task":
-    case "agent":
-      return "正在委托子代理";
-    case "mcp__":
-      return "正在调用 MCP 工具";
-    default:
-      return t ? `正在执行 ${toolName} (${t.slice(0, 20)})` : `正在执行 ${toolName}`;
-  }
 }
 
 const HELP_TEXT = `Claude Code Replica (ccr) — a local AI coding assistant for OpenAI-compatible APIs.
@@ -1012,19 +977,8 @@ async function main() {
           resetIdleTimer();
           spinner.stop();
           renderer.flush();
-          // P1-3: Enhanced tool start with clearer action label
-          const toolName = event.name;
-          const toolDetail = event.input;
-          const toolTarget =
-            typeof toolDetail?.filePath === "string"
-              ? toolDetail.filePath.split(/[/\\]/).pop()
-              : typeof toolDetail?.command === "string"
-                ? toolDetail.command.split(" ").slice(0, 3).join(" ")
-                : typeof toolDetail?.pattern === "string"
-                  ? toolDetail.pattern
-                  : "";
-          const actionLabel = getToolActionLabel(toolName, toolTarget ?? "");
-          console.log(chalk.dim(`  ${chalk.cyan("▶")} ${actionLabel}`));
+          // Official Claude Code style: orange ● + Name(detail).
+          renderToolStart(event.name, event.input);
           recordTranscript({
             type: "tool_use",
             id: event.id,
@@ -1040,17 +994,8 @@ async function main() {
           resetIdleTimer();
           spinner.stop();
           renderer.flush();
-          // P1-3: Show tool results summary
-          const successCount = event.results.filter((r) => !r.error).length;
-          const errorCount = event.results.length - successCount;
-          if (errorCount > 0) {
-            console.log(chalk.yellow(`  ${chalk.dim("◀")} ${errorCount} 个工具执行出错`));
-          } else if (successCount > 0) {
-            const totalMs = event.results.reduce((sum, r) => sum + (r.durationMs ?? 0), 0);
-            console.log(
-              chalk.dim(`  ${chalk.green("✓")} ${successCount} 个工具执行完成 (${totalMs}ms)`),
-            );
-          }
+          // Each tool renders its own "⎿ result" line (a compact summary for
+          // Read/Grep/Glob). No redundant batch line — matches official output.
           for (const result of event.results) {
             renderToolResult(result);
             recordTranscript({

@@ -113,7 +113,7 @@ describe("renderToolResult", () => {
     } as ToolExecutionResult;
     const out = captureStdout(() => renderToolResult(result));
     expect(out).toContain("⎿");
-    expect(out).toContain("ctrl+o to expand");
+    expect(out).toContain("ctrl+r to expand");
   });
 
   it("shows the error on failure", () => {
@@ -135,6 +135,21 @@ describe("renderToolResult", () => {
     const out = captureStdout(() => renderToolResult(result));
     expect(out).toContain("added line");
     expect(out).toContain("removed line");
+  });
+
+  it("shows a compact summary for Read/Grep/Glob instead of raw content", () => {
+    const result: ToolExecutionResult = {
+      toolName: "read",
+      formatted: "   1: line one\n   2: line two",
+      durationMs: 3,
+      result: {
+        content: "   1: line one\n   2: line two",
+        metadata: { linesRead: 2, summary: "Read 2 lines" },
+      },
+    };
+    const out = captureStdout(() => renderToolResult(result));
+    expect(out).toContain("Read 2 lines");
+    expect(out).not.toContain("line one");
   });
 });
 

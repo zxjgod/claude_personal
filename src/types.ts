@@ -105,6 +105,14 @@ export interface ToolResultMetadata {
   aborted?: boolean;
   /** True when the command exceeded its timeout and was force-killed. */
   timedOut?: boolean;
+  /**
+   * One-line human summary for the terminal UI (e.g. "Read 200 lines",
+   * "12 matches", "8 files"). Display-only — the model sees `content`, never
+   * this field. Read/Grep/Glob set it so the terminal shows a compact result
+   * instead of dumping the raw output; when absent, renderers fall back to a
+   * folded content preview.
+   */
+  summary?: string;
 }
 
 export interface ToolContext {

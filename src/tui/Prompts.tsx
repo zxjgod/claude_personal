@@ -13,7 +13,7 @@ const CYAN = "cyan";
 
 /** Risk level visual indicators */
 const RISK_LEVELS = {
-  low: { icon: "⚡", color: "#9ece6a", label: "Low Risk" },
+  low: { icon: "⚡", color: "#4EBA65", label: "Low Risk" },
   medium: { icon: "⚠️", color: "#e0af68", label: "Medium Risk" },
   high: { icon: "🔴", color: "#f7768e", label: "High Risk" },
 } as const;

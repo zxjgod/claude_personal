@@ -13,6 +13,7 @@ import chalk from "chalk";
 import type { SubAgentProgress, ToolExecutionResult } from "../types.js";
 import { renderMarkdown } from "./markdown.js";
 import { terminalColumns, visualWidth } from "./terminal-width.js";
+import { toolResultSummary } from "./tool-result-summary.js";
 
 // Windows-safe glyphs (see constants/figures.ts in the reference source).
 const BLACK_CIRCLE = "●"; // assistant message / tool-start bullet
@@ -150,9 +151,12 @@ export function renderToolResult(result: ToolExecutionResult): void {
     return;
   }
 
-  const rendered = renderFormattedToolOutput(result.formatted);
+  // Read/Grep/Glob show a compact summary line ("Read N lines") instead of
+  // dumping their raw output; every other tool shows a folded content preview.
+  const summary = toolResultSummary(result);
+  const rendered = summary ?? renderFormattedToolOutput(result.formatted);
   if (rendered) {
-    process.stdout.write(`  ${chalk.dim(BRANCH)} ${indentContinuation(rendered)}\n`);
+    process.stdout.write(`  ${chalk.dim(BRANCH)} ${indentContinuation(rendered)}${duration}\n`);
   } else {
     process.stdout.write(`  ${chalk.dim(BRANCH)}${duration}\n`);
   }
@@ -276,7 +280,7 @@ function renderFormattedToolOutput(text: string): string {
 
   if (wasClipped) {
     const extra = lines.length - MAX_LINES;
-    return rendered + chalk.dim(`\n… +${extra} lines (ctrl+o to expand)`);
+    return rendered + chalk.dim(`\n… +${extra} lines (ctrl+r to expand)`);
   }
   return rendered;
 }

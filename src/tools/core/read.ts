@@ -150,6 +150,7 @@ export const ReadTool: Tool = buildTool({
         metadata: {
           linesRead: lines.length,
           fileSize: stat.size,
+          summary: lines.length === 1 ? "Read 1 line" : `Read ${lines.length} lines`,
         },
       };
     } catch (error: any) {

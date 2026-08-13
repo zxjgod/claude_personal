@@ -138,7 +138,7 @@ export const ORANGE_HEX = "#d77757";
 export const SHIMMER_HEX = "#f59575";
 
 /** Status dot colors */
-export const STATUS_GREEN = "#9ece6a"; // AI idle / completed - success green
+export const STATUS_GREEN = "#4EBA65"; // completed tool - Claude Code dark success green (rgb 78,186,101)
 export const STATUS_GRAY = "#666666"; // Tool executing - gray
 export const STATUS_GRAY_BRIGHT = "#999999"; // Tool executing flash - lighter gray
 

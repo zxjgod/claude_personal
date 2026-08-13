@@ -59,7 +59,12 @@ function buildToolUsageSection(): string {
 - PREFER dedicated tools (Read, Edit, Write, Glob, Grep) over Bash for
   file operations. Tools are safer, faster, and more reliable.
 - Use Glob to find files by name pattern (e.g., "src/**/*.ts").
-- Use Grep to search file contents with regex patterns.
+- Use Grep to search file contents with regex. Narrow results with
+  \`type\` (file type), \`glob\` (filename filter), \`-i\` (case-insensitive),
+  and \`output_mode\` (content | files_with_matches | count); add context with
+  \`-A\`/\`-B\`/\`-C\`. Default output is capped at 250 lines.
+- Use Read with \`offset\`/\`limit\` to read a specific line window of a large
+  file instead of loading it whole.
 - Use Bash ONLY for: running build/test commands, git operations,
   package managers (npm, pip, cargo), and other CLI tasks that don't
   have a dedicated tool.

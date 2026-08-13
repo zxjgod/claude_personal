@@ -383,6 +383,35 @@ describe("GrepTool", () => {
     expect(result.content).toContain("match.ts");
     expect(result.content).not.toContain("skip.md");
   });
+
+  it("supports -i (case-insensitive) and output_mode=count", async () => {
+    fs.writeFileSync(path.join(tmpDir, "a.ts"), "Hello\n");
+    fs.writeFileSync(path.join(tmpDir, "b.ts"), "hello\nHELLO\n");
+
+    const result = await GrepTool.call({ pattern: "hello", "-i": true, output_mode: "count" }, ctx);
+
+    expect(result.error).toBeUndefined();
+    // Per-file counts ("path:count") — same shape from rg --count and fallback.
+    expect(result.content).toContain("a.ts:1");
+    expect(result.content).toContain("b.ts:2");
+    // The terminal summary labels count mode by file count.
+    expect(result.metadata?.summary).toBe("2 files");
+  });
+
+  it("supports output_mode=files_with_matches (paths only)", async () => {
+    fs.writeFileSync(path.join(tmpDir, "hit.ts"), "needle\n");
+    fs.writeFileSync(path.join(tmpDir, "miss.ts"), "nope\n");
+
+    const result = await GrepTool.call(
+      { pattern: "needle", output_mode: "files_with_matches" },
+      ctx,
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(result.content).toContain("hit.ts");
+    expect(result.content).not.toContain("miss.ts");
+    expect(result.content).not.toContain("needle"); // no match lines, just paths
+  });
 });
 
 // --- Workspace boundary enforcement (regression for path escapes) ---
