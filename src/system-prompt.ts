@@ -18,6 +18,7 @@
 // and once per machine. M33 moves them below.)
 // ============================================================
 
+import { outputStylePrompt } from "./output-style.js";
 import type { Tool } from "./types.js";
 
 // ============================================================
@@ -69,16 +70,8 @@ function buildToolUsageSection(): string {
   Example: Grep + Glob → parallel calls.`;
 }
 
-function buildOutputStyleSection(): string {
-  return `OUTPUT STYLE:
-
-- Be concise and direct. Get to the point quickly.
-- Do not add narration inside code blocks just to explain what the code does.
-- Use the following format when citing code:
-  \`\`\`startLine:endLine:filepath
-- Respond in the same language as the user's query.
-  If the user writes in Chinese, respond in Chinese.
-- Minimize output tokens while maintaining quality.`;
+function buildOutputStyleSection(style: string): string {
+  return `OUTPUT STYLE:\n\n${outputStylePrompt(style)}`;
 }
 
 function buildDestructiveActionsSection(): string {
@@ -224,6 +217,8 @@ export interface SystemPromptOptions {
   model?: string;
   /** MCP server instructions, if any servers are connected */
   mcpInstructions?: string;
+  /** Active output style name (default / explanatory / learning / custom). */
+  outputStyle?: string;
 }
 
 // ============================================================
@@ -257,11 +252,14 @@ export function buildSystemPrompt(options: SystemPromptOptions): string[] {
   }
 
   // --- Static, cacheable prefix (memoized; identical across sessions) ---
+  // The output-style section is memoized per style name so switching styles
+  // recomputes only that block while the rest of the prefix stays cached.
+  const outputStyle = options.outputStyle ?? "default";
   const staticBlocks = [
     systemPromptSection("identity", buildIdentitySection),
     systemPromptSection("coding_rules", buildCodingRulesSection),
     systemPromptSection("tool_usage", buildToolUsageSection),
-    systemPromptSection("output_style", buildOutputStyleSection),
+    systemPromptSection(`output_style:${outputStyle}`, () => buildOutputStyleSection(outputStyle)),
     systemPromptSection("destructive_actions", buildDestructiveActionsSection),
     // Tool descriptions are stable within a session (the enabled tool set does
     // not change turn-to-turn), so they belong in the cacheable prefix.

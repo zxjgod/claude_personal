@@ -4,9 +4,11 @@ import type { SlashCommand } from "./types.js";
 
 // COMMANDS is injected at registry build time to avoid a static import cycle
 // (registry.ts imports this file, so this file cannot import registry.ts).
-let COMMANDS_REF: SlashCommand[] = [];
+// The getter is evaluated lazily at run time (not at bind time) so disk-defined
+// custom commands loaded later in startup still appear in /help.
+let COMMANDS_GETTER: () => SlashCommand[] = () => [];
 export function bindCommandList(list: () => SlashCommand[]): void {
-  COMMANDS_REF = list() as SlashCommand[];
+  COMMANDS_GETTER = list;
 }
 
 /** Command categories for grouping */
@@ -77,7 +79,7 @@ export const helpCommand: SlashCommand = {
     const categories: CommandCategory[] = [];
     const categoryMap = new Map<string, SlashCommand[]>();
 
-    for (const cmd of COMMANDS_REF) {
+    for (const cmd of COMMANDS_GETTER()) {
       const catInfo = CATEGORY_MAP[cmd.name];
       const key = catInfo?.title || "其他";
       if (!categoryMap.has(key)) {

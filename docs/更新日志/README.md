@@ -57,6 +57,8 @@ docs/更新日志/
 
 | 日期 | 类型 | 模块 | 主题 | commit | 关联 |
 |---|---|---|---|---|---|
+| 2026-08-13 | feature | 自定义命令 / 自定义子代理 / 输出风格 / 配置驱动 hooks / 测试基建 | [对齐官方 Claude Code 的五大能力补齐（`.claude/commands`、`.claude/agents`、`/output-style`、settings.json hooks、vitest 纳入 `.test.tsx`）](./20260813-parity-features.md) | 待提交 | [项目总览](../项目总览.md) |
+| 2026-08-02 | fix | 工程基建 / 测试 / 文档体系 | [文档同步脚本（`doc-sync.mjs`）+ WebFetchTool 测试封闭化 + 文档数字校正](./20260802-doc-sync-and-hermetic-tests.md) | 待提交 | [项目评审报告](../项目评审报告.md) |
 | 2026-07-08 | fix | BashTool / team / agent-loop / MCP / web-fetch / session-memory | [三周安全与架构优化（子代理权限继承、usage 口径统一、Web URL 验证增强、会话异步 I/O）](./20260708-three-week-security-architecture-fixes.md) | 待提交 | [项目评审报告](../项目评审报告.md) |
 | 2026-07-08 | fix | markdown / InputBox / command / store | [代码审查修复（语法高亮 HTML 实体、历史输入位置、命令换行绕过、死代码清理）](./20260708-code-review-fixes.md) | 待提交 | [项目评审报告](../项目评审报告.md) |
 | 2026-07-06 | fix | TypeScript / TUI 测试 | [修复类型收窄错误和 TUI 滚动测试超时问题](./20260706-typecheck-tui-timeout-fix.md) | 待提交 | — |
@@ -96,11 +98,13 @@ docs/更新日志/
 - **TUI 输入框 / 历史导航 / markdown 渲染**：`20260708-code-review-fixes`（修复历史浏览时输入插入位置 0→光标处；`parseHljsOutput` 增加 HTML 实体解码分支，代码块不再显示 `&lt;`；删除死代码 `formatError`/`unescapeHtml`/`getInputHistory`/`pushInputHistory`；简化语言别名查找）。
 - **TUI 多行输入 / 全屏布局（M25）**：`M25计划表-全屏TUI`（M25.1 InputBox 多行 Ctrl+J / `\`+Enter / 行间光标 / 行内 Home·End；M25.2 可选全屏 `--fullscreen`：自造 `ScrollView` + `useTerminalSize` + `transcript-lines`，alt-screen 生命周期退出必复位）、`20260629-fullscreen-tui-fixes`（实测三修：① prompt 做成最后渲染行根治光标漂移；② `keepColorWhenDisabled`/`hideBottomRule` + 撤固定 width 治变色缩小；③ flex+`measureElement` 自测高度 + Ctrl+U/D/B/F/G 滚动兜底；并抽 `FullScreenApp.tsx` 独立模块，App.tsx 仅一委托分支，默认路径零回归）。
 - **工程基建 / CI / 构建**：`20260628-m20-engineering`（M20：Biome 替 eslint+prettier、esbuild 转译构建、免 key 冒烟脚本、husky+lint-staged pre-commit、GitHub Actions CI、`.gitattributes` 强制 LF、cli `--version/--help`）。
+- **文档同步 / 计数维护 / 测试封闭化**：`20260802-doc-sync-and-hermetic-tests`（新增 `scripts/doc-sync.mjs` 一键复核版本/行数/文件数/命令数/工具数/测试数并 `--check` 比对文档、挂 pre-commit 警告；`new-tools.test.ts` 的 WebFetchTool URL 测试 stub `fetch` 封闭化消除网络超时；`package.json` version 定 1.2.0 为唯一真源；文档四件套 + `.env.example` + CHANGELOG 校正）。
 - **测试基建 / TypeScript 类型 / TUI 测试**：`20260706-typecheck-tui-timeout-fix`（修复 `path-security.test.ts` discriminated union 类型收窄问题 + `tui-components.test.tsx` 滚动测试超时问题，978/978 测试全过）、`20260708-code-review-fixes`（修正历史输入断言 + 新增换行符绕过回归用例，994/994 全过）。
 - **测试基建 / 集成测试**：`20260628-m21-testing`（M21：tools/permissions/persistence/MCP/TUI 五大集成测试 + CI 冒烟元测试，508→613；真 git worktree 提交隔离、真 MCP SDK stdio/http mock server、分类器短路顺序、resume 折叠、30 轮长会话 store 不变量）。
 - **TUI overlay / resume**：`20260628-resume-session-picker`（裸 `/resume` 弹 sessionPicker overlay、`nextOffset` 滚动窗口、`history-replay` 把 `Message[]` 回放进 transcript、零 token 恢复）。
 - **provider 路由 / 配置**：`20260628-provider-profiles`（`/provider`：`.claude/providers.json` 存多套 `(provider/baseURL/apiKey/model)` 档案，TUI 方向键 overlay / `/provider <name>` 直切，`applyProfile` 原地改 `modelConfig`；`cli.ts` 把 `callModel` 改为按 provider 现解析以支持家族切换；不做 M22）。
 - **斜杠命令 `/effort` / `/sessions` / `/compact` / `/mode`**：`20260702-m38-command-permission-mode`（M38：`/effort` 明确 6 档定义与供应商映射；`/sessions delete <prefix|id>` 唯一匹配删除历史会话；`/compact` 展示阶段式进度条）、`20260704-m38-mode-switch-ux`（新增 `/mode` 命令，支持直接设置权限模式）。
+- **自定义命令 / 自定义子代理 / 输出风格 / 配置驱动 hooks**：`20260813-parity-features`（`.claude/commands/*.md` 与 `.claude/agents/*.md` 磁盘加载器；`/output-style` 输出风格预设；`.claude/settings.json` PreToolUse/PostToolUse/Stop 命令式 hook + 正则 matcher + fail-open；vitest 纳入 `.test.tsx`，7 个 TUI 测试恢复执行）。
 - **全局里程碑**：`M计划更新日志`（M1–M6，后续断档，新特性请补登）。
 
 > 新条目按「模块名: 日志（一句话改了什么）」追加到对应键下；模块名沿用《项目架构.md》的称呼。

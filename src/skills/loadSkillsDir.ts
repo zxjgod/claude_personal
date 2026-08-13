@@ -34,6 +34,11 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { promisify } from "node:util";
 import { registerSkill, type SkillContext, type SkillDefinition } from "../skills.js";
+import { type ParsedFrontmatter, parseFrontmatter } from "../utils/frontmatter.js";
+
+// Back-compat alias: the shared parser was previously defined in this module.
+export { parseFrontmatter };
+export type ParsedSkillFile = ParsedFrontmatter;
 
 const execFileAsync = promisify(execFile);
 
@@ -49,43 +54,6 @@ const USER_SKILLS_ENV = "CCR_USER_SKILLS_DIR";
 export function skillDirRoots(workspaceRoot: string): string[] {
   const userRoot = process.env[USER_SKILLS_ENV] || path.join(os.homedir(), ".claude", "skills");
   return [userRoot, path.join(workspaceRoot, ".claude", "skills")];
-}
-
-interface ParsedSkillFile {
-  frontmatter: Record<string, string | string[]>;
-  body: string;
-}
-
-/**
- * Minimal YAML-ish frontmatter parser: a leading `---` block of `key: value`
- * lines (values may be `[a, b]` lists). Intentionally tiny — covers the skill
- * config surface, not full YAML. Returns empty frontmatter when absent.
- */
-export function parseFrontmatter(raw: string): ParsedSkillFile {
-  const text = raw.replace(/^﻿/, "");
-  const m = text.match(/^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*\r?\n?([\s\S]*)$/);
-  if (!m) return { frontmatter: {}, body: text.trim() };
-  const frontmatter: Record<string, string | string[]> = {};
-  for (const line of m[1]!.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const idx = trimmed.indexOf(":");
-    if (idx < 0) continue;
-    const key = trimmed.slice(0, idx).trim();
-    let value = trimmed.slice(idx + 1).trim();
-    if (!key) continue;
-    if (value.startsWith("[") && value.endsWith("]")) {
-      frontmatter[key] = value
-        .slice(1, -1)
-        .split(",")
-        .map((s) => s.trim().replace(/^["']|["']$/g, ""))
-        .filter(Boolean);
-    } else {
-      value = value.replace(/^["']|["']$/g, "");
-      frontmatter[key] = value;
-    }
-  }
-  return { frontmatter, body: (m[2] ?? "").trim() };
 }
 
 function asString(v: string | string[] | undefined): string | undefined {

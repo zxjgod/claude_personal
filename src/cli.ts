@@ -11,12 +11,13 @@ import chalk from "chalk";
 import dotenv from "dotenv";
 
 import { agentLoop } from "./agent-loop.js";
+import { loadAgentsDir } from "./agents/loadAgentsDir.js";
 import { formatCliError } from "./cli-errors.js";
 import { createCliInputReader } from "./cli-input.js";
-import type { ToolSource } from "./commands.js";
-import { COMMANDS, handleSlashCommand } from "./commands.js";
+import { COMMANDS, handleSlashCommand, loadCommandsDir } from "./commands.js";
 import { formatGitContext, gatherGitContext } from "./git-context.js";
 import { HookRegistry } from "./hooks.js";
+import { loadHooksFromSettings } from "./hooks-config.js";
 import { createModelCaller, resolveProviderConfig } from "./llm-adapter.js";
 import { discoverMCPConfigs, MCPManager } from "./mcp/index.js";
 import { PersistenceManager } from "./persistence.js";
@@ -437,10 +438,8 @@ async function main() {
   // --- Tool Setup ---
 
   const toolRegistry = new ToolRegistry();
-  const toolSources: Array<{ tool: Tool; source: ToolSource }> = [];
   for (const tool of CORE_TOOLS) {
-    toolRegistry.register(tool);
-    toolSources.push({ tool, source: "core" });
+    toolRegistry.register(tool, "core");
   }
   // 16.9: inject the core tool set into the subagents registry so sub-agent
   // loops (Task/Team) resolve tool names without dynamically importing
@@ -459,6 +458,35 @@ async function main() {
     // Disk skills are optional; a malformed skills dir never blocks startup.
   }
 
+  // Custom slash commands (<root>/.claude/commands/<name>.md and the user-level
+  // equivalent). Each file's body is a prompt template injected via /<name>.
+  try {
+    const loadedCommands = loadCommandsDir(workspaceRoot);
+    if (loadedCommands.length > 0) {
+      console.log(
+        chalk.gray(
+          `Loaded ${loadedCommands.length} custom command(s): ${loadedCommands.join(", ")}`,
+        ),
+      );
+    }
+  } catch {
+    // Custom commands are optional; a malformed commands dir never blocks startup.
+  }
+
+  // Custom sub-agents (<root>/.claude/agents/<name>.md and the user-level
+  // equivalent). Registered into the sub-agent type registry so the Task tool's
+  // `subagent_name` enum and /agents pick them up.
+  try {
+    const loadedAgents = loadAgentsDir(workspaceRoot);
+    if (loadedAgents.length > 0) {
+      console.log(
+        chalk.gray(`Loaded ${loadedAgents.length} custom agent(s): ${loadedAgents.join(", ")}`),
+      );
+    }
+  } catch {
+    // Custom agents are optional; a malformed agents dir never blocks startup.
+  }
+
   // MCP Setup
   const mcpManager = new MCPManager();
   const mcpConfigs = discoverMCPConfigs(workspaceRoot);
@@ -466,20 +494,20 @@ async function main() {
     await mcpManager.loadConfig(configPath);
   }
   for (const mcpTool of mcpManager.getAllTools()) {
-    toolRegistry.register(mcpTool);
-    toolSources.push({ tool: mcpTool, source: "mcp" });
+    toolRegistry.register(mcpTool, "mcp");
   }
 
   // MCP resource tools (8.6) — list/read resources from connected servers.
   for (const resTool of createMcpResourceTools(mcpManager)) {
-    toolRegistry.register(resTool);
-    toolSources.push({ tool: resTool, source: "core" });
+    toolRegistry.register(resTool, "core");
   }
 
   // ToolSearch (8.5) registered last so it can see the full tool set.
   const toolSearchTool = createToolSearchTool(() => toolRegistry.getEnabledTools());
-  toolRegistry.register(toolSearchTool);
-  toolSources.push({ tool: toolSearchTool, source: "core" });
+  toolRegistry.register(toolSearchTool, "core");
+
+  // /tools listing derives from the registry — single source of truth.
+  const toolSources = toolRegistry.listSources();
 
   if (verbose) {
     console.log(`Tools loaded: ${toolRegistry.enabledCount}`);
@@ -499,20 +527,42 @@ async function main() {
     permissionMode,
   });
 
-  const systemPrompt = renderSystemPrompt(
-    buildSystemPrompt({
-      workspaceRoot,
-      tools: toolRegistry.getEnabledTools(),
-      claudeMdContent,
-      model: modelConfig.model,
-      // 12.4: inject a compact git snapshot (branch / dirty files / recent
-      // commits). Read-only, best-effort — null in non-git dirs.
-      gitStatus: await (async () => {
-        const ctx = await gatherGitContext(workspaceRoot);
-        return ctx ? formatGitContext(ctx) : undefined;
-      })(),
-    }),
-  );
+  // Mutable session holders read by both the system-prompt builder and the
+  // corresponding slash commands (/goal, /output-style). Stored as `{ value }`
+  // references so a command and the REPL share the same cell.
+  const goalHolder = { value: "" };
+  const editorModeHolder = { value: "default" } as { value: "default" | "vim" };
+  const outputStyleHolder = { value: "default" };
+
+  // 12.4: a compact git snapshot (branch / dirty files / recent commits) is
+  // gathered once at startup and injected into the dynamic suffix. Read-only,
+  // best-effort — null in non-git dirs.
+  const gitSnapshot = await (async () => {
+    const ctx = await gatherGitContext(workspaceRoot);
+    return ctx ? formatGitContext(ctx) : undefined;
+  })();
+
+  // Build the full turn system prompt from the live goal + output-style
+  // holders. buildSystemPrompt memoizes its static sections (the output-style
+  // block is keyed by style name), so rebuilding each turn is cheap — only the
+  // dynamic suffix (and the output-style block when the style changes) recompute.
+  const buildTurnSystemPrompt = (): string => {
+    const base = renderSystemPrompt(
+      buildSystemPrompt({
+        workspaceRoot,
+        tools: toolRegistry.getEnabledTools(),
+        claudeMdContent,
+        model: modelConfig.model,
+        outputStyle: outputStyleHolder.value,
+        gitStatus: gitSnapshot,
+      }),
+    );
+    return goalHolder.value
+      ? `${base}\n\n[SESSION GOAL]\nThe user set this objective for the session. Keep it in view and steer toward it:\n${goalHolder.value}`
+      : base;
+  };
+
+  const systemPrompt = buildTurnSystemPrompt();
 
   // --- Model Caller ---
 
@@ -549,7 +599,16 @@ async function main() {
   // --- Hooks ---
   // Empty by default. Register PreToolUse/PostToolUse hooks here (or load
   // them from project config) to intercept, block, or rewrite tool calls.
+  // Config-driven hooks are loaded from .claude/settings.json (+ settings.local.json).
   const hooks = new HookRegistry();
+  try {
+    const hookCount = loadHooksFromSettings(workspaceRoot, hooks);
+    if (hookCount > 0 && verbose) {
+      console.log(`Hooks loaded: ${hookCount} from .claude/settings.json`);
+    }
+  } catch {
+    // Hooks are optional; a malformed settings.json never blocks startup.
+  }
 
   // --- REPL ---
 
@@ -607,9 +666,6 @@ async function main() {
     return true;
   };
 
-  const goalHolder = { value: "" };
-  const editorModeHolder = { value: "default" } as { value: "default" | "vim" };
-
   const makeCommandContext = () => ({
     messages,
     modelConfig,
@@ -634,6 +690,7 @@ async function main() {
     hooks,
     goal: goalHolder,
     editorMode: editorModeHolder,
+    outputStyle: outputStyleHolder,
     input: {
       askConfirmation: async (question: string): Promise<boolean> => {
         const answer = await askQuestion(question);
@@ -858,11 +915,9 @@ async function main() {
       }
     };
 
-    // Run agent loop. M18.12: append the session goal (if any) so the model
-    // keeps the objective in view this turn.
-    const turnSystemPrompt = goalHolder.value
-      ? `${systemPrompt}\n\n[SESSION GOAL]\nThe user set this objective for the session. Keep it in view and steer toward it:\n${goalHolder.value}`
-      : systemPrompt;
+    // Run agent loop. Rebuild the turn system prompt so a /goal or /output-style
+    // change made earlier this session takes effect next turn.
+    const turnSystemPrompt = buildTurnSystemPrompt();
     const loop = agentLoop(messages, tools, callModel, modelConfig, {
       systemPrompt: turnSystemPrompt,
       maxTurns: 50,

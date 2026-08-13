@@ -1,6 +1,6 @@
 {
   "name": "claude-code-replica",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "A local AI coding assistant that replicates Claude Code's agentic workflow with third-party LLM APIs",
   "type": "module",
   "main": "dist/index.js",
@@ -19,6 +19,7 @@
     "format": "biome format --write src",
     "check": "biome check src",
     "smoke": "node scripts/smoke.mjs",
+    "docs:sync": "node --import tsx scripts/doc-sync.mjs",
     "prepare": "husky"
   },
   "dependencies": {

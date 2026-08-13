@@ -82,7 +82,18 @@ export class HookRegistry {
   }
 
   private matching(toolName: string): Hook[] {
-    return this.hooks.filter((h) => h.matcher === "*" || h.matcher === toolName);
+    return this.hooks.filter((h) => {
+      if (h.matcher === "*") return true;
+      if (h.matcher === toolName) return true;
+      // Config-driven hooks may use a regex matcher (e.g. "Edit|Write"). A plain
+      // tool name is also a valid (anchored) regex, so this is a safe superset of
+      // strict equality. Invalid patterns never match.
+      try {
+        return new RegExp(`^(?:${h.matcher})$`).test(toolName);
+      } catch {
+        return false;
+      }
+    });
   }
 
   /**

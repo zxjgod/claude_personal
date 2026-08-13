@@ -185,13 +185,25 @@ describe("WebFetchTool", () => {
   });
 
   it("should accept valid URLs", async () => {
-    // Test that valid input passes Zod but still has SSRF check in call()
-    const result = await WebFetchTool.call(
-      { url: "https://github.com", fetchInfo: "homepage" },
-      ctx,
-    );
-    // Should not fail Zod validation; may fail at network level but that's ok for unit test
-    expect(result.error || result.content).toBeDefined();
+    // Test that valid input passes Zod but still has SSRF check in call().
+    // Stub global fetch so the test is hermetic — no real network / DNS,
+    // otherwise it hangs in restricted networks and times out the suite.
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response("<html><body>ok</body></html>", {
+        status: 200,
+        headers: { "content-type": "text/html" },
+      })) as typeof fetch;
+    try {
+      const result = await WebFetchTool.call(
+        { url: "https://github.com", fetchInfo: "homepage" },
+        ctx,
+      );
+      expect(result.error).toBeUndefined();
+      expect(result.content).toContain("ok");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 

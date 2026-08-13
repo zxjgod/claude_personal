@@ -1,1 +1,5 @@
 npx lint-staged
+
+# doc-sync: warn (non-blocking) when documented project metrics drift from code.
+# To refresh docs: run `npm run docs:sync -- --check` and update 项目总览.md.
+node --import tsx scripts/doc-sync.mjs --check || echo "⚠️ doc-sync: 文档数字有漂移 — 请运行 \`npm run docs:sync\` 并按输出更新 docs/项目总览.md"

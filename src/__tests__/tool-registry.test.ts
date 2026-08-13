@@ -81,6 +81,47 @@ describe("ToolRegistry", () => {
     const registry = new ToolRegistry();
     expect(registry.getTool("unknown")).toBeUndefined();
   });
+
+  it("listSources returns registration-order source tags", () => {
+    const registry = new ToolRegistry();
+    const mk = (name: string) =>
+      createTool({
+        name,
+        description: name,
+        promptDescription: name,
+        inputSchema: { type: "object", properties: {}, required: [] },
+        isReadOnly: true,
+        isConcurrencySafe: true,
+        call: async () => ({ content: "ok" }),
+      });
+    registry.register(mk("a"), "core");
+    registry.register(mk("b"), "mcp");
+    registry.register(mk("c"), "core");
+    expect(registry.listSources().map((s) => `${s.source}:${s.tool.name}`)).toEqual([
+      "core:a",
+      "mcp:b",
+      "core:c",
+    ]);
+    // Defaults to "core" when source is omitted.
+    registry.register(mk("d"));
+    expect(registry.listSources().at(-1)?.source).toBe("core");
+  });
+
+  it("unregister removes the source record too", () => {
+    const registry = new ToolRegistry();
+    const tool = createTool({
+      name: "tmp",
+      description: "Tmp",
+      promptDescription: "Tmp tool",
+      inputSchema: { type: "object", properties: {}, required: [] },
+      isReadOnly: true,
+      isConcurrencySafe: true,
+      call: async () => ({ content: "ok" }),
+    });
+    registry.register(tool, "mcp");
+    registry.unregister("tmp");
+    expect(registry.listSources()).toHaveLength(0);
+  });
 });
 
 describe("createTool", () => {

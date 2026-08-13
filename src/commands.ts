@@ -8,10 +8,17 @@
 // ============================================================
 
 import chalk from "chalk";
+import { getCustomCommands } from "./commands/loadCommandsDir.js";
 import { COMMANDS } from "./commands/registry.js";
 import type { CommandContext, CommandResult } from "./commands/types.js";
 import { getSkill, resolveSkillPrompt } from "./skills.js";
 
+export {
+  getCustomCommands,
+  loadCommandsDir,
+  registerCustomCommand,
+  resetCustomCommands,
+} from "./commands/loadCommandsDir.js";
 export { COMMANDS } from "./commands/registry.js";
 export type {
   CommandContext,
@@ -39,7 +46,9 @@ export async function handleSlashCommand(
   const [rawName, ...rest] = input.slice(1).split(/\s+/);
   const name = rawName.toLowerCase();
   const args = input.slice(1 + rawName.length).trim();
-  const cmd = COMMAND_MAP.get(name);
+  // Built-in commands take precedence; disk-defined commands are consulted
+  // after them (a custom command may not shadow a built-in).
+  const cmd = COMMAND_MAP.get(name) ?? getCustomCommands().get(name);
 
   if (!cmd) {
     // Slash sugar (kernel §Skill point 3): `/<name>` that isn't a built-in

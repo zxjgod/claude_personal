@@ -1,6 +1,18 @@
 # 更新日志 (Changelog)
 
-## [待发布] - 2026-07-11
+> 版本号以 `package.json` 的 `version` 为唯一真源；历史版本映射见 [`项目总览.md`](./项目总览.md)。当前版本：**v1.2.0**。
+
+## 2026-08-02
+
+### 文档同步 + 测试封闭化
+
+- 新增 `scripts/doc-sync.mjs`（`npm run docs:sync`）一键复核项目指标（版本/行数/文件数/命令数/工具数/测试文件数），`--check` 与 `项目总览.md` 比对，已挂 `.husky/pre-commit` 作警告。
+- `new-tools.test.ts` 的 WebFetchTool URL 测试改为 stub `fetch`，不再依赖真实网络（此前受限网络下超时，套件 951/952）。
+- `package.json` version 定为 **1.2.0**（唯一版本真源），`项目总览.md`/`架构.md`/`维护方案.md`/`快速开始.md`/`.env.example`/CHANGELOG 同步校正。详见 [`更新日志/20260802-doc-sync-and-hermetic-tests.md`](./更新日志/20260802-doc-sync-and-hermetic-tests.md)。
+
+---
+
+## v1.2.0 - 2026-07-11
 
 ### 架构重构 + 质量完善
 
@@ -72,7 +84,32 @@ Smoke Test: PASSED
 
 ---
 
-## [待发布] - 2026-07-08
+## 2026-07-09
+
+### 安全 / 工程基建 / i18n（`f471601`）
+
+- **token 估算**：新增 `src/token-estimator.ts` —— 分档估算（代码 3.0 / 自然语言 3.5 / 结构化数据 2.5 字符-token）。
+- **错误恢复模块化**：从 agent-loop 拆出 `src/error-recovery.ts`，集中错误分类与恢复策略。
+- **审计日志**：新增 `src/audit-log.ts`，追踪破坏性操作。
+- **文件缓存**：新增 `src/file-cache.ts`（LRU 淘汰 + mtime 校验）—— 后随 07-11 重构移除。
+- **i18n 国际化**：新增 `src/tui/i18n.ts`，中/英文双语；错误消息统一为英文。
+- **vitest 配置**：新增 `vitest.config.ts`（include `src/**/*.test.ts`、排除参考目录），修复 `npm test` 超时（移除非法 `--dir` 标志）。
+
+**测试**：新增 audit-log / file-cache / i18n 测试共 34 个（合计 947 通过）。
+
+---
+
+## 2026-07-08
+
+### 安全与架构修复（`0ca3cd4`：S-2 / S-4 / P1-1 / P1-4 / M-7）
+
+详见 [`更新日志/20260708-three-week-security-architecture-fixes.md`](./更新日志/20260708-three-week-security-architecture-fixes.md)。
+
+- **S-2 子代理权限继承**：Team 子代理改用 `createSubAgentApprover()`，破坏性工具（bash/write/edit）不再绕过父级审批，与 task.ts fork 模式一致。
+- **S-4 统一 usage 口径**：移除 Anthropic 路径的 cache token 重复计数，`input_tokens` 用 provider 上报值。
+- **P1-1 WebFetch 统一 URL 校验**：改用 `InputValidator.validateUrl()`，删除重复的 BLOCKED_HOSTS 实现（-45 行）。
+- **P1-4 MCP schema 类型安全**：拒绝非对象属性，防恶意 schema 注入。
+- **M-7 异步 I/O**：session-memory 改用 `fs/promises`，避免大会话文件阻塞事件循环。
 
 ### 代码审查修复（M41 改动复审）
 
@@ -162,6 +199,12 @@ Smoke Test: PASSED
 
 | 提交 | 描述 |
 |------|------|
+| `41321e1` | refactor: architecture improvements and quality fixes (P1-P2) |
+| `f471601` | fix: security, architecture, i18n improvements (P0-P3) |
+| `0ca3cd4` | fix: security and architecture improvements (S-2, S-4, P1-1, P1-4, M-7) |
+| `eda2a18` | feat: M41 TUI upgrades — history, syntax highlight, confirm prompt, risk levels |
+| `7f30422` | fix: code review — abort delay, HTML entity decode, --force flag, and cleanup |
+| `dd121f3` | feat: 工具系统全面升级 - promptDescription 补充 + Zod 迁移 |
 | `0334c9f` | fix: correct path-security symlink test setup and add update log |
 | `7187011` | Enhance Stability |
 | `7d12aa9` | security: prevent symlink escape via realpath check in resolveInWorkspace |

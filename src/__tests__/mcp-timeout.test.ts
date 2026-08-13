@@ -9,7 +9,7 @@
 // ============================================================
 
 import { describe, expect, it } from "vitest";
-import { TimeoutError, withTimeout } from "../mcp/index.js";
+import { expandEnvRecord, expandEnvTemplate, TimeoutError, withTimeout } from "../mcp/index.js";
 
 describe("mcp withTimeout", () => {
   it("resolves with the operation's value when it finishes in time", async () => {
@@ -55,5 +55,38 @@ describe("mcp withTimeout", () => {
       setTimeout(() => reject(new Error("server crashed")), 5),
     );
     await expect(withTimeout("op", boom, 1000)).rejects.toThrow("server crashed");
+  });
+});
+
+describe("mcp expandEnvTemplate", () => {
+  const saved = { ...process.env };
+
+  it("expands ${VAR} placeholders from process.env", () => {
+    process.env.MCP_TEST_TOKEN = "ghp_123";
+    expect(expandEnvTemplate("Bearer ${MCP_TEST_TOKEN}")).toBe("Bearer ghp_123");
+  });
+
+  it("expands undefined variables to empty string (no literal leak)", () => {
+    delete process.env.MCP_TEST_TOKEN;
+    expect(expandEnvTemplate("Bearer ${MCP_TEST_TOKEN}")).toBe("Bearer ");
+  });
+
+  it("leaves non-var text and non-UPPER var names untouched", () => {
+    expect(expandEnvTemplate("plain ${mixedCase} ${NOT_A_VAR")).toBe(
+      "plain ${mixedCase} ${NOT_A_VAR",
+    );
+  });
+
+  it("expandEnvRecord expands every key and value, preserving undefined", () => {
+    process.env.MCP_TEST_KEY = "x-secret";
+    const out = expandEnvRecord({ Authorization: "Bearer ${MCP_TEST_KEY}", "X-Literal": "plain" });
+    expect(out).toEqual({ Authorization: "Bearer x-secret", "X-Literal": "plain" });
+    expect(expandEnvRecord(undefined)).toBeUndefined();
+  });
+
+  it("restores the environment afterwards", () => {
+    for (const [k, v] of Object.entries(saved)) process.env[k] = v;
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+    expect(process.env.MCP_TEST_KEY).toBeUndefined();
   });
 });

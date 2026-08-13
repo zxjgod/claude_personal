@@ -50,6 +50,30 @@ export async function withTimeout<T>(
   }
 }
 
+/**
+ * Expand `${ENV_VAR}` placeholders in a string using process.env.
+ *
+ * Mirrors Claude Code's MCP config behavior: `.mcp.json` may reference
+ * secrets (e.g. `"Authorization": "Bearer ${GITHUB_TOKEN}"`) without baking
+ * them into the repo. Undefined variables expand to "" rather than leaking a
+ * literal `${...}` (which would be sent verbatim as a header value).
+ */
+export function expandEnvTemplate(value: string): string {
+  return value.replace(/\$\{([A-Z][A-Z0-9_]*)\}/g, (_, name: string) => process.env[name] ?? "");
+}
+
+/** Expand `${VAR}` in every key and value of a record (headers / env). */
+export function expandEnvRecord(
+  record?: Record<string, string>,
+): Record<string, string> | undefined {
+  if (!record) return undefined;
+  const out: Record<string, string> = {};
+  for (const [key, val] of Object.entries(record)) {
+    out[expandEnvTemplate(key)] = expandEnvTemplate(val);
+  }
+  return out;
+}
+
 // Conservative per-operation ceilings. A well-behaved MCP server should
 // respond far faster; these bound the worst case so a hung server degrades
 // to an error rather than freezing the session.
@@ -145,7 +169,7 @@ export class MCPManager {
         const transport = new StdioClientTransport({
           command: config.command,
           args: config.args || [],
-          env: { ...process.env, ...(config.env || {}) } as Record<string, string>,
+          env: { ...process.env, ...expandEnvRecord(config.env) } as Record<string, string>,
         });
         client = new Client(
           { name: "claude-code-replica", version: "1.0.0" },
@@ -174,7 +198,7 @@ export class MCPManager {
         const transport = this.createNetworkTransport(
           config.type,
           url,
-          config.headers,
+          expandEnvRecord(config.headers),
           authProvider,
         );
 
@@ -189,7 +213,7 @@ export class MCPManager {
             const reTransport = this.createNetworkTransport(
               config.type as "http" | "sse",
               url,
-              config.headers,
+              expandEnvRecord(config.headers),
               authProvider,
             );
             // finishAuth exchanges the code for tokens on the transport.

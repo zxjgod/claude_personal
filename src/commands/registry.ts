@@ -25,11 +25,13 @@ import helpCommand, { bindCommandList } from "./help.js";
 import { hooksCommand } from "./hooks.js";
 import { initCommand } from "./init.js";
 import { keybindingsCommand } from "./keybindings.js";
+import { getCustomCommands } from "./loadCommandsDir.js";
 import { mcpCommand } from "./mcp.js";
 import { memoryCommand } from "./memory.js";
 import { modeCommand } from "./mode.js";
 import { modelCommand } from "./model.js";
 import { onboardingCommand } from "./onboarding.js";
+import { outputStyleCommand } from "./output-style.js";
 import { permissionsCommand } from "./permissions.js";
 import { prCommand } from "./pr.js";
 import { providerCommand } from "./provider.js";
@@ -90,7 +92,10 @@ export const COMMANDS: SlashCommand[] = [
   scheduleCommand,
   goalCommand,
   vimCommand,
+  outputStyleCommand,
 ];
 
 // /help iterates COMMANDS at run time; bind it now that the array exists.
-bindCommandList(() => COMMANDS);
+// The getter also folds in disk-defined custom commands (loaded later, at CLI
+// startup) so they show up in the help panel without a second binding pass.
+bindCommandList(() => [...COMMANDS, ...getCustomCommands().values()]);

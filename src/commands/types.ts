@@ -62,6 +62,12 @@ export interface CommandContext {
   goal?: { value: string };
   /** Editor input mode (for /vim). Toggled between "default" and "vim". */
   editorMode?: { value: "default" | "vim" };
+  /**
+   * Active output style holder (for /output-style). The CLI reads this when it
+   * rebuilds the turn's system prompt; writing it switches the style for
+   * subsequent turns. Same `{ value }` holder pattern as `goal` / `editorMode`.
+   */
+  outputStyle?: { value: string };
 }
 
 export interface CommandResult {

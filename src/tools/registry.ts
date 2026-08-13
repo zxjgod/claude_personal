@@ -7,22 +7,39 @@ import { zodToJsonSchema } from "zod-to-json-schema";
 import type { PermissionResult, Tool, ToolContext, ToolInput, ToolResult } from "../types.js";
 import { DEFAULT_MAX_RESULT_CHARS } from "./truncation.js";
 
+/** Where a tool came from — drives /tools-style listings. */
+export type ToolSource = "core" | "mcp";
+
 export class ToolRegistry {
   private tools: Map<string, Tool> = new Map();
+  // Registration-order source records, so /tools can show where each tool
+  // came from without a second hand-maintained array in cli.ts (which could
+  // drift from what the loop actually uses).
+  private sources: Array<{ tool: Tool; source: ToolSource }> = [];
 
-  register(tool: Tool): void {
+  register(tool: Tool, source: ToolSource = "core"): void {
     if (this.tools.has(tool.name)) {
       throw new Error(`Tool "${tool.name}" is already registered`);
     }
     this.tools.set(tool.name, tool);
+    this.sources.push({ tool, source });
   }
 
   unregister(name: string): void {
     this.tools.delete(name);
+    this.sources = this.sources.filter((s) => s.tool.name !== name);
   }
 
   getEnabledTools(): Tool[] {
     return Array.from(this.tools.values()).filter((t) => t.isEnabled());
+  }
+
+  /**
+   * Every registered tool in registration order, tagged with its source
+   * ("core" | "mcp"). Single source of truth for /tools-style listings.
+   */
+  listSources(): Array<{ tool: Tool; source: ToolSource }> {
+    return this.sources;
   }
 
   getTool(name: string): Tool | undefined {
