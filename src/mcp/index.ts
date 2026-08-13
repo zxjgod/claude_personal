@@ -406,6 +406,21 @@ export class MCPManager {
   }
 
   /**
+   * Compact "server → tools" summary for the system prompt. Lets the model see
+   * WHICH MCP servers are connected and what each exposes (beyond the bare tool
+   * definitions carried by the API `tools` argument). Returns "" when no servers
+   * are connected, so callers can pass it straight into buildSystemPrompt.
+   */
+  describeServersForPrompt(): string {
+    const lines: string[] = [];
+    for (const [name, server] of this.servers) {
+      const tools = server.tools.map((t) => t.name).join(", ");
+      lines.push(`- ${name}: ${tools || "(no tools)"}`);
+    }
+    return lines.join("\n");
+  }
+
+  /**
    * List resources across all connected servers. Servers that don't support
    * resources (or error) are skipped. Returns flat entries tagged by server.
    */

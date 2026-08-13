@@ -5,7 +5,7 @@
 import OpenAI from "openai";
 import { anthropicCaller } from "./anthropic-adapter.js";
 import { isCloudGateway, resolveGateway } from "./cloud-gateway.js";
-import { truncateToolResult } from "./tools/truncation.js";
+import { DEFAULT_MAX_RESULT_CHARS, truncateToolResult } from "./tools/truncation.js";
 import { getEffort, modelSupportsReasoningEffort, openaiReasoningEffort } from "./tui/effort.js";
 import type { Message, ModelCaller, ModelConfig, StreamEvent, Tool } from "./types.js";
 
@@ -48,26 +48,22 @@ export const PROVIDER_DEFAULTS = PROVIDER_CONFIGS;
 // --- Message Conversion (Internal → OpenAI) ---
 
 /**
- * P0-1 Fix: Map tool names to their maxResultSizeChars cap so the truncation
- * matches what the agent loop uses when formatting results. Keep in sync with
- * the tool definitions in src/tools/. Default = DEFAULT_MAX_RESULT_CHARS.
+ * Per-tool model-facing result cap. Looked up from the live tool set on every
+ * call so Read's `maxResultSizeChars = Infinity` (never truncate a Read) is
+ * honored — previously this resolved through a global registry handle that was
+ * never assigned, so every tool silently fell back to the default cap.
+ * Falls back to DEFAULT_MAX_RESULT_CHARS for unknown tools.
  */
-const TOOL_MAX_CHARS: Record<string, number | undefined> = {};
-// Resolved lazily on first use via getToolMaxChars() below.
-
-/** Get the max chars cap for a tool. Returns DEFAULT_MAX_RESULT_CHARS as fallback. */
-function getToolMaxChars(toolName: string): number {
-  // Lazy: resolve from the Tool registry on first call, then cache.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const reg = (globalThis as any).__ccr_toolRegistry;
-  if (reg) {
-    const tool = reg.findByName?.(toolName);
-    if (tool?.maxResultSizeChars) return tool.maxResultSizeChars;
-  }
-  return 30_000; // DEFAULT_MAX_RESULT_CHARS
+function getToolMaxChars(toolName: string, tools: Tool[]): number {
+  const tool = tools.find((t) => t.name === toolName);
+  if (tool?.maxResultSizeChars) return tool.maxResultSizeChars;
+  return DEFAULT_MAX_RESULT_CHARS;
 }
 
-function convertToOpenAIMessage(msg: Message): OpenAI.Chat.Completions.ChatCompletionMessageParam {
+function convertToOpenAIMessage(
+  msg: Message,
+  tools: Tool[],
+): OpenAI.Chat.Completions.ChatCompletionMessageParam {
   switch (msg.role) {
     case "user":
       return {
@@ -100,7 +96,7 @@ function convertToOpenAIMessage(msg: Message): OpenAI.Chat.Completions.ChatCompl
     case "tool": {
       // P0-1 Fix: truncate tool result at API-call time, not in message history.
       // The full result is preserved in messages[] for session snapshot / resume.
-      const maxChars = getToolMaxChars(msg.name ?? "");
+      const maxChars = getToolMaxChars(msg.name ?? "", tools);
       const truncated = truncateToolResult(msg.content, maxChars);
       const apiContent = truncated.truncated ? truncated.preview : msg.content;
       return {
@@ -137,7 +133,7 @@ async function* openAICompatibleCaller(
 
   const requestMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
     { role: "system", content: systemPrompt },
-    ...messages.map(convertToOpenAIMessage),
+    ...messages.map((m) => convertToOpenAIMessage(m, tools)),
   ];
 
   // Reasoning effort (/effort). Only reasoning-capable models accept

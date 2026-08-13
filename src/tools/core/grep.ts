@@ -232,10 +232,14 @@ async function runNodeFallback(
 
       const contextBefore = input["-B"] ?? input["-C"] ?? 0;
       const contextAfter = input["-A"] ?? input["-C"] ?? 0;
+      // Honor -n:false (suppress line numbers) and -o (only matching substrings).
+      const showLineNum = input["-n"] !== false;
+      const onlyRegex = input["-o"] ? new RegExp(input.pattern, flags) : null;
 
       for (let i = 0; i < contentLines.length; i++) {
+        const line = contentLines[i]!;
         regex.lastIndex = 0;
-        if (!regex.test(contentLines[i]!)) continue;
+        if (!regex.test(line)) continue;
         if (input.output_mode === "files_with_matches") {
           fileMatchCount.set(relPath, 1);
           continue;
@@ -244,12 +248,24 @@ async function runNodeFallback(
           fileMatchCount.set(relPath, (fileMatchCount.get(relPath) ?? 0) + 1);
           continue;
         }
-        // content mode: emit match lines with optional context
-        const start = Math.max(0, i - contextBefore);
-        const end = Math.min(contentLines.length - 1, i + contextAfter);
-        for (let j = start; j <= end; j++) {
-          const sep = j === i ? ":" : "-";
-          results.push(`${relPath}:${j + 1}${sep}${contentLines[j]!.trim()}`);
+        if (onlyRegex) {
+          // -o: emit each matching substring (context lines are not emitted with
+          // -o; they would duplicate the match on the same line).
+          let m: RegExpExecArray | null;
+          while ((m = onlyRegex.exec(line)) !== null) {
+            results.push(showLineNum ? `${relPath}:${i + 1}:${m[0]}` : m[0]);
+            if (m.index === onlyRegex.lastIndex) onlyRegex.lastIndex++;
+            if (results.length >= headLimit) break;
+          }
+        } else {
+          // content mode: emit match lines with optional context
+          const start = Math.max(0, i - contextBefore);
+          const end = Math.min(contentLines.length - 1, i + contextAfter);
+          for (let j = start; j <= end; j++) {
+            const sep = j === i ? ":" : "-";
+            const prefix = showLineNum ? `${relPath}:${j + 1}${sep}` : "";
+            results.push(`${prefix}${contentLines[j]!.trim()}`);
+          }
         }
         if (results.length >= headLimit) break;
       }

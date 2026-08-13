@@ -155,32 +155,34 @@ export const ReadTool: Tool = buildTool({
       };
     } catch (error: any) {
       if (error.code === "ENOENT") {
-        const fileName = input.filePath.split(/[/\\]/).pop() || input.filePath;
         return {
           content: "",
           error:
-            `文件不存在: ${input.filePath}\n` +
-            chalk.gray(`   提示: 检查路径是否正确，或使用 Glob 工具搜索文件 (如 "*.ts")`),
+            `File not found: ${input.filePath}\n` +
+            chalk.gray(
+              `   Hint: check the path, or use the Glob tool to search for it (e.g. "*.ts")`,
+            ),
         };
       }
       if (error.code === "EACCES") {
         return {
           content: "",
           error:
-            `权限不足: 无法读取 "${input.filePath}"\n` + chalk.gray("   提示: 检查文件权限设置"),
+            `Permission denied: cannot read "${input.filePath}"\n` +
+            chalk.gray("   Hint: check the file permissions"),
         };
       }
       if (error.code === "EISDIR") {
         return {
           content: "",
           error:
-            `路径是目录而非文件: ${input.filePath}\n` +
-            chalk.gray("   提示: 使用 Glob 工具列出目录内容"),
+            `Path is a directory, not a file: ${input.filePath}\n` +
+            chalk.gray("   Hint: use the Glob tool to list directory contents"),
         };
       }
       return {
         content: "",
-        error: `读取文件时出错: ${error.message}`,
+        error: `Error reading file: ${error.message}`,
       };
     }
   },

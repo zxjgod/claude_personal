@@ -176,12 +176,12 @@ export const BashTool: Tool = buildTool({
     if (timedOut) {
       const timeoutSecs = Math.round(timeout / 1000);
       return {
-        content: output || `命令在 ${timeoutSecs} 秒后超时`,
+        content: output || `Command timed out after ${timeoutSecs}s`,
         truncated: outTruncated,
         error:
-          `命令执行超时 (${timeoutSecs}s)\n` +
-          chalk.gray(`   提示: 如果这是正常行为，可以增加 timeout 参数`) +
-          (output ? `\n${chalk.gray("   前部分输出:")}\n${output.slice(0, 500)}` : ""),
+          `Command timed out (${timeoutSecs}s)\n` +
+          chalk.gray(`   Hint: if this is expected, increase the timeout parameter`) +
+          (output ? `\n${chalk.gray("   Output so far:")}\n${output.slice(0, 500)}` : ""),
         metadata: { exitCode: -1, timedOut: true },
       };
     }
@@ -189,20 +189,20 @@ export const BashTool: Tool = buildTool({
     // Non-zero exit code indicates command failure
     if (exitCode !== null && exitCode !== 0) {
       const truncatedNote = outTruncated
-        ? `\n${chalk.yellow("   ⚠️ 输出被截断 (超过 10MB 限制)")}`
+        ? `\n${chalk.yellow("   ⚠️ output truncated (over 10MB limit)")}`
         : "";
       return {
-        content: output || "(无输出)",
+        content: output || "(no output)",
         truncated: outTruncated,
         error:
-          `命令执行失败 (退出码: ${exitCode})${truncatedNote}\n` +
-          chalk.gray("   提示: 检查命令语法和参数是否正确"),
+          `Command failed (exit code: ${exitCode})${truncatedNote}\n` +
+          chalk.gray("   Hint: check the command syntax and arguments"),
         metadata: { exitCode },
       };
     }
 
     return {
-      content: output || "(无输出)",
+      content: output || "(no output)",
       truncated: outTruncated,
       metadata: { exitCode },
     };

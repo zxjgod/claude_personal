@@ -136,28 +136,31 @@ export const EditTool: Tool = buildTool({
         return {
           content: "",
           error:
-            `文件不存在: ${input.filePath}\n` +
-            chalk.gray("   提示: 无法编辑不存在的文件，请先使用 Write 工具创建它"),
+            `File not found: ${input.filePath}\n` +
+            chalk.gray(
+              "   Hint: cannot edit a non-existent file; use the Write tool to create it first",
+            ),
         };
       }
       if (error.code === "EACCES") {
         return {
           content: "",
           error:
-            `权限不足: 无法编辑 "${input.filePath}"\n` + chalk.gray("   提示: 检查文件权限设置"),
+            `Permission denied: cannot edit "${input.filePath}"\n` +
+            chalk.gray("   Hint: check the file permissions"),
         };
       }
       if (error.code === "EBUSY" || error.code === "ETXTBSY") {
         return {
           content: "",
           error:
-            `文件正被占用: ${input.filePath}\n` +
-            chalk.gray("   提示: 文件可能被其他程序打开，请关闭后再试"),
+            `File is in use: ${input.filePath}\n` +
+            chalk.gray("   Hint: the file may be open in another program; close it and retry"),
         };
       }
       return {
         content: "",
-        error: `编辑文件时出错: ${error.message}`,
+        error: `Error editing file: ${error.message}`,
       };
     }
   },
@@ -304,26 +307,29 @@ export const MultiEditTool: Tool = buildTool({
         return {
           content: "",
           error:
-            `文件不存在: ${input.filePath}\n` +
-            chalk.gray("   提示: 无法编辑不存在的文件，请先使用 Write 工具创建它"),
+            `File not found: ${input.filePath}\n` +
+            chalk.gray(
+              "   Hint: cannot edit a non-existent file; use the Write tool to create it first",
+            ),
         };
       }
       if (error.code === "EACCES") {
         return {
           content: "",
           error:
-            `权限不足: 无法编辑 "${input.filePath}"\n` + chalk.gray("   提示: 检查文件权限设置"),
+            `Permission denied: cannot edit "${input.filePath}"\n` +
+            chalk.gray("   Hint: check the file permissions"),
         };
       }
       if (error.code === "EBUSY" || error.code === "ETXTBSY") {
         return {
           content: "",
           error:
-            `文件正被占用: ${input.filePath}\n` +
-            chalk.gray("   提示: 文件可能被其他程序打开，请关闭后再试"),
+            `File is in use: ${input.filePath}\n` +
+            chalk.gray("   Hint: the file may be open in another program; close it and retry"),
         };
       }
-      return { content: "", error: `编辑文件时出错: ${error.message}` };
+      return { content: "", error: `Error editing file: ${error.message}` };
     }
   },
 

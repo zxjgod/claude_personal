@@ -99,11 +99,11 @@ function buildToolDescriptionsSection(tools: Tool[]): string {
   const lines = ["AVAILABLE TOOLS:", ""];
   for (const tool of tools) {
     if (!tool.isEnabled()) continue;
-    lines.push(
-      `${tool.name} — ${tool.promptDescription}`,
-      `  Parameters: ${JSON.stringify(tool.inputSchema.properties)}`,
-      "",
-    );
+    // One line per tool: name + intent (promptDescription already lists the
+    // parameters). The full JSON Schema is carried by the API `tools` argument,
+    // so duplicating it here doubles the token cost for no signal — both live
+    // in the cacheable prefix, so it's pure waste.
+    lines.push(`${tool.name} — ${tool.promptDescription}`, "");
   }
   return lines.join("\n");
 }

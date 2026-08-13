@@ -50,7 +50,7 @@ describe("ReadTool", () => {
 
   it("should return error for non-existent file", async () => {
     const result = await ReadTool.call({ filePath: "nonexistent.txt" }, ctx);
-    expect(result.error).toContain("不存在");
+    expect(result.error).toContain("File not found");
   });
 
   it("should detect binary files", async () => {

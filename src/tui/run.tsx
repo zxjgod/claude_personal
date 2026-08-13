@@ -61,6 +61,10 @@ export interface TuiDeps {
   permissionKey: (toolName: string, input: Record<string, unknown>) => string;
   /** M15.3: optional LLM permission classifier (opt-in via CLI flag). */
   permissionClassifier?: PermissionClassifier;
+  /** M36: background memory/skill prefetch (returns a <system-reminder> or null). */
+  prefetch?: (latestUserText: string) => Promise<string | null>;
+  /** M36: opt-in tool-batch digest (undefined = disabled). */
+  summarizeToolBatch?: (prompt: string) => Promise<string | null>;
   /** M25.2: opt-in full-screen alt-screen layout (default off). */
   fullscreen?: boolean;
   onSave: () => void;
@@ -126,6 +130,9 @@ async function runTurn(
     askUser,
     abortSignal: controller.signal,
     hooks: deps.hooks,
+    // M36: background memory/skill prefetch + (opt-in) tool-batch digest.
+    prefetch: deps.prefetch,
+    summarizeToolBatch: deps.summarizeToolBatch,
     // M36: type-ahead. The loop drains queued input at each turn boundary and
     // continues the SAME turn with it (kernel §9), so a message typed while the
     // agent works is picked up without waiting for the turn to end. The TUI

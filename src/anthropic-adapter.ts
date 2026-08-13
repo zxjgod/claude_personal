@@ -9,7 +9,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { DYNAMIC_BOUNDARY } from "./system-prompt.js";
-import { truncateToolResult } from "./tools/truncation.js";
+import { DEFAULT_MAX_RESULT_CHARS, truncateToolResult } from "./tools/truncation.js";
 import { anthropicEffort, getEffort } from "./tui/effort.js";
 import type { Message, ModelCaller, ModelConfig, StreamEvent, Tool } from "./types.js";
 
@@ -64,17 +64,16 @@ export function formatSystemForAnthropic(
 // --- Message conversion ---
 
 /** Get the max chars cap for a tool. Returns DEFAULT_MAX_RESULT_CHARS as fallback. */
-function getToolMaxChars(toolName: string): number {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const reg = (globalThis as any).__ccr_toolRegistry;
-  if (reg) {
-    const tool = reg.findByName?.(toolName);
-    if (tool?.maxResultSizeChars) return tool.maxResultSizeChars;
-  }
-  return 30_000;
+function getToolMaxChars(toolName: string, tools: Tool[]): number {
+  const tool = tools.find((t) => t.name === toolName);
+  if (tool?.maxResultSizeChars) return tool.maxResultSizeChars;
+  return DEFAULT_MAX_RESULT_CHARS;
 }
 
-export function convertMessagesToAnthropic(messages: Message[]): AnthropicMessage[] {
+export function convertMessagesToAnthropic(
+  messages: Message[],
+  tools: Tool[] = [],
+): AnthropicMessage[] {
   const out: AnthropicMessage[] = [];
 
   for (const msg of messages) {
@@ -153,7 +152,7 @@ export function convertMessagesToAnthropic(messages: Message[]): AnthropicMessag
       case "tool": {
         // P0-1 Fix: truncate tool result at API-call time, not in message history.
         // The full result is preserved in messages[] for session snapshot / resume.
-        const maxChars = getToolMaxChars(msg.name ?? "");
+        const maxChars = getToolMaxChars(msg.name ?? "", tools);
         const truncated = truncateToolResult(msg.content, maxChars);
         const apiContent = truncated.truncated ? truncated.preview : msg.content;
         // Anthropic requires tool results in a user message.
@@ -267,7 +266,7 @@ export const anthropicCaller: ModelCaller = async function* (
       model: config.model || "claude-opus-4-8",
       max_tokens: config.maxTokens ?? 16_000,
       system: formatSystemForAnthropic(systemPrompt) as any,
-      messages: withMessageCacheBreakpoint(convertMessagesToAnthropic(messages)) as any,
+      messages: withMessageCacheBreakpoint(convertMessagesToAnthropic(messages, tools)) as any,
       tools: tools.length > 0 ? (formatToolsForAnthropic(tools) as any) : undefined,
       // Claude 4.8 benefits from adaptive thinking; harmlessly omitted when the
       // caller uses a non-Claude provider because this adapter only runs for

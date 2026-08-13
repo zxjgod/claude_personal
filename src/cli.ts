@@ -20,8 +20,11 @@ import { HookRegistry } from "./hooks.js";
 import { loadHooksFromSettings } from "./hooks-config.js";
 import { createModelCaller, resolveProviderConfig } from "./llm-adapter.js";
 import { discoverMCPConfigs, MCPManager } from "./mcp/index.js";
+import { MemoryStore } from "./memory-extract.js";
 import { PersistenceManager } from "./persistence.js";
+import { renderPrefetchAttachment, startPrefetch } from "./prefetch.js";
 import { loadSkillsDir } from "./skills/loadSkillsDir.js";
+import { listSkills } from "./skills.js";
 import { formatSpeculationLine } from "./speculation.js";
 import { setCoreToolsForSubagents } from "./subagents.js";
 import { buildSystemPrompt, renderSystemPrompt } from "./system-prompt.js";
@@ -44,6 +47,7 @@ import {
   StreamingRenderer,
 } from "./tui/cli-renderer.js";
 import { Spinner } from "./tui/cli-spinner.js";
+import { detectLanguage } from "./tui/i18n.js";
 import { SessionStats } from "./tui/session-stats.js";
 import { SessionTranscript } from "./tui/session-transcript.js";
 import type {
@@ -520,6 +524,13 @@ async function main() {
         model: modelConfig.model,
         outputStyle: outputStyleHolder.value,
         gitStatus: gitSnapshot,
+        // MCP servers connect/disconnect at runtime, so this is recomputed each
+        // turn (see DANGEROUS_uncachedSystemPromptSection in system-prompt.ts).
+        mcpInstructions: mcpManager.describeServersForPrompt(),
+        // Only surface an explicit preference when a non-default language is
+        // detected; otherwise the output-style's "respond in the user's
+        // language" rule already governs.
+        languagePreference: detectLanguage() === "zh-CN" ? "Chinese" : undefined,
       }),
     );
     return goalHolder.value
@@ -538,6 +549,41 @@ async function main() {
   // The branch is a cheap function-ref lookup, so per-turn cost is negligible.
   const callModel: ModelCaller = (messages, tools, systemPrompt, cfg, abortSignal) =>
     createModelCaller(cfg)(messages, tools, systemPrompt, cfg, abortSignal);
+
+  // M36: memory + skill prefetch (kernel §9). Kicks off concurrently with the
+  // model stream so the NEXT turn can inject relevant memories/skills as a
+  // <system-reminder> without paying latency. Pure keyword-overlap ranking — no
+  // model call, no I/O beyond the already-loaded lists.
+  const memoryStore = new MemoryStore(workspaceRoot);
+  const prefetchMemories = (latestUserText: string): Promise<string | null> =>
+    startPrefetch({
+      query: latestUserText,
+      memories: () => memoryStore.list(),
+      skills: () => listSkills(),
+    }).then(renderPrefetchAttachment);
+
+  // M36: fast-model digest of a finished tool batch (kernel §9). OFF by default
+  // — it fires a concurrent model call per large batch, and there's no separate
+  // fast-model config yet, so enable explicitly with CCR_TOOL_SUMMARY=1.
+  const summarizeToolBatch =
+    process.env.CCR_TOOL_SUMMARY === "1"
+      ? async (prompt: string): Promise<string | null> => {
+          try {
+            let text = "";
+            for await (const event of callModel(
+              [{ role: "user", content: [{ type: "text", text: prompt }] }],
+              [],
+              "",
+              modelConfig,
+            )) {
+              if (event.type === "text_delta") text += event.delta;
+            }
+            return text.trim() || null;
+          } catch {
+            return null;
+          }
+        }
+      : undefined;
 
   // M15.3: LLM-assisted permission classifier. OFF by default — enable with
   // --llm-perm-classifier or CCR_PERM_CLASSIFIER=1. When enabled, tool calls
@@ -692,6 +738,9 @@ async function main() {
       // M15.3: opt-in LLM permission classifier, threaded into the TUI's
       // agent loop the same way as the line-based REPL path.
       permissionClassifier,
+      // M36: background memory/skill prefetch + (opt-in) tool-batch digest.
+      prefetch: prefetchMemories,
+      summarizeToolBatch,
       onSave: () => {
         persistence.save(sessionId!, messages).catch((err) => {
           console.error("Warning: TUI save failed:", formatCliError(err));
@@ -912,6 +961,9 @@ async function main() {
       // M15.2: ON by default; --no-speculation / CCR_SPECULATION=0 disable.
       speculation:
         !process.argv.includes("--no-speculation") && process.env.CCR_SPECULATION !== "0",
+      // M36: background memory/skill prefetch + (opt-in) tool-batch digest.
+      prefetch: prefetchMemories,
+      summarizeToolBatch,
     });
 
     let lastText = "";
