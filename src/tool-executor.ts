@@ -309,33 +309,45 @@ export async function* executeToolCalls(
 
     const emitted = new Set<number>();
     let wasAborted = false;
-    while (true) {
-      // Race the merged batch against the abort signal.
-      let step: IteratorResult<IndexedResult>;
-      if (abortSignal) {
-        const abortPromise = new Promise<never>((_, reject) => {
-          if (abortSignal.aborted) reject(new AbortError("Aborted"));
-          else
-            abortSignal.addEventListener("abort", () => reject(new AbortError("Aborted")), {
-              once: true,
-            });
-        });
-        try {
-          step = await Promise.race([merged.next(), abortPromise]);
-        } catch {
+
+    // A single abort promise + listener for the whole batch (P2 Fix). The
+    // previous code created one abortPromise + abort listener per race
+    // iteration and never removed them, leaking a listener per tool call.
+    let abortPromise: Promise<never> | null = null;
+    let rejectAbort: ((e: Error) => void) | null = null;
+    const onAbort = () => rejectAbort?.(new AbortError("Aborted"));
+    if (abortSignal) {
+      abortPromise = new Promise<never>((_, reject) => {
+        rejectAbort = reject;
+        if (abortSignal.aborted) reject(new AbortError("Aborted"));
+        else abortSignal.addEventListener("abort", onAbort, { once: true });
+      });
+    }
+
+    try {
+      while (true) {
+        // Race the merged batch against the abort signal.
+        let step: IteratorResult<IndexedResult>;
+        if (abortPromise) {
+          try {
+            step = await Promise.race([merged.next(), abortPromise]);
+          } catch {
+            wasAborted = true;
+            break;
+          }
+        } else {
+          step = await merged.next();
+        }
+        if (step.done) break;
+        emitted.add(step.value.index);
+        yield step.value;
+        if (abortSignal?.aborted) {
           wasAborted = true;
           break;
         }
-      } else {
-        step = await merged.next();
       }
-      if (step.done) break;
-      emitted.add(step.value.index);
-      yield step.value;
-      if (abortSignal?.aborted) {
-        wasAborted = true;
-        break;
-      }
+    } finally {
+      if (abortSignal) abortSignal.removeEventListener("abort", onAbort);
     }
     if (wasAborted) {
       // Surface aborted results for any call in this batch that never emitted.

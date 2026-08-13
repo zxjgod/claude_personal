@@ -8,17 +8,22 @@
 /**
  * Decision returned by handleModelError.
  * - "retry": wait then re-call the model with the same messages (429).
+ * - "retry_transient": wait then re-call after a timeout/connection error.
  * - "compact_and_retry": compress context once, then re-call the model
  *   (context_length exceeded).
  * - "abort": unrecoverable (auth, unknown, or retry budget exhausted).
  */
-export type ModelErrorRecovery = "retry" | "compact_and_retry" | "abort";
+export type ModelErrorRecovery = "retry" | "retry_transient" | "compact_and_retry" | "abort";
 
 export interface RecoveryState {
   rateLimitRetries: number;
   contextLengthRetries: number;
+  /** Transient transport-error retries (timeouts/connection resets), separate */
+  /** from rate-limit retries so a 429 burst can't exhaust the timeout budget. */
+  transientRetries: number;
   maxRateLimitRetries: number;
   maxContextLengthRetries: number;
+  maxTransientRetries: number;
 }
 
 /** Sleep utility. */
@@ -83,7 +88,8 @@ export async function handleModelError(
     return "abort";
   }
 
-  // Transient timeout / connection error → retry once (bounded).
+  // Transient timeout / connection error → retry once, bounded by its OWN
+  // budget (independent of rate-limit retries).
   if (
     name === "TimeoutError" ||
     name === "ETIMEDOUT" ||
@@ -93,11 +99,11 @@ export async function handleModelError(
     msg.includes("timeout") ||
     msg.includes("socket hang up")
   ) {
-    if (state.rateLimitRetries >= state.maxRateLimitRetries) {
+    if (state.transientRetries >= state.maxTransientRetries) {
       return "abort";
     }
     await sleep(2000);
-    return "retry";
+    return "retry_transient";
   }
 
   // Unknown error → abort

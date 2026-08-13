@@ -112,6 +112,19 @@ export const WebFetchTool: Tool = buildTool({
 
       clearTimeout(timeoutId);
 
+      // `redirect: "follow"` can land on an internal host even when the original
+      // URL passed SSRF validation. Re-validate the FINAL url after redirects so a
+      // redirect to localhost/private IPs is still blocked.
+      if (response.url && response.url !== input.url) {
+        const finalCheck = InputValidator.validateUrl(response.url);
+        if (!finalCheck.valid) {
+          return {
+            content: "",
+            error: `Blocked redirect target: ${finalCheck.error ?? response.url}`,
+          };
+        }
+      }
+
       // Check content type
       const contentType = response.headers.get("content-type") || "";
 

@@ -165,6 +165,12 @@ export interface ToolContext {
    * (the kernel's reason a fork must not swap model). Absent → fork unavailable.
    */
   parentSystemPrompt?: string;
+  /**
+   * Nesting depth of the current agent loop (0 = the main agent). Threaded so
+   * the Task tool can cap fork-in-fork recursion, which would otherwise grow
+   * unbounded (each fork inherits the full tool set, including Task itself).
+   */
+  subagentDepth?: number;
 }
 
 /** A structured question the model can pose to the user (AskUserQuestion). */

@@ -34,6 +34,10 @@ setAgentMemoryLoader(loadAgentMemoryPrompt);
 
 const SUBAGENT_MAX_TURNS = 10;
 const SUBAGENT_COMPACT_THRESHOLD = 50_000;
+// Fork nesting cap: a fork inherits the full core tool set (including the Task
+// tool itself), so without a limit fork → fork → … would recurse unbounded.
+// The main agent (depth 0) may fork once (depth 1); a fork may not fork again.
+const MAX_FORK_DEPTH = 1;
 
 // Max sub-agents running at once. A turn can request many `task` calls
 // (they're concurrency-safe), so without a cap a wide fan-out would hit
@@ -126,6 +130,17 @@ export const TaskTool: Tool = buildTool({
     const canFork = !!context.getParentMessages && !!context.parentSystemPrompt;
     const isFork = !requestedName && canFork;
 
+    // Guard against unbounded fork recursion (fork → fork → …).
+    const depth = context.subagentDepth ?? 0;
+    if (isFork && depth >= MAX_FORK_DEPTH) {
+      return {
+        content: "",
+        error:
+          `Fork nesting limit reached (depth ${depth}). ` +
+          `A forked agent cannot fork again — use a typed sub-agent (subagent_name) instead.`,
+      };
+    }
+
     const subagentName = isFork ? "fork" : requestedName || "code-explorer";
     const subagentType = isFork ? undefined : getSubagentType(subagentName);
     if (!isFork && !subagentType) {
@@ -196,6 +211,8 @@ export const TaskTool: Tool = buildTool({
           modelConfig: context.modelConfig,
           // Use restricted approver to prevent sub-agents from bypassing permissions
           askUser: subApprover,
+          // Thread the nesting depth so a fork-of-a-fork is capped.
+          subagentDepth: depth + 1,
         },
         // Also pass restricted askUser at the LoopOptions level
         askUser: subApprover,

@@ -55,6 +55,7 @@ interface LoopState {
   totalTokens: number;
   rateLimitRetries: number;
   contextLengthRetries: number;
+  transientRetries: number;
   /** Why the previous step handed control back to the loop top. */
   transition: { reason: "start" | "model_retry" | "compact_retry" | "tools_done" };
   /**
@@ -109,16 +110,19 @@ export async function* agentLoop(
     abortSignal,
     getParentMessages: () => messages.slice(),
     parentSystemPrompt: systemPrompt,
+    subagentDepth: toolContext?.subagentDepth,
   };
 
   const MAX_RATE_LIMIT_RETRIES = 3;
   const MAX_CONTEXT_LENGTH_RETRIES = 3;
+  const MAX_TRANSIENT_RETRIES = 3;
 
   let state: LoopState = {
     turnCount: 0,
     totalTokens: 0,
     rateLimitRetries: 0,
     contextLengthRetries: 0,
+    transientRetries: 0,
     transition: { reason: "start" },
     budget: createTokenBudgetState(),
     stopHookActive: false,
@@ -270,11 +274,19 @@ export async function* agentLoop(
             const recovery = await handleModelError(event.error, {
               rateLimitRetries: state.rateLimitRetries,
               contextLengthRetries: state.contextLengthRetries,
+              transientRetries: state.transientRetries,
               maxRateLimitRetries: MAX_RATE_LIMIT_RETRIES,
               maxContextLengthRetries: MAX_CONTEXT_LENGTH_RETRIES,
+              maxTransientRetries: MAX_TRANSIENT_RETRIES,
             });
             if (recovery === "retry") {
               state = { ...state, rateLimitRetries: state.rateLimitRetries + 1 };
+              nextAction = "retry";
+              streamEnded = true;
+              break;
+            }
+            if (recovery === "retry_transient") {
+              state = { ...state, transientRetries: state.transientRetries + 1 };
               nextAction = "retry";
               streamEnded = true;
               break;

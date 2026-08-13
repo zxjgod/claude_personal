@@ -68,11 +68,30 @@ export const ReadTool: Tool = buildTool({
         };
       }
 
-      // Check for binary files
-      const buffer = fs.readFileSync(filePath);
+      const mediaType = imageMediaType(filePath);
+
+      // Never load an unbounded text file wholesale into memory: a multi-GB
+      // file would be read into RAM and split into lines with no cap, risking
+      // OOM. Read only a bounded prefix for oversized non-image files and flag
+      // truncation.
+      const MAX_TEXT_FILE_BYTES = 10 * 1024 * 1024; // 10MB
+      let buffer: Buffer;
+      let fileTruncated = false;
+      if (!mediaType && stat.size > MAX_TEXT_FILE_BYTES) {
+        const fd = fs.openSync(filePath, "r");
+        try {
+          const head = Buffer.alloc(MAX_TEXT_FILE_BYTES);
+          const bytesRead = fs.readSync(fd, head, 0, MAX_TEXT_FILE_BYTES, 0);
+          buffer = head.subarray(0, bytesRead);
+        } finally {
+          fs.closeSync(fd);
+        }
+        fileTruncated = true;
+      } else {
+        buffer = fs.readFileSync(filePath);
+      }
 
       // Images and PDFs return as multimodal content blocks.
-      const mediaType = imageMediaType(filePath);
       if (mediaType) {
         if (stat.size > MAX_IMAGE_BYTES) {
           return {
@@ -121,7 +140,7 @@ export const ReadTool: Tool = buildTool({
         })
         .join("\n");
 
-      const truncated = end < totalLines;
+      const truncated = fileTruncated || end < totalLines;
 
       markRead(context.sessionId, filePath, stat.mtimeMs);
 

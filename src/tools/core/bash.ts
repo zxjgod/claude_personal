@@ -45,7 +45,10 @@ export const BashTool: Tool = buildTool({
       return { content: "", error: commandValidation.error };
     }
 
-    const timeout = input.timeout ?? 120_000;
+    // A non-positive timeout (0 / negative) would disable the timer entirely and
+    // let a silent never-exiting command hang the loop forever. Clamp it so "no
+    // timeout" can never mean "infinite hang".
+    const timeout = input.timeout && input.timeout > 0 ? input.timeout : 120_000;
     const abortSignal = context.abortSignal;
 
     // IMPORTANT: We deliberately do NOT use `exec`/`execAsync` here.
@@ -71,33 +74,6 @@ export const BashTool: Tool = buildTool({
       detached: process.platform !== "win32",
     });
 
-    let stdout = "";
-    let stderr = "";
-    let truncated = false;
-    const MAX_OUTPUT = 10 * 1024 * 1024; // 10MB cap on accumulated output
-    child.stdout?.on("data", (d: Buffer) => {
-      stdout += d.toString();
-      if (stdout.length > MAX_OUTPUT) {
-        truncated = true;
-        try {
-          child.kill();
-        } catch {
-          /* ignore */
-        }
-      }
-    });
-    child.stderr?.on("data", (d: Buffer) => {
-      stderr += d.toString();
-      if (stderr.length > MAX_OUTPUT) {
-        truncated = true;
-        try {
-          child.kill();
-        } catch {
-          /* ignore */
-        }
-      }
-    });
-
     // Kill the entire process tree (parent + all descendants). This is the
     // only reliable way on Windows to also terminate grandchild processes
     // that the shell spawned — `child.kill()` would only kill cmd.exe and
@@ -118,6 +94,29 @@ export const BashTool: Tool = buildTool({
         // Process may already be gone — ignore.
       }
     };
+
+    let stdout = "";
+    let stderr = "";
+    let truncated = false;
+    const MAX_OUTPUT = 10 * 1024 * 1024; // 10MB cap on accumulated output
+    child.stdout?.on("data", (d: Buffer) => {
+      stdout += d.toString();
+      if (stdout.length > MAX_OUTPUT) {
+        truncated = true;
+        // Kill the WHOLE tree on overflow too — `child.kill()` orphans the real
+        // command, which keeps holding the stdout pipe open so `close` never
+        // fires and the loop hangs forever (the same deadlock the timeout path
+        // already guards against with killTree).
+        killTree();
+      }
+    });
+    child.stderr?.on("data", (d: Buffer) => {
+      stderr += d.toString();
+      if (stderr.length > MAX_OUTPUT) {
+        truncated = true;
+        killTree();
+      }
+    });
 
     let timedOut = false;
     const timer =
