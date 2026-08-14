@@ -5,7 +5,7 @@
 > 类型：feature
 > 模块：vim 输入模式（`src/tui/vim/`）
 > 主题：从 claude-code 参考源码 `vim/` 移植完整 vim 状态机 + 操作符，落成框架无关的纯引擎
-> 状态：已落地（引擎 + 测试；InputBox 集成待做）
+> 状态：已落地（引擎 + InputBox 集成 + 测试）
 > 验证：`npx tsc --noEmit` 通过、`npx vitest run src/__tests__/vim.test.ts` 11/11 全过、全量 1090/1090
 > 关联 commit：待提交
 > 关联文档：[参考源码精华盘点与移植计划](./20260814-network-dependency-audit.md)（同一批规划的 Phase A）
@@ -44,6 +44,16 @@
 
 ---
 
-## 四、后续（A1 收尾）
+## 四、A1 收尾：InputBox 集成（已落地）
 
-`VimEngine` ↔ `InputBox` 集成：`editorMode === "vim"` 时把按键路由给引擎，并同步 text/offset。见 `src/tui/InputBox.tsx`。
+`src/tui/InputBox.tsx` 把原手写 vim 子集（i/a/A/0/$/h/l/x/D）替换为 `VimEngine` 驱动：
+
+- normal 模式按键经 `inkKeyToVim`（方向键 → h/l/k/j，其余 → 输入字符）路由进引擎，再把引擎的 `text/offset/mode` 读回 React 状态。
+- 引擎用 `useRef` 跨按键持久，多键操作符（`d`→`w`、`3`→`w`）状态机在两次击键间保留。
+- `Esc` 回 normal 时把引擎复位到 NORMAL/idle；text/offset 逐键重同步。
+- INSERT 模式原有编辑逻辑（退格/删除/方向键/多行/历史/补全）不动，只换 normal 块。
+
+## 五、已知未做
+
+- **undo（`u`）/ dot-repeat（`.`）** 仍为 no-op——引擎记录 `lastChange`，但撤销栈属于 InputBox 的历史层，留待后续。
+- A2 Keybindings 系统尚未开始。

@@ -35,6 +35,7 @@ import { useEffect, useRef, useState } from "react";
 import { nextOffset } from "./SessionPicker.js";
 import { terminalColumns } from "./terminal-width.js";
 import { palette } from "./theme.js";
+import { VimEngine } from "./vim/index.js";
 
 export interface CommandInfo {
   name: string;
@@ -130,6 +131,18 @@ function deleteWordBefore(
   };
 }
 
+/** Map an Ink keystroke to a single vim-engine key token. */
+function inkKeyToVim(
+  input: string,
+  key: { leftArrow?: boolean; rightArrow?: boolean; upArrow?: boolean; downArrow?: boolean },
+): string {
+  if (key.leftArrow) return "h";
+  if (key.rightArrow) return "l";
+  if (key.upArrow) return "k";
+  if (key.downArrow) return "j";
+  return input;
+}
+
 export interface InputBoxProps {
   commands: CommandInfo[];
   disabled: boolean;
@@ -175,6 +188,10 @@ export function InputBox({
   bufferRef.current = buffer;
   const cursorRef = useRef(0);
   cursorRef.current = cursor;
+  // Vim engine (only used when vimActive): persists across normal-mode keys so
+  // multi-key operators (d/w, dd, 3w, …) keep their state machine between
+  // keystrokes. Lazily created; text/offset re-synced from buffer on each key.
+  const vimEngineRef = useRef<VimEngine | null>(null);
 
   // Wrapper that keeps cursorRef in sync with state
   const setCursor = (updater: number | ((prev: number) => number)) => {
@@ -247,7 +264,7 @@ export function InputBox({
 
   useInput(
     (input, key) => {
-      // --- Vim normal mode (M18.10): motions + mode switches, no text input ---
+      // --- Vim normal mode (M18.10): drive the VimEngine state machine ---
       if (vimActive && vimMode === "normal") {
         if (key.return) {
           const value = buffer;
@@ -257,49 +274,17 @@ export function InputBox({
           onSubmit(value);
           return;
         }
-        if (input === "i") {
-          setVimMode("insert");
-          return;
-        }
-        if (input === "a") {
-          setCursor((c) => Math.min(bufferRef.current.length, c + 1));
-          setVimMode("insert");
-          return;
-        }
-        if (input === "A") {
-          setCursor(bufferRef.current.length);
-          setVimMode("insert");
-          return;
-        }
-        if (input === "0" || (key as { home?: boolean }).home) {
-          setCursor(0);
-          return;
-        }
-        if (input === "$" || (key as { end?: boolean }).end) {
-          setCursor(Math.max(0, bufferRef.current.length - 1));
-          return;
-        }
-        if (input === "h" || key.leftArrow) {
-          setCursor((c) => Math.max(0, c - 1));
-          return;
-        }
-        if (input === "l" || key.rightArrow) {
-          setCursor((c) => Math.min(bufferRef.current.length, c + 1));
-          return;
-        }
-        if (input === "x") {
-          if (cursorRef.current < bufferRef.current.length)
-            setBuffer(
-              bufferRef.current.slice(0, cursorRef.current) +
-                bufferRef.current.slice(cursorRef.current + 1),
-            );
-          return;
-        }
-        if (input === "D") {
-          setBuffer(bufferRef.current.slice(0, cursorRef.current));
-          return;
-        }
-        // Swallow everything else in normal mode (no stray text insertion).
+        // Route the keystroke through the engine, then read its text/offset/
+        // mode back into React state. The engine owns motions, operators,
+        // counts, and text objects — a strict superset of the old inline
+        // handlers (i/a/A/0/$/h/l/x/D and much more).
+        if (!vimEngineRef.current) vimEngineRef.current = new VimEngine("");
+        const engine = vimEngineRef.current;
+        engine.setText(bufferRef.current, cursorRef.current);
+        engine.handleKey(inkKeyToVim(input, key));
+        setBuffer(engine.getText());
+        setCursor(engine.getOffset());
+        setVimMode(engine.getMode());
         return;
       }
 
@@ -307,6 +292,9 @@ export function InputBox({
       if (key.escape && vimActive) {
         setVimMode("normal");
         setCursor((c) => Math.max(0, c - 1));
+        // Reset the engine to NORMAL/idle so the next normal-mode key starts a
+        // fresh command (text/offset are re-synced on that key).
+        vimEngineRef.current?.handleKey("Escape");
         return;
       }
 
