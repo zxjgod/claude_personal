@@ -17,7 +17,7 @@ import type {
 const WORKSPACE = "/home/user/project";
 
 function makeContext(
-  mode: "default" | "acceptEdits" | "bypassPermissions" | "plan" | "auto" = "default",
+  mode: "default" | "acceptEdits" | "bypassPermissions" | "plan" | "auto" | "dontAsk" = "default",
 ): ToolContext {
   return {
     workspaceRoot: WORKSPACE,
@@ -351,6 +351,64 @@ describe("checkPermission auto mode", () => {
       askUser: alwaysAllow,
     });
     expect(res.allowed).toBe(false);
+  });
+});
+
+describe("checkPermission dontAsk mode", () => {
+  const bashTool = createTool({
+    name: "bash",
+    description: "Bash",
+    promptDescription: "Run shell",
+    inputSchema: { type: "object", properties: {}, required: [] },
+    isReadOnly: () => false,
+    isConcurrencySafe: false,
+    call: async () => ({ content: "" }),
+  });
+  const writeTool = createTool({
+    name: "write",
+    description: "Write",
+    promptDescription: "Write files",
+    inputSchema: { type: "object", properties: {}, required: [] },
+    isReadOnly: false,
+    isConcurrencySafe: false,
+    call: async () => ({ content: "" }),
+  });
+
+  it("denies a dangerous command without prompting (ask → deny)", async () => {
+    const askUser = vi.fn().mockResolvedValue(true);
+    const res = await checkPermission(bashTool, { command: "rm -rf /" }, makeContext("dontAsk"), {
+      askUser,
+    });
+    expect(res.allowed).toBe(false);
+    expect(askUser).not.toHaveBeenCalled();
+  });
+
+  it("denies a non-dangerous destructive tool without prompting", async () => {
+    const askUser = vi.fn().mockResolvedValue(true);
+    const res = await checkPermission(
+      writeTool,
+      { filePath: "/home/user/project/src/a.ts" },
+      makeContext("dontAsk"),
+      { askUser },
+    );
+    expect(res.allowed).toBe(false);
+    expect(askUser).not.toHaveBeenCalled();
+  });
+
+  it("still allows read-only tools", async () => {
+    const readTool = createTool({
+      name: "read",
+      description: "Read",
+      promptDescription: "Read files",
+      inputSchema: { type: "object", properties: {}, required: [] },
+      isReadOnly: true,
+      isConcurrencySafe: true,
+      call: async () => ({ content: "" }),
+    });
+    const res = await checkPermission(readTool, {}, makeContext("dontAsk"), {
+      askUser: alwaysAllow,
+    });
+    expect(res.allowed).toBe(true);
   });
 });
 

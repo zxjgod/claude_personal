@@ -203,7 +203,13 @@ export interface SubAgentProgress {
   results?: ToolExecutionResult[];
 }
 
-export type PermissionMode = "default" | "acceptEdits" | "bypassPermissions" | "plan" | "auto";
+export type PermissionMode =
+  | "default"
+  | "acceptEdits"
+  | "bypassPermissions"
+  | "plan"
+  | "auto"
+  | "dontAsk";
 
 /**
  * Why a permission decision was reached (kernel §4 decisionReason union).

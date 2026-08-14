@@ -442,6 +442,18 @@ export async function checkPermission(
       return result;
     }
 
+    // dontAsk mode: "ask" → "deny". Dangerous patterns always prompt, so in
+    // dontAsk they are silently denied (no classifier, no prompt).
+    if (context.permissionMode === "dontAsk") {
+      const result = {
+        allowed: false as const,
+        reason: `dontAsk mode: ${tool.name} needs approval (${riskHint})`,
+        decisionReason: "mode" as const,
+      };
+      logPermissionDecision(3, tool.name, action, result, { stage: "dontAsk-mode", riskHint });
+      return result;
+    }
+
     logPermissionDecision(
       3,
       tool.name,
@@ -497,6 +509,17 @@ export async function checkPermission(
   if (!needsApproval) {
     const result = { allowed: true };
     logPermissionDecision(6, tool.name, action, result);
+    return result;
+  }
+
+  // dontAsk mode: "ask" → "deny" (a tool that would prompt is silently denied).
+  if (context.permissionMode === "dontAsk") {
+    const result = {
+      allowed: false as const,
+      reason: `dontAsk mode: ${tool.name} needs approval`,
+      decisionReason: "mode" as const,
+    };
+    logPermissionDecision(6, tool.name, action, result, { stage: "dontAsk-mode" });
     return result;
   }
 

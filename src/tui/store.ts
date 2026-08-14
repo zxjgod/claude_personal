@@ -158,6 +158,7 @@ export const PERMISSION_MODE_CYCLE: PermissionMode[] = [
   "bypassPermissions",
   "plan",
   "auto",
+  "dontAsk",
 ];
 
 export function nextPermissionMode(current: PermissionMode): PermissionMode {

@@ -5,6 +5,7 @@
 // ============================================================
 
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import * as readline from "node:readline";
 import chalk from "chalk";
@@ -22,7 +23,7 @@ import { createCliInputReader } from "./cli-input.js";
 import { COMMANDS, handleSlashCommand, loadCommandsDir } from "./commands.js";
 import { formatGitContext, gatherGitContext } from "./git-context.js";
 import { HookRegistry } from "./hooks.js";
-import { loadHooksFromSettings } from "./hooks-config.js";
+import { loadHooksFromSettings, readSettings } from "./hooks-config.js";
 import { createModelCaller, resolveProviderConfig } from "./llm-adapter.js";
 import { discoverMCPConfigs, MCPManager } from "./mcp/index.js";
 import { MemoryStore } from "./memory-extract.js";
@@ -206,6 +207,7 @@ Options:
   --no-speculation           Disable speculative prefetch
   --llm-perm-classifier      Use the LLM permission-risk classifier
   --safe-mode                Read-only session (force plan mode)
+  --permission-mode <mode>   Set the permission mode (default/acceptEdits/bypassPermissions/plan/auto/dontAsk)
 
 Configuration:
   .env                       LLM_PROVIDER, LLM_API_KEY, LLM_MODEL, LLM_BASE_URL
@@ -283,16 +285,34 @@ const VALID_PERMISSION_MODES: PermissionMode[] = [
   "bypassPermissions",
   "plan",
   "auto",
+  "dontAsk",
 ];
 
-function getPermissionMode(): PermissionMode {
+function getPermissionMode(workspaceRoot: string): PermissionMode {
+  // Precedence (highest → lowest): CLI flag → --safe-mode → env → project
+  // settings (settings.local.json > settings.json) → user settings (~/.claude).
+  const flagIdx = process.argv.indexOf("--permission-mode");
+  if (flagIdx !== -1) {
+    const m = process.argv[flagIdx + 1] as PermissionMode | undefined;
+    if (m && VALID_PERMISSION_MODES.includes(m)) return m;
+  }
   // --safe-mode: force a read-only (plan) session regardless of env/config.
   if (process.argv.includes("--safe-mode")) {
     return "plan";
   }
-  const mode = process.env.PERMISSION_MODE as PermissionMode | undefined;
-  if (mode && VALID_PERMISSION_MODES.includes(mode)) {
-    return mode;
+  const envMode = process.env.PERMISSION_MODE as PermissionMode | undefined;
+  if (envMode && VALID_PERMISSION_MODES.includes(envMode)) {
+    return envMode;
+  }
+  const project = readSettings(workspaceRoot);
+  const projectMode = project?.permissionMode as PermissionMode | undefined;
+  if (projectMode && VALID_PERMISSION_MODES.includes(projectMode)) {
+    return projectMode;
+  }
+  const user = readSettings(os.homedir());
+  const userMode = user?.permissionMode as PermissionMode | undefined;
+  if (userMode && VALID_PERMISSION_MODES.includes(userMode)) {
+    return userMode;
   }
   return "default";
 }
@@ -343,7 +363,7 @@ async function main() {
   // no-key path deterministic for the smoke test.
   if (!modelConfig.provider) return;
   let workspaceRoot = getWorkspaceRoot();
-  let permissionMode = getPermissionMode();
+  let permissionMode = getPermissionMode(workspaceRoot);
   const permissionModeState = {
     get: () => permissionMode,
     set: (mode: PermissionMode) => {
