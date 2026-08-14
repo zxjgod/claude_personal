@@ -8,6 +8,7 @@
 // ============================================================
 
 import Anthropic from "@anthropic-ai/sdk";
+import { checkResponseForCacheBreak, recordPromptState } from "./prompt-cache.js";
 import { DYNAMIC_BOUNDARY } from "./system-prompt.js";
 import { DEFAULT_MAX_RESULT_CHARS, truncateToolResult } from "./tools/truncation.js";
 import { anthropicEffort, getEffort } from "./tui/effort.js";
@@ -261,6 +262,15 @@ export const anthropicCaller: ModelCaller = async function* (
     ? AbortSignal.any([abortSignal, timeoutSignal])
     : timeoutSignal;
 
+  // Phase 1 of cache-break detection: hash the cacheable prefix + tools so the
+  // post-call check can attribute a cache miss to the exact cause.
+  recordPromptState({
+    systemPrompt,
+    tools,
+    model: config.model || "claude-opus-4-8",
+    effort: getEffort(config.options),
+  });
+
   const stream = client.messages.stream(
     {
       model: config.model || "claude-opus-4-8",
@@ -342,6 +352,16 @@ export const anthropicCaller: ModelCaller = async function* (
     const u = final.usage as any;
     const cacheRead = u.cache_read_input_tokens ?? 0;
     const cacheCreation = u.cache_creation_input_tokens ?? 0;
+
+    // Phase 2 of cache-break detection: surface a break with its root cause.
+    const cacheBreak = checkResponseForCacheBreak(cacheRead, cacheCreation);
+    if (cacheBreak) {
+      console.warn(
+        `[prompt cache break] ${cacheBreak.reason} ` +
+          `(cache read ${cacheRead} tokens, creation ${cacheCreation})`,
+      );
+    }
+
     yield {
       type: "done",
       usage: {
