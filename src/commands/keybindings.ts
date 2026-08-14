@@ -1,10 +1,11 @@
-// /keybindings — show the active keyboard shortcuts
+// /keybindings — show the active keyboard shortcuts (+ user overrides)
 import chalk from "chalk";
+import { chordToString, loadUserBindings, parseBindings } from "../tui/keybindings/index.js";
 import type { SlashCommand } from "./types.js";
 
 export const keybindingsCommand: SlashCommand = {
   name: "keybindings",
-  description: "Show the active keyboard shortcuts",
+  description: "Show the active keyboard shortcuts (+ user overrides)",
   run: () => {
     console.log("");
     console.log(chalk.bold("  Keybindings:"));
@@ -30,6 +31,19 @@ export const keybindingsCommand: SlashCommand = {
     ];
     for (const [k, desc] of bindings) {
       console.log(`    ${chalk.cyan(k.padEnd(18))} ${chalk.gray(desc)}`);
+    }
+
+    // User overrides from ~/.claude/keybindings.json (parsed + displayed).
+    const user = loadUserBindings();
+    if (user && user.length > 0) {
+      const parsed = parseBindings(user);
+      console.log("");
+      console.log(chalk.bold("  Custom (~/.claude/keybindings.json):"));
+      for (const b of parsed) {
+        const key = chordToString(b.chord);
+        const action = b.action === null ? chalk.dim("unbound") : b.action;
+        console.log(`    ${chalk.cyan(key.padEnd(18))} ${chalk.gray(`[${b.context}] ${action}`)}`);
+      }
     }
   },
 };

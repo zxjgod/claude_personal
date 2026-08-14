@@ -22,6 +22,7 @@ import { EffortPrompt } from "./EffortPrompt.js";
 import { FullScreenApp } from "./FullScreenApp.js";
 import { HelpPanel } from "./HelpPanel.js";
 import { type CommandInfo, InputBox } from "./InputBox.js";
+import { createResolver, DEFAULT_BINDINGS, loadUserBindings } from "./keybindings/index.js";
 import { renderMarkdown } from "./markdown.js";
 import { ConfirmPrompt, PermissionPrompt, QuestionPrompt } from "./Prompts.js";
 import { ProviderPicker } from "./ProviderPicker.js";
@@ -268,11 +269,17 @@ function selectStatusBar(s: StoreState) {
   };
 }
 
+// Global-hotkey resolver: defaults + any user overrides from
+// ~/.claude/keybindings.json. Loaded once at startup (not hot-reloaded).
+const globalResolver = createResolver(DEFAULT_BINDINGS, loadUserBindings());
+
 function ModeHotkey({ store }: { store: TuiStore }) {
   useInput((input, key) => {
-    if (key.tab && key.shift) {
+    const result = globalResolver(input, key, ["Global"]);
+    if (result.type !== "match") return;
+    if (result.action === "chat:cycleMode") {
       store.cyclePermissionMode();
-    } else if (input === "?" && !store.getSnapshot().overlay) {
+    } else if (result.action === "help:toggle" && !store.getSnapshot().overlay) {
       // Show help panel only when not in an overlay (overlays have their own input).
       store.setShowHelp(true);
     }

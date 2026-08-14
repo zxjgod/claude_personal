@@ -57,6 +57,7 @@ docs/更新日志/
 
 | 日期 | 类型 | 模块 | 主题 | commit | 关联 |
 |---|---|---|---|---|---|
+| 2026-08-14 | feature | 键位系统 | [Keybindings 系统（解析/匹配/解析器 + 用户配置加载 + App 全局热键接线 + 10 测试）](./20260814-keybindings-system.md) | 待提交 | [参考源码盘点](20260814-network-dependency-audit.md) |
 | 2026-08-14 | feature | vim 输入模式 | [Vim 模式引擎移植（claude-code `vim/` 状态机 + 操作符 → 框架无关 `src/tui/vim/` 引擎 + 11 测试）](./20260814-vim-engine-port.md) | 待提交 | [参考源码盘点](20260814-network-dependency-audit.md) |
 | 2026-08-14 | fix | web_search / web_fetch | [网络依赖审计 + web 工具代理/端点配置（可配置 `WEB_SEARCH_ENDPOINT` + 可操作网络错误提示）](./20260814-network-dependency-audit.md) | 待提交 | [项目评审报告](../项目评审报告.md) |
 | 2026-08-13 | feature | 自定义命令 / 自定义子代理 / 输出风格 / 配置驱动 hooks / 测试基建 | [对齐官方 Claude Code 的五大能力补齐（`.claude/commands`、`.claude/agents`、`/output-style`、settings.json hooks、vitest 纳入 `.test.tsx`）](./20260813-parity-features.md) | 待提交 | [项目总览](../项目总览.md) |
@@ -93,7 +94,8 @@ docs/更新日志/
 - **permissions 危险命令拦截 / 权限模式**：`bash-deadlock-fix-20260626`（补充易致死命令静态拦截）、`20260702-m38-command-permission-mode`（M38）、`20260704-m38-mode-switch-ux`（Toast 反馈）。
 - **MCP / schema 安全**：`20260708-three-week-security-architecture-fixes`（P1-4：MCP schema 类型安全验证，拒绝恶意 schema 注入）。
 - **Web 工具 / SSRF 防护**：`20260708-three-week-security-architecture-fixes`（P1-1：统一使用 `InputValidator.validateUrl()`，删除重复实现）、`20260814-network-dependency-audit`（审计确认全工具集仅 web_search/web_fetch 依赖外网；`WEB_SEARCH_ENDPOINT` 可配端点 + 网络错误提示，代理需 `HTTPS_PROXY` + `NODE_USE_ENV_PROXY=1`）。
-- **vim 输入模式**：`20260814-vim-engine-port`（从 claude-code `vim/` 移植状态机 + 操作符 → 框架无关 `src/tui/vim/` 引擎；InputBox 集成待做）。
+- **vim 输入模式**：`20260814-vim-engine-port`（从 claude-code `vim/` 移植状态机 + 操作符 → 框架无关 `src/tui/vim/` 引擎 + InputBox 集成）。
+- **键位系统**：`20260814-keybindings-system`（解析/匹配/解析器 + `~/.claude/keybindings.json` 用户覆盖 + App 全局热键接线；单键绑定，InputBox 编辑键迁解析器待做）。
 - **session-memory / 持久化**：`20260708-three-week-security-architecture-fixes`（M-7：会话加载改异步 I/O，`fsPromises` 替代 `fsSync`）。
 - **agent-loop 并行 / abort**：`bash-deadlock-fix-20260626`（并行路径加 abort 竞速）。
 - **permissions 危险命令拦截 / 权限模式**：`bash-deadlock-fix-20260626`（补充易致死命令静态拦截）、`20260702-m38-command-permission-mode`（M38：`ToolContext.getPermissionMode`/`setPermissionMode` 实时模式；TUI Shift+Tab 循环 `default → acceptEdits → bypassPermissions → plan`；安全地板仍在 bypassPermissions 前执行）、`20260704-m38-mode-switch-ux`（Toast 视觉反馈、`?` 帮助面板、`/mode` 命令、状态栏模式颜色区分）。
