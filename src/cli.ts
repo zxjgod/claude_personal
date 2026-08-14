@@ -12,6 +12,11 @@ import dotenv from "dotenv";
 
 import { agentLoop } from "./agent-loop.js";
 import { loadAgentsDir } from "./agents/loadAgentsDir.js";
+import {
+  DEFAULT_CLASSIFIER_RULES,
+  mergeClassifierRules,
+  parseClassifierRules,
+} from "./classifier-rules.js";
 import { formatCliError } from "./cli-errors.js";
 import { createCliInputReader } from "./cli-input.js";
 import { COMMANDS, handleSlashCommand, loadCommandsDir } from "./commands.js";
@@ -635,6 +640,12 @@ async function main() {
   // starting in auto mode implies the classifier is on. (Switching to auto at
   // runtime without the flag still works — but conservatively denies anything
   // the classifier can't clear, since no classifier is available.)
+  // Rule layer for the classifier: sensible defaults + user overrides from
+  // CCR_CLASSIFIER_RULES (JSON: {"allow":[...],"soft_deny":[...],"environment":[...]}).
+  const classifierRules = mergeClassifierRules(
+    DEFAULT_CLASSIFIER_RULES,
+    parseClassifierRules(process.env.CCR_CLASSIFIER_RULES) ?? {},
+  );
   const permissionClassifier: PermissionClassifier | undefined =
     llmPermClassifierEnabled || permissionMode === "auto"
       ? {
@@ -643,6 +654,7 @@ async function main() {
           // Bound classifier latency so a slow/hung provider can't stall the
           // approval flow; on timeout we defer to the regex reason.
           timeoutMs: 4000,
+          rules: classifierRules,
         }
       : undefined;
 

@@ -15,6 +15,8 @@
 // shared base types to avoid circular dependencies.
 // ============================================================
 
+import type { ClassifierRules } from "./classifier-rules.js";
+
 // ============================================================================
 // SECTION 1: Messages (Internal Format)
 // ============================================================================
@@ -242,6 +244,8 @@ export interface PermissionClassifier {
   modelConfig: ModelConfig;
   timeoutMs?: number;
   signal?: AbortSignal;
+  /** Optional rule layer (allow/soft_deny/environment) driving the classifier. */
+  rules?: ClassifierRules;
 }
 
 export interface Tool<T extends ToolInput = ToolInput> {

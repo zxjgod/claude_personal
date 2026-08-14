@@ -4,6 +4,7 @@
 // ============================================================
 
 import * as path from "node:path";
+import { buildClassifierPrompt } from "./classifier-rules.js";
 import type {
   ClassifierResult,
   PermissionClassifier,
@@ -274,7 +275,9 @@ export async function classifyPermissionRisk(
   input: Record<string, unknown>,
   classifier: PermissionClassifier,
 ): Promise<ClassifierResult> {
-  const { callModel, modelConfig, timeoutMs = 4000, signal } = classifier;
+  const { callModel, modelConfig, timeoutMs = 4000, signal, rules } = classifier;
+  // A rule layer (allow/soft_deny/environment) overrides the bare default prompt.
+  const systemPrompt = rules ? buildClassifierPrompt(rules) : CLASSIFIER_SYSTEM_PROMPT;
 
   // No API key → can't call the model. Fail safe (defer to regex path).
   if (!modelConfig.apiKey) return { block: false, unavailable: true };
@@ -299,7 +302,7 @@ export async function classifyPermissionRisk(
 
   try {
     let text = "";
-    for await (const event of callModel(messages, [], CLASSIFIER_SYSTEM_PROMPT, {
+    for await (const event of callModel(messages, [], systemPrompt, {
       ...modelConfig,
       temperature: 0,
     })) {
