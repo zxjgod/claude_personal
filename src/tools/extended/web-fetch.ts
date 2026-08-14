@@ -186,7 +186,13 @@ export const WebFetchTool: Tool = buildTool({
       if (err.name === "AbortError") {
         return { content: "", error: `Request timed out after ${TIMEOUT_MS / 1000}s` };
       }
-      return { content: "", error: `Fetch failed: ${err.message}` };
+      return {
+        content: "",
+        error:
+          `Fetch failed: ${err.message}\n` +
+          `Network unreachable. Check your connection, or set HTTPS_PROXY/HTTP_PROXY ` +
+          `(with NODE_USE_ENV_PROXY=1).`,
+      };
     }
   },
 

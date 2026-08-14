@@ -57,6 +57,7 @@ docs/更新日志/
 
 | 日期 | 类型 | 模块 | 主题 | commit | 关联 |
 |---|---|---|---|---|---|
+| 2026-08-14 | fix | web_search / web_fetch | [网络依赖审计 + web 工具代理/端点配置（可配置 `WEB_SEARCH_ENDPOINT` + 可操作网络错误提示）](./20260814-network-dependency-audit.md) | 待提交 | [项目评审报告](../项目评审报告.md) |
 | 2026-08-13 | feature | 自定义命令 / 自定义子代理 / 输出风格 / 配置驱动 hooks / 测试基建 | [对齐官方 Claude Code 的五大能力补齐（`.claude/commands`、`.claude/agents`、`/output-style`、settings.json hooks、vitest 纳入 `.test.tsx`）](./20260813-parity-features.md) | 待提交 | [项目总览](../项目总览.md) |
 | 2026-08-02 | fix | 工程基建 / 测试 / 文档体系 | [文档同步脚本（`doc-sync.mjs`）+ WebFetchTool 测试封闭化 + 文档数字校正](./20260802-doc-sync-and-hermetic-tests.md) | 待提交 | [项目评审报告](../项目评审报告.md) |
 | 2026-07-08 | fix | BashTool / team / agent-loop / MCP / web-fetch / session-memory | [三周安全与架构优化（子代理权限继承、usage 口径统一、Web URL 验证增强、会话异步 I/O）](./20260708-three-week-security-architecture-fixes.md) | 待提交 | [项目评审报告](../项目评审报告.md) |
@@ -90,7 +91,7 @@ docs/更新日志/
 - **agent-loop 并行 / abort / usage 口径**：`bash-deadlock-fix-20260626`（并行路径加 abort 竞速）、`20260708-three-week-security-architecture-fixes`（S-4：统一 usage 口径，移除 `cache_creation_input_tokens` 双重计数）。
 - **permissions 危险命令拦截 / 权限模式**：`bash-deadlock-fix-20260626`（补充易致死命令静态拦截）、`20260702-m38-command-permission-mode`（M38）、`20260704-m38-mode-switch-ux`（Toast 反馈）。
 - **MCP / schema 安全**：`20260708-three-week-security-architecture-fixes`（P1-4：MCP schema 类型安全验证，拒绝恶意 schema 注入）。
-- **Web 工具 / SSRF 防护**：`20260708-three-week-security-architecture-fixes`（P1-1：统一使用 `InputValidator.validateUrl()`，删除重复实现）。
+- **Web 工具 / SSRF 防护**：`20260708-three-week-security-architecture-fixes`（P1-1：统一使用 `InputValidator.validateUrl()`，删除重复实现）、`20260814-network-dependency-audit`（审计确认全工具集仅 web_search/web_fetch 依赖外网；`WEB_SEARCH_ENDPOINT` 可配端点 + 网络错误提示，代理需 `HTTPS_PROXY` + `NODE_USE_ENV_PROXY=1`）。
 - **session-memory / 持久化**：`20260708-three-week-security-architecture-fixes`（M-7：会话加载改异步 I/O，`fsPromises` 替代 `fsSync`）。
 - **agent-loop 并行 / abort**：`bash-deadlock-fix-20260626`（并行路径加 abort 竞速）。
 - **permissions 危险命令拦截 / 权限模式**：`bash-deadlock-fix-20260626`（补充易致死命令静态拦截）、`20260702-m38-command-permission-mode`（M38：`ToolContext.getPermissionMode`/`setPermissionMode` 实时模式；TUI Shift+Tab 循环 `default → acceptEdits → bypassPermissions → plan`；安全地板仍在 bypassPermissions 前执行）、`20260704-m38-mode-switch-ux`（Toast 视觉反馈、`?` 帮助面板、`/mode` 命令、状态栏模式颜色区分）。

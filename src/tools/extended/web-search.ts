@@ -12,7 +12,9 @@ import { buildTool } from "../registry.js";
 
 const TIMEOUT_MS = 15_000;
 const MAX_RESULTS = 10;
-const SEARCH_ENDPOINT = "https://html.duckduckgo.com/html/";
+// Configurable search endpoint so users behind a firewall can point at a
+// DuckDuckGo-compatible mirror/proxy (the HTML format parser is DDG-specific).
+const SEARCH_ENDPOINT = process.env.WEB_SEARCH_ENDPOINT || "https://html.duckduckgo.com/html/";
 
 const WebSearchSchema = z.strictObject({
   query: z.string().min(1).describe("The search query"),
@@ -142,7 +144,13 @@ export const WebSearchTool: Tool = buildTool({
       if (err.name === "AbortError") {
         return { content: "", error: `Search timed out after ${TIMEOUT_MS / 1000}s` };
       }
-      return { content: "", error: `Search failed: ${err.message}` };
+      return {
+        content: "",
+        error:
+          `Search failed: ${err.message}\n` +
+          `Network unreachable. Check your connection, or set HTTPS_PROXY/HTTP_PROXY ` +
+          `(with NODE_USE_ENV_PROXY=1), or override WEB_SEARCH_ENDPOINT.`,
+      };
     }
   },
 
