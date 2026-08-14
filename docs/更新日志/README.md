@@ -57,6 +57,7 @@ docs/更新日志/
 
 | 日期 | 类型 | 模块 | 主题 | commit | 关联 |
 |---|---|---|---|---|---|
+| 2026-08-14 | feature | 上下文压缩 | [按工具类型选择性清除（`COMPACTABLE_TOOLS` 保护 Task/Skill 语义工具，只清 bulk I/O 工具结果）](./20260814-tool-type-aware-microcompact.md) | 待提交 | [参考源码移植路线图](../参考源码移植路线图.md) |
 | 2026-08-14 | feature | 权限系统 | [`dontAsk` 权限档（ask→deny）+ 权限模式配置优先级链（`--permission-mode`/env/settings）](./20260814-dontask-mode-precedence.md) | 待提交 | [参考源码移植路线图](../参考源码移植路线图.md) |
 | 2026-08-14 | feature | 权限分类器 | [权限分类器规则层（allow/soft_deny/environment + 用户覆盖，从 yoloClassifier 结构移植 + 6 测试）](./20260814-classifier-rule-layer.md) | 待提交 | [参考源码移植路线图](../参考源码移植路线图.md) |
 | 2026-08-14 | feature | prompt cache 诊断 | [Prompt 缓存断裂检测 + 根因归因（`src/prompt-cache.ts` + Anthropic 适配器接线 + 6 测试）](./20260814-prompt-cache-break-detection.md) | 待提交 | [参考源码移植路线图](../参考源码移植路线图.md) |
@@ -102,6 +103,7 @@ docs/更新日志/
 - **prompt cache 诊断**：`20260814-prompt-cache-break-detection`（`src/prompt-cache.ts` 哈希可缓存前缀 + 工具 schema，比对 `cache_read` 降幅归因断裂根因，接 Anthropic 适配器）。
 - **权限分类器**：`20260814-classifier-rule-layer`（`src/classifier-rules.ts` allow/soft_deny/environment 规则层 + 用户覆盖 `CCR_CLASSIFIER_RULES`，`classifyPermissionRisk` 用规则驱动提示词）。
 - **权限模式**：`20260814-dontask-mode-precedence`（第 6 档 `dontAsk`：ask→deny 无交互档 + 权限模式优先级 `--permission-mode`/env/settings）。
+- **上下文压缩**：`20260814-tool-type-aware-microcompact`（`COMPACTABLE_TOOLS` 按工具类型选择性清除，保护 Task/Skill 等语义工具结果）。
 - **session-memory / 持久化**：`20260708-three-week-security-architecture-fixes`（M-7：会话加载改异步 I/O，`fsPromises` 替代 `fsSync`）。
 - **agent-loop 并行 / abort**：`bash-deadlock-fix-20260626`（并行路径加 abort 竞速）。
 - **permissions 危险命令拦截 / 权限模式**：`bash-deadlock-fix-20260626`（补充易致死命令静态拦截）、`20260702-m38-command-permission-mode`（M38：`ToolContext.getPermissionMode`/`setPermissionMode` 实时模式；TUI Shift+Tab 循环 `default → acceptEdits → bypassPermissions → plan`；安全地板仍在 bypassPermissions 前执行）、`20260704-m38-mode-switch-ux`（Toast 视觉反馈、`?` 帮助面板、`/mode` 命令、状态栏模式颜色区分）。

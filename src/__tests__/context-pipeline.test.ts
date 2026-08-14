@@ -146,6 +146,49 @@ describe("microcompact (M31 layer 3)", () => {
   });
 });
 
+describe("tool-type-aware eviction (COMPACTABLE_TOOLS)", () => {
+  function toolMsg(id: string, name: string, chars: number): Message[] {
+    return [
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id, type: "function", function: { name, arguments: "{}" } }],
+      },
+      { role: "tool", tool_call_id: id, name, content: "z".repeat(chars) },
+    ];
+  }
+
+  it("microcompact protects semantic tool results (task) but evicts bulk (read)", () => {
+    const msgs = [...toolMsg("task_0", "task", 3000), ...toolMsg("read_0", "read", 3000)];
+    const r = microcompact(msgs, { keepRecentToolResults: 0, minEvictChars: 1000 });
+    const taskResult = r.messages.find((m) => m.role === "tool" && m.name === "task") as Extract<
+      Message,
+      { role: "tool" }
+    >;
+    const readResult = r.messages.find((m) => m.role === "tool" && m.name === "read") as Extract<
+      Message,
+      { role: "tool" }
+    >;
+    expect(taskResult.content).not.toContain("[evicted:");
+    expect(readResult.content).toContain("[evicted:");
+  });
+
+  it("applyToolResultBudget protects semantic tool results too", () => {
+    const msgs = [...toolMsg("task_0", "task", 3000), ...toolMsg("read_0", "read", 3000)];
+    const r = applyToolResultBudget(msgs, { maxTotalChars: 2000, keepRecent: 0 });
+    const taskResult = r.messages.find((m) => m.role === "tool" && m.name === "task") as Extract<
+      Message,
+      { role: "tool" }
+    >;
+    const readResult = r.messages.find((m) => m.role === "tool" && m.name === "read") as Extract<
+      Message,
+      { role: "tool" }
+    >;
+    expect(taskResult.content.length).toBe(3000); // untouched
+    expect(readResult.content.length).toBeLessThan(3000); // trimmed
+  });
+});
+
 describe("prepareCheapLayers orchestrator (M31)", () => {
   it("runs nothing under threshold and reports no autoCompact need", () => {
     const msgs = history(2, 100);

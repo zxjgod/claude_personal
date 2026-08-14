@@ -31,6 +31,31 @@ export function evictionStub(toolName: string | undefined, chars: number): strin
   return `[evicted: ${toolName ?? "tool"} result, ${chars} chars — older context trimmed to save space]`;
 }
 
+/**
+ * Tools whose result content is safe to trim/evict: bulk I/O dumps that the
+ * model can re-fetch (Read/Grep/Glob/WebSearch/WebFetch) or re-derive
+ * (Edit/Write diffs, Bash output). Mirrors claude-code's COMPACTABLE_TOOLS —
+ * semantic tools (Task sub-agent reports, Skill instructions, AskUserQuestion,
+ * plan-mode notes) are NOT here, because losing their result loses the
+ * sub-agent's conclusion / the loaded instructions, which can't be re-derived
+ * without re-running them.
+ */
+export const COMPACTABLE_TOOLS = new Set([
+  "read",
+  "write",
+  "edit",
+  "multi_edit",
+  "notebook_edit",
+  "glob",
+  "grep",
+  "bash",
+  "powershell",
+  "web_fetch",
+  "web_search",
+  "lsp_diagnostics",
+  "lsp_completions",
+]);
+
 // ============================================================
 // Layer 1 — compact boundary
 // ============================================================
@@ -149,6 +174,7 @@ export function applyToolResultBudget(
     if (total <= maxTotalChars) break;
     const m = out[i];
     if (m.role !== "tool" || typeof m.content !== "string") continue;
+    if (!COMPACTABLE_TOOLS.has(m.name ?? "")) continue; // protect semantic tools
     const content = m.content;
     if (content.length <= headChars + tailChars) continue; // not worth trimming
 
@@ -206,6 +232,7 @@ export function microcompact(
   for (const i of evictable) {
     const m = out[i];
     if (m.role !== "tool" || typeof m.content !== "string") continue;
+    if (!COMPACTABLE_TOOLS.has(m.name ?? "")) continue; // protect semantic tools
     const stub = evictionStub(m.name, m.content.length);
     // Already evicted (idempotent) or too small to bother.
     if (m.content.startsWith("[evicted:") || m.content.length < minEvictChars) continue;
