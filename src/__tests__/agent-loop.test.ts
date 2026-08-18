@@ -71,6 +71,74 @@ describe("agentLoop", () => {
     expect(doneEvent.finishReason).toBe("end_turn");
   });
 
+  it("recovers from truncation and continues until the model finishes naturally", async () => {
+    // finish_reason "length" = the provider cut the output off; the loop must
+    // nudge and continue rather than treat the half answer as complete. A task
+    // truncated TWICE must still finish — there is no artificial cap on the
+    // number of continuations.
+    const caller = makeMockCaller([
+      [
+        { type: "text_delta", delta: "Part 1 — " },
+        { type: "done", usage: { input_tokens: 10, output_tokens: 4 }, finish_reason: "length" },
+      ],
+      [
+        { type: "text_delta", delta: "Part 2 — " },
+        { type: "done", usage: { input_tokens: 10, output_tokens: 4 }, finish_reason: "length" },
+      ],
+      [
+        { type: "text_delta", delta: "Part 3 (done)." },
+        { type: "done", usage: { input_tokens: 10, output_tokens: 3 }, finish_reason: "stop" },
+      ],
+    ]);
+
+    const messages: Message[] = [
+      { role: "user", content: [{ type: "text", text: "Write three parts" }] },
+    ];
+
+    const events: any[] = [];
+    for await (const event of agentLoop(messages, [], caller, testConfig, {
+      systemPrompt: "You are helpful.",
+      maxTurns: 10,
+      speculation: false,
+    })) {
+      events.push(event);
+    }
+
+    // Two truncations → two continuations → three model calls total.
+    expect(events.filter((e) => e.type === "usage")).toHaveLength(3);
+    const doneEvent = events.find((e) => e.type === "done");
+    expect(doneEvent).toBeDefined();
+    expect(doneEvent.finishReason).toBe("end_turn");
+  });
+
+  it("a provider that never stops truncating hits maxTurns, never reports completed", async () => {
+    // Every call is truncated. The loop must keep recovering but still exit at
+    // maxTurns (the hard backstop) — and it must report "max_turns", NOT
+    // "completed"/"end_turn", so a half answer is never silently accepted.
+    const truncated: StreamEvent[] = [
+      { type: "text_delta", delta: "more output… " },
+      { type: "done", usage: { input_tokens: 10, output_tokens: 4 }, finish_reason: "length" },
+    ];
+    const caller = makeMockCaller([truncated, truncated, truncated, truncated, truncated]);
+
+    const messages: Message[] = [
+      { role: "user", content: [{ type: "text", text: "Run forever" }] },
+    ];
+
+    const events: any[] = [];
+    for await (const event of agentLoop(messages, [], caller, testConfig, {
+      systemPrompt: "You are helpful.",
+      maxTurns: 3,
+      speculation: false,
+    })) {
+      events.push(event);
+    }
+
+    const doneEvent = events.find((e) => e.type === "done");
+    expect(doneEvent).toBeDefined();
+    expect(doneEvent.finishReason).toBe("max_turns");
+  });
+
   it("should execute tool calls and continue", async () => {
     const tool: Tool = {
       name: "echo",

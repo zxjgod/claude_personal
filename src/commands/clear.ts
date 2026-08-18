@@ -2,6 +2,8 @@
 import chalk from "chalk";
 import { clearChanges } from "../change-tracker.js";
 import { resetSystemPromptCache } from "../system-prompt.js";
+import { clearJobs } from "../tools/job-store.js";
+import { clearCwd } from "../tools/session-cwd.js";
 import type { SlashCommand } from "./types.js";
 
 export const clearCommand: SlashCommand = {
@@ -10,6 +12,10 @@ export const clearCommand: SlashCommand = {
   run: (_args, ctx) => {
     ctx.messages.length = 0;
     clearChanges(ctx.sessionId);
+    // Release settled background-job output buffers and the remembered cwd for a
+    // fresh conversation (running jobs are left alone — they hold live processes).
+    clearJobs(ctx.sessionId);
+    clearCwd(ctx.sessionId);
     // The memoized system-prompt sections are scoped to a conversation; a fresh
     // conversation may have different memory/env, so drop the cache (kernel §4).
     resetSystemPromptCache();

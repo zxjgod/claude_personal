@@ -240,6 +240,7 @@ export async function* agentLoop(
     let nextAction: "proceed" | "retry" | "abort" = "proceed";
     let abortError: unknown = null;
     let streamEnded = false;
+    let modelFinishReason = "stop";
 
     try {
       for await (const event of callModel(
@@ -268,6 +269,7 @@ export async function* agentLoop(
           case "done": {
             usage = event.usage;
             lastTurnOutput = event.usage.output_tokens;
+            modelFinishReason = event.finish_reason;
             const promptTokens = event.usage.input_tokens;
             state = {
               ...state,
@@ -408,6 +410,32 @@ export async function* agentLoop(
         continue;
       }
       state = { ...state, budget: decision.state };
+
+      // M40: truncation recovery — the provider cut the output off
+      // (finish_reason === "length"). The turn isn't genuinely complete; take
+      // the accumulated text as valid progress and nudge the loop to continue,
+      // rather than silently ending on a half answer.
+      //
+      // Deliberately INDEPENDENT of `decision.shouldContinue` (which is
+      // "disabled" by default — maxOutputTokens is 0 unless the caller opts
+      // into a turn-output budget). There is NO separate continuation cap: a
+      // long task that needs many continuations to finish must be allowed to
+      // run them all. The `maxTurns` loop bound is the backstop that guarantees
+      // a provider which never stops truncating still cannot loop forever —
+      // truncation continuations consume `turnCount` like any other turn, so the
+      // loop always exits and reports `max_turns` (not "completed").
+      if (modelFinishReason === "length") {
+        messages.push({
+          role: "user",
+          content: [{ type: "text", text: buildContinuationNudge(state.budget) }],
+        });
+        state = {
+          ...state,
+          turnCount: turnCount + 1,
+          transition: { reason: "model_retry" },
+        };
+        continue;
+      }
 
       if (injectQueuedInput(messages, drainQueuedInput)) {
         state = { ...state, turnCount: turnCount + 1, transition: { reason: "model_retry" } };

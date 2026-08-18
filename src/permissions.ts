@@ -183,8 +183,10 @@ const BLOCKED_PATTERNS = [
   /\.ssh$/,
   /\/etc\/(passwd|shadow|sudoers)/,
   /\/etc\/ssl\//,
-  /\.env$/,
-  /\.env\./,
+  // Anchor to the basename so `foo.env` (a differently-named file) is NOT
+  // blocked, only `.env` and `.env.*` variants.
+  /(^|[/\\])\.env$/,
+  /(^|[/\\])\.env\./,
   /credentials\.json$/,
   /\.npmrc$/,
   // --- VCS internals: the whole .git/ tree, not just config/hooks. Editing

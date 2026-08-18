@@ -317,6 +317,39 @@ function getPermissionMode(workspaceRoot: string): PermissionMode {
   return "default";
 }
 
+// --- Max turns (loop bound) ---
+/**
+ * Parse a maxTurns value: a positive integer is used as-is; "unlimited" /
+ * "infinity" / "0" disable the cap entirely. Returns undefined for anything
+ * invalid so callers fall back to the default.
+ */
+function parseMaxTurns(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  const trimmed = raw.trim().toLowerCase();
+  if (trimmed === "unlimited" || trimmed === "infinity" || trimmed === "0") {
+    return Number.POSITIVE_INFINITY;
+  }
+  const n = Number(trimmed);
+  return Number.isInteger(n) && n > 0 ? n : undefined;
+}
+
+/**
+ * Resolve the main agent loop's maxTurns bound. Precedence: CLI `--max-turns <n>`
+ * → env `CCR_MAX_TURNS` → default 50. Set 0 / unlimited / infinity to run without
+ * a turn cap — auto-compact still bounds context, and Ctrl+C still aborts, so
+ * "unlimited" is not a hard lock-up.
+ */
+function resolveMaxTurns(): number {
+  const flagIdx = process.argv.indexOf("--max-turns");
+  if (flagIdx !== -1) {
+    const parsed = parseMaxTurns(process.argv[flagIdx + 1]);
+    if (parsed !== undefined) return parsed;
+  }
+  const envParsed = parseMaxTurns(process.env.CCR_MAX_TURNS);
+  if (envParsed !== undefined) return envParsed;
+  return 50;
+}
+
 // --- Load CLAUDE.md ---
 
 function loadClaudeMd(workspaceRoot: string): string | undefined {
@@ -1011,7 +1044,7 @@ async function main() {
     const turnSystemPrompt = buildTurnSystemPrompt();
     const loop = agentLoop(messages, tools, callModel, modelConfig, {
       systemPrompt: turnSystemPrompt,
-      maxTurns: 50,
+      maxTurns: resolveMaxTurns(),
       toolContext: {
         workspaceRoot,
         sessionId: sessionId!,

@@ -45,6 +45,12 @@ const PROVIDER_CONFIGS: Record<string, { baseURL: string; defaultModel: string }
 /** Exported provider defaults for use by other modules (e.g. /provider command) */
 export const PROVIDER_DEFAULTS = PROVIDER_CONFIGS;
 
+// Default output-token ceiling when the user hasn't configured maxTokens. The
+// provider's own default (e.g. DeepSeek's 4K) is far too small for long agent
+// turns and silently truncates mid-tool-call, which the loop can't recover from
+// cleanly. A higher ceiling lets long turns complete instead of stopping.
+const DEFAULT_MAX_TOKENS = 8192;
+
 // --- Message Conversion (Internal → OpenAI) ---
 
 /**
@@ -138,8 +144,11 @@ async function* openAICompatibleCaller(
 
   // Reasoning effort (/effort). Only reasoning-capable models accept
   // `reasoning_effort`; sending it to a plain chat model can 400 on strict
-  // providers, so gate it behind a model-capability check.
-  const reasoningEffort = modelSupportsReasoningEffort(config.provider, model)
+  // providers, so gate it behind a model-capability check. The same gate
+  // suppresses `temperature` — reasoning models (DeepSeek R1, o1/o3, QwQ)
+  // reject it, so we must omit it rather than default it.
+  const isReasoningModel = modelSupportsReasoningEffort(config.provider, model);
+  const reasoningEffort = isReasoningModel
     ? openaiReasoningEffort(getEffort(config.options))
     : undefined;
 
@@ -158,8 +167,8 @@ async function* openAICompatibleCaller(
       messages: requestMessages,
       tools: tools.length > 0 ? formatToolsForOpenAI(tools) : undefined,
       tool_choice: tools.length > 0 ? "auto" : undefined,
-      max_tokens: config.maxTokens,
-      temperature: config.temperature ?? 0.1,
+      max_tokens: config.maxTokens ?? DEFAULT_MAX_TOKENS,
+      temperature: isReasoningModel ? undefined : (config.temperature ?? 0.1),
       ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
       stream: true,
       // Ask the provider to emit a final usage chunk. Without this, streamed
@@ -188,6 +197,12 @@ async function* openAICompatibleCaller(
         const input = JSON.parse(buf.arguments);
         yield { type: "tool_use", id: buf.id, name: buf.name, input };
       } catch {
+        // A truncated stream (finish_reason === "length") leaves tool-call
+        // arguments incomplete. That is recoverable — drop the partial call and
+        // let the loop continue from the accumulated text — not a fatal error.
+        if (finishReason === "length") {
+          continue;
+        }
         yield {
           type: "error",
           error: new Error(`Failed to parse tool arguments for "${buf.name}"`),

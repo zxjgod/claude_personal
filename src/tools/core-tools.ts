@@ -19,6 +19,7 @@ import { GrepTool } from "./core/grep.js";
 import { PowerShellTool } from "./core/powershell.js";
 import { ReadTool } from "./core/read.js";
 import { WriteTool } from "./core/write.js";
+import { JobKillTool, JobListTool, JobOutputTool } from "./extended/jobs.js";
 import { ReplTool } from "./extended/repl.js";
 import { TaskTool } from "./extended/task.js";
 import { TodoTool } from "./extended/todo.js";
@@ -41,6 +42,9 @@ export const CORE_TOOLS: Tool[] = [
   ReplTool,
   WorkflowTool,
   TaskTool,
+  JobOutputTool,
+  JobKillTool,
+  JobListTool,
   NotebookEditTool,
   LspDiagnosticsTool,
   LspCompletionsTool,

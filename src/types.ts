@@ -107,6 +107,8 @@ export interface ToolResultMetadata {
   aborted?: boolean;
   /** True when the command exceeded its timeout and was force-killed. */
   timedOut?: boolean;
+  /** Background job id (M38) — set when a tool (Bash) returns a job handle. */
+  jobId?: string;
   /**
    * One-line human summary for the terminal UI (e.g. "Read 200 lines",
    * "12 matches", "8 files"). Display-only — the model sees `content`, never

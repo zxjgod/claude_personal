@@ -123,6 +123,7 @@ export async function executeSingleTool(
       toolName: tool.name,
       error: "Aborted",
       formatted: `Aborted before executing ${tool.name}.`,
+      isError: true,
     };
   }
 

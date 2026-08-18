@@ -4,6 +4,7 @@
 // Provides unified input validation for all tools to prevent
 // injection attacks, path traversal, and malformed inputs.
 
+import * as net from "node:net";
 import * as path from "node:path";
 import type { ToolContext } from "../types.js";
 
@@ -176,24 +177,113 @@ export class InputValidator {
   }
 
   /**
-   * Check if hostname is in private network range (SSRF prevention)
+   * Check if hostname is in a private/special network range (SSRF prevention).
+   *
+   * The old regex-only check missed three forms that reach the network stack:
+   *   - Node's `URL.hostname` returns IPv6 addresses WITH brackets ("[::1]"),
+   *     which the bare "::1" / "fe80:" / "fd..:" regexes never matched — so
+   *     IPv6 loopback, link-local and ULA were silently ALLOWED.
+   *   - IPv4-mapped IPv6 ("::ffff:7f00:1", the normalized form of
+   *     "::ffff:127.0.0.1") embeds a private IPv4 that a prefix check cannot see.
+   *   - 0.0.0.0 (all interfaces) and :: (unspecified) were in no range at all.
    */
   private static isPrivateNetwork(hostname: string): boolean {
-    // Local hostnames
-    if (/^(localhost|127\.\d+\.\d+\.\d+|::1)$/i.test(hostname)) {
+    // Strip IPv6 brackets before any address parsing.
+    let host = hostname;
+    if (host.startsWith("[") && host.endsWith("]")) {
+      host = host.slice(1, -1);
+    }
+
+    // Local hostnames.
+    if (/^localhost$/i.test(host)) {
       return true;
     }
 
-    // Private IP ranges
-    const privateRanges = [
-      /^10\.\d+\.\d+\.\d+$/, // 10.0.0.0/8
-      /^172\.(1[6-9]|2\d|3[01])\.\d+\.\d+$/, // 172.16.0.0/12
-      /^192\.168\.\d+\.\d+$/, // 192.168.0.0/16
-      /^169\.254\.\d+\.\d+$/, // 169.254.0.0/16 (link-local)
-      /^fd[0-9a-f]{2}:/i, // IPv6 ULA
-      /^fe80:/i, // IPv6 link-local
-    ];
+    const version = net.isIP(host);
+    if (version === 4) {
+      return InputValidator.isPrivateIPv4(host);
+    }
+    if (version === 6) {
+      return InputValidator.isPrivateIPv6(host);
+    }
+    return false;
+  }
 
-    return privateRanges.some((pattern) => pattern.test(hostname));
+  /** Private/special IPv4 ranges: this-network, loopback, private, CGNAT,
+   * link-local, benchmarking, documentation, multicast, reserved. */
+  private static isPrivateIPv4(addr: string): boolean {
+    const octets = addr.split(".").map(Number);
+    const [a, b, c] = octets;
+    if (a === undefined || b === undefined) return false;
+    return (
+      a === 0 || // 0.0.0.0/8 "this network"
+      a === 10 || // 10.0.0.0/8 private
+      (a === 100 && b >= 64 && b <= 127) || // 100.64.0.0/10 CGNAT (incl. Tailscale)
+      a === 127 || // 127.0.0.0/8 loopback
+      (a === 169 && b === 254) || // 169.254.0.0/16 link-local
+      (a === 172 && b >= 16 && b <= 31) || // 172.16.0.0/12 private
+      (a === 192 && b === 0 && c === 0) || // 192.0.0.0/24 IETF protocol assignments
+      (a === 192 && b === 0 && c === 2) || // 192.0.2.0/24 TEST-NET-1 documentation
+      (a === 192 && b === 168) || // 192.168.0.0/16 private
+      (a === 198 && (b === 18 || b === 19)) || // 198.18.0.0/15 benchmarking
+      (a === 198 && b === 51 && c === 100) || // 198.51.100.0/24 TEST-NET-2 documentation
+      (a === 203 && b === 0 && c === 113) || // 203.0.113.0/24 TEST-NET-3 documentation
+      a >= 224 // 224.0.0.0/4 multicast + 240.0.0.0/4 reserved + 255.255.255.255 broadcast
+    );
+  }
+
+  /** Private/special IPv6 ranges: unspecified, loopback, IPv4-mapped, link-local,
+   * ULA, multicast, documentation. */
+  private static isPrivateIPv6(addr: string): boolean {
+    const lower = addr.toLowerCase();
+
+    // Unspecified / loopback.
+    if (lower === "::" || lower === "::1") return true;
+
+    // IPv4-mapped ("::ffff:a.b.c.d" or the normalized "::ffff:xxxx:xxxx") —
+    // unwrap the embedded IPv4 and apply the IPv4 checks.
+    if (lower.startsWith("::ffff:")) {
+      const ipv4 = InputValidator.mappedIPv4(lower);
+      return ipv4 ? InputValidator.isPrivateIPv4(ipv4) : false;
+    }
+
+    // Link-local fe80::/10 (first byte fe, second byte 80–bf).
+    if (
+      lower.startsWith("fe8") ||
+      lower.startsWith("fe9") ||
+      lower.startsWith("fea") ||
+      lower.startsWith("feb")
+    ) {
+      return true;
+    }
+    // ULA fc00::/7 (first byte fc or fd).
+    if (lower.startsWith("fc") || lower.startsWith("fd")) {
+      return true;
+    }
+    // Multicast ff00::/8.
+    if (lower.startsWith("ff")) return true;
+    // Documentation 2001:db8::/32.
+    if (lower === "2001:db8" || lower.startsWith("2001:db8:")) return true;
+
+    return false;
+  }
+
+  /** Extract the embedded IPv4 from an IPv4-mapped IPv6 address, or undefined. */
+  private static mappedIPv4(addr: string): string | undefined {
+    const rest = addr.slice("::ffff:".length);
+    if (rest.includes(".")) {
+      // Dotted form: "::ffff:127.0.0.1".
+      return net.isIPv4(rest) ? rest : undefined;
+    }
+    // Hex form (Node's normalization of the above): "::ffff:7f00:1" — the last
+    // two 16-bit groups are the four IPv4 octets.
+    const groups = rest.split(":");
+    if (groups.length === 2) {
+      const hi = Number.parseInt(groups[0]!, 16);
+      const lo = Number.parseInt(groups[1]!, 16);
+      if (Number.isNaN(hi) || Number.isNaN(lo)) return undefined;
+      return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+    }
+    return undefined;
   }
 }

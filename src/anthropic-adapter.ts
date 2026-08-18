@@ -362,6 +362,14 @@ export const anthropicCaller: ModelCaller = async function* (
       );
     }
 
+    // M40: Anthropic reports output truncation as stop_reason "max_tokens",
+    // but the agent loop's truncation recovery keys off the OpenAI-style
+    // finish_reason "length". Normalize here so a truncated Anthropic stream
+    // triggers the same continue-and-recover path instead of silently
+    // returning a half answer as if complete.
+    const stopReason = final.stop_reason;
+    const finishReason = stopReason === "max_tokens" ? "length" : (stopReason ?? "end_turn");
+
     yield {
       type: "done",
       usage: {
@@ -370,7 +378,7 @@ export const anthropicCaller: ModelCaller = async function* (
         cache_read_input_tokens: cacheRead,
         cache_creation_input_tokens: cacheCreation,
       },
-      finish_reason: final.stop_reason ?? "end_turn",
+      finish_reason: finishReason,
     };
   } finally {
     abortSignal?.removeEventListener("abort", onAbort);

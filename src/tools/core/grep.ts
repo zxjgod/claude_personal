@@ -10,10 +10,23 @@ import fg from "fast-glob";
 import { z } from "zod";
 import type { Tool, ToolResult } from "../../types.js";
 import { buildTool } from "../registry.js";
+import { resolveInWorkspace } from "../utils/path.js";
 
 const execFileAsync = promisify(execFile);
 
 const DEFAULT_HEAD_LIMIT = 250;
+
+// Packaged ripgrep binary (M37). `@vscode/ripgrep` is a thin shim that resolves
+// the correct per-platform binary from an optional dependency and exports its
+// absolute path as `rgPath`. It THROWS when that platform package is absent,
+// which callers treat as "no rg available" → the Node.js fallback runs instead.
+// Memoized so the (lazy) dynamic import happens once per process, not per call.
+let rgPathPromise: Promise<string> | undefined;
+
+async function resolveRgPath(): Promise<string> {
+  rgPathPromise ??= import("@vscode/ripgrep").then((m) => m.rgPath);
+  return rgPathPromise;
+}
 
 const GrepSchema = z.strictObject({
   pattern: z.string().describe("The regular expression pattern to search for in file contents"),
@@ -87,9 +100,18 @@ export const GrepTool: Tool = buildTool({
   searchHint: "grep search regex content find text rg",
 
   async call(input, context): Promise<ToolResult> {
-    const searchDir = input.path
-      ? path.resolve(context.workspaceRoot, input.path)
-      : context.workspaceRoot;
+    // Resolve `path` through the workspace containment check so an absolute
+    // path cannot override the workspace root and search/read files outside it.
+    let searchDir: string;
+    if (input.path) {
+      const resolution = resolveInWorkspace(input.path, context.workspaceRoot);
+      if (!resolution.ok) {
+        return { content: "", error: resolution.error };
+      }
+      searchDir = resolution.path;
+    } else {
+      searchDir = context.workspaceRoot;
+    }
 
     // Prefer ripgrep (fast, gitignore-aware); fall back to a Node.js scan.
     try {
@@ -118,6 +140,19 @@ async function runRipgrep(
   searchDir: string,
   abortSignal?: AbortSignal,
 ): Promise<ToolResult> {
+  // Resolve the PACKAGED ripgrep binary instead of a host `rg` on PATH. This
+  // removes the hidden host dependency, fixes the old path's cmd.exe quoting
+  // breakage on Windows, and keeps the whole search as a direct argv → execFile
+  // call (no shell layer, no injection surface). If the platform binary is
+  // unavailable (optionalDependencies missing), this throws and the caller
+  // falls back to runNodeFallback.
+  let rgPath: string;
+  try {
+    rgPath = await resolveRgPath();
+  } catch {
+    throw new Error("packaged ripgrep binary unavailable for this platform");
+  }
+
   // Build the rg invocation as an argv array passed to execFile rather than a
   // shell-quoted string. The old code used Unix single-quotes (`--glob '*.ts'`,
   // `'${pattern}'`) which are not valid quoting under cmd.exe — the project's
@@ -125,7 +160,8 @@ async function runRipgrep(
   // and silently fell back. execFile passes args verbatim with no shell, so the
   // same argv works on every platform and there is no injection surface.
   const argv = [
-    "rg",
+    rgPath,
+    "--no-config",
     "--line-number",
     "--no-heading",
     "--color",
@@ -161,7 +197,9 @@ async function runRipgrep(
   const fileFilter = input.glob ?? input.include;
   if (fileFilter) argv.push("--glob", fileFilter);
 
-  argv.push(input.pattern, searchDir);
+  // `--` terminates option parsing, so a pattern beginning with `-` (e.g.
+  // "-foo", "-\d+") is treated as the regex, not a ripgrep flag.
+  argv.push("--", input.pattern, searchDir);
 
   const { stdout } = await execFileAsync(argv[0]!, argv.slice(1), {
     timeout: 30_000,

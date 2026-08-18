@@ -2,21 +2,32 @@
 // Bash Tool
 // ============================================================
 
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 import chalk from "chalk";
 import { z } from "zod";
-import { checkDangerousPattern } from "../../permissions.js";
-import type { Tool, ToolResult } from "../../types.js";
+import type { Tool, ToolContext, ToolResult } from "../../types.js";
 import { InputValidator } from "../../utils/input-validator.js";
+import { createJob, settleJob } from "../job-store.js";
 import { buildTool } from "../registry.js";
+import { getCwd, rememberCd } from "../session-cwd.js";
 import { bashCommandIsReadOnly } from "../utils/command.js";
 
 const BashSchema = z.strictObject({
   command: z.string().describe("The CLI command to execute"),
   description: z.string().describe("What this command does (shown to user)"),
   timeout: z.number().optional().describe("Timeout in ms (default: 120000)"),
+  run_in_background: z
+    .boolean()
+    .optional()
+    .describe(
+      "Run in the background and return a job id immediately (collect with job_output, stop with job_kill).",
+    ),
 });
 type BashInput = z.infer<typeof BashSchema>;
+
+/** 10MB cap on accumulated output — overflow kills the process tree. */
+const MAX_OUTPUT = 10 * 1024 * 1024;
 
 export const BashTool: Tool = buildTool({
   name: "bash",
@@ -27,10 +38,13 @@ export const BashTool: Tool = buildTool({
     "and CLI tasks without a dedicated tool. " +
     "Parameters: command (required, the CLI command to execute), " +
     "description (required, what this command does for the user), " +
-    "timeout (optional, max execution time in milliseconds, default 120000). " +
+    "timeout (optional, max execution time in milliseconds, default 120000), " +
+    "run_in_background (optional, run detached and return a job id — read with " +
+    "job_output, stop with job_kill). " +
+    "The working directory persists across calls within a session (use `cd <dir>`). " +
     "Very large output is saved to a file and you receive a preview plus the path.",
   schema: BashSchema,
-  searchHint: "shell command execute run script build test git npm",
+  searchHint: "shell command execute run script build test git npm background job",
   // Data-driven (M29): a read-only command (`cat`, `ls`, `git status`…) is
   // auto-approved and safe to parallelize; anything else routes through
   // approval and runs serially. Concurrency-safety mirrors read-only because a
@@ -49,6 +63,15 @@ export const BashTool: Tool = buildTool({
     // let a silent never-exiting command hang the loop forever. Clamp it so "no
     // timeout" can never mean "infinite hang".
     const timeout = input.timeout && input.timeout > 0 ? input.timeout : 120_000;
+
+    // M39: seed the spawn cwd from the remembered session cwd, falling back to
+    // the workspace root on the first call.
+    const cwd = getCwd(context.sessionId) ?? context.workspaceRoot;
+
+    if (input.run_in_background) {
+      return runInBackground(input, context, cwd);
+    }
+
     const abortSignal = context.abortSignal;
 
     // IMPORTANT: We deliberately do NOT use `exec`/`execAsync` here.
@@ -65,42 +88,17 @@ export const BashTool: Tool = buildTool({
     // process tree with `taskkill /T /F` (Windows) or a process-group signal
     // (Unix). This guarantees the pipe closes and the promise always settles.
 
-    const child = spawn(input.command, [], {
-      cwd: context.workspaceRoot,
-      shell: process.env.ComSpec || (process.platform === "win32" ? "cmd.exe" : "/bin/bash"),
-      windowsHide: true,
-      // On Unix, give the child its own process group so we can signal the
-      // whole tree via process.kill(-pid). On Windows we use taskkill /T.
-      detached: process.platform !== "win32",
-    });
-
-    // Kill the entire process tree (parent + all descendants). This is the
-    // only reliable way on Windows to also terminate grandchild processes
-    // that the shell spawned — `child.kill()` would only kill cmd.exe and
-    // leave orphans holding the pipes, re-introducing the original deadlock.
-    const killTree = () => {
-      if (child.pid === undefined) return;
-      try {
-        if (process.platform === "win32") {
-          // /T = kill tree, /F = force
-          spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
-            windowsHide: true,
-            stdio: "ignore",
-          }).unref();
-        } else {
-          process.kill(-child.pid, "SIGKILL");
-        }
-      } catch {
-        // Process may already be gone — ignore.
-      }
-    };
+    const { child, killTree } = spawnShell(input.command, cwd);
 
     let stdout = "";
     let stderr = "";
     let truncated = false;
-    const MAX_OUTPUT = 10 * 1024 * 1024; // 10MB cap on accumulated output
+    // Decode incrementally so a multibyte UTF-8 character split across two
+    // `data` chunks is reassembled instead of emitting a U+FFFD replacement.
+    const stdoutDecoder = new StringDecoder("utf8");
+    const stderrDecoder = new StringDecoder("utf8");
     child.stdout?.on("data", (d: Buffer) => {
-      stdout += d.toString();
+      stdout += stdoutDecoder.write(d);
       if (stdout.length > MAX_OUTPUT) {
         truncated = true;
         // Kill the WHOLE tree on overflow too — `child.kill()` orphans the real
@@ -111,7 +109,7 @@ export const BashTool: Tool = buildTool({
       }
     });
     child.stderr?.on("data", (d: Buffer) => {
-      stderr += d.toString();
+      stderr += stderrDecoder.write(d);
       if (stderr.length > MAX_OUTPUT) {
         truncated = true;
         killTree();
@@ -140,8 +138,12 @@ export const BashTool: Tool = buildTool({
       }
     }
 
+    let spawnError = "";
     const exitCode: number | null = await new Promise<number | null>((resolve) => {
-      child.on("error", () => resolve(-1));
+      child.on("error", (err) => {
+        spawnError = err.message;
+        resolve(-1);
+      });
       // 'close' fires after stdio streams are closed (process tree killed),
       // which is what we need so the captured stdout/stderr are complete.
       child.on("close", (code) => resolve(code));
@@ -191,14 +193,22 @@ export const BashTool: Tool = buildTool({
       const truncatedNote = outTruncated
         ? `\n${chalk.yellow("   ⚠️ output truncated (over 10MB limit)")}`
         : "";
+      // `spawnError` is set when the child never spawned (ENOENT etc.) — surface
+      // the real reason rather than a bare "exit code: -1".
+      const spawnNote = spawnError ? `\n${chalk.gray("   Spawn failed:")} ${spawnError}` : "";
       return {
-        content: output || "(no output)",
+        content: output || spawnError || "(no output)",
         truncated: outTruncated,
         error:
-          `Command failed (exit code: ${exitCode})${truncatedNote}\n` +
+          `Command failed (exit code: ${exitCode})${truncatedNote}${spawnNote}\n` +
           chalk.gray("   Hint: check the command syntax and arguments"),
         metadata: { exitCode },
       };
+    }
+
+    // M39: a successful `cd <dir>` sticks for the next bash call.
+    if (exitCode === 0) {
+      rememberCd(context.sessionId, cwd, input.command);
     }
 
     return {
@@ -207,12 +217,136 @@ export const BashTool: Tool = buildTool({
       metadata: { exitCode },
     };
   },
-
-  async checkPermissions(input, context) {
-    const danger = checkDangerousPattern("bash", input, context.workspaceRoot);
-    if (danger.dangerous) {
-      return { allowed: false, reason: danger.reason! };
-    }
-    return { allowed: true };
-  },
 });
+
+// ============================================================
+// Shared spawn helpers
+// ============================================================
+
+/** The shell the command runs through (cmd.exe on Windows, bash elsewhere). */
+function shellName(): string {
+  return process.env.ComSpec || (process.platform === "win32" ? "cmd.exe" : "/bin/bash");
+}
+
+/**
+ * Spawn the command in its own shell and return the child plus a killTree that
+ * terminates the WHOLE process tree. This is the shared core of the foreground
+ * and background paths — the tree kill is what prevents the Windows
+ * orphan-deadlock described in `call` above.
+ */
+function spawnShell(command: string, cwd: string): { child: ChildProcess; killTree: () => void } {
+  const child = spawn(command, [], {
+    cwd,
+    shell: shellName(),
+    windowsHide: true,
+    // On Unix, give the child its own process group so we can signal the
+    // whole tree via process.kill(-pid). On Windows we use taskkill /T.
+    detached: process.platform !== "win32",
+  });
+
+  const killTree = () => {
+    if (child.pid === undefined) return;
+    try {
+      if (process.platform === "win32") {
+        // /T = kill tree, /F = force
+        spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+          windowsHide: true,
+          stdio: "ignore",
+        }).unref();
+      } else {
+        process.kill(-child.pid, "SIGKILL");
+      }
+    } catch {
+      // Process may already be gone — ignore.
+    }
+  };
+
+  return { child, killTree };
+}
+
+/**
+ * Background path (M38): spawn detached, register a session job, and return the
+ * job id immediately. Output accumulates on the job; the job settles when the
+ * process tree exits or is killed via job_kill.
+ *
+ * Background jobs deliberately IGNORE `context.abortSignal`. A background job
+ * exists to outlive the current turn (the model starts it, keeps working, then
+ * polls with job_output), so Ctrl+C / turn-abort must NOT tear it down — the
+ * whole point is that it survives the request that spawned it. The only way to
+ * stop one is an explicit job_kill. This mirrors task/sub-agent semantics.
+ */
+function runInBackground(input: BashInput, context: ToolContext, cwd: string): ToolResult {
+  const job = createJob(context.sessionId, {
+    kind: "bash",
+    command: input.command,
+    description: input.description,
+  });
+
+  const { child, killTree } = spawnShell(input.command, cwd);
+  job.kill = killTree;
+
+  // Decode incrementally (same multibyte-safety rationale as the foreground path).
+  const stdoutDecoder = new StringDecoder("utf8");
+  const stderrDecoder = new StringDecoder("utf8");
+  child.stdout?.on("data", (d: Buffer) => {
+    job.stdout += stdoutDecoder.write(d);
+    // Same 10MB guard as the foreground path — kill the tree rather than let
+    // a runaway process grow the in-memory buffer without bound. Mark the job
+    // truncated so job_output can surface the data loss (the foreground path
+    // flags it; the background path must too, since it has no `truncated` field
+    // on ToolResult).
+    if (job.stdout.length > MAX_OUTPUT) {
+      job.truncated = true;
+      killTree();
+    }
+  });
+  child.stderr?.on("data", (d: Buffer) => {
+    job.stderr += stderrDecoder.write(d);
+    if (job.stderr.length > MAX_OUTPUT) {
+      job.truncated = true;
+      killTree();
+    }
+  });
+
+  // Honor an explicit `timeout` for background jobs too. The foreground path
+  // defaults to 120s; background work deliberately has NO default (it exists
+  // to outlive a turn — a dev server or long build must not be reaped at
+  // 120s). But a caller-supplied timeout still applies, so a silent no-output
+  // infinite loop gets a hard bound instead of pinning a session job slot
+  // forever.
+  const timeoutMs = input.timeout && input.timeout > 0 ? input.timeout : 0;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  if (timeoutMs > 0) {
+    timer = setTimeout(() => {
+      job.killReason = `timed out after ${Math.round(timeoutMs / 1000)}s`;
+      killTree();
+      settleJob(job, "killed", null);
+    }, timeoutMs);
+  }
+  const clearTimer = () => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  };
+
+  child.on("error", (err) => {
+    // Spawn failure (e.g. ENOENT — command not found): surface the reason in
+    // the job output instead of leaving it empty with a bare exit code.
+    clearTimer();
+    job.stderr += `spawn failed: ${err.message}\n`;
+    settleJob(job, "done", -1);
+  });
+  child.on("close", (code) => {
+    clearTimer();
+    settleJob(job, "done", code);
+  });
+
+  const preview = input.description || input.command;
+  return {
+    content:
+      `Started background job ${job.id} (${preview.slice(0, 80)}).\n` +
+      `Read its output with job_output (job_id: "${job.id}"); stop it with job_kill.`,
+    metadata: { jobId: job.id },
+  };
+}

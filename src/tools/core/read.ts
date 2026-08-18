@@ -15,8 +15,13 @@ import { resolveInWorkspace } from "../utils/path.js";
 
 const ReadSchema = z.strictObject({
   filePath: z.string().describe("The absolute path to the file to read"),
-  offset: z.number().int().optional().describe("Line number to start reading from (1-based)"),
-  limit: z.number().int().optional().describe("Maximum number of lines to read"),
+  offset: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Line number to start reading from (1-based)"),
+  limit: z.number().int().min(1).optional().describe("Maximum number of lines to read"),
 });
 type ReadInput = z.infer<typeof ReadSchema>;
 

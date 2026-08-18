@@ -28,24 +28,83 @@ export function resolveInWorkspace(
   const root = path.resolve(workspaceRoot);
   const resolved = path.resolve(root, inputPath);
 
-  // Resolve symlinks to get the real path, then verify containment.
-  // This prevents attacks via symlinks pointing outside the workspace.
-  let realPath: string;
-  try {
-    realPath = fs.realpathSync(resolved);
-  } catch {
-    // realpathSync fails for broken symlinks or permission errors.
-    // Fall back to resolved path — the prefix check still blocks the escape.
-    realPath = resolved;
+  // Resolve symlinks to get the real path, then verify containment. A
+  // not-yet-existing tail (a write creating a new file) is tolerated; a symlink
+  // that points outside the workspace is rejected by the containment check below
+  // (never by blind fallback, which used to let writeFileSync follow the link).
+  const real = resolveRealPathOrError(inputPath, resolved);
+  if (!real.ok) {
+    return real;
   }
 
-  if (realPath !== root && !realPath.startsWith(root + path.sep)) {
+  if (real.path !== root && !real.path.startsWith(root + path.sep)) {
     return {
       ok: false,
       error: `Access denied: "${inputPath}" resolves outside workspace`,
     };
   }
-  return { ok: true, path: resolved };
+  // Return the symlink-resolved path so the caller operates on the REAL target,
+  // not a symlink that could be swapped after this check (TOCTOU). For
+  // not-yet-existing files `real.path` is the real ancestor + literal suffix —
+  // the best containment verdict available before the file exists.
+  return { ok: true, path: real.path };
+}
+
+/**
+ * Resolve `resolved` to its real path, following symlinks, while tolerating a
+ * not-yet-existing tail (writes that create new files). Walks up to the deepest
+ * EXISTING ancestor and re-appends the missing suffix. Any symlink component is
+ * followed (relative to its own directory) so the caller's containment check
+ * can reject a link that escapes the workspace — a dangling link whose target
+ * does not exist yet simply becomes a not-yet-created tail and is then judged
+ * by containment too.
+ */
+function resolveRealPathOrError(
+  inputPath: string,
+  resolved: string,
+): { ok: true; path: string } | { ok: false; error: string } {
+  try {
+    return { ok: true, path: fs.realpathSync(resolved) };
+  } catch {
+    // Path does not fully exist — fall through to the ancestor walk below.
+  }
+  let cur = resolved;
+  const suffix: string[] = [];
+  const seenLinks = new Set<string>();
+  for (;;) {
+    let st: fs.Stats | undefined;
+    try {
+      st = fs.lstatSync(cur);
+    } catch {
+      st = undefined;
+    }
+    if (st === undefined) {
+      // `cur` does not exist — its basename is a not-yet-created tail component.
+      const parent = path.dirname(cur);
+      if (parent === cur) {
+        return {
+          ok: false,
+          error: `Access denied: "${inputPath}" cannot be resolved inside the workspace`,
+        };
+      }
+      suffix.unshift(path.basename(cur));
+      cur = parent;
+      continue;
+    }
+    if (st.isSymbolicLink()) {
+      if (seenLinks.has(cur)) {
+        return {
+          ok: false,
+          error: `Access denied: "${inputPath}" traverses a symbolic-link cycle`,
+        };
+      }
+      seenLinks.add(cur);
+      cur = path.resolve(path.dirname(cur), fs.readlinkSync(cur));
+      continue;
+    }
+    // Deepest existing non-symlink ancestor: resolve and re-append the tail.
+    return { ok: true, path: path.join(fs.realpathSync(cur), ...suffix) };
+  }
 }
 
 /** Workspace-relative path for display; falls back to absolute if outside. */

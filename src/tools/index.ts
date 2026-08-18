@@ -11,6 +11,7 @@ export { ReadTool } from "./core/read.js";
 export { WriteTool } from "./core/write.js";
 // Export the main CORE_TOOLS array
 export { CORE_TOOLS } from "./core-tools.js";
+export { JobKillTool, JobListTool, JobOutputTool } from "./extended/jobs.js";
 export { TaskTool } from "./extended/task.js";
 // Export extended tools
 export { clearTodos, getTodos, TodoTool } from "./extended/todo.js";

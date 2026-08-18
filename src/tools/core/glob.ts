@@ -2,11 +2,11 @@
 // Glob Tool
 // ============================================================
 
-import * as path from "node:path";
 import fg from "fast-glob";
 import { z } from "zod";
 import type { Tool, ToolResult } from "../../types.js";
 import { buildTool } from "../registry.js";
+import { resolveInWorkspace } from "../utils/path.js";
 
 const GlobSchema = z.strictObject({
   pattern: z.string().describe("Glob pattern, e.g. '**/*.ts' or 'src/**/*.test.ts'"),
@@ -28,9 +28,19 @@ export const GlobTool: Tool = buildTool({
   searchHint: "glob find files pattern match search",
 
   async call(input, context): Promise<ToolResult> {
-    const searchDir = input.path
-      ? path.resolve(context.workspaceRoot, input.path)
-      : context.workspaceRoot;
+    // Resolve `path` through the workspace containment check so an absolute
+    // path (e.g. "/etc", "C:\\Users") cannot override the workspace root and
+    // enumerate files outside it.
+    let searchDir: string;
+    if (input.path) {
+      const resolution = resolveInWorkspace(input.path, context.workspaceRoot);
+      if (!resolution.ok) {
+        return { content: "", error: resolution.error };
+      }
+      searchDir = resolution.path;
+    } else {
+      searchDir = context.workspaceRoot;
+    }
 
     try {
       const files = await fg(input.pattern, {
