@@ -38,20 +38,45 @@ const MAX_WORKER_CONCURRENCY = (() => {
 let activeWorkers = 0;
 const workerQueue: Array<() => void> = [];
 
+/**
+ * Counting semaphore over activeWorkers + a FIFO queue. Invariant: a slot is
+ * either counted in activeWorkers or currently owned by a queued waiter being
+ * woken — never both, never neither.
+ *
+ * The previous implementation raced: release() decremented BEFORE waking a
+ * waiter, and the waiter re-incremented only after its microtask ran. In that
+ * window a newcomer on the fast path could ALSO take the slot, after which the
+ * waiter's increment overshot the cap — silently defeating the concurrency
+ * limit that exists to protect the provider.
+ */
 async function acquireWorkerSlot(): Promise<void> {
-  if (activeWorkers < MAX_WORKER_CONCURRENCY) {
+  // Fast path only when nobody is waiting: otherwise a newcomer could grab a
+  // slot that releaseWorkerSlot() just transferred to a queued waiter.
+  if (workerQueue.length === 0 && activeWorkers < MAX_WORKER_CONCURRENCY) {
     activeWorkers++;
     return;
   }
   await new Promise<void>((resolve) => workerQueue.push(resolve));
-  activeWorkers++;
+  // Slot ownership was TRANSFERRED by releaseWorkerSlot (count unchanged) —
+  // do NOT increment here.
 }
 
 function releaseWorkerSlot(): void {
-  activeWorkers--;
   const next = workerQueue.shift();
-  if (next) next();
+  if (next) {
+    // Hand the slot directly to the waiter; the count stays the same.
+    next();
+  } else {
+    activeWorkers--;
+  }
 }
+
+/** Exposed for tests only — the semaphore is module-internal by design. */
+export const __workerSlots = {
+  acquire: acquireWorkerSlot,
+  release: releaseWorkerSlot,
+  max: MAX_WORKER_CONCURRENCY,
+};
 
 /** Spawn one read-only worker sub-agent and return its final assistant text. */
 export async function runWorkerAgent(prompt: string, context: ToolContext): Promise<string> {
@@ -160,7 +185,23 @@ export async function runWorkflow(
   };
   WORKFLOWS.set(id, record);
 
+  const timeoutMs = options.timeoutMs ?? 120_000;
+  // When the wall-clock budget expires we flip `revoked` so the sandbox's
+  // helpers (agent/parallel/pipeline) start throwing — pending async work
+  // stops making progress instead of running on in the background forever.
+  let revoked = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      revoked = true;
+      reject(new Error(`workflow timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    // Don't let a completed workflow's lingering timer keep the process alive.
+    timer.unref?.();
+  });
+
   const agent = async (prompt: string, opts?: { label?: string }) => {
+    if (revoked) throw new Error("workflow timed out (revoked)");
     const label = opts?.label ?? (prompt.length > 60 ? `${prompt.slice(0, 57)}…` : prompt);
     record.logs.push(`agent: ${label}`);
     return agentRunner(prompt, context);
@@ -188,14 +229,20 @@ export async function runWorkflow(
   };
   vm.createContext(sandbox);
 
-  const timeoutMs = options.timeoutMs ?? 120_000;
-  const timeout = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error(`workflow timed out after ${timeoutMs}ms`)), timeoutMs),
-  );
-
   try {
     const wrapped = `(async () => {\n${script}\n})()`;
-    const result: unknown = await Promise.race([vm.runInContext(wrapped, sandbox), timeout]);
+    // vm's own `timeout` option covers a SYNCHRONOUS infinite loop during the
+    // initial evaluation (e.g. a bare `while (true) {}` — the async IIFE body
+    // runs synchronously up to its first await, inside runInContext), which
+    // would otherwise freeze the event loop and leave the Promise.race timer
+    // no chance to fire. A sync loop hidden BEHIND an await still cannot be
+    // preempted from this thread — that would require running the script in a
+    // worker thread, deliberately out of scope for a personal CLI.
+    const syncBudget = Math.min(timeoutMs, 10_000);
+    const result: unknown = await Promise.race([
+      vm.runInContext(wrapped, sandbox, { timeout: syncBudget }),
+      timeout,
+    ]);
     record.status = "completed";
     record.finishedAt = Date.now();
     record.result = result === undefined ? undefined : String(result);
@@ -203,6 +250,11 @@ export async function runWorkflow(
     record.status = "failed";
     record.finishedAt = Date.now();
     record.logs.push(`error: ${error?.message ?? error}`);
+    if (revoked) {
+      record.logs.push("note: timed out — in-flight worker calls were revoked mid-flight");
+    }
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 
   return record;

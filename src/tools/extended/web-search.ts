@@ -113,16 +113,20 @@ export const WebSearchTool: Tool = buildTool({
         body: new URLSearchParams({ q: input.query }).toString(),
         signal: controller.signal,
       });
-      clearTimeout(timeoutId);
 
       if (!response.ok) {
+        clearTimeout(timeoutId);
         return {
           content: "",
           error: `Search failed: ${response.status} ${response.statusText}`,
         };
       }
 
+      // The timeout stays armed through response.text(): a server that returns
+      // headers promptly then drips the body must still hit the abort (the
+      // signal propagates into the body stream and rejects the read).
       const html = await response.text();
+      clearTimeout(timeoutId);
       const results = parseSearchResults(html);
 
       if (results.length === 0) {

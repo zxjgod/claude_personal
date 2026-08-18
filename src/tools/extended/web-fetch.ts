@@ -93,37 +93,34 @@ export const WebFetchTool: Tool = buildTool({
       };
     }
 
-    // --- Fetch ---
+    // --- Fetch (manual redirects so every hop is SSRF-checked) ---
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
+    const headers = {
+      "User-Agent":
+        "ClaudeCodeReplica/1.0 (AI coding assistant; +https://github.com/claude-code-replica)",
+      Accept: "text/html, text/plain, application/json, */*",
+    };
+
     try {
-      const response = await fetch(input.url, {
-        method: "GET",
-        headers: {
-          "User-Agent":
-            "ClaudeCodeReplica/1.0 (AI coding assistant; +https://github.com/claude-code-replica)",
-          Accept: "text/html, text/plain, application/json, */*",
-        },
-        redirect: "follow",
-        signal: controller.signal,
-      });
-
-      clearTimeout(timeoutId);
-
-      // `redirect: "follow"` can land on an internal host even when the original
-      // URL passed SSRF validation. Re-validate the FINAL url after redirects so a
-      // redirect to localhost/private IPs is still blocked.
-      if (response.url && response.url !== input.url) {
-        const finalCheck = InputValidator.validateUrl(response.url);
-        if (!finalCheck.valid) {
-          return {
-            content: "",
-            error: `Blocked redirect target: ${finalCheck.error ?? response.url}`,
-          };
-        }
+      // `redirect: "follow"` only exposes the FINAL url, so a chain that hops
+      // through an internal host (public → 169.254.169.254 → public) would pass
+      // the final-URL check while still touching the internal host. Follow
+      // manually and validate EVERY hop instead, bounding the chain length.
+      const fetched = await fetchWithManualRedirects(input.url, headers, controller.signal);
+      if (!fetched.ok) {
+        clearTimeout(timeoutId);
+        return { content: "", error: fetched.error };
       }
+      const response = fetched.response;
+
+      // NOTE: the timeout stays ARMED through the body read. Clearing it after
+      // the headers arrive (the old behavior) let a slow-drip server — headers
+      // instantly, body byte-by-byte — hang the tool forever. The abort signal
+      // propagates to the body stream, so readLimited() rejects with
+      // AbortError when the timer fires.
 
       // Check content type
       const contentType = response.headers.get("content-type") || "";
@@ -138,6 +135,8 @@ export const WebFetchTool: Tool = buildTool({
           return { content: "", error: `Request timed out after ${TIMEOUT_MS / 1000}s` };
         }
         return { content: "", error: `Failed to read response: ${err.message}` };
+      } finally {
+        clearTimeout(timeoutId);
       }
 
       let content: string;
@@ -200,6 +199,55 @@ export const WebFetchTool: Tool = buildTool({
     return { allowed: true }; // Read-only — auto-approved
   },
 });
+
+// --- Helper: manual redirect following with per-hop SSRF validation ---
+
+type FetchResult = { ok: true; response: Response } | { ok: false; error: string };
+
+const MAX_REDIRECTS = 5;
+
+/**
+ * Follow redirects manually so EVERY hop is SSRF-validated (not just the final
+ * URL, which is all `redirect: "follow"` reveals). The chain length is bounded
+ * so a redirect loop cannot run forever under the single fetch timeout.
+ */
+async function fetchWithManualRedirects(
+  startUrl: string,
+  headers: Record<string, string>,
+  signal: AbortSignal,
+): Promise<FetchResult> {
+  let currentUrl = startUrl;
+  let hops = 0;
+  for (;;) {
+    // Validate THIS hop's target before requesting it. The original URL already
+    // passed validation at the call site; intermediate hops are checked here.
+    const check = InputValidator.validateUrl(currentUrl);
+    if (!check.valid) {
+      return { ok: false, error: `Blocked redirect target: ${check.error ?? currentUrl}` };
+    }
+
+    const response = await fetch(currentUrl, {
+      method: "GET",
+      headers,
+      redirect: "manual",
+      signal,
+    });
+
+    const status = response.status;
+    if (status >= 300 && status < 400) {
+      const location = response.headers.get("location");
+      if (!location) return { ok: true, response }; // 3xx without Location → final
+      if (++hops > MAX_REDIRECTS) {
+        return { ok: false, error: `Too many redirects (over ${MAX_REDIRECTS})` };
+      }
+      currentUrl = new URL(location, currentUrl).toString();
+      await response.body?.cancel(); // release the connection before the next hop
+      continue;
+    }
+
+    return { ok: true, response };
+  }
+}
 
 // --- Helper: Read response body with size limit ---
 

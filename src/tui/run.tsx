@@ -8,8 +8,8 @@
 // so it doesn't corrupt the Ink frame.
 // ============================================================
 
-import { render } from "ink";
-import { useCallback, useRef, useState } from "react";
+import { render, useApp, useInput } from "ink";
+import { type RefObject, useCallback, useRef, useState } from "react";
 import { agentLoop } from "./../agent-loop.js";
 import { formatCliError } from "./../cli-errors.js";
 import type { CommandContext } from "./../commands.js";
@@ -411,6 +411,10 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
   // M36: one type-ahead queue per session. Stable across renders so a message
   // typed while the agent is busy survives until the loop drains it.
   const queueRef = useRef<InputQueue>(new InputQueue());
+  // The AbortController of the in-flight turn, so the Ctrl+C hotkey can
+  // interrupt it. Ink keeps stdin in raw mode, so Ctrl+C never raises SIGINT —
+  // the process-level handler below only covers non-TUI fallbacks.
+  const turnControllerRef = useRef<AbortController | null>(null);
 
   const askUser: AskUserFn = useCallback(
     async (tool, input, riskHint) => {
@@ -554,6 +558,7 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
         deps.messages.push({ role: "user", content: [{ type: "text", text: contentText }] });
 
         const controller = new AbortController();
+        turnControllerRef.current = controller;
         const onSigint = () => controller.abort("用户中断");
         process.on("SIGINT", onSigint);
         try {
@@ -572,6 +577,7 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
           store.addNotice(`⎿ ${formatCliError(err)}`);
           store.setBusy(false);
         } finally {
+          turnControllerRef.current = null;
           process.removeListener("SIGINT", onSigint);
         }
       })().catch((err) => {
@@ -585,15 +591,48 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
   );
 
   return (
-    <App
-      store={store}
-      commands={deps.commands}
-      onSubmit={onSubmit}
-      expandedId={expandedId}
-      editorMode={deps.makeCommandContext().editorMode}
-      fullscreen={deps.fullscreen}
-    />
+    <>
+      <InterruptHotkey store={store} controllerRef={turnControllerRef} />
+      <App
+        store={store}
+        commands={deps.commands}
+        onSubmit={onSubmit}
+        expandedId={expandedId}
+        editorMode={deps.makeCommandContext().editorMode}
+        fullscreen={deps.fullscreen}
+      />
+    </>
   );
+}
+
+/**
+ * Ctrl+C in the TUI: interrupt the in-flight turn when busy, exit when idle.
+ * Ink runs stdin in raw mode, so Ctrl+C arrives as a keypress (not SIGINT) —
+ * with exitOnCtrlC disabled at the render() call sites, THIS is the only
+ * Ctrl+C behavior. Without it, Ctrl+C hard-exited the process mid-turn and the
+ * status line's "(Ctrl+C interrupt)" hint was a lie.
+ */
+function InterruptHotkey({
+  store,
+  controllerRef,
+}: {
+  store: TuiStore;
+  controllerRef: RefObject<AbortController | null>;
+}) {
+  const { exit } = useApp();
+  useInput((input, key) => {
+    if (!(key.ctrl && input === "c")) return;
+    // Overlays (permission prompt, question prompt) own their input — let
+    // their own cancel handling deal with Ctrl+C.
+    if (store.getSnapshot().overlay) return;
+    const controller = controllerRef.current;
+    if (controller && store.getSnapshot().busy) {
+      controller.abort("用户中断");
+    } else {
+      exit();
+    }
+  });
+  return null;
 }
 
 /** Launch the Ink TUI. Resolves when the user exits. */
@@ -637,7 +676,11 @@ export function runTui(deps: TuiDeps): Promise<void> {
         workspaceRoot: deps.workspaceRoot,
       }).map((line) => ({ kind: "log", lines: [line] })),
     );
-    const { waitUntilExit } = render(<Root store={store} deps={deps} />);
+    const { waitUntilExit } = render(<Root store={store} deps={deps} />, {
+      // Ctrl+C is handled by Root's InterruptHotkey (interrupt turn / exit when
+      // idle) — Ink's default would hard-exit the process mid-turn.
+      exitOnCtrlC: false,
+    });
     return (waitUntilExit() as Promise<void>).finally(restoreScreen);
   }
 
@@ -655,6 +698,9 @@ export function runTui(deps: TuiDeps): Promise<void> {
     batching: true,
     permissionMode: deps.permissionMode,
   });
-  const { waitUntilExit } = render(<Root store={store} deps={deps} />);
+  const { waitUntilExit } = render(<Root store={store} deps={deps} />, {
+    // See the fullscreen render above: Ctrl+C belongs to InterruptHotkey.
+    exitOnCtrlC: false,
+  });
   return waitUntilExit() as Promise<void>;
 }

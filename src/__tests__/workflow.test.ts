@@ -4,7 +4,7 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 import type { ToolContext } from "../types.js";
-import { resetWorkflows, runWorkflow } from "../workflow.js";
+import { __workerSlots, resetWorkflows, runWorkflow } from "../workflow.js";
 
 const ctx: ToolContext = {
   workspaceRoot: process.cwd(),
@@ -76,5 +76,49 @@ describe("runWorkflow", () => {
     });
     expect(record.status).toBe("failed");
     expect(record.logs.some((l) => l.includes("boom"))).toBe(true);
+  });
+
+  it("a synchronous infinite loop fails instead of freezing the process", async () => {
+    // Regression: vm.runInContext previously ran WITHOUT its timeout option,
+    // so a bare `while (true) {}` blocked the event loop forever and the
+    // Promise.race timeout never got a chance to fire.
+    const record = await runWorkflow(`while (true) {}`, ctx, {
+      agentRunner: fakeAgent,
+      timeoutMs: 500,
+    });
+    expect(record.status).toBe("failed");
+    expect(record.logs.some((l) => /timed out/i.test(l))).toBe(true);
+  });
+
+  it("wall-clock timeout fails the run and revokes pending agent calls", async () => {
+    const neverAgent = (): Promise<string> => new Promise<string>(() => {});
+    const record = await runWorkflow(`return await agent("hang")`, ctx, {
+      agentRunner: neverAgent,
+      timeoutMs: 100,
+    });
+    expect(record.status).toBe("failed");
+    expect(record.result).toBeUndefined();
+    expect(record.logs.some((l) => /timed out/i.test(l))).toBe(true);
+  });
+
+  it("never exceeds the worker concurrency cap", async () => {
+    // Regression for the semaphore race: release() used to hand a slot to a
+    // waiter AND let a newcomer take it too, overshooting the cap. The
+    // semaphore lives inside runWorkerAgent (agentRunner injection bypasses
+    // it), so exercise the slot primitives directly.
+    const { acquire, release, max } = __workerSlots;
+    let active = 0;
+    let maxActive = 0;
+    const worker = async (): Promise<void> => {
+      await acquire();
+      active++;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((r) => setTimeout(r, 15));
+      active--;
+      release();
+    };
+    await Promise.all(Array.from({ length: 12 }, () => worker()));
+    expect(maxActive).toBeLessThanOrEqual(max);
+    expect(maxActive).toBeGreaterThan(1); // sanity: work actually overlapped
   });
 });
