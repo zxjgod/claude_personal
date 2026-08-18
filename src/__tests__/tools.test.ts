@@ -101,11 +101,25 @@ describe("WriteTool", () => {
     const filePath = path.join(tmpDir, "existing.txt");
     fs.writeFileSync(filePath, "old content");
 
+    // The read-before-write gate requires reading the file first.
+    await ReadTool.call({ filePath: "existing.txt" }, ctx);
+
     const result = await WriteTool.call({ filePath: "existing.txt", content: "new content" }, ctx);
     expect(result.content).toContain("Updated");
 
     const content = fs.readFileSync(filePath, "utf-8");
     expect(content).toBe("new content");
+  });
+
+  it("should refuse to overwrite a file that was never read", async () => {
+    const filePath = path.join(tmpDir, "unseen.txt");
+    fs.writeFileSync(filePath, "old content");
+
+    const result = await WriteTool.call({ filePath: "unseen.txt", content: "new content" }, ctx);
+    expect(result.error).toBeDefined();
+
+    const content = fs.readFileSync(filePath, "utf-8");
+    expect(content).toBe("old content");
   });
 
   it("should create parent directories", async () => {

@@ -210,7 +210,9 @@ describe("classifier verdicts in the pipeline", () => {
       askUser,
       classifier: { callModel: caller, modelConfig: classifierConfig },
     });
-    expect(askUser.mock.calls[0]![2]).toBe("递归删除命令 (rm -rf) — 将强制删除所有内容且无法恢复");
+    expect(askUser.mock.calls[0]![2]).toBe(
+      "递归删除命令 (rm -r / rm -rf) — 将删除目录及其所有子内容",
+    );
   });
 
   it("no classifier configured leaves the dangerous path unchanged", async () => {
@@ -252,7 +254,9 @@ describe("classifier fail-safe paths", () => {
     });
     // With no key the classifier short-circuits before consuming the caller.
     expect(calls.count).toBe(0);
-    expect(askUser.mock.calls[0]![2]).toBe("递归删除命令 (rm -rf) — 将强制删除所有内容且无法恢复");
+    expect(askUser.mock.calls[0]![2]).toBe(
+      "递归删除命令 (rm -r / rm -rf) — 将删除目录及其所有子内容",
+    );
   });
 
   it("caller throws → defers to the regex reason and prompts", async () => {
@@ -265,7 +269,9 @@ describe("classifier fail-safe paths", () => {
       askUser,
       classifier: { callModel: thrower, modelConfig: classifierConfig },
     });
-    expect(askUser.mock.calls[0]![2]).toBe("递归删除命令 (rm -rf) — 将强制删除所有内容且无法恢复");
+    expect(askUser.mock.calls[0]![2]).toBe(
+      "递归删除命令 (rm -r / rm -rf) — 将删除目录及其所有子内容",
+    );
     expect(r.allowed).toBe(false);
   });
 

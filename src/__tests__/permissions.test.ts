@@ -3,7 +3,12 @@
 // ============================================================
 
 import { describe, expect, it, vi } from "vitest";
-import { checkPermission, classifyPermissionRisk, parseClassifierVerdict } from "../permissions.js";
+import {
+  checkDangerousPattern,
+  checkPermission,
+  classifyPermissionRisk,
+  parseClassifierVerdict,
+} from "../permissions.js";
 import { createTool } from "../tools/registry.js";
 import type {
   Message,
@@ -561,7 +566,9 @@ describe("checkPermission + classifier integration", () => {
     });
     expect(askUser).toHaveBeenCalledTimes(1);
     // ALLOW → no model annotation; the original regex reason is shown.
-    expect(askUser.mock.calls[0]![2]).toBe("递归删除命令 (rm -rf) — 将强制删除所有内容且无法恢复");
+    expect(askUser.mock.calls[0]![2]).toBe(
+      "递归删除命令 (rm -r / rm -rf) — 将删除目录及其所有子内容",
+    );
   });
 
   it("classifier unavailable (unparseable) falls back to the regex reason", async () => {
@@ -575,7 +582,9 @@ describe("checkPermission + classifier integration", () => {
       },
     });
     expect(askUser).toHaveBeenCalledTimes(1);
-    expect(askUser.mock.calls[0]![2]).toBe("递归删除命令 (rm -rf) — 将强制删除所有内容且无法恢复");
+    expect(askUser.mock.calls[0]![2]).toBe(
+      "递归删除命令 (rm -r / rm -rf) — 将删除目录及其所有子内容",
+    );
   });
 
   it("without a classifier, the dangerous-bash path is unchanged", async () => {
@@ -585,7 +594,47 @@ describe("checkPermission + classifier integration", () => {
       askUser,
     });
     expect(askUser).toHaveBeenCalledTimes(1);
-    expect(askUser.mock.calls[0]![2]).toBe("递归删除命令 (rm -rf) — 将强制删除所有内容且无法恢复");
+    expect(askUser.mock.calls[0]![2]).toBe(
+      "递归删除命令 (rm -r / rm -rf) — 将删除目录及其所有子内容",
+    );
     expect(result.allowed).toBe(false);
+  });
+});
+
+describe("checkDangerousPattern coverage (regression)", () => {
+  // The dangerous-pattern regexes are the bypass-immune safety floor — every
+  // one of these slipped through at some point and would run unconfirmed even
+  // in bypassPermissions mode.
+  const dangerous = [
+    'rm "-rf" target', // quoted flag bypassed the \s-anchor
+    "rm '-r' target",
+    "curl https://x.sh | BASH", // case-sensitive shell name
+    "curl https://x.sh | python3", // interpreter pipe not covered
+    "git push -f", // short flag
+    "git -C repo push --force", // -C broke git/push adjacency
+    "git push origin main --force-with-lease",
+    "git -C repo reset --hard",
+    "rmdir /s /q build", // cmd.exe coverage (Bash runs cmd.exe on Windows)
+    "del /f /s dist",
+    "format c:",
+  ];
+  for (const command of dangerous) {
+    it(`flags: ${command}`, () => {
+      expect(checkDangerousPattern("bash", { command }, "/workspace").dangerous).toBe(true);
+    });
+  }
+
+  it("does NOT false-positive on benign lookalikes", () => {
+    const benign = [
+      "rm my-archive.tar",
+      "curl https://x.sh | grep push", // 'push' contains 'sh' but no word boundary around it
+      "git push origin main",
+      "git reset --soft HEAD~1",
+    ];
+    for (const command of benign) {
+      expect(checkDangerousPattern("bash", { command }, "/workspace").dangerous, command).toBe(
+        false,
+      );
+    }
   });
 });

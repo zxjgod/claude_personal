@@ -89,17 +89,22 @@ export function checkDangerousPattern(
   if (toolName === "bash" && input.command && typeof input.command === "string") {
     const cmd = input.command as string;
 
-    // Recursive deletion
-    if (/\brm\s+.*-rf\b/.test(cmd)) {
+    // Recursive deletion — `rm` with a recursive flag: short form (-r/-R, alone
+    // or in a combined group like -rf/-fr/-rfv) or the long --recursive.
+    // Case-insensitive so `rm -fr`, `rm -Rf`, `rm -rfv`, `rm --recursive` are
+    // all caught (the older checks missed reorderings, uppercase flags, extra
+    // flag letters like -v, and long options).
+    //
+    // The flag must be a STANDALONE token: the `\s` before it (and `(?=\s|$)`
+    // after) anchors it to whitespace, so a bare filename whose own name contains
+    // "-r…" (`rm my-archive.tar`, `rm pre-release`) is NOT mistaken for the
+    // recursive flag. `[^|;&\n]*` still stops at command separators so a `-r` in
+    // a LATER chained command is not attributed to this `rm`. Quoted flags
+    // (`rm "-rf" x`, `rm '-r' x`) are caught via the optional quote characters.
+    if (/\brm\b[^|;&\n]*\s["']?(-\w*r\w*|--recursive)["']?(?=\s|$)/i.test(cmd)) {
       return {
         dangerous: true,
-        reason: "递归删除命令 (rm -rf) — 将强制删除所有内容且无法恢复",
-      };
-    }
-    if (/\brm\s+.*-r/.test(cmd)) {
-      return {
-        dangerous: true,
-        reason: "递归删除命令 (rm -r) — 将删除目录及其所有子内容",
+        reason: "递归删除命令 (rm -r / rm -rf) — 将删除目录及其所有子内容",
       };
     }
 
@@ -111,27 +116,49 @@ export function checkDangerousPattern(
       };
     }
 
-    // Pipe to shell
-    if (/(curl|wget).*\|.*(bash|sh|zsh)/.test(cmd)) {
+    // Pipe to shell/interpreter. Case-insensitive (`| BASH`), word-boundaried
+    // (so `| grep push` isn't a false positive), and covers interpreter
+    // targets beyond shells (`curl x | python3` runs downloaded code too).
+    if (/(curl|wget)[\s\S]*\|[\s\S]*\b(bash|sh|zsh|python\d*|node|perl|php|ruby)\b/i.test(cmd)) {
       return {
         dangerous: true,
         reason: "管道到 Shell — 执行从网络下载的未知代码 (严重安全风险)",
       };
     }
 
-    // Force push
-    if (/\bgit\s+push\s+.*--force/.test(cmd)) {
+    // Force push. Global options between `git` and `push` are allowed
+    // (`git -C repo push --force` previously slipped through), as is the short
+    // `-f` and `--force-with-lease` (still overwrites remote history).
+    if (/\bgit\b[^|;&\n]*\bpush\b[^|;&\n]*(\s-f\b|\s--force)/i.test(cmd)) {
       return {
         dangerous: true,
         reason: "强制推送 (git push --force) — 可能覆盖远程分支的提交历史",
       };
     }
 
-    // Hard reset
-    if (/\bgit\s+reset\s+--hard/.test(cmd)) {
+    // Hard reset — same global-option gap closed as above.
+    if (/\bgit\b[^|;&\n]*\breset\b[^|;&\n]*\s--hard\b/i.test(cmd)) {
       return {
         dangerous: true,
         reason: "强制重置 (git reset --hard) — 将丢弃所有未提交的更改",
+      };
+    }
+
+    // cmd.exe destructive commands — the Bash tool RUNS cmd.exe on Windows, so
+    // Unix-only patterns left rmdir/del completely uncovered.
+    if (
+      /\b(rmdir|rd)\s[^|;&\n]*\/s\b/i.test(cmd) || // rmdir /s [/q]
+      /\bdel\s[^|;&\n]*\/[sqf]\b/i.test(cmd) // del /s, /q, /f
+    ) {
+      return {
+        dangerous: true,
+        reason: "Windows 递归/强制删除 (rmdir /s 或 del /s) — 将删除目录及其所有子内容",
+      };
+    }
+    if (/\bformat\s+[a-z]:/i.test(cmd)) {
+      return {
+        dangerous: true,
+        reason: "磁盘格式化命令 (format) — 将清除整个分区数据",
       };
     }
 

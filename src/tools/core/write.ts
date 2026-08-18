@@ -7,11 +7,12 @@ import * as path from "node:path";
 import { z } from "zod";
 import { recordChange } from "../../change-tracker.js";
 import { checkDangerousPattern, isBlockedPath } from "../../permissions.js";
+import { checkReadBeforeEdit, refreshRead } from "../../read-tracker.js";
 import type { Tool, ToolResult } from "../../types.js";
 import { InputValidator } from "../../utils/input-validator.js";
 import { buildTool } from "../registry.js";
 import { formatSize } from "../utils/file.js";
-import { relForDisplay, resolveInWorkspace } from "../utils/path.js";
+import { relForDisplay, resolveInWorkspace, statMtimeMs } from "../utils/path.js";
 
 const WriteSchema = z.strictObject({
   filePath: z.string().describe("The absolute path where to write the file"),
@@ -62,12 +63,26 @@ export const WriteTool: Tool = buildTool({
     }
 
     try {
+      // Overwriting an existing file without having read it silently clobbers
+      // unseen content — enforce the same read-before-write gate the Edit
+      // tools use (new files pass unconditionally).
+      const existed = fs.existsSync(filePath);
+      if (existed) {
+        const gate = checkReadBeforeEdit(context.sessionId, filePath, statMtimeMs(filePath));
+        if (!gate.ok) {
+          return { content: "", error: gate.reason! };
+        }
+      }
+
       // Create parent directories
       const dir = path.dirname(filePath);
       fs.mkdirSync(dir, { recursive: true });
 
-      const existed = fs.existsSync(filePath);
       fs.writeFileSync(filePath, input.content, "utf-8");
+
+      // Keep the read tracker current so a follow-up Edit sees fresh state.
+      const after = statMtimeMs(filePath);
+      if (after !== undefined) refreshRead(context.sessionId, filePath, after);
 
       const size = Buffer.byteLength(input.content, "utf-8");
       const action = existed ? "Updated" : "Created";

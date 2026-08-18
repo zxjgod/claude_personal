@@ -55,6 +55,130 @@ function parseKey(data: Buffer): Key {
   return { name: "char", ctrl: false, sequence: seq };
 }
 
+const ESCAPE_KEYS: Array<[string, string]> = [
+  ["\x1b[A", "up"],
+  ["\x1bOA", "up"],
+  ["\x1b[B", "down"],
+  ["\x1bOB", "down"],
+  ["\x1b[C", "right"],
+  ["\x1bOC", "right"],
+  ["\x1b[D", "left"],
+  ["\x1bOD", "left"],
+  ["\x1b[3~", "delete"],
+];
+
+// A CSI sequence (\x1b[ params intermediates final) or SS3 (\x1bO x) we do
+// not otherwise recognize.
+const UNKNOWN_ESC_RE = /^\x1b(?:\[[0-9;<=>?]*[ -/]*[@-~]|O.)/;
+
+/**
+ * Split one raw `data` event into individual keys.
+ *
+ * A data event is NOT guaranteed to hold a single keypress: terminal pastes
+ * arrive as one Buffer carrying the whole pasted string, and the console may
+ * coalesce fast key bursts. Feeding such a buffer to parseKey misclassifies
+ * it — a pasted "\x1b[A" would move the cursor, pasted digits could trigger
+ * menu shortcuts, and pasted newlines submit early and corrupt the repaint
+ * Region's line count.
+ *
+ * Heuristics:
+ * - Bracketed paste markers (\x1b[200~ ... \x1b[201~) wrap terminal-pasted
+ *   text; the body becomes a single "paste" key.
+ * - A multi-character event is paste/burst-like: embedded \r / \n flatten to
+ *   spaces instead of acting as Enter, tabs become spaces, and other control
+ *   bytes are dropped (a pasted ^C must not cancel, a pasted ^H must not
+ *   delete).
+ * - Unknown escape sequences are swallowed whole so their parameter bytes
+ *   never leak into the input as text.
+ */
+function splitKeys(data: Buffer): Key[] {
+  const seq = data.toString("utf8");
+  const keys: Key[] = [];
+  const burst = seq.length > 1;
+  let chars = ""; // coalesced run of printable characters
+  let i = 0;
+
+  const flushChars = () => {
+    if (chars.length > 0) {
+      keys.push({ name: "char", ctrl: false, sequence: chars });
+      chars = "";
+    }
+  };
+
+  while (i < seq.length) {
+    const rest = seq.slice(i);
+
+    if (rest.startsWith("\x1b[200~")) {
+      flushChars();
+      const end = seq.indexOf("\x1b[201~", i + 6);
+      const body = end === -1 ? seq.slice(i + 6) : seq.slice(i + 6, end);
+      keys.push({ name: "paste", ctrl: false, sequence: body });
+      i = end === -1 ? seq.length : end + 6;
+      continue;
+    }
+
+    const known = ESCAPE_KEYS.find(([s]) => rest.startsWith(s));
+    if (known) {
+      flushChars();
+      const [escSeq, escName] = known;
+      keys.push({ name: escName, ctrl: false, sequence: escSeq });
+      i += escSeq.length;
+      continue;
+    }
+
+    const unknown = rest.match(UNKNOWN_ESC_RE);
+    if (unknown) {
+      flushChars();
+      i += unknown[0].length;
+      continue;
+    }
+
+    const ch = seq[i]!;
+    if (ch === "\x1b") {
+      flushChars();
+      keys.push({ name: "escape", ctrl: false, sequence: ch });
+      i += 1;
+      continue;
+    }
+    if (ch === "\r" || ch === "\n") {
+      if (burst) {
+        // Pasted/burst newline: flatten (CRLF counts as one break).
+        chars += " ";
+        i += ch === "\r" && seq[i + 1] === "\n" ? 2 : 1;
+        continue;
+      }
+      flushChars();
+      keys.push({ name: "enter", ctrl: false, sequence: ch });
+      i += 1;
+      continue;
+    }
+    if (ch < " " || ch === "\x7f") {
+      if (burst) {
+        if (ch === "\t") chars += " ";
+        i += 1;
+        continue;
+      }
+      flushChars();
+      const control = parseKey(Buffer.from(ch, "utf8"));
+      if (control.name !== "char") keys.push(control); // swallow unknown controls
+      i += 1;
+      continue;
+    }
+    chars += ch;
+    i += 1;
+  }
+  flushChars();
+  return keys;
+}
+
+/** Flatten pasted text for the single-line input box: newlines become spaces. */
+function sanitizePaste(text: string): string {
+  return text
+    .replace(/\r\n|[\r\n]/g, " ")
+    .replace(/\t/g, " ")
+    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
+}
+
 // --- A small in-place repainting region ---
 
 class Region {
@@ -176,9 +300,16 @@ export function createRawInputReader(opts: {
         region.positionCursor(lines.length - 1 - cursorRow, cursorCol);
       };
 
+      // A data event may carry several keys (paste / key burst); once cleanup
+      // has resolved the promise, the remaining keys must be dropped.
+      let finished = false;
+
       const cleanup = (committed: string | null) => {
+        if (finished) return;
+        finished = true;
         input.off("data", onData);
         if (input.isTTY) input.setRawMode(false);
+        output.write("\x1b[?2004l"); // disable bracketed paste
         input.pause();
         region.clear();
         if (committed !== null) {
@@ -188,8 +319,7 @@ export function createRawInputReader(opts: {
         resolve(committed);
       };
 
-      const onData = (data: Buffer) => {
-        const key = parseKey(data);
+      const handleKey = (key: Key): void => {
         switch (key.name) {
           case "enter": {
             // Enter always submits. Use Tab to accept a completion.
@@ -263,9 +393,18 @@ export function createRawInputReader(opts: {
               repaint();
             }
             return;
+          case "paste": {
+            const text = sanitizePaste(key.sequence);
+            if (text.length === 0) return;
+            state.buffer =
+              state.buffer.slice(0, state.cursor) + text + state.buffer.slice(state.cursor);
+            state.cursor += text.length;
+            repaint();
+            return;
+          }
           case "char": {
             // Ignore stray escape-sequence bytes / non-printables.
-            if (key.sequence < " " && key.sequence !== "\t") return;
+            if (key.sequence < " ") return;
             state.buffer =
               state.buffer.slice(0, state.cursor) + key.sequence + state.buffer.slice(state.cursor);
             state.cursor += key.sequence.length;
@@ -275,8 +414,16 @@ export function createRawInputReader(opts: {
         }
       };
 
+      const onData = (data: Buffer) => {
+        for (const key of splitKeys(data)) {
+          if (finished) return;
+          handleKey(key);
+        }
+      };
+
       input.resume();
       if (input.isTTY) input.setRawMode(true);
+      output.write("\x1b[?2004h"); // enable bracketed paste
       input.on("data", onData);
       repaint();
     });
@@ -288,37 +435,50 @@ export function createRawInputReader(opts: {
       if (closed) return resolve(null);
       output.write(prompt);
       let buffer = "";
+      let finished = false;
+      const finish = (result: string | null) => {
+        if (finished) return;
+        finished = true;
+        input.off("data", onData);
+        if (input.isTTY) input.setRawMode(false);
+        output.write("\x1b[?2004l"); // disable bracketed paste
+        input.pause();
+        resolve(result);
+      };
       const onData = (data: Buffer) => {
-        const key = parseKey(data);
-        if (key.name === "enter") {
-          output.write("\n");
-          input.off("data", onData);
-          if (input.isTTY) input.setRawMode(false);
-          input.pause();
-          resolve(buffer);
-          return;
-        }
-        if (key.ctrl && key.name === "c") {
-          input.off("data", onData);
-          if (input.isTTY) input.setRawMode(false);
-          input.pause();
-          resolve(null);
-          return;
-        }
-        if (key.name === "backspace") {
-          if (buffer.length > 0) {
-            buffer = buffer.slice(0, -1);
-            output.write("\b \b");
+        for (const key of splitKeys(data)) {
+          if (finished) return;
+          if (key.name === "enter") {
+            output.write("\n");
+            finish(buffer);
+            return;
           }
-          return;
-        }
-        if (key.name === "char" && key.sequence >= " ") {
-          buffer += key.sequence;
-          output.write(key.sequence);
+          if (key.ctrl && key.name === "c") {
+            finish(null);
+            return;
+          }
+          if (key.name === "backspace") {
+            if (buffer.length > 0) {
+              buffer = buffer.slice(0, -1);
+              output.write("\b \b");
+            }
+            continue;
+          }
+          if (key.name === "paste") {
+            const text = sanitizePaste(key.sequence);
+            buffer += text;
+            output.write(text);
+            continue;
+          }
+          if (key.name === "char" && key.sequence >= " ") {
+            buffer += key.sequence;
+            output.write(key.sequence);
+          }
         }
       };
       input.resume();
       if (input.isTTY) input.setRawMode(true);
+      output.write("\x1b[?2004h"); // enable bracketed paste
       input.on("data", onData);
     });
   };
@@ -408,7 +568,10 @@ export function promptPermissionMenu(opts: {
       region.paint(lines);
     };
 
+    let finished = false;
     const finish = (choice: PermissionChoice) => {
+      if (finished) return;
+      finished = true;
       input.off("data", onData);
       if (input.isTTY) input.setRawMode(false);
       input.pause();
@@ -417,19 +580,21 @@ export function promptPermissionMenu(opts: {
     };
 
     const onData = (data: Buffer) => {
-      const key = parseKey(data);
-      if (key.name === "up") {
-        selected = (selected - 1 + options.length) % options.length;
-        render();
-      } else if (key.name === "down") {
-        selected = (selected + 1) % options.length;
-        render();
-      } else if (key.name === "enter") {
-        finish(options[selected]!.value);
-      } else if (key.name === "escape" || (key.ctrl && key.name === "c")) {
-        finish("no");
-      } else if (key.name === "char" && /^[1-3]$/.test(key.sequence)) {
-        finish(options[parseInt(key.sequence, 10) - 1]!.value);
+      for (const key of splitKeys(data)) {
+        if (finished) return;
+        if (key.name === "up") {
+          selected = (selected - 1 + options.length) % options.length;
+          render();
+        } else if (key.name === "down") {
+          selected = (selected + 1) % options.length;
+          render();
+        } else if (key.name === "enter") {
+          finish(options[selected]!.value);
+        } else if (key.name === "escape" || (key.ctrl && key.name === "c")) {
+          finish("no");
+        } else if (key.name === "char" && /^[1-3]$/.test(key.sequence)) {
+          finish(options[parseInt(key.sequence, 10) - 1]!.value);
+        }
       }
     };
 
@@ -500,7 +665,10 @@ export function promptSelectMenu(opts: {
       region.paint(lines);
     };
 
+    let finished = false;
     const finish = (result: string[] | null) => {
+      if (finished) return;
+      finished = true;
       input.off("data", onData);
       if (input.isTTY) input.setRawMode(false);
       input.pause();
@@ -509,7 +677,13 @@ export function promptSelectMenu(opts: {
     };
 
     const onData = (data: Buffer) => {
-      const key = parseKey(data);
+      for (const key of splitKeys(data)) {
+        if (finished) return;
+        handleMenuKey(key);
+      }
+    };
+
+    const handleMenuKey = (key: Key): void => {
       if (key.name === "up") {
         cursor = (cursor - 1 + opts.options.length) % opts.options.length;
         render();

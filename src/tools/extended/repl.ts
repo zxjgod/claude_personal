@@ -20,6 +20,9 @@ type ReplLanguage = "node" | "python";
 
 // Node wrapper: reads one JSON request per stdin line, evals synchronously,
 // captures console.log output, and answers with a marker-prefixed JSON line.
+// Each request carries a `seq` that the response echoes back — the caller
+// matches responses by seq, NOT by FIFO order, so a late answer to an already
+// timed-out request can never be delivered to the NEXT request.
 const NODE_WRAPPER = `
 const vm = require("vm");
 const rl = require("readline").createInterface({ input: process.stdin, terminal: false });
@@ -42,9 +45,9 @@ rl.on("line", (line) => {
   try {
     const v = vm.runInContext(req.expr, context, { timeout: 10000 });
     const value = v === undefined ? "undefined" : typeof v === "object" ? enc(v) : String(v);
-    console.log("${MARKER}" + JSON.stringify({ ok: true, value, output: out.join("\\n") }));
+    console.log("${MARKER}" + JSON.stringify({ ok: true, value, output: out.join("\\n"), seq: req.seq }));
   } catch (e) {
-    console.log("${MARKER}" + JSON.stringify({ ok: false, error: String((e && e.message) || e), output: out.join("\\n") }));
+    console.log("${MARKER}" + JSON.stringify({ ok: false, error: String((e && e.message) || e), output: out.join("\\n"), seq: req.seq }));
   }
 });
 `;
@@ -68,15 +71,19 @@ for line in sys.stdin:
     try:
         val = eval(req.get("expr", ""))
         value = "None" if val is None else (val if isinstance(val, str) else enc(val))
-        print("${MARKER}" + json.dumps({"ok": True, "value": value, "output": ""}), flush=True)
+        print("${MARKER}" + json.dumps({"ok": True, "value": value, "output": "", "seq": req.get("seq")}), flush=True)
     except Exception as e:
-        print("${MARKER}" + json.dumps({"ok": False, "error": str(e), "output": ""}), flush=True)
+        print("${MARKER}" + json.dumps({"ok": False, "error": str(e), "output": "", "seq": req.get("seq")}), flush=True)
 `;
 
 interface ReplSession {
   proc: ChildProcess;
   buffer: string;
-  pending: Array<(res: ReplResponse) => void>;
+  /** In-flight requests keyed by seq — FIFO popping was the misalignment bug. */
+  pending: Map<number, (res: ReplResponse) => void>;
+  nextSeq: number;
+  /** Most recent interpreter-level stderr, attached to timeout errors. */
+  lastStderr: string;
 }
 
 interface ReplResponse {
@@ -84,6 +91,7 @@ interface ReplResponse {
   value?: string;
   output?: string;
   error?: string;
+  seq?: number;
 }
 
 const SESSIONS = new Map<string, ReplSession>();
@@ -112,7 +120,16 @@ function getSession(sessionId: string, language: ReplLanguage): ReplSession {
   if (session) return session;
 
   const proc = spawnProcess(language);
-  const sessionObj: ReplSession = { proc, buffer: "", pending: [] };
+  const sessionObj: ReplSession = {
+    proc,
+    buffer: "",
+    pending: new Map(),
+    nextSeq: 1,
+    lastStderr: "",
+  };
+  // A dead wrapper's stdin emits an async EPIPE 'error' event on write; without
+  // a listener that throw escapes as an uncaught exception.
+  proc.stdin?.on("error", () => {});
   let stdoutBuf = "";
   proc.stdout?.setEncoding("utf-8");
   proc.stdout?.on("data", (chunk: string) => {
@@ -130,32 +147,39 @@ function getSession(sessionId: string, language: ReplLanguage): ReplSession {
       }
       const jsonStr = rest.slice(0, nl).trim();
       stdoutBuf = rest.slice(nl + 1);
-      const pending = sessionObj.pending.shift();
+      let parsed: ReplResponse;
+      try {
+        parsed = JSON.parse(jsonStr) as ReplResponse;
+      } catch {
+        parsed = { ok: false, error: `Bad REPL response: ${jsonStr}` };
+      }
+      // Match by seq, never by order: a response whose request already timed
+      // out (or arrived after a restart) has no pending entry and is dropped,
+      // so it can never be delivered to a later request (the old FIFO shift
+      // misaligned the whole session after a single timeout).
+      const seq = parsed.seq;
+      if (typeof seq !== "number") continue;
+      const pending = sessionObj.pending.get(seq);
       if (pending) {
-        try {
-          pending(JSON.parse(jsonStr) as ReplResponse);
-        } catch {
-          pending({ ok: false, error: `Bad REPL response: ${jsonStr}` });
-        }
+        sessionObj.pending.delete(seq);
+        pending(parsed);
       }
     }
   });
   proc.stderr?.on("data", (d: Buffer) => {
-    // stderr from the interpreter itself (not the eval) is surfaced on the
-    // next response if there's a pending request.
-    const pending = sessionObj.pending[0];
-    if (pending) {
-      pending({ ok: false, error: d.toString().trim() });
-      sessionObj.pending.shift();
-    }
+    // Interpreter-level stderr (startup errors, warnings) is NOT matched to a
+    // request — the wrapper reports eval errors over stdout with a seq. Pop a
+    // pending request here used to misalign every response that followed.
+    sessionObj.lastStderr = d.toString().trim();
   });
   proc.on("exit", () => {
     // Process died — reject anything in flight and drop the session. Guard the
     // delete so a stale exit (e.g. the old process killed by a restart) can't
     // evict a NEWER session that re-registered under the same key.
-    for (const p of sessionObj.pending.splice(0)) {
+    for (const p of [...sessionObj.pending.values()]) {
       p({ ok: false, error: `${language} REPL process exited` });
     }
+    sessionObj.pending.clear();
     if (SESSIONS.get(key) === sessionObj) SESSIONS.delete(key);
   });
 
@@ -165,19 +189,23 @@ function getSession(sessionId: string, language: ReplLanguage): ReplSession {
 
 function evaluate(session: ReplSession, expr: string): Promise<ReplResponse> {
   return new Promise((resolve, reject) => {
+    const seq = session.nextSeq++;
     const timer = setTimeout(() => {
-      const idx = session.pending.indexOf(resolve);
-      if (idx >= 0) session.pending.splice(idx, 1);
-      reject(new Error("REPL evaluation timed out"));
+      // Remove our resolver so the (possible) late response is dropped by the
+      // seq check instead of being handed to the NEXT request.
+      session.pending.delete(seq);
+      const stderrNote = session.lastStderr ? ` (stderr: ${session.lastStderr})` : "";
+      reject(new Error(`REPL evaluation timed out${stderrNote}`));
     }, 20_000);
-    session.pending.push((res) => {
+    session.pending.set(seq, (res) => {
       clearTimeout(timer);
       resolve(res);
     });
     try {
-      session.proc.stdin?.write(JSON.stringify({ expr }) + "\n");
+      session.proc.stdin?.write(JSON.stringify({ seq, expr }) + "\n");
     } catch (e) {
       clearTimeout(timer);
+      session.pending.delete(seq);
       reject(e as Error);
     }
   });
