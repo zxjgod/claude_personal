@@ -360,7 +360,17 @@ export async function checkPermission(
   input: Record<string, unknown>,
   context: ToolContext,
   options: PermissionCheckOptions,
-): Promise<{ allowed: boolean; reason?: string; decisionReason?: PermissionDecisionReason }> {
+): Promise<{
+  allowed: boolean;
+  reason?: string;
+  decisionReason?: PermissionDecisionReason;
+  /**
+   * True only when a human explicitly approved this call via the interactive
+   * prompt. Absent/false for every auto-approved path (mode shortcuts,
+   * classifier ALLOW, read-only fast path) — the audit log relies on this.
+   */
+  userConfirmed?: boolean;
+}> {
   const action = formatActionForClassifier(tool.name, input).slice(0, 100);
 
   // Step 1: Read-only tools are always allowed. Pass input so data-driven
@@ -465,8 +475,17 @@ export async function checkPermission(
     );
     const allowed = await options.askUser(tool, input, riskHint);
     const result = allowed
-      ? { allowed: true as const, decisionReason: "safetyCheck" as const }
-      : { allowed: false as const, reason: riskHint, decisionReason: "safetyCheck" as const };
+      ? {
+          allowed: true as const,
+          decisionReason: "safetyCheck" as const,
+          userConfirmed: true as const,
+        }
+      : {
+          allowed: false as const,
+          reason: riskHint,
+          decisionReason: "safetyCheck" as const,
+          userConfirmed: true as const,
+        };
     logPermissionDecision(3, tool.name, action, result, {
       stage: "user-confirmed",
       userAllowed: allowed,
@@ -528,8 +547,13 @@ export async function checkPermission(
   logPermissionDecision(6, tool.name, action, { allowed: true }, { stage: "awaiting-user" });
   const allowed = await options.askUser(tool, input);
   const result = allowed
-    ? { allowed: true }
-    : { allowed: false, reason: "User denied permission", decisionReason: "mode" as const };
+    ? { allowed: true, userConfirmed: true as const }
+    : {
+        allowed: false,
+        reason: "User denied permission",
+        decisionReason: "mode" as const,
+        userConfirmed: true as const,
+      };
   logPermissionDecision(6, tool.name, action, result, { userAllowed: allowed });
   return result;
 }

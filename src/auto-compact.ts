@@ -88,8 +88,16 @@ so the conversation can continue with a fresh context window.`;
     { role: "user", content: [{ type: "text", text: summaryPrompt }] },
   ];
 
-  // Call model without tools for summarization
+  // Call model without tools for summarization.
+  //
+  // Failure handling is load-bearing: adapters signal mid-stream failures by
+  // YIELDING an error event rather than throwing, so consume it explicitly.
+  // Committing an empty/partial summary would silently destroy all old
+  // messages — and the COMPACT_BOUNDARY_MARKER makes that destruction
+  // permanent on the next turn. Fail loudly instead and let the caller keep
+  // the original history.
   const chunks: string[] = [];
+  let streamError: Error | undefined;
   for await (const event of callModel(
     summaryMessages,
     [],
@@ -99,9 +107,17 @@ so the conversation can continue with a fresh context window.`;
   )) {
     if (event.type === "text_delta") {
       chunks.push(event.delta);
+    } else if (event.type === "error") {
+      streamError = event.error;
     }
   }
+  if (streamError) throw streamError;
   const summary = chunks.join("");
+  if (summary.trim() === "") {
+    throw new Error(
+      "Auto-compaction failed: the model returned an empty summary; keeping original messages.",
+    );
+  }
 
   // Rebuild: system summary + tail. The summary is tagged with
   // COMPACT_BOUNDARY_MARKER so the pipeline's layer 1

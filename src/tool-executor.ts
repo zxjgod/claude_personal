@@ -4,7 +4,8 @@
 // Handles tool call grouping, early execution, and result formatting.
 // ============================================================
 
-import { logToolExecution } from "./audit-log.js";
+import type { OperationOutcome } from "./audit-log.js";
+import { logBashOperation, logFileOperation, logToolExecution } from "./audit-log.js";
 import { checkPermission } from "./permissions.js";
 import type { SpeculationCache } from "./speculation.js";
 import type { StreamingToolExecutor } from "./streaming-tool-executor.js";
@@ -178,10 +179,54 @@ export async function executeSingleTool(
     //   (a) tool-level checkPermissions() — the tool's own hard policy.
     //   (b) system-level checkPermission() — mode + dangerous-pattern +
     //       interactive askUser flow.
+    //
+    // Audit EVERY non-read-only call in EVERY mode — approvals, denials and
+    // execution failures are all security-relevant. (Previously only auto-mode
+    // decisions were logged, so default/bypass sessions left no trail at all.)
+    // Fire-and-forget: a log write failure never blocks the turn, and the
+    // auditRecorded guard keeps the several call sites below from emitting
+    // duplicate entries for one call.
+    const isMutating = !tool.isReadOnly(input);
+    let auditRecorded = false;
+    const recordAudit = (
+      outcome: OperationOutcome,
+      opts: { userConfirmed?: boolean; reason?: string } = {},
+    ): void => {
+      if (!isMutating || auditRecorded) return;
+      auditRecorded = true;
+      const base = {
+        workspaceRoot: context.workspaceRoot,
+        userConfirmed: opts.userConfirmed ?? false,
+        outcome,
+        sessionId: context.sessionId,
+        errorMessage: opts.reason,
+      };
+      const name = tool.name;
+      if ((name === "bash" || name === "powershell") && typeof input.command === "string") {
+        void logBashOperation({ ...base, command: input.command }).catch(() => {});
+      } else if (
+        (name === "edit" || name === "multi_edit" || name === "write") &&
+        typeof input.filePath === "string"
+      ) {
+        void logFileOperation({
+          ...base,
+          operation: name === "write" ? "write" : "edit",
+          filePath: input.filePath,
+        }).catch(() => {});
+      } else {
+        void logToolExecution({
+          ...base,
+          toolName: name,
+          metadata: { mode: context.permissionMode, reason: opts.reason },
+        }).catch(() => {});
+      }
+    };
+
     context.permissionMode = context.getPermissionMode?.() ?? context.permissionMode;
     const toolLevel = await tool.checkPermissions(input, context);
     if (!toolLevel.allowed) {
       const reason = toolLevel.reason ?? `denied by ${tool.name} policy`;
+      recordAudit("denied", { reason });
       return {
         toolName: tool.name,
         error: reason,
@@ -194,22 +239,9 @@ export async function executeSingleTool(
       classifier: context.permissionClassifier,
     });
 
-    // Auto mode: the interactive prompt is replaced by a background safety
-    // check, so every destructive decision must leave an audit trail for later
-    // review. Fire-and-forget — a log write failure never blocks the turn.
-    if (context.permissionMode === "auto" && !tool.isReadOnly(input)) {
-      void logToolExecution({
-        toolName: tool.name,
-        workspaceRoot: context.workspaceRoot,
-        userConfirmed: false,
-        outcome: permission.allowed ? "success" : "denied",
-        sessionId: context.sessionId,
-        metadata: { mode: "auto", reason: permission.reason },
-      }).catch(() => {});
-    }
-
     if (!permission.allowed) {
       const reason = permission.reason ?? "denied by permission policy";
+      recordAudit("denied", { userConfirmed: permission.userConfirmed, reason });
       return {
         toolName: tool.name,
         error: reason,
@@ -222,6 +254,13 @@ export async function executeSingleTool(
     // 12.2: Serve from the speculation cache if we prefetched this exact call.
     let result = (await specCache?.take(tool.name, input)) ?? (await tool.call(input, context));
     const duration = Date.now() - startTime;
+
+    // Audit the executed outcome (success / tool-reported error). Decisions
+    // were already recorded above; this closes the loop for approved calls.
+    recordAudit(result.error != null ? "error" : "success", {
+      userConfirmed: permission.userConfirmed,
+      reason: typeof result.error === "string" ? result.error : undefined,
+    });
 
     // M15.2: Record this path as read so predictReads won't re-prefetch it.
     if (readFiles && tool.name.toLowerCase() === "read" && typeof input.filePath === "string") {

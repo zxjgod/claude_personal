@@ -58,6 +58,16 @@ export class AuditLogger {
   private options: Required<AuditLogOptions>;
   private entries: AuditEntry[] = [];
   private initialized = false;
+  /**
+   * How many in-memory entries are already on disk. persist() appends ONLY the
+   * delta — the previous implementation re-appended the entire array on every
+   * log() call (O(N²) duplicate lines, unbounded disk growth).
+   */
+  private persistedCount = 0;
+  /** Set when entries were trimmed and the file no longer matches memory. */
+  private needsFullRewrite = false;
+  /** Serializes persist() calls so concurrent log()s can't double-append. */
+  private persistChain: Promise<void> = Promise.resolve();
 
   constructor(options: AuditLogOptions = {}) {
     this.options = { ...DEFAULT_OPTIONS, ...options };
@@ -93,13 +103,29 @@ export class AuditLogger {
       this.entries = [];
     }
 
+    // Everything loaded from disk is by definition already persisted.
+    this.persistedCount = this.entries.length;
+    this.needsFullRewrite = false;
     this.initialized = true;
   }
 
   private async persist(): Promise<void> {
     try {
-      const lines = this.entries.map((e) => JSON.stringify(e)).join("\n") + "\n";
-      await fs.promises.writeFile(this.options.logFilePath, lines, { flag: "a" });
+      if (this.needsFullRewrite || this.persistedCount > this.entries.length) {
+        // A trim shifted the in-memory window; the on-disk file no longer
+        // corresponds to any suffix of it, so rewrite wholesale (bounded by
+        // maxEntries, so this stays cheap) instead of appending.
+        const lines = this.entries.map((e) => JSON.stringify(e)).join("\n") + "\n";
+        await fs.promises.writeFile(this.options.logFilePath, lines);
+      } else {
+        // Normal path: append only the entries written since the last persist.
+        const fresh = this.entries.slice(this.persistedCount);
+        if (fresh.length === 0) return;
+        const lines = fresh.map((e) => JSON.stringify(e)).join("\n") + "\n";
+        await fs.promises.writeFile(this.options.logFilePath, lines, { flag: "a" });
+      }
+      this.persistedCount = this.entries.length;
+      this.needsFullRewrite = false;
     } catch (error) {
       console.error("Failed to persist audit log:", error);
     }
@@ -108,12 +134,11 @@ export class AuditLogger {
   async log(entry: Omit<AuditEntry, "timestamp">): Promise<void> {
     await this.ensureInitialized();
 
-    // Skip read operations unless explicitly configured
+    // Skip read operations unless explicitly configured. (The previous guard
+    // also required `!entry.outcome`, which is impossible — outcome is a
+    // required field — so the filter never matched anything.)
     if (!this.options.includeReadOperations) {
-      const readOperations: OperationType[] = ["mcp_tool_call"];
-      const isReadOp =
-        readOperations.includes(entry.operation) && !entry.outcome && entry.userConfirmed;
-      if (isReadOp && entry.metadata?.readonly) {
+      if (entry.operation === "mcp_tool_call" && entry.metadata?.readonly) {
         return;
       }
     }
@@ -128,10 +153,16 @@ export class AuditLogger {
     // Trim if exceeds max
     if (this.entries.length > this.options.maxEntries) {
       this.entries = this.entries.slice(-this.options.maxEntries);
+      this.needsFullRewrite = true;
     }
 
-    // Persist asynchronously
-    this.persist().catch(() => {});
+    // Persist via a serial chain: two back-to-back log() calls must not run
+    // persist() concurrently, or both would compute their append delta from
+    // the same stale persistedCount and duplicate lines. Awaiting the chain
+    // here is safe — production callers fire-and-forget log() itself, and it
+    // makes the write durable before tests/consumers read the file.
+    this.persistChain = this.persistChain.then(() => this.persist());
+    await this.persistChain;
   }
 
   async query(filter?: {
@@ -166,6 +197,8 @@ export class AuditLogger {
 
   async clear(): Promise<void> {
     this.entries = [];
+    this.persistedCount = 0;
+    this.needsFullRewrite = false;
     try {
       await fs.promises.unlink(this.options.logFilePath);
     } catch {

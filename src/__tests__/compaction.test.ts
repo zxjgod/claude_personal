@@ -9,6 +9,7 @@
 
 import { describe, expect, it } from "vitest";
 import { agentLoop } from "../agent-loop.js";
+import { autoCompact } from "../auto-compact.js";
 import type { Message, ModelCaller, ModelConfig, StreamEvent } from "../types.js";
 
 const testConfig: ModelConfig = {
@@ -305,5 +306,67 @@ describe("M31 compaction pipeline", () => {
 
     // Turn 2's prep saw the baseline (50k) > threshold (10k) and compacted.
     expect(types).toContain("compacting");
+  });
+});
+
+describe("autoCompact failure safety", () => {
+  // Regression: adapters signal mid-stream failures by YIELDING an error event
+  // (not throwing). autoCompact used to ignore it and commit whatever partial/
+  // empty summary resulted — silently deleting all old messages permanently.
+
+  function longHistory(pairs = 30): Message[] {
+    const messages: Message[] = [];
+    for (let i = 0; i < pairs; i++) {
+      messages.push({ role: "user", content: [{ type: "text", text: `q${i}` }] });
+      messages.push({ role: "assistant", content: `a${i}` });
+    }
+    return messages;
+  }
+
+  it("throws (instead of destroying history) when the summary stream yields an error", async () => {
+    const failingCaller: ModelCaller = async function* (): AsyncGenerator<StreamEvent> {
+      yield { type: "text_delta", delta: "partial summary" };
+      yield { type: "error", error: new Error("stream blew up") };
+      yield {
+        type: "done",
+        usage: { input_tokens: 1, output_tokens: 1 },
+        finish_reason: "stop",
+      };
+    };
+    const messages = longHistory();
+    await expect(autoCompact(messages, failingCaller, testConfig)).rejects.toThrow(
+      "stream blew up",
+    );
+  });
+
+  it("throws when the model returns an empty summary", async () => {
+    const emptyCaller: ModelCaller = async function* (): AsyncGenerator<StreamEvent> {
+      yield {
+        type: "done",
+        usage: { input_tokens: 1, output_tokens: 1 },
+        finish_reason: "stop",
+      };
+    };
+    await expect(autoCompact(longHistory(), emptyCaller, testConfig)).rejects.toThrow(
+      /empty summary/,
+    );
+  });
+
+  it("still compacts normally on a healthy stream", async () => {
+    const okCaller: ModelCaller = async function* (): AsyncGenerator<StreamEvent> {
+      yield { type: "text_delta", delta: "A faithful summary." };
+      yield {
+        type: "done",
+        usage: { input_tokens: 1, output_tokens: 1 },
+        finish_reason: "stop",
+      };
+    };
+    const messages = longHistory();
+    const compacted = await autoCompact(messages, okCaller, testConfig);
+    expect(compacted.length).toBeLessThan(messages.length);
+    expect(compacted[0].role).toBe("system");
+    expect(
+      typeof compacted[0].content === "string" && compacted[0].content.includes("faithful"),
+    ).toBe(true);
   });
 });

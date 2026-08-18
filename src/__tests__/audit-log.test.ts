@@ -210,4 +210,71 @@ describe("Convenience functions", () => {
     expect(entries[0].operation).toBe("write");
     expect(entries[0].filePath).toBe("/project/src/index.ts");
   });
+
+  it("appends only new entries (no O(N²) duplicate lines)", async () => {
+    // Regression: persist() used to re-append the ENTIRE in-memory array on
+    // every log(), so N entries produced ~N²/2 lines on disk.
+    const logger = new AuditLogger({ logFilePath: logFile });
+    for (let i = 0; i < 5; i++) {
+      await logger.log({
+        operation: "bash",
+        command: `cmd-${i}`,
+        workspaceRoot: "/workspace",
+        userConfirmed: false,
+        outcome: "success",
+      });
+    }
+
+    const content = await fs.promises.readFile(logFile, "utf-8");
+    const lines = content.split("\n").filter(Boolean);
+    expect(lines).toHaveLength(5);
+    const commands = lines.map((l) => JSON.parse(l).command);
+    expect(commands).toEqual(["cmd-0", "cmd-1", "cmd-2", "cmd-3", "cmd-4"]);
+  });
+
+  it("rewrites the file wholesale after maxEntries trim (no stale lines)", async () => {
+    const small = new AuditLogger({ logFilePath: logFile, maxEntries: 3 });
+    for (let i = 0; i < 5; i++) {
+      await small.log({
+        operation: "bash",
+        command: `cmd-${i}`,
+        workspaceRoot: "/workspace",
+        userConfirmed: false,
+        outcome: "success",
+      });
+    }
+
+    const content = await fs.promises.readFile(logFile, "utf-8");
+    const commands = content
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => JSON.parse(l).command);
+    expect(commands).toEqual(["cmd-2", "cmd-3", "cmd-4"]);
+
+    // Logging after the trim must keep the sliding window consistent.
+    await small.log({
+      operation: "bash",
+      command: "cmd-5",
+      workspaceRoot: "/workspace",
+      userConfirmed: false,
+      outcome: "success",
+    });
+    const after = (await fs.promises.readFile(logFile, "utf-8")).split("\n").filter(Boolean);
+    expect(after.map((l) => JSON.parse(l).command)).toEqual(["cmd-3", "cmd-4", "cmd-5"]);
+  });
+
+  it("a fresh logger recovers all previously persisted entries", async () => {
+    const logger = new AuditLogger({ logFilePath: logFile });
+    await logger.log({
+      operation: "bash",
+      command: "first",
+      workspaceRoot: "/workspace",
+      userConfirmed: false,
+      outcome: "success",
+    });
+    const reloaded = new AuditLogger({ logFilePath: logFile });
+    const entries = await reloaded.query();
+    expect(entries).toHaveLength(1);
+    expect(entries[0].command).toBe("first");
+  });
 });

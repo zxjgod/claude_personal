@@ -2,6 +2,7 @@
 import chalk from "chalk";
 import { autoCompact } from "../auto-compact.js";
 import { resetSystemPromptCache } from "../system-prompt.js";
+import type { Message } from "../types.js";
 import type { SlashCommand } from "./types.js";
 
 function progressBar(step: number, total: number): string {
@@ -27,7 +28,20 @@ export const compactCommand: SlashCommand = {
     printCompactProgress(1, total, "Preparing conversation for compaction");
     printCompactProgress(2, total, "Trimming cheap context layers");
     printCompactProgress(3, total, "Summarizing with the model");
-    const compacted = await autoCompact(ctx.messages, ctx.callModel, ctx.modelConfig);
+    let compacted: Message[];
+    try {
+      compacted = await autoCompact(ctx.messages, ctx.callModel, ctx.modelConfig);
+    } catch (e) {
+      // autoCompact throws (instead of committing an empty/partial summary)
+      // when the summarization stream fails — the original messages are kept.
+      console.log(
+        chalk.yellow(
+          `  Compaction failed: ${e instanceof Error ? e.message : String(e)}. ` +
+            `The conversation was left unchanged.`,
+        ),
+      );
+      return;
+    }
     // Replace contents in place so the caller keeps the same array reference.
     ctx.messages.length = 0;
     ctx.messages.push(...compacted);

@@ -23,7 +23,7 @@ import { createCliInputReader } from "./cli-input.js";
 import { COMMANDS, handleSlashCommand, loadCommandsDir } from "./commands.js";
 import { formatGitContext, gatherGitContext } from "./git-context.js";
 import { HookRegistry } from "./hooks.js";
-import { loadHooksFromSettings, readSettings } from "./hooks-config.js";
+import { loadHooksFromSettingsTrusted, readSettings } from "./hooks-config.js";
 import { createModelCaller, resolveProviderConfig } from "./llm-adapter.js";
 import { discoverMCPConfigs, MCPManager } from "./mcp/index.js";
 import { MemoryStore } from "./memory-extract.js";
@@ -328,6 +328,23 @@ function getPermissionMode(workspaceRoot: string): PermissionMode {
     return userMode;
   }
   return "default";
+}
+
+// --- One-shot yes/no prompt ---
+
+/**
+ * Plain-cooked-mode y/N question used for pre-REPL trust prompts (project
+ * hooks). Dedicated short-lived readline so it never tangles with the raw-mode
+ * input reader created later; defaults to NO on empty/garbage input.
+ */
+function askYesNo(question: string): Promise<boolean> {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise((resolve) => {
+    rl.question(question, (answer) => {
+      rl.close();
+      resolve(/^y(es)?$/i.test(answer.trim()));
+    });
+  });
 }
 
 // --- Max turns (loop bound) ---
@@ -732,11 +749,37 @@ async function main() {
   // Empty by default. Register PreToolUse/PostToolUse hooks here (or load
   // them from project config) to intercept, block, or rewrite tool calls.
   // Config-driven hooks are loaded from .claude/settings.json (+ settings.local.json).
+  //
+  // SECURITY: project hooks execute arbitrary shell commands with our full
+  // environment, so an untrusted repo must never auto-enable them. The gated
+  // loader only registers hooks whose config fingerprint was previously
+  // trusted, or that the user confirms right now (interactive only — piped/CI
+  // sessions skip untrusted hooks, fail-closed).
   const hooks = new HookRegistry();
   try {
-    const hookCount = loadHooksFromSettings(workspaceRoot, hooks);
-    if (hookCount > 0 && verbose) {
-      console.log(`Hooks loaded: ${hookCount} from .claude/settings.json`);
+    const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+    const hookResult = await loadHooksFromSettingsTrusted(
+      workspaceRoot,
+      hooks,
+      interactive
+        ? async (descriptions) => {
+            console.log(
+              chalk.yellow("\nThis project defines hooks that execute shell commands on tool use:"),
+            );
+            for (const d of descriptions) console.log(chalk.gray(`   ${d}`));
+            const answer = await askYesNo("Trust and enable these project hooks? [y/N] ");
+            return answer;
+          }
+        : null,
+    );
+    if (hookResult.loaded > 0 && verbose) {
+      console.log(`Hooks loaded: ${hookResult.loaded} from .claude/settings.json`);
+    }
+    if (hookResult.skippedUntrusted) {
+      console.error(
+        "Warning: project hooks were NOT loaded (untrusted). Run interactively to review " +
+          "and trust them, or remove the hooks block from .claude/settings.json.",
+      );
     }
   } catch {
     // Hooks are optional; a malformed settings.json never blocks startup.

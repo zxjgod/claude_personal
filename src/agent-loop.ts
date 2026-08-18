@@ -196,13 +196,22 @@ export async function* agentLoop(
 
     if (prepared.needsAutoCompact) {
       yield { type: "compacting" };
-      messages = await autoCompact(messages, callModel, modelConfig, abortSignal);
-      const newPromptTokens = estimateTokens(messages);
-      state = {
-        ...state,
-        usageBaseline: { promptTokens: newPromptTokens, messageCount: messages.length },
-      };
-      yield { type: "compacted", summary: "Context compressed" };
+      try {
+        messages = await autoCompact(messages, callModel, modelConfig, abortSignal);
+        const newPromptTokens = estimateTokens(messages);
+        state = {
+          ...state,
+          usageBaseline: { promptTokens: newPromptTokens, messageCount: messages.length },
+        };
+        yield { type: "compacted", summary: "Context compressed" };
+      } catch (e) {
+        // Compaction failure must NOT kill the session or proceed with a
+        // half-destroyed history. Keep the original messages and continue: the
+        // next model call either still fits (the threshold is conservative) or
+        // fails with a context-length error, which routes through the
+        // compact_and_retry recovery path below.
+        yield { type: "error", error: e };
+      }
     } else if (
       autoCompactThreshold === Number.POSITIVE_INFINITY &&
       estTokens(messages) >= contextHardLimit

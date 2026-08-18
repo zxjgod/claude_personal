@@ -27,6 +27,7 @@
 // ============================================================
 
 import { spawn } from "node:child_process";
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { Hook, HookRegistry } from "./hooks.js";
@@ -268,9 +269,118 @@ export function registerHooksFromConfig(registry: HookRegistry, config: HooksCon
 /**
  * Load hooks from the project settings and register them. Convenience wrapper:
  * readSettings → parseHooksConfig → registerHooksFromConfig. Returns the count.
+ *
+ * LOW-LEVEL: this bypasses the trust gate. Interacting with a checked-out
+ * repository should go through loadHooksFromSettingsTrusted instead — project
+ * hooks execute arbitrary shell commands with the user's environment.
  */
 export function loadHooksFromSettings(workspaceRoot: string, registry: HookRegistry): number {
   const settings = readSettings(workspaceRoot);
   const config = parseHooksConfig(settings);
   return registerHooksFromConfig(registry, config);
+}
+
+// --- Project-hook trust gate ------------------------------------------------
+// Hooks declared by a checked-out repo run arbitrary shell commands inheriting
+// the user's full environment (API keys included). Loading them unconditionally
+// would make "clone a malicious repo and run the assistant" a supply-chain
+// exploit, so a project's hooks must be explicitly trusted ONCE per
+// (workspaceRoot, config-content) pair. Trust is keyed on a fingerprint of the
+// hook commands, so editing the hook config invalidates prior approval.
+
+function trustStorePath(): string {
+  return (
+    process.env.CCR_TRUST_STORE ||
+    path.join(
+      process.env.HOME || process.env.USERPROFILE || ".",
+      ".claude-code-replica",
+      "trusted-hooks.json",
+    )
+  );
+}
+
+/** Stable fingerprint over every (phase, matcher, command) in the config. */
+export function hooksConfigFingerprint(config: HooksConfig): string {
+  const flat: string[] = [];
+  for (const phase of PHASES) {
+    for (const entry of config[phase] ?? []) {
+      for (const spec of entry.hooks) {
+        flat.push([phase, entry.matcher, spec.command].join("\u001f"));
+      }
+    }
+  }
+  flat.sort();
+  return crypto.createHash("sha256").update(flat.join("\n")).digest("hex");
+}
+
+/** Human-readable "Phase [matcher]: command" lines for the trust prompt. */
+export function describeHooksConfig(config: HooksConfig): string[] {
+  const lines: string[] = [];
+  for (const phase of PHASES) {
+    for (const entry of config[phase] ?? []) {
+      for (const spec of entry.hooks) {
+        lines.push(`${phase} [${entry.matcher}]: ${spec.command}`);
+      }
+    }
+  }
+  return lines;
+}
+
+export function isHooksConfigTrusted(workspaceRoot: string, fingerprint: string): boolean {
+  try {
+    const store = JSON.parse(fs.readFileSync(trustStorePath(), "utf-8")) as Record<string, string>;
+    return store[workspaceRoot] === fingerprint;
+  } catch {
+    return false;
+  }
+}
+
+export function trustHooksConfig(workspaceRoot: string, fingerprint: string): void {
+  try {
+    const file = trustStorePath();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    let store: Record<string, string> = {};
+    try {
+      store = JSON.parse(fs.readFileSync(file, "utf-8")) as Record<string, string>;
+    } catch {
+      // Missing or corrupt store — start fresh.
+    }
+    store[workspaceRoot] = fingerprint;
+    fs.writeFileSync(file, JSON.stringify(store, null, 2));
+  } catch {
+    // Trust persistence is best-effort; failing to save just re-prompts next time.
+  }
+}
+
+export interface TrustedHooksResult {
+  /** Hooks actually registered (0 when none configured or not trusted). */
+  loaded: number;
+  /** True when the project HAS hooks but they were not trusted/confirmed. */
+  skippedUntrusted: boolean;
+}
+
+/**
+ * Trust-gated variant of loadHooksFromSettings. Hooks are registered only when
+ * the config fingerprint is already trusted, or the user confirms via the
+ * `confirm` callback (pass null in non-interactive contexts → fail-closed).
+ */
+export async function loadHooksFromSettingsTrusted(
+  workspaceRoot: string,
+  registry: HookRegistry,
+  confirm: ((descriptions: string[]) => Promise<boolean>) | null,
+): Promise<TrustedHooksResult> {
+  const settings = readSettings(workspaceRoot);
+  const config = parseHooksConfig(settings);
+  const descriptions = describeHooksConfig(config);
+  if (descriptions.length === 0) return { loaded: 0, skippedUntrusted: false };
+
+  const fingerprint = hooksConfigFingerprint(config);
+  if (isHooksConfigTrusted(workspaceRoot, fingerprint)) {
+    return { loaded: registerHooksFromConfig(registry, config), skippedUntrusted: false };
+  }
+  if (confirm && (await confirm(descriptions))) {
+    trustHooksConfig(workspaceRoot, fingerprint);
+    return { loaded: registerHooksFromConfig(registry, config), skippedUntrusted: false };
+  }
+  return { loaded: 0, skippedUntrusted: true };
 }

