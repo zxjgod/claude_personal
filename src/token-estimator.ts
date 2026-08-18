@@ -10,9 +10,36 @@
 //   - Natural language: ~3.5 chars/token
 //   - Code: ~3.0 chars/token (closer to GPT tokenizers)
 //   - Structured data (JSON, config): ~2.5 chars/token
+//
+// CJK text is counted SEPARATELY at ~1 token/char: Chinese/Japanese/Korean
+// characters tokenize at roughly one token each on mainstream tokenizers
+// (cl100k, DeepSeek, Qwen), so applying the natural-language ratio to them
+// underestimates by ~3x. Underestimation is the dangerous direction here — it
+// delays auto-compaction until the provider hard-rejects with context_length.
+// Overestimating CJK slightly (newer tokenizers reach ~1.2 chars/token) only
+// compacts a bit earlier; safe.
 // ============================================================
 
 import type { ContentBlock, Message } from "./types.js";
+
+/**
+ * CJK + fullwidth code points: CJK radicals/symbols/kana/ideographs
+ * (U+2E80–U+9FFF), compatibility ideographs (U+F900–U+FAFF), fullwidth forms
+ * (U+FF00–U+FFEF), Hangul syllables (U+AC00–U+D7AF).
+ */
+const CJK_PATTERN = /[\u2e80-\u9fff\uf900-\ufaff\uff00-\uffef\uac00-\ud7af]/g;
+
+/**
+ * Split-based estimate: CJK chars at ~1 token each, everything else at the
+ * caller-supplied ratio (by content type). Without the split, a Chinese-heavy
+ * conversation or CLAUDE.md is underestimated ~3x and blows the context window
+ * before auto-compaction ever triggers.
+ */
+function estimateMixedTextTokens(text: string, nonCjkCharsPerToken: number): number {
+  const cjkCount = text.match(CJK_PATTERN)?.length ?? 0;
+  const nonCjk = text.length - cjkCount;
+  return Math.ceil(cjkCount + nonCjk / nonCjkCharsPerToken);
+}
 
 // Code-like file extensions
 const CODE_EXTENSIONS = new Set([
@@ -112,15 +139,15 @@ function estimateBlockTokens(block: ContentBlock, sourceFile?: string): number {
 
   // Determine content type and apply appropriate ratio
   if (isStructuredData(text)) {
-    return Math.ceil(text.length / 2.5); // Structured data: ~2.5 chars/token
+    return estimateMixedTextTokens(text, 2.5); // Structured data: ~2.5 chars/token
   }
 
   if (isLikelyCode(text, sourceFile)) {
-    return Math.ceil(text.length / 3.0); // Code: ~3.0 chars/token
+    return estimateMixedTextTokens(text, 3.0); // Code: ~3.0 chars/token
   }
 
   // Natural language: ~3.5 chars/token
-  return Math.ceil(text.length / 3.5);
+  return estimateMixedTextTokens(text, 3.5);
 }
 
 /**
@@ -135,7 +162,7 @@ function estimateMessageTokens(msg: Message): number {
       let total = 0;
       if (msg.content) {
         if (typeof msg.content === "string") {
-          total += Math.ceil(msg.content.length / 3.5);
+          total += estimateMixedTextTokens(msg.content, 3.5);
         } else {
           for (const block of msg.content as ContentBlock[]) {
             total += estimateBlockTokens(block);
@@ -144,9 +171,10 @@ function estimateMessageTokens(msg: Message): number {
       }
       if (msg.tool_calls) {
         for (const tc of msg.tool_calls) {
-          // Tool call overhead: name + arguments
+          // Tool call overhead: name + arguments (arguments can carry CJK,
+          // e.g. Write tool file content in a Chinese document)
           total += Math.ceil(tc.function.name.length / 3.0);
-          total += Math.ceil(tc.function.arguments.length / 2.5);
+          total += estimateMixedTextTokens(tc.function.arguments, 2.5);
         }
       }
       return total;
@@ -156,13 +184,13 @@ function estimateMessageTokens(msg: Message): number {
       // Tool results often contain mixed content (text + code)
       const text = msg.content || "";
       if (isLikelyCode(text)) {
-        return Math.ceil(text.length / 3.0);
+        return estimateMixedTextTokens(text, 3.0);
       }
-      return Math.ceil(text.length / 3.5);
+      return estimateMixedTextTokens(text, 3.5);
     }
 
     case "system":
-      return Math.ceil(msg.content.length / 3.5);
+      return estimateMixedTextTokens(msg.content, 3.5);
 
     default:
       return 0;

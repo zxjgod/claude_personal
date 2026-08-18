@@ -141,6 +141,12 @@ export const ReadTool: Tool = buildTool({
       const end = input.limit ? start + input.limit : Math.min(start + 2000, totalLines);
       lines = lines.slice(start, end);
 
+      // Strip trailing `\r` from CRLF files. The `\r` is invisible in the
+      // terminal but pollutes every line the model sees; showing it would
+      // push the model to embed `\r` into Edit old_string/new_string. (Edit
+      // is CRLF-tolerant on match, so LF-only search text still works.)
+      lines = lines.map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line));
+
       // Add line numbers (4-space padded)
       const numbered = lines
         .map((line, i) => {

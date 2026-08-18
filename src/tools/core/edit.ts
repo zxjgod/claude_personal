@@ -10,13 +10,14 @@ import { checkDangerousPattern, isBlockedPath } from "../../permissions.js";
 import { checkReadBeforeEdit, refreshRead } from "../../read-tracker.js";
 import type { Tool, ToolResult } from "../../types.js";
 import { buildTool } from "../registry.js";
-import { generateSimpleDiff, spliceAll } from "../utils/diff.js";
+import { crlfTolerantPair, generateSimpleDiff, spliceAll } from "../utils/diff.js";
 import { relForDisplay, resolveInWorkspace, statMtimeMs } from "../utils/path.js";
 
 const EditSchema = z.strictObject({
   filePath: z.string().describe("The absolute path to the file to edit"),
   old_string: z
     .string()
+    .min(1, "old_string must not be empty")
     .describe(
       "The text to replace. Must match EXACTLY including whitespace and indentation. If not unique, add more surrounding context lines.",
     ),
@@ -70,16 +71,30 @@ export const EditTool: Tool = buildTool({
       }
 
       const content = fs.readFileSync(filePath, "utf-8");
-      const oldStr = input.old_string;
-      const newStr = input.new_string;
+      // CRLF tolerance: Read output strips `\r`, so the model sends LF-only
+      // search text; retry with the pair upconverted when the exact match
+      // misses inside a CRLF file (see crlfTolerantPair).
+      const { oldStr, newStr } = crlfTolerantPair(content, input.old_string, input.new_string);
       const replaceAll = input.replace_all === true;
+
+      // A no-op edit still rewrites the file and refreshes the read tracker —
+      // refuse it instead of corrupting freshness bookkeeping.
+      if (oldStr === newStr || input.old_string === input.new_string) {
+        return {
+          content: "",
+          error: "old_string and new_string are identical — nothing to change.",
+        };
+      }
 
       // Count occurrences
       let count = 0;
       let pos = 0;
       while ((pos = content.indexOf(oldStr, pos)) !== -1) {
         count++;
-        pos += oldStr.length;
+        // `|| 1` guards an empty old_string, which would otherwise loop forever
+        // (indexOf("", pos) === pos, and pos += 0 never advances). Mirrors the
+        // multi_edit guard; the schema's .min(1) rejects it earlier in practice.
+        pos += oldStr.length || 1;
       }
 
       if (count === 0) {
@@ -183,7 +198,10 @@ const MultiEditSchema = z.strictObject({
   edits: z
     .array(
       z.strictObject({
-        old_string: z.string().describe("Text to find (exact match)"),
+        old_string: z
+          .string()
+          .min(1, "old_string must not be empty")
+          .describe("Text to find (exact match)"),
         new_string: z.string().describe("Replacement text"),
         replace_all: z
           .boolean()
@@ -244,14 +262,19 @@ export const MultiEditTool: Tool = buildTool({
 
       // Apply edits in memory; bail out before writing if any fails.
       for (let i = 0; i < input.edits.length; i++) {
-        const { old_string: oldStr, new_string: newStr, replace_all } = input.edits[i];
+        const edit = input.edits[i];
 
-        if (typeof oldStr !== "string" || typeof newStr !== "string") {
+        if (typeof edit.old_string !== "string" || typeof edit.new_string !== "string") {
           return {
             content: "",
             error: `Edit #${i + 1}: old_string and new_string are required.`,
           };
         }
+
+        // CRLF tolerance per edit, evaluated against the CURRENT working text
+        // (previous edits may have introduced or removed CRLF regions).
+        const { oldStr, newStr } = crlfTolerantPair(working, edit.old_string, edit.new_string);
+        const replace_all = edit.replace_all;
 
         let count = 0;
         let pos = 0;

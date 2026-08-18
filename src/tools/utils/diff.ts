@@ -67,3 +67,33 @@ export function spliceAll(content: string, oldStr: string, newStr: string): stri
   result += content.slice(pos);
   return result;
 }
+
+/**
+ * CRLF tolerance for search/replace on Windows files. The model almost always
+ * builds old_string from Read output (which strips `\r`), so it sends LF-only
+ * search text; an exact indexOf then fails against a CRLF file on EVERY
+ * multi-line match. When that happens, upconvert the pair to CRLF and let the
+ * caller retry. Surgical: only the matched region is rewritten with CRLF —
+ * lone-LF lines elsewhere in a mixed-ending file are untouched.
+ *
+ * Returns the ORIGINAL pair unchanged when upconversion doesn't apply (exact
+ * match already works, file is LF-only, or old_string already carries `\r`).
+ */
+export function crlfTolerantPair(
+  content: string,
+  oldStr: string,
+  newStr: string,
+): { oldStr: string; newStr: string } {
+  if (
+    oldStr.includes("\n") &&
+    !oldStr.includes("\r") &&
+    content.includes("\r\n") &&
+    !content.includes(oldStr)
+  ) {
+    return {
+      oldStr: oldStr.replace(/\n/g, "\r\n"),
+      newStr: newStr.replace(/\n/g, "\r\n"),
+    };
+  }
+  return { oldStr, newStr };
+}

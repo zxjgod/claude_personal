@@ -223,3 +223,37 @@ describe("Sleep", () => {
 // PowerShellTool now lives in src/tools/core/powershell.ts (read-only detection
 // + danger patterns + process-tree-kill); its read-only heuristic is covered in
 // tools.test.ts. The execution path itself is exercised only on Windows.
+
+describe("PowerShellTool execution (Windows only)", () => {
+  const itWin = process.platform === "win32" ? it : it.skip;
+
+  itWin("decodes CJK output as UTF-8 (no mojibake from the console codepage)", async () => {
+    // Regression: powershell.exe writes pipes in the console codepage (GBK on
+    // Chinese Windows); utf8-decoding that produced garbled output.
+    const { PowerShellTool } = await import("../tools/core/powershell.js");
+    const r = await PowerShellTool.call(
+      { command: "Write-Output '你好世界'", description: "print CJK text" },
+      ctx(),
+    );
+    expect(r.error).toBeUndefined();
+    expect(r.content).toContain("你好世界");
+    expect(r.content).not.toContain("\ufffd");
+  });
+
+  itWin("remembers a successful cd for the next call (Bash parity)", async () => {
+    const { PowerShellTool } = await import("../tools/core/powershell.js");
+    const sub = path.join(repo, "sub dir");
+    fs.mkdirSync(sub);
+    const sessionId = "sess-ps-cwd";
+    const cd = await PowerShellTool.call(
+      { command: `cd "${sub}"`, description: "enter subdir" },
+      ctx({ sessionId }),
+    );
+    expect(cd.error).toBeUndefined();
+    const pwd = await PowerShellTool.call(
+      { command: "(Get-Location).Path", description: "print cwd" },
+      ctx({ sessionId }),
+    );
+    expect(pwd.content.toLowerCase()).toContain("sub dir");
+  });
+});

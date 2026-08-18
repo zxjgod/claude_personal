@@ -6,12 +6,13 @@
 // detection lives in utils/command.ts and permissions.ts respectively.
 
 import { spawn } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 import chalk from "chalk";
 import { z } from "zod";
-import { checkDangerousPattern } from "../../permissions.js";
 import type { Tool, ToolResult } from "../../types.js";
 import { InputValidator } from "../../utils/input-validator.js";
 import { buildTool } from "../registry.js";
+import { getCwd, rememberCd } from "../session-cwd.js";
 import { powershellCommandIsReadOnly } from "../utils/command.js";
 
 const PowerShellSchema = z.strictObject({
@@ -56,11 +57,21 @@ export const PowerShellTool: Tool = buildTool({
     const timeout = input.timeout && input.timeout > 0 ? input.timeout : 120_000;
     const abortSignal = context.abortSignal;
 
+    // M39 parity with Bash: seed the spawn cwd from the remembered session cwd.
+    const cwd = getCwd(context.sessionId) ?? context.workspaceRoot;
+
+    // Force UTF-8 output. powershell.exe on a Chinese/Japanese/Korean Windows
+    // writes pipes in the console codepage (GBK/cp936 etc.), which utf8
+    // decoding renders as mojibake; pwsh already defaults to UTF-8 and accepts
+    // this harmlessly. NOTE: the prefix is added ONLY to the spawned payload —
+    // read-only classification and validation above saw the original command.
+    const psCommand = `[Console]::OutputEncoding=[Text.Encoding]::UTF8; ${input.command}`;
+
     // Same process-tree-kill strategy as Bash (see bash.ts): spawn the shell
     // ourselves and, on timeout/abort/overflow, kill the WHOLE tree so a
     // grandchild can't hold the pipe open and deadlock the loop on Windows.
-    const child = spawn(shellFor(), shellArgs(input.command), {
-      cwd: context.workspaceRoot,
+    const child = spawn(shellFor(), shellArgs(psCommand), {
+      cwd,
       windowsHide: true,
       detached: process.platform !== "win32",
     });
@@ -85,15 +96,19 @@ export const PowerShellTool: Tool = buildTool({
     let stderr = "";
     let overflowed = false;
     const MAX_OUTPUT = 10 * 1024 * 1024;
+    // Decode incrementally so a multibyte character split across two `data`
+    // chunks is reassembled instead of emitting U+FFFD (mirrors bash.ts).
+    const stdoutDecoder = new StringDecoder("utf8");
+    const stderrDecoder = new StringDecoder("utf8");
     child.stdout?.on("data", (d: Buffer) => {
-      stdout += d.toString();
+      stdout += stdoutDecoder.write(d);
       if (stdout.length > MAX_OUTPUT) {
         overflowed = true;
         killTree();
       }
     });
     child.stderr?.on("data", (d: Buffer) => {
-      stderr += d.toString();
+      stderr += stderrDecoder.write(d);
       if (stderr.length > MAX_OUTPUT) {
         overflowed = true;
         killTree();
@@ -122,8 +137,13 @@ export const PowerShellTool: Tool = buildTool({
       }
     }
 
+    let spawnError = "";
     const exitCode: number | null = await new Promise<number | null>((resolve) => {
-      child.on("error", () => resolve(-1));
+      child.on("error", (err) => {
+        // Surface the real reason (ENOENT etc.) instead of a bare "-1".
+        spawnError = err.message;
+        resolve(-1);
+      });
       child.on("close", (code) => resolve(code));
     });
 
@@ -133,6 +153,9 @@ export const PowerShellTool: Tool = buildTool({
     if (aborted) {
       return { content: "Command aborted.", metadata: { exitCode: -1, aborted: true } };
     }
+
+    // M39: a bare successful `cd <dir>` sticks for the next call (Bash parity).
+    if (exitCode === 0) rememberCd(context.sessionId, cwd, input.command);
 
     const output = [stdout, stderr].filter(Boolean).join(stderr && stdout ? "\n" : "");
 
@@ -149,11 +172,14 @@ export const PowerShellTool: Tool = buildTool({
     }
 
     if (exitCode !== null && exitCode !== 0) {
+      // `spawnError` is set when the child never spawned (ENOENT etc.) —
+      // surface the real reason rather than a bare "exit code: -1".
+      const spawnNote = spawnError ? `\n${chalk.gray("   Spawn failed:")} ${spawnError}` : "";
       return {
-        content: output || "(no output)",
+        content: output || spawnError || "(no output)",
         truncated: overflowed,
         error:
-          `Command failed (exit code: ${exitCode})\n` +
+          `Command failed (exit code: ${exitCode})${spawnNote}\n` +
           chalk.gray("   Hint: check the command syntax and arguments"),
         metadata: { exitCode },
       };
@@ -164,13 +190,5 @@ export const PowerShellTool: Tool = buildTool({
       truncated: overflowed,
       metadata: { exitCode },
     };
-  },
-
-  async checkPermissions(input, context) {
-    const danger = checkDangerousPattern("powershell", input, context.workspaceRoot);
-    if (danger.dangerous) {
-      return { allowed: false, reason: danger.reason! };
-    }
-    return { allowed: true };
   },
 });

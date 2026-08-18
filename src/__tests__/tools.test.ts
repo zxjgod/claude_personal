@@ -205,6 +205,63 @@ describe("EditTool", () => {
     expect(result.error).toContain("not found");
   });
 
+  it("matches LF-only old_string inside a CRLF file (Windows)", async () => {
+    // Regression: Read strips the invisible `\r`, so the model sends LF-only
+    // old_string; the exact indexOf then failed on EVERY multi-line match in a
+    // CRLF file, making Edit unusable on Windows files.
+    const filePath = path.join(tmpDir, "crlf.txt");
+    fs.writeFileSync(filePath, "line one\r\nline two\r\nline three\r\n");
+
+    const read = await ReadTool.call({ filePath: "crlf.txt" }, ctx);
+    // The model sees clean lines — no carriage returns in the display.
+    expect(read.content).not.toContain("\r");
+    expect(read.content).toContain("line two");
+
+    const result = await EditTool.call(
+      {
+        filePath: "crlf.txt",
+        old_string: "line one\nline two",
+        new_string: "line one\nLINE TWO",
+      },
+      ctx,
+    );
+    expect(result.error).toBeUndefined();
+
+    const content = fs.readFileSync(filePath, "utf-8");
+    expect(content).toBe("line one\r\nLINE TWO\r\nline three\r\n");
+  });
+
+  it("CRLF retry stays surgical in a mixed-ending file", async () => {
+    const filePath = path.join(tmpDir, "mixed.txt");
+    // A lone-LF block that must NOT be converted, then the CRLF target.
+    fs.writeFileSync(filePath, "lone a\nlone b\r\ntarget one\r\ntarget two\r\n");
+
+    await ReadTool.call({ filePath: "mixed.txt" }, ctx);
+    const result = await EditTool.call(
+      {
+        filePath: "mixed.txt",
+        old_string: "target one\ntarget two",
+        new_string: "target one\nTARGET TWO",
+      },
+      ctx,
+    );
+    expect(result.error).toBeUndefined();
+
+    const content = fs.readFileSync(filePath, "utf-8");
+    expect(content).toBe("lone a\nlone b\r\ntarget one\r\nTARGET TWO\r\n");
+  });
+
+  it("rejects a no-op edit where old_string equals new_string", async () => {
+    const filePath = path.join(tmpDir, "noop.txt");
+    fs.writeFileSync(filePath, "same text");
+    await ReadTool.call({ filePath: "noop.txt" }, ctx);
+    const result = await EditTool.call(
+      { filePath: "noop.txt", old_string: "same text", new_string: "same text" },
+      ctx,
+    );
+    expect(result.error).toContain("identical");
+  });
+
   it("should insert literal $ sequences without special interpretation", async () => {
     const filePath = path.join(tmpDir, "dollar.txt");
     fs.writeFileSync(filePath, "PLACEHOLDER");
