@@ -329,6 +329,15 @@ describe("bashCommandIsReadOnly (M29)", () => {
     expect(bashCommandIsReadOnly("ls\rrm -rf /")).toBe(false);
     expect(bashCommandIsReadOnly("cat a.txt\n\necho done")).toBe(false);
   });
+
+  it("splits on a bare & (bash background / cmd.exe separator)", () => {
+    // Regression: `&` alone was not a split point, so `ls & rm -rf x` passed
+    // as read-only on the strength of `ls` — and cmd.exe treats `&` as an
+    // unconditional command separator, making the second command execute.
+    expect(bashCommandIsReadOnly("ls & rm -rf /tmp/data")).toBe(false);
+    expect(bashCommandIsReadOnly("cat a.txt & del b.txt")).toBe(false);
+    expect(bashCommandIsReadOnly("ls & echo done")).toBe(true);
+  });
 });
 
 describe("powershellCommandIsReadOnly", () => {
@@ -347,6 +356,16 @@ describe("powershellCommandIsReadOnly", () => {
     expect(powershellCommandIsReadOnly("Get-Content foo > out.txt")).toBe(false);
     expect(powershellCommandIsReadOnly("Invoke-Expression 'x'")).toBe(false);
     expect(powershellCommandIsReadOnly("")).toBe(false);
+  });
+
+  it("rejects bare ; and & followed by whitespace or quotes (no word boundary)", () => {
+    // Regression: `;\b`/`&\b` never matched before a space or quote because a
+    // word boundary cannot exist between two non-word characters, letting
+    // `Get-Date ; Remove-Item …` through as read-only.
+    expect(powershellCommandIsReadOnly("Get-Date ; Remove-Item -Recurse C:\\work")).toBe(false);
+    expect(powershellCommandIsReadOnly('Get-ChildItem ; "echo hi"')).toBe(false);
+    expect(powershellCommandIsReadOnly('Get-Date & "evil.exe"')).toBe(false);
+    expect(powershellCommandIsReadOnly("Get-Date;Get-Location")).toBe(false);
   });
 });
 

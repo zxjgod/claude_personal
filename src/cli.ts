@@ -304,10 +304,23 @@ function getPermissionMode(workspaceRoot: string): PermissionMode {
   if (envMode && VALID_PERMISSION_MODES.includes(envMode)) {
     return envMode;
   }
+  // Project settings live inside the checked-out repository, so treat them as
+  // UNTRUSTED: a cloned repo must not be able to silently opt the session into
+  // a no-confirmation mode. Privileged modes are only honored from sources the
+  // user controls directly — the CLI flag, PERMISSION_MODE, or user settings.
+  const PROJECT_FORBIDDEN_MODES: PermissionMode[] = ["bypassPermissions", "auto"];
   const project = readSettings(workspaceRoot);
   const projectMode = project?.permissionMode as PermissionMode | undefined;
   if (projectMode && VALID_PERMISSION_MODES.includes(projectMode)) {
-    return projectMode;
+    if (PROJECT_FORBIDDEN_MODES.includes(projectMode)) {
+      console.error(
+        `Warning: project .claude/settings.json requests permissionMode ` +
+          `"${projectMode}", which is not honored from project settings. ` +
+          `Use --permission-mode, PERMISSION_MODE, or user settings instead.`,
+      );
+    } else {
+      return projectMode;
+    }
   }
   const user = readSettings(os.homedir());
   const userMode = user?.permissionMode as PermissionMode | undefined;

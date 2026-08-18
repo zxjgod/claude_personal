@@ -75,6 +75,16 @@ export const ReadTool: Tool = buildTool({
 
       const mediaType = imageMediaType(filePath);
 
+      // Images/PDFs are loaded wholesale into memory below, so the size gate
+      // MUST run before any read: a multi-GB PNG rejected only after
+      // readFileSync would already have OOM'd the process.
+      if (mediaType && stat.size > MAX_IMAGE_BYTES) {
+        return {
+          content: `[Image too large to load: ${input.filePath} (${stat.size} bytes, max ${MAX_IMAGE_BYTES})]`,
+          metadata: { fileSize: stat.size },
+        };
+      }
+
       // Never load an unbounded text file wholesale into memory: a multi-GB
       // file would be read into RAM and split into lines with no cap, risking
       // OOM. Read only a bounded prefix for oversized non-image files and flag
@@ -98,12 +108,6 @@ export const ReadTool: Tool = buildTool({
 
       // Images and PDFs return as multimodal content blocks.
       if (mediaType) {
-        if (stat.size > MAX_IMAGE_BYTES) {
-          return {
-            content: `[Image too large to load: ${input.filePath} (${stat.size} bytes, max ${MAX_IMAGE_BYTES})]`,
-            metadata: { fileSize: stat.size },
-          };
-        }
         markRead(context.sessionId, filePath, stat.mtimeMs);
         return {
           content: `[Loaded ${mediaType}: ${input.filePath}]`,

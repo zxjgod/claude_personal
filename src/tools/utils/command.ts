@@ -13,8 +13,11 @@
  *  - Reject command substitution / process substitution / backticks / redirects
  *    (`$(...)`, `<(...)`, `` `...` ``, `>`, `>>`) — they can write or smuggle
  *    side effects.
- *  - Split on `|`, `&&`, `||`, `;` and require EVERY segment's leading word to
- *    be in the read-only allowlist.
+ *  - Split on `|`, `&&`, `||`, `;`, `&` and require EVERY segment's leading word
+ *    to be in the read-only allowlist. A bare `&` is a command separator in
+ *    BOTH bash (background + continue) and cmd.exe (unconditional separator,
+ *    which is what the Bash tool actually runs under on Windows) — omitting it
+ *    let `ls & rm -rf x` pass as read-only on the strength of `ls` alone.
  *  - `git` is special-cased: only a fixed set of read-only subcommands count.
  */
 export function bashCommandIsReadOnly(command: string | undefined): boolean {
@@ -30,6 +33,11 @@ export function bashCommandIsReadOnly(command: string | undefined): boolean {
   if (/[\r\n]/.test(cmd)) return false;
 
   // Read-only command leaders. Kept tight; expand deliberately.
+  //
+  // Deliberately EXCLUDED despite looking read-only:
+  //  - find — `-exec`/`-execdir`/`-delete`/`-ok` run or delete arbitrarily
+  //  - env  — `env CMD …` executes CMD; use `printenv` to list the environment
+  // Anything that can hide a write must route through approval.
   const READONLY = new Set([
     "cat",
     "ls",
@@ -42,12 +50,10 @@ export function bashCommandIsReadOnly(command: string | undefined): boolean {
     "egrep",
     "fgrep",
     "rg",
-    "find",
     "stat",
     "file",
     "which",
     "type",
-    "env",
     "printenv",
     "date",
     "whoami",
@@ -96,7 +102,7 @@ export function bashCommandIsReadOnly(command: string | undefined): boolean {
     "whatchanged",
   ]);
 
-  const segments = cmd.split(/\||&&|\|\||;/g);
+  const segments = cmd.split(/&&|\|\||[|;&]/g);
   for (const seg of segments) {
     const trimmed = seg.trim();
     if (!trimmed) continue;
@@ -128,7 +134,15 @@ export function powershellCommandIsReadOnly(command: string | undefined): boolea
   if (!cmd) return false;
 
   // Shell features that can write or hide side effects → not read-only.
-  if (/[`]|\$\(|>>|>|<\(|&\b|;\b|\n|\r/.test(cmd)) return false;
+  // `{`/`}` reject script blocks (`Where-Object { Remove-Item … }`, calculated
+  // properties `@{e={…}}`), which run arbitrary statements even under an
+  // otherwise-read-only cmdlet prefix.
+  //
+  // `&` (call operator) and `;` (statement separator) are matched as BARE
+  // characters — not `\b`-anchored. A word boundary never exists between `;`
+  // and a following space/quote (both non-word chars), so `&\b`/`;\b` let
+  // `Get-Date ; Remove-Item …` slip through as "read-only".
+  if (/[`]|\$\(|>>|>|<\(|&|;|\n|\r|\{|\}/.test(cmd)) return false;
 
   const segments = cmd.split(/\|/g);
   const READONLY_PREFIXES = [
