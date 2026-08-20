@@ -9,15 +9,18 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { registerSkill, resetSkills } from "../skills.js";
 import {
-  EnterWorktreeTool,
-  ExitWorktreeTool,
+  getScheduledJob,
   listScheduledJobs,
   resetScheduledJobs,
+  validateCron,
+} from "../tools/extended/cron-shared.js";
+import {
+  EnterWorktreeTool,
+  ExitWorktreeTool,
   resetWorktrees,
   ScheduleCronTool,
   SkillTool,
   SleepTool,
-  validateCron,
 } from "../tools/m8/m9.js";
 import type { ToolContext } from "../types.js";
 

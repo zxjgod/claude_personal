@@ -19,8 +19,18 @@ import { GrepTool } from "./core/grep.js";
 import { PowerShellTool } from "./core/powershell.js";
 import { ReadTool } from "./core/read.js";
 import { WriteTool } from "./core/write.js";
+import { AgentTool } from "./extended/agent.js";
+import { CronCreateTool, CronDeleteTool, CronListTool } from "./extended/cron-tools.js";
 import { JobKillTool, JobListTool, JobOutputTool } from "./extended/jobs.js";
 import { ReplTool } from "./extended/repl.js";
+import { ReportFindingsTool } from "./extended/report-findings.js";
+import { ScheduleWakeupTool } from "./extended/schedule-wakeup.js";
+import {
+  TaskCreateTool,
+  TaskGetTool,
+  TaskListTool,
+  TaskUpdateTool,
+} from "./extended/structured-task-tools.js";
 import { TaskTool } from "./extended/task.js";
 import { TodoTool } from "./extended/todo.js";
 import { WebFetchTool } from "./extended/web-fetch.js";
@@ -42,8 +52,9 @@ export const CORE_TOOLS: Tool[] = [
   ReplTool,
   WorkflowTool,
   TaskTool,
-  JobOutputTool,
-  JobKillTool,
+  AgentTool, // Enhanced sub-agent spawning with isolation support
+  JobOutputTool, // Aliases: TaskOutput, task_output
+  JobKillTool, // Aliases: TaskStop, task_stop
   JobListTool,
   NotebookEditTool,
   LspDiagnosticsTool,
@@ -51,6 +62,19 @@ export const CORE_TOOLS: Tool[] = [
   EnterPlanModeTool,
   ExitPlanModeTool,
   AskUserQuestionTool,
+  // Structured task management
+  TaskCreateTool,
+  TaskGetTool,
+  TaskUpdateTool,
+  TaskListTool,
+  // Cron management
+  CronCreateTool, // Aliases: schedule_cron, cron_create
+  CronDeleteTool, // Aliases: cron_delete
+  CronListTool, // Aliases: cron_list
+  // Dynamic loop scheduling
+  ScheduleWakeupTool, // Aliases: schedule_wakeup
+  // Code review
+  ReportFindingsTool, // Aliases: report_findings
   ...TEAM_TOOLS,
   ...M14_TOOLS,
 ];

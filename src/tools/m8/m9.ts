@@ -269,94 +269,19 @@ export const SkillTool: Tool = buildTool({
 // CLI wires the actual firing loop (it already owns the idle loop). Tests
 // cover validation/registration without needing a live timer.
 
-export interface ScheduledJob {
-  id: string;
-  cron: string;
-  prompt: string;
-  recurring: boolean;
-  durable: boolean;
-  createdAt: bigint;
-}
+// Import shared cron logic
+import {
+  getScheduledJob,
+  listScheduledJobs,
+  registerScheduledJob,
+  removeScheduledJob,
+  resetScheduledJobs,
+  type ScheduledJob,
+  validateCron,
+} from "../extended/cron-shared.js";
 
-const JOBS = new Map<string, ScheduledJob>();
-let jobCounter = 0;
-
-/** Test/util: clear all scheduled jobs. */
-export function resetScheduledJobs(): void {
-  JOBS.clear();
-  jobCounter = 0;
-}
-
-/** List registered jobs (for /status and tests). */
-export function listScheduledJobs(): ScheduledJob[] {
-  return [...JOBS.values()];
-}
-
-/** Get a job by id (for cancellation/tests). */
-export function getScheduledJob(id: string): ScheduledJob | undefined {
-  return JOBS.get(id);
-}
-
-/** Remove a job. Returns true if it existed. */
-export function removeScheduledJob(id: string): boolean {
-  return JOBS.delete(id);
-}
-
-/** Next id without Math.random (banned in some harnesses). */
-function nextJobId(): string {
-  jobCounter += 1;
-  return `job-${process.hrtime.bigint().toString(36)}-${jobCounter}`;
-}
-
-/**
- * Validate a 5-field cron expression minimally: 5 whitespace-separated
- * fields, each a recognized pattern (number, star, star-slash-n, range a-b,
- * list a,b). This is intentionally permissive — it catches gross typos, not
- * every edge of real cron grammar. Returns null if valid, an error string
- * if not.
- */
-export function validateCron(cron: string): string | null {
-  const fields = cron.trim().split(/\s+/);
-  if (fields.length !== 5) {
-    return `Cron must have exactly 5 fields (min hour dom mon dow), got ${fields.length}`;
-  }
-  const ranges: Array<[number, number]> = [
-    [0, 59], // minute
-    [0, 23], // hour
-    [1, 31], // day of month
-    [1, 12], // month
-    [0, 7], // day of week (0 and 7 both = Sunday)
-  ];
-  for (let i = 0; i < 5; i++) {
-    const err = validateCronField(fields[i]!, ranges[i]![0], ranges[i]![1]);
-    if (err) return `Field ${i + 1} (${fields[i]}): ${err}`;
-  }
-  return null;
-}
-
-function validateCronField(field: string, min: number, max: number): string | null {
-  for (const part of field.split(",")) {
-    const stepped = part.split("/");
-    if (stepped.length > 2) return "too many / separators";
-    const base = stepped[0]!;
-    if (base !== "*") {
-      const rangeMatch = base.match(/^(\d+)(?:-(\d+))?$/);
-      if (!rangeMatch) return `"${base}" is not a number, range, or *`;
-      const lo = parseInt(rangeMatch[1]!, 10);
-      const hi = rangeMatch[2] ? parseInt(rangeMatch[2], 10) : lo;
-      if (Number.isNaN(lo) || Number.isNaN(hi)) return "non-numeric value";
-      if (lo < min || lo > max || hi < min || hi > max) {
-        return `value out of range ${min}-${max}`;
-      }
-      if (hi < lo) return "range end before start";
-    }
-    if (stepped[1] !== undefined) {
-      const step = parseInt(stepped[1], 10);
-      if (Number.isNaN(step) || step < 1) return "step must be a positive integer";
-    }
-  }
-  return null;
-}
+// Re-export for backward compatibility
+export { getScheduledJob, listScheduledJobs, removeScheduledJob, resetScheduledJobs };
 
 const ScheduleCronSchema = z.strictObject({
   cron: z.string().describe("5-field cron expression, local time"),
@@ -380,15 +305,14 @@ export const ScheduleCronTool: Tool = buildTool({
   async call(input): Promise<ToolResult> {
     const err = validateCron(input.cron);
     if (err) return { content: "", error: err };
-    const job: ScheduledJob = {
-      id: nextJobId(),
+
+    const job = registerScheduledJob({
       cron: input.cron.trim(),
       prompt: input.prompt,
       recurring: input.recurring ?? true,
       durable: input.durable ?? false,
-      createdAt: process.hrtime.bigint(),
-    };
-    JOBS.set(job.id, job);
+    });
+
     return {
       content:
         `Scheduled ${job.recurring ? "recurring" : "one-shot"} job ${job.id} ` +
@@ -423,15 +347,12 @@ export const SleepTool: Tool = buildTool({
     }
     const delay = Math.min(Math.max(Math.round(raw), 60), 3600);
     if (input.prompt?.trim()) {
-      const job: ScheduledJob = {
-        id: nextJobId(),
+      const job = registerScheduledJob({
         cron: `+${delay}`,
         prompt: input.prompt,
         recurring: false,
         durable: false,
-        createdAt: process.hrtime.bigint(),
-      };
-      JOBS.set(job.id, job);
+      });
       return {
         content: `Will enqueue prompt after ${delay}s (${input.reason}). Job ${job.id}.`,
       };

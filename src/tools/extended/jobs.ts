@@ -71,6 +71,7 @@ export const JobOutputTool: Tool = buildTool({
   isReadOnly: true,
   isConcurrencySafe: true,
   searchHint: "job output read background result",
+  aliases: ["TaskOutput", "task_output"],
 
   async call(input, context): Promise<ToolResult> {
     const job = getJob(context.sessionId, input.job_id);
@@ -129,6 +130,7 @@ export const JobKillTool: Tool = buildTool({
   isReadOnly: false,
   isConcurrencySafe: false,
   searchHint: "job kill stop background cancel",
+  aliases: ["TaskStop", "task_stop"],
 
   async call(input, context): Promise<ToolResult> {
     const job = getJob(context.sessionId, input.job_id);
