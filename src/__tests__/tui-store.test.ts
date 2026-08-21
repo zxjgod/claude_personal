@@ -192,8 +192,6 @@ describe("TuiStore", () => {
     expect(store.cyclePermissionMode()).toBe("acceptEdits");
     expect(store.cyclePermissionMode()).toBe("bypassPermissions");
     expect(store.cyclePermissionMode()).toBe("plan");
-    expect(store.cyclePermissionMode()).toBe("auto");
-    expect(store.cyclePermissionMode()).toBe("dontAsk");
     expect(store.cyclePermissionMode()).toBe("default");
   });
 
