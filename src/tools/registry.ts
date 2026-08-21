@@ -39,7 +39,7 @@ export class ToolRegistry {
    * ("core" | "mcp"). Single source of truth for /tools-style listings.
    */
   listSources(): Array<{ tool: Tool; source: ToolSource }> {
-    return this.sources;
+    return this.sources.slice();
   }
 
   getTool(name: string): Tool | undefined {
@@ -206,9 +206,9 @@ export function createTool<T extends ToolInput = ToolInput>(config: BaseToolConf
   return finalizeTool(config, config.inputSchema, undefined);
 }
 
-// Cache the model-facing JSON Schema per tool name so we run zodToJsonSchema
-// once per tool, not on every system-prompt rebuild.
-const jsonSchemaCache = new Map<string, Tool["inputSchema"]>();
+// Cache by schema identity, not tool name: separate registries may legitimately
+// reuse a name with a different input contract.
+const jsonSchemaCache = new WeakMap<object, Tool["inputSchema"]>();
 
 export interface BuildToolConfig<S extends z.ZodType>
   extends CommonToolConfig<z.infer<S> & ToolInput> {
@@ -230,7 +230,7 @@ export function buildTool<S extends z.ZodType>(
   config: BuildToolConfig<S>,
 ): Tool<z.infer<S> & ToolInput> {
   type T = z.infer<S> & ToolInput;
-  const cached = jsonSchemaCache.get(config.name);
+  const cached = jsonSchemaCache.get(config.schema as object);
   let inputSchema: Tool["inputSchema"];
   if (cached) {
     inputSchema = cached;
@@ -244,7 +244,7 @@ export function buildTool<S extends z.ZodType>(
       properties: (generated.properties as Tool["inputSchema"]["properties"]) ?? {},
       required: (generated.required as string[]) ?? [],
     };
-    jsonSchemaCache.set(config.name, inputSchema);
+    jsonSchemaCache.set(config.schema as object, inputSchema);
   }
 
   const validateInput = (input: Record<string, unknown>): T => {

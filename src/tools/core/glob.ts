@@ -2,6 +2,7 @@
 // Glob Tool
 // ============================================================
 
+import * as path from "node:path";
 import fg from "fast-glob";
 import { z } from "zod";
 import type { Tool, ToolResult } from "../../types.js";
@@ -43,6 +44,14 @@ export const GlobTool: Tool = buildTool({
     }
 
     try {
+      // Patterns are evaluated relative to the already validated directory;
+      // reject absolute/traversal patterns so fast-glob cannot escape cwd.
+      if (
+        path.isAbsolute(input.pattern) ||
+        input.pattern.split(/[\\/]+/).some((segment) => segment === "..")
+      ) {
+        return { content: "", error: "Glob pattern must stay inside the workspace." };
+      }
       const files = await fg(input.pattern, {
         cwd: searchDir,
         ignore: ["**/node_modules/**", "**/.git/**"],
@@ -53,10 +62,11 @@ export const GlobTool: Tool = buildTool({
       });
 
       const MAX_RESULTS = 500;
+      // Sort before truncating so the bounded result is deterministic and
+      // contains the lexicographically earliest matches.
+      files.sort();
       const truncated = files.length > MAX_RESULTS;
       const resultFiles = files.slice(0, MAX_RESULTS);
-      // Sort for deterministic output
-      resultFiles.sort();
 
       const content =
         resultFiles.length === 0 ? "No files found matching pattern." : resultFiles.join("\n");

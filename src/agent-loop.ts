@@ -480,6 +480,20 @@ export async function* agentLoop(
         toolResults[done.index] = done.result;
         yield { type: "tool_result", id: toolCalls[done.index]!.id, result: done.result };
       }
+    } catch (error) {
+      // Normalize executor/stream failures into tool results so one rejected
+      // batch cannot tear down the async generator or strand tool_use entries.
+      const message = error instanceof Error ? error.message : String(error);
+      for (let i = 0; i < toolCalls.length; i++) {
+        if (!toolResults[i]) {
+          toolResults[i] = {
+            toolName: toolCalls[i]!.function.name,
+            error: message,
+            formatted: `Error executing ${toolCalls[i]!.function.name}: ${message}`,
+            isError: true,
+          };
+        }
+      }
     } finally {
       // === STEP 6: Add tool results to history ===
       for (let i = 0; i < toolCalls.length; i++) {

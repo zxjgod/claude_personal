@@ -97,23 +97,21 @@ export const BashTool: Tool = buildTool({
     // `data` chunks is reassembled instead of emitting a U+FFFD replacement.
     const stdoutDecoder = new StringDecoder("utf8");
     const stderrDecoder = new StringDecoder("utf8");
-    child.stdout?.on("data", (d: Buffer) => {
-      stdout += stdoutDecoder.write(d);
-      if (stdout.length > MAX_OUTPUT) {
+    let outputBytes = 0;
+    const appendOutput = (chunk: string, target: "stdout" | "stderr") => {
+      outputBytes += Buffer.byteLength(chunk, "utf8");
+      if (target === "stdout") stdout += chunk;
+      else stderr += chunk;
+      if (outputBytes > MAX_OUTPUT) {
         truncated = true;
-        // Kill the WHOLE tree on overflow too — `child.kill()` orphans the real
-        // command, which keeps holding the stdout pipe open so `close` never
-        // fires and the loop hangs forever (the same deadlock the timeout path
-        // already guards against with killTree).
         killTree();
       }
+    };
+    child.stdout?.on("data", (d: Buffer) => {
+      appendOutput(stdoutDecoder.write(d), "stdout");
     });
     child.stderr?.on("data", (d: Buffer) => {
-      stderr += stderrDecoder.write(d);
-      if (stderr.length > MAX_OUTPUT) {
-        truncated = true;
-        killTree();
-      }
+      appendOutput(stderrDecoder.write(d), "stderr");
     });
 
     let timedOut = false;
@@ -148,6 +146,9 @@ export const BashTool: Tool = buildTool({
       // which is what we need so the captured stdout/stderr are complete.
       child.on("close", (code) => resolve(code));
     });
+    // Flush an incomplete final UTF-8 sequence rather than silently dropping it.
+    appendOutput(stdoutDecoder.end(), "stdout");
+    appendOutput(stderrDecoder.end(), "stderr");
 
     if (timer) clearTimeout(timer);
     if (abortSignal) abortSignal.removeEventListener("abort", onAbort);

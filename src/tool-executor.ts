@@ -171,7 +171,28 @@ export async function executeSingleTool(
           isError: true,
         };
       }
-      if (pre.input) input = pre.input;
+      if (pre.input) {
+        // Hooks may rewrite inputs, but the final value must satisfy the same
+        // schema and semantic constraints as the model-provided value.
+        if (tool.validateInput) {
+          try {
+            input = tool.validateInput(pre.input) as Record<string, unknown>;
+          } catch (err) {
+            const message =
+              err instanceof InputValidationError
+                ? err.message
+                : `Invalid hook arguments: ${err instanceof Error ? err.message : String(err)}`;
+            return {
+              toolName: tool.name,
+              error: message,
+              formatted: message,
+              isError: true,
+            };
+          }
+        } else {
+          input = pre.input;
+        }
+      }
     }
 
     // === Permission check (before any side effect) ===

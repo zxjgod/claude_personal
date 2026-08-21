@@ -21,6 +21,7 @@ import { ReadTool } from "./core/read.js";
 import { WriteTool } from "./core/write.js";
 import { AgentTool } from "./extended/agent.js";
 import { CronCreateTool, CronDeleteTool, CronListTool } from "./extended/cron-tools.js";
+import { DesignSyncTool } from "./extended/design-sync.js";
 import { JobKillTool, JobListTool, JobOutputTool } from "./extended/jobs.js";
 import { ReplTool } from "./extended/repl.js";
 import { ReportFindingsTool } from "./extended/report-findings.js";
@@ -75,6 +76,8 @@ export const CORE_TOOLS: Tool[] = [
   ScheduleWakeupTool, // Aliases: schedule_wakeup
   // Code review
   ReportFindingsTool, // Aliases: report_findings
+  // Design system integration
+  DesignSyncTool, // Aliases: design_sync
   ...TEAM_TOOLS,
   ...M14_TOOLS,
 ];

@@ -33,11 +33,25 @@ const GrepSchema = z.strictObject({
   path: z.string().optional().describe("File or directory to search in (default: workspace root)"),
   type: z.string().optional().describe("File type to search (e.g. 'js', 'ts', 'py', 'rust')"),
   "-i": z.boolean().optional().describe("Case-insensitive search (default: false)"),
-  "-A": z.number().int().optional().describe("Number of lines to show after each match (rg -A)"),
-  "-B": z.number().int().optional().describe("Number of lines to show before each match (rg -B)"),
+  "-A": z
+    .number()
+    .int()
+    .min(0)
+    .max(1000)
+    .optional()
+    .describe("Number of lines to show after each match (rg -A)"),
+  "-B": z
+    .number()
+    .int()
+    .min(0)
+    .max(1000)
+    .optional()
+    .describe("Number of lines to show before each match (rg -B)"),
   "-C": z
     .number()
     .int()
+    .min(0)
+    .max(1000)
     .optional()
     .describe("Number of lines to show before and after each match (rg -C)"),
   output_mode: z
@@ -49,6 +63,8 @@ const GrepSchema = z.strictObject({
   head_limit: z
     .number()
     .int()
+    .min(0)
+    .max(10000)
     .optional()
     .describe(`Limit output to first N lines (default: ${DEFAULT_HEAD_LIMIT})`),
   "-n": z.boolean().optional().describe("Show line numbers (default: true)"),
@@ -246,7 +262,13 @@ async function runNodeFallback(
     onlyFiles: true,
   });
 
-  const flags = input["-i"] ? "gim" : input.multiline ? "gm" : "g";
+  if (input["-e"]) {
+    return {
+      content: "",
+      error: "Extended PCRE2 search is unavailable without ripgrep.",
+    };
+  }
+  const flags = input["-i"] ? (input.multiline ? "gim" : "gi") : input.multiline ? "gm" : "g";
   let regex: RegExp;
   try {
     regex = new RegExp(input.pattern, flags);

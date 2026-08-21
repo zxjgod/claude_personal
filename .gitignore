@@ -32,4 +32,5 @@ reference/
 *.pdf
 
 claude-code-参考标准/
-参考文档/
+参考文档/.claude/worktrees/
+tsc-output.txt

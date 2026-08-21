@@ -400,11 +400,25 @@ export async function checkPermission(
 }> {
   const action = formatActionForClassifier(tool.name, input).slice(0, 100);
 
-  // Step 1: Read-only tools are always allowed. Pass input so data-driven
+  // Safety-floor blocked paths must run before the read-only fast path. A tool
+  // being non-mutating does not make sensitive files safe to disclose.
+  if (input.filePath && typeof input.filePath === "string") {
+    if (isBlockedPath(input.filePath as string)) {
+      const result = {
+        allowed: false as const,
+        reason: `Path "${input.filePath}" is blocked for security reasons.`,
+        decisionReason: "safetyCheck" as const,
+      };
+      logPermissionDecision(1, tool.name, action, result, { path: input.filePath });
+      return result;
+    }
+  }
+
+  // Read-only tools are otherwise always allowed. Pass input so data-driven
   // tools (Bash: `cat` read-only, `rm` not) decide per call (M29).
   if (tool.isReadOnly(input)) {
     const result = { allowed: true as const };
-    logPermissionDecision(1, tool.name, action, result);
+    logPermissionDecision(2, tool.name, action, result);
     return result;
   }
 

@@ -12,6 +12,7 @@ import { buildTool } from "../registry.js";
 
 const TIMEOUT_MS = 15_000;
 const MAX_RESULTS = 10;
+const MAX_BODY_BYTES = 2 * 1024 * 1024;
 // Configurable search endpoint so users behind a firewall can point at a
 // DuckDuckGo-compatible mirror/proxy (the HTML format parser is DDG-specific).
 const SEARCH_ENDPOINT = process.env.WEB_SEARCH_ENDPOINT || "https://html.duckduckgo.com/html/";
@@ -122,10 +123,21 @@ export const WebSearchTool: Tool = buildTool({
         };
       }
 
-      // The timeout stays armed through response.text(): a server that returns
-      // headers promptly then drips the body must still hit the abort (the
-      // signal propagates into the body stream and rejects the read).
-      const html = await response.text();
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error("Search response body is not readable");
+      const chunks: Buffer[] = [];
+      let totalBytes = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        totalBytes += value.byteLength;
+        if (totalBytes > MAX_BODY_BYTES) {
+          await reader.cancel();
+          return { content: "", error: `Search response exceeds ${MAX_BODY_BYTES} bytes` };
+        }
+        chunks.push(Buffer.from(value));
+      }
+      const html = Buffer.concat(chunks).toString("utf8");
       clearTimeout(timeoutId);
       const results = parseSearchResults(html);
 

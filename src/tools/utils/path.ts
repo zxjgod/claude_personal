@@ -26,7 +26,14 @@ export function resolveInWorkspace(
   workspaceRoot: string,
 ): { ok: true; path: string } | { ok: false; error: string } {
   const root = path.resolve(workspaceRoot);
-  const resolved = path.resolve(root, inputPath);
+  const rootReal = (() => {
+    try {
+      return fs.realpathSync(root);
+    } catch {
+      return root;
+    }
+  })();
+  const resolved = path.resolve(rootReal, inputPath);
 
   // Resolve symlinks to get the real path, then verify containment. A
   // not-yet-existing tail (a write creating a new file) is tolerated; a symlink
@@ -37,7 +44,11 @@ export function resolveInWorkspace(
     return real;
   }
 
-  if (real.path !== root && !real.path.startsWith(root + path.sep)) {
+  const normalizeForContainment = (value: string): string =>
+    process.platform === "win32" ? value.toLowerCase() : value;
+  const normalizedRoot = normalizeForContainment(rootReal);
+  const normalizedReal = normalizeForContainment(real.path);
+  if (normalizedReal !== normalizedRoot && !normalizedReal.startsWith(normalizedRoot + path.sep)) {
     return {
       ok: false,
       error: `Access denied: "${inputPath}" resolves outside workspace`,
