@@ -15,6 +15,7 @@ import { createModelCaller } from "../../llm-adapter.js";
 import {
   buildSubagentSystemPrompt,
   extractLastAssistantText,
+  getCoreToolsForSubagents,
   getSubagentType,
   listSubagentNames,
   listSubagentSelectionHints,
@@ -193,6 +194,9 @@ export const AgentTool: Tool = buildTool({
         };
       }
 
+      // Get available tools
+      const availableTools = await getCoreToolsForSubagents();
+
       // Build system prompt
       let systemPrompt: string;
       let initialMessages: Message[];
@@ -201,14 +205,14 @@ export const AgentTool: Tool = buildTool({
       if (isFork) {
         systemPrompt = context.parentSystemPrompt!;
         initialMessages = context.getParentMessages!();
-        tools = context.tools || [];
+        tools = availableTools; // Fork gets all available tools
       } else {
         systemPrompt = buildSubagentSystemPrompt(
           subagentType!,
           input.description || "Sub-agent task",
         );
         initialMessages = [];
-        tools = resolveSubagentTools(subagentType!);
+        tools = resolveSubagentTools(subagentType!, availableTools);
       }
 
       // Add user prompt
@@ -216,7 +220,7 @@ export const AgentTool: Tool = buildTool({
         ...initialMessages,
         {
           role: "user",
-          content: input.prompt,
+          content: [{ type: "text", text: input.prompt }],
         },
       ];
 
@@ -227,35 +231,47 @@ export const AgentTool: Tool = buildTool({
       const cancellation = new CancellationScope();
       const approver = createSubAgentApprover(context.askUser);
 
-      const result = await agentLoop({
+      const loop = agentLoop(messages, tools, modelCaller, modelConfig, {
         systemPrompt,
-        initialMessages: messages,
-        tools,
-        modelCaller,
-        workspaceRoot: effectiveWorkspaceRoot,
-        sessionId: `${context.sessionId}-agent-${Date.now()}`,
-        permissionMode: context.permissionMode,
         maxTurns: 10,
-        compactThreshold: 50_000,
+        autoCompactThreshold: 50_000,
+        abortSignal: context.abortSignal,
+        toolContext: {
+          workspaceRoot: effectiveWorkspaceRoot,
+          sessionId: `${context.sessionId}-agent-${Date.now()}`,
+          permissionMode: context.permissionMode,
+          modelConfig: context.modelConfig,
+          askUser: approver,
+          onSubAgentProgress: context.onSubAgentProgress,
+        },
         askUser: approver,
-        onProgress: context.onSubAgentProgress,
-        parentAbortSignal: context.abortSignal,
-        cancellation,
       });
 
+      // Consume loop events
+      let terminal: any;
+      for await (const event of loop) {
+        if (event.type === "done") {
+          terminal = { reason: event.finishReason, turns: event.turns };
+        } else if (event.type === "error") {
+          terminal = { reason: "model_error", turns: 0, error: event.error };
+        } else if (event.type === "aborted") {
+          terminal = { reason: "aborted_streaming", turns: 0, error: event.reason };
+        }
+      }
+
       // Extract final output
-      const finalText = extractLastAssistantText(result.messages);
+      const finalText = extractLastAssistantText(messages);
       const duration = Date.now() - startTime;
 
       // Clean up worktree if successful
-      if (worktree && !result.error) {
+      if (worktree && terminal?.reason === "end_turn") {
         await removeWorktree(context.workspaceRoot, worktree.path, worktree.branch);
       }
 
-      if (result.error) {
+      if (terminal?.error) {
         return {
           content: finalText || "",
-          error: result.error,
+          error: String(terminal.error),
           metadata: { durationMs: duration },
         };
       }
@@ -264,8 +280,6 @@ export const AgentTool: Tool = buildTool({
         content: finalText || "(Agent completed with no output)",
         metadata: {
           durationMs: duration,
-          turns: result.turnCount,
-          tokens: result.totalTokens,
         },
       };
     } catch (error: any) {
