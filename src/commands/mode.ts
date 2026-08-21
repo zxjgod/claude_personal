@@ -9,8 +9,7 @@ import type { SlashCommand } from "./types.js";
 
 export const modeCommand: SlashCommand = {
   name: "mode",
-  description:
-    "Show or set the permission mode (default | acceptEdits | bypassPermissions | plan | auto | dontAsk)",
+  description: "Show or set the permission mode (default | acceptEdits | bypassPermissions | plan)",
   run: (args, ctx) => {
     const current = (ctx.getPermissionMode?.() ??
       ctx.permissionMode ??
@@ -58,10 +57,8 @@ function getModeDescription(mode: PermissionMode): string {
       return "Auto-approve all tools except dangerous patterns";
     case "plan":
       return "Plan only — no destructive tool execution";
-    case "auto":
-      return "Background safety checks instead of prompts (audited)";
-    case "dontAsk":
-      return "No prompts — deny anything that would ask for approval";
+    default:
+      return "Unknown mode";
   }
 }
 

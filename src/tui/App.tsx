@@ -252,7 +252,11 @@ function StatusBar({ store }: { store: TuiStore }) {
       <Text dimColor>
         {busy ? "working… (Ctrl+C interrupt)" : "? shortcuts · ← agents · / commands"}
         {" · "}
-        <Text color={modeColor(permissionMode)}>{permissionMode}</Text>
+      </Text>
+      <Text color={modeColor(permissionMode)} bold>
+        {permissionMode}
+      </Text>
+      <Text dimColor>
         {" · "}
         {tokensIn}↑ {tokensOut}↓ tokens
       </Text>

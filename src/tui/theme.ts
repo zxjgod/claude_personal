@@ -32,10 +32,10 @@ export const palette = {
   error: "#f7768e",
   /** Permission mode badge colors (keyed by mode name). */
   modeColors: {
-    default: "#e0af68",
-    acceptEdits: "#bb9af7",
-    bypassPermissions: "#f7768e",
-    plan: "#7aa2f7",
+    default: "#e0af68", // yellow/gold - neutral
+    acceptEdits: "#bb9af7", // purple - permissive for edits
+    bypassPermissions: "#f7768e", // red - most permissive
+    plan: "#7aa2f7", // blue - read-only planning
   } as Record<string, string>,
 } as const;
 

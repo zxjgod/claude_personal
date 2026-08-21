@@ -157,8 +157,6 @@ export const PERMISSION_MODE_CYCLE: PermissionMode[] = [
   "acceptEdits",
   "bypassPermissions",
   "plan",
-  "auto",
-  "dontAsk",
 ];
 
 export function nextPermissionMode(current: PermissionMode): PermissionMode {
@@ -515,7 +513,7 @@ export class TuiStore {
   cyclePermissionMode(): PermissionMode {
     const mode = nextPermissionMode(this.state.permissionMode);
     this.set({ permissionMode: mode });
-    this.showToast(`Permission mode: ${mode}`);
+    // Toast removed - mode is visible in the status bar
     return mode;
   }
 

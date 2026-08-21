@@ -101,7 +101,11 @@ function FsStatusBar({ store }: { store: TuiStore }) {
           ? "working… (Ctrl+C interrupt)"
           : "? shortcuts · / commands · @path attach · PgUp/PgDn scroll"}
         {" · "}
-        <Text color={modeColor(permissionMode)}>{permissionMode}</Text>
+      </Text>
+      <Text color={modeColor(permissionMode)} bold>
+        {permissionMode}
+      </Text>
+      <Text dimColor>
         {" · "}
         {tokensIn}↑ {tokensOut}↓ tokens
       </Text>
