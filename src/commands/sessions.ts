@@ -25,11 +25,7 @@ async function resolveSession(
   ctx: Parameters<SlashCommand["run"]>[1],
   idOrPrefix: string,
 ): Promise<SessionMeta | null> {
-  const sessions = ctx.persistence!.listSessions
-    ? await ctx.persistence!.listSessions()
-    : (await ctx.persistence!.searchSessions(idOrPrefix)).map(
-        ({ pinned: _pinned, preview: _preview, ...meta }) => meta,
-      );
+  const sessions = await ctx.persistence!.listSessions();
   const matches = findSessionByPrefix(sessions, idOrPrefix);
   if (matches.length === 0) {
     console.log(chalk.yellow(`  Session not found: ${idOrPrefix}`));
