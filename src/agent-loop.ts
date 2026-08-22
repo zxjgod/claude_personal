@@ -104,6 +104,27 @@ export async function* agentLoop(
     drainQueuedInput,
   } = options;
 
+  // Keep the caller-owned array identity stable. The CLI autosaves this array
+  // while the loop runs; replacing it after compaction would leave persistence
+  // pointing at the pre-compaction history forever.
+  const replaceMessages = (next: Message[]): void => {
+    if (next !== messages) messages.splice(0, messages.length, ...next);
+  };
+
+  // Provider SDKs can throw before yielding their first event (HTTP 429/5xx,
+  // stream setup failures). Normalize those throws into the same error event
+  // path used by adapters that report failures mid-stream.
+  const safeCallModel: ModelCaller = async function* (...args) {
+    try {
+      yield* callModel(...args);
+    } catch (error) {
+      yield {
+        type: "error",
+        error: error instanceof Error ? error : new Error(String(error)),
+      };
+    }
+  };
+
   // Build the full ToolContext from caller-provided values.
   const baseContext: ToolContext = {
     workspaceRoot: toolContext?.workspaceRoot ?? process.cwd(),
@@ -187,7 +208,7 @@ export async function* agentLoop(
       store: collapseStore,
     });
     if (prepared.messages !== messages) {
-      messages = prepared.messages;
+      replaceMessages(prepared.messages);
       state = { ...state, usageBaseline: undefined };
     }
     for (const note of prepared.notes) {
@@ -197,7 +218,7 @@ export async function* agentLoop(
     if (prepared.needsAutoCompact) {
       yield { type: "compacting" };
       try {
-        messages = await autoCompact(messages, callModel, modelConfig, abortSignal);
+        replaceMessages(await autoCompact(messages, safeCallModel, modelConfig, abortSignal));
         const newPromptTokens = estimateTokens(messages);
         state = {
           ...state,
@@ -252,7 +273,7 @@ export async function* agentLoop(
     let modelFinishReason = "stop";
 
     try {
-      for await (const event of callModel(
+      for await (const event of safeCallModel(
         messages,
         tools,
         systemPrompt,
@@ -315,7 +336,9 @@ export async function* agentLoop(
             if (recovery === "compact_and_retry") {
               state = { ...state, contextLengthRetries: state.contextLengthRetries + 1 };
               try {
-                messages = await autoCompact(messages, callModel, modelConfig, abortSignal);
+                replaceMessages(
+                  await autoCompact(messages, safeCallModel, modelConfig, abortSignal),
+                );
                 yield {
                   type: "compacted",
                   summary: "Context compressed after context_length error",

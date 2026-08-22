@@ -2,6 +2,42 @@
 // Command Utilities for Tools
 // ============================================================
 
+import { isBlockedPath } from "../../permissions.js";
+
+// Home references that are safe to resolve in a path. Any other `$VAR`/`%VAR%`
+// in a path-like argument may expand to a secret location, so it fails closed.
+const HOME_ENV_RE = /\$HOME|\$\{HOME\}|\$USERPROFILE|%USERPROFILE%/gi;
+
+/**
+ * Detect whether a shell command's arguments reference a blocked path (secrets,
+ * credentials, VCS internals, shell startup files). Shell commands carry a raw
+ * string rather than a structured `filePath`, so the permission layer's
+ * blocked-path floor cannot see their targets. This extracts path-like
+ * arguments and delegates to the same `isBlockedPath` rules used by Read/Write/
+ * Edit — so a secret reached via `~`, `$HOME`, an absolute path, or a `./`/`../`
+ * spelling is caught identically.
+ *
+ * Fail-closed on variable expansion we cannot resolve: a `$VAR`/`%VAR%` other
+ * than the home references above, embedded in a path-like argument, may resolve
+ * to a secret location.
+ */
+export function commandReferencesBlockedPath(command: string): boolean {
+  for (const segment of command.replaceAll("\\", "/").split(/&&|\|\||[|;&]/)) {
+    const tokens = segment
+      .trim()
+      .split(/[\s"'`]+/)
+      .filter(Boolean);
+    for (let i = 1; i < tokens.length; i++) {
+      const token = tokens[i];
+      if (isBlockedPath(token)) return true;
+      if (/[$%]/.test(token) && /[/~.]/.test(token)) {
+        if (/[$%]/.test(token.replace(HOME_ENV_RE, ""))) return true;
+      }
+    }
+  }
+  return false;
+}
+
 /**
  * Decide whether a shell command is read-only (M29). Read-only ⇒ auto-approved
  * + safe to run concurrently. This is intentionally CONSERVATIVE: it returns
@@ -27,6 +63,12 @@ export function bashCommandIsReadOnly(command: string | undefined): boolean {
 
   // Any of these shell features can write or hide side effects — bail out.
   if (/[`]|\$\(|<\(|>>|>|\btee\b/.test(cmd)) return false;
+
+  // Shell reads do not carry a structured filePath, so the permission layer
+  // cannot apply its blocked-path floor to them. Full environment dumps and any
+  // secret/credential/VCS target route through approval instead.
+  if (/\bprintenv\b|\b(env|set)\s*$/i.test(cmd)) return false;
+  if (commandReferencesBlockedPath(cmd)) return false;
 
   // Newlines can chain commands (e.g. "ls\nrm -rf /") and bypass the
   // per-segment read-only check below, which only splits on |, &&, ||, ;.

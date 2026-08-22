@@ -6,6 +6,7 @@
 // agent loop. Uses the official @modelcontextprotocol/sdk.
 // ============================================================
 
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -136,6 +137,89 @@ export interface MCPConfig {
   mcpServers: Record<string, MCPServerConfig>;
 }
 
+export interface MCPLoadOptions {
+  /** Require explicit approval before connecting servers from a project file. */
+  requireTrust?: boolean;
+  confirm?: (descriptions: string[]) => Promise<boolean>;
+}
+
+const SAFE_STDIO_ENV_KEYS = new Set([
+  "PATH",
+  "HOME",
+  "USERPROFILE",
+  "SystemRoot",
+  "WINDIR",
+  "TEMP",
+  "TMP",
+  "LANG",
+  "LC_ALL",
+  "TERM",
+  "SHELL",
+  "ComSpec",
+]);
+
+/** Keep ambient credentials out of project-controlled MCP child processes. */
+export function buildStdioEnv(overrides?: Record<string, string>): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const key of SAFE_STDIO_ENV_KEYS) {
+    const value = process.env[key];
+    if (value !== undefined) env[key] = value;
+  }
+  return { ...env, ...(expandEnvRecord(overrides) ?? {}) };
+}
+
+// --- Project-MCP trust gate ------------------------------------------------
+// A project `.mcp.json` can spawn arbitrary stdio commands (and reach http
+// endpoints) — loading it unconditionally would make "clone a malicious repo
+// and run the assistant" a supply-chain exploit. Servers from a project config
+// are therefore trusted ONCE per (config-path, config-content) pair, keyed on a
+// fingerprint of the raw file so any edit re-prompts. Trust is persisted to the
+// same directory as the hooks trust store, in a separate file.
+
+function mcpTrustStorePath(): string {
+  return (
+    process.env.CCR_TRUST_STORE_MCP ||
+    path.join(
+      process.env.HOME || process.env.USERPROFILE || ".",
+      ".claude-code-replica",
+      "trusted-mcp.json",
+    )
+  );
+}
+
+function mcpConfigFingerprint(raw: string): string {
+  return crypto.createHash("sha256").update(raw).digest("hex");
+}
+
+function isMcpConfigTrusted(configPath: string, raw: string): boolean {
+  try {
+    const store = JSON.parse(fs.readFileSync(mcpTrustStorePath(), "utf-8")) as Record<
+      string,
+      string
+    >;
+    return store[path.resolve(configPath)] === mcpConfigFingerprint(raw);
+  } catch {
+    return false;
+  }
+}
+
+function trustMcpConfig(configPath: string, raw: string): void {
+  try {
+    const file = mcpTrustStorePath();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    let store: Record<string, string> = {};
+    try {
+      store = JSON.parse(fs.readFileSync(file, "utf-8")) as Record<string, string>;
+    } catch {
+      // Missing or corrupt store — start fresh.
+    }
+    store[path.resolve(configPath)] = mcpConfigFingerprint(raw);
+    fs.writeFileSync(file, JSON.stringify(store, null, 2));
+  } catch {
+    // Trust persistence is best-effort; failing to save just re-prompts next time.
+  }
+}
+
 // --- Server entry ---
 
 interface ServerEntry {
@@ -159,7 +243,7 @@ export class MCPManager {
   /**
    * Load MCP configuration from a JSON file
    */
-  async loadConfig(configPath: string): Promise<void> {
+  async loadConfig(configPath: string, options: MCPLoadOptions = {}): Promise<void> {
     let raw: string;
     try {
       raw = fs.readFileSync(configPath, "utf-8");
@@ -175,6 +259,30 @@ export class MCPManager {
     } catch (error: any) {
       console.error(`Error parsing MCP config from ${configPath}:`, error.message);
       return;
+    }
+
+    if (options.requireTrust) {
+      const enabled = Object.entries(config.mcpServers).filter(([, server]) => !server.disabled);
+      // Only prompt when this exact config content has not been trusted before.
+      // Once trusted, subsequent launches load it silently; an edited config
+      // changes the fingerprint and re-prompts.
+      if (enabled.length > 0 && !isMcpConfigTrusted(configPath, raw)) {
+        const descriptions = enabled.map(([name, server]) => {
+          const target =
+            server.type === "stdio"
+              ? [server.command, ...(server.args ?? [])].join(" ")
+              : server.url;
+          return `${name} (${server.type}): ${target ?? "configured server"}`;
+        });
+        const trusted = options.confirm ? await options.confirm(descriptions) : false;
+        if (!trusted) {
+          console.error(
+            `MCP project config not trusted; skipped ${descriptions.length} server(s).`,
+          );
+          return;
+        }
+        trustMcpConfig(configPath, raw);
+      }
     }
 
     for (const [name, serverConfig] of Object.entries(config.mcpServers)) {
@@ -206,7 +314,7 @@ export class MCPManager {
         const transport = new StdioClientTransport({
           command: config.command,
           args: config.args || [],
-          env: { ...process.env, ...expandEnvRecord(config.env) } as Record<string, string>,
+          env: buildStdioEnv(config.env),
         });
         activeTransport = transport;
         client = new Client(

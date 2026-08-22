@@ -13,6 +13,7 @@ import { DYNAMIC_BOUNDARY } from "./system-prompt.js";
 import { DEFAULT_MAX_RESULT_CHARS, truncateToolResult } from "./tools/truncation.js";
 import { anthropicEffort, getEffort } from "./tui/effort.js";
 import type { Message, ModelCaller, ModelConfig, StreamEvent, Tool } from "./types.js";
+import { combineAbortSignals } from "./utils/cancellation.js";
 
 // --- Types kept intentionally local ---
 
@@ -257,10 +258,8 @@ export const anthropicCaller: ModelCaller = async function* (
   // stream timeout is generous (5 min) because Anthropic streams chunks; the
   // signal also lets the SDK abort the in-flight HTTP request promptly.
   const STREAM_TIMEOUT_MS = 5 * 60 * 1000;
-  const timeoutSignal = AbortSignal.timeout(STREAM_TIMEOUT_MS);
-  const combinedSignal = abortSignal
-    ? AbortSignal.any([abortSignal, timeoutSignal])
-    : timeoutSignal;
+  const combined = combineAbortSignals(abortSignal, STREAM_TIMEOUT_MS);
+  const combinedSignal = combined.signal;
 
   // Phase 1 of cache-break detection: hash the cacheable prefix + tools so the
   // post-call check can attribute a cache miss to the exact cause.
@@ -382,5 +381,6 @@ export const anthropicCaller: ModelCaller = async function* (
     };
   } finally {
     abortSignal?.removeEventListener("abort", onAbort);
+    combined.cleanup();
   }
 };

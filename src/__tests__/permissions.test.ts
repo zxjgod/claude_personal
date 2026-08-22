@@ -7,6 +7,7 @@ import {
   checkDangerousPattern,
   checkPermission,
   classifyPermissionRisk,
+  isBlockedPath,
   parseClassifierVerdict,
 } from "../permissions.js";
 import { createTool } from "../tools/registry.js";
@@ -37,6 +38,44 @@ async function alwaysAllow(): Promise<boolean> {
 async function alwaysDeny(): Promise<boolean> {
   return false;
 }
+
+describe("isBlockedPath", () => {
+  it("blocks secret, credential, and VCS paths case-insensitively", () => {
+    for (const p of [
+      ".env",
+      ".ENV",
+      ".env.local",
+      "/home/user/.env",
+      "C:\\Users\\me\\.npmrc",
+      ".ssh/id_rsa",
+      "~/.ssh",
+      "/etc/ssl/cert.pem",
+      "/etc/passwd",
+      ".git/config",
+      ".claude/settings.json",
+      ".bashrc",
+      "credentials.json",
+      ".aws/credentials",
+      ".docker/config.json",
+      ".kube/config",
+      ".git-credentials",
+      ".netrc",
+    ]) {
+      expect(isBlockedPath(p), p).toBe(true);
+    }
+  });
+
+  it("allows benign files and differently-named lookalikes", () => {
+    for (const p of [
+      "src/index.ts",
+      "readme.md",
+      "foo.env", // not a literal `.env` basename
+      "package.json",
+    ]) {
+      expect(isBlockedPath(p), p).toBe(false);
+    }
+  });
+});
 
 describe("checkPermission", () => {
   it("should allow read-only tools", async () => {

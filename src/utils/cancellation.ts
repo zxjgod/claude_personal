@@ -48,6 +48,30 @@ export function isInterrupt(signal: AbortSignal): boolean {
   return signal.aborted && interpretCancelReason(signal.reason).kind === "interrupt";
 }
 
+/** Compose a caller signal and timeout without relying on AbortSignal.any (Node 18). */
+export function combineAbortSignals(
+  parent: AbortSignal | undefined,
+  timeoutMs: number,
+): { signal: AbortSignal; cleanup: () => void } {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const onParentAbort = () => controller.abort(parent?.reason);
+  if (parent) {
+    if (parent.aborted) controller.abort(parent.reason);
+    else parent.addEventListener("abort", onParentAbort, { once: true });
+  }
+  if (!controller.signal.aborted) {
+    timer = setTimeout(() => controller.abort(new Error("Request timed out")), timeoutMs);
+  }
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      if (timer) clearTimeout(timer);
+      parent?.removeEventListener("abort", onParentAbort);
+    },
+  };
+}
+
 /**
  * A node in the cancellation tree. Wraps an AbortController, links to a parent
  * signal (parent abort → this aborts with the same reason), and tracks child

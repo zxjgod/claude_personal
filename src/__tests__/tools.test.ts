@@ -383,6 +383,38 @@ describe("bashCommandIsReadOnly (M29)", () => {
     expect(bashCommandIsReadOnly("echo `rm x`")).toBe(false);
   });
 
+  it("requires approval for environment and sensitive-file reads", () => {
+    expect(bashCommandIsReadOnly("printenv")).toBe(false);
+    expect(bashCommandIsReadOnly("cat .env")).toBe(false);
+    expect(bashCommandIsReadOnly("cat ~/.ssh/id_rsa")).toBe(false);
+    expect(bashCommandIsReadOnly("head credentials.json")).toBe(false);
+  });
+
+  it("requires approval for secrets reached via variables, home, and absolute paths", () => {
+    expect(bashCommandIsReadOnly("cat $HOME/.ssh/id_rsa")).toBe(false);
+    expect(bashCommandIsReadOnly("cat ${HOME}/.ssh/config")).toBe(false);
+    expect(bashCommandIsReadOnly("grep x $HOME/.npmrc")).toBe(false);
+    expect(bashCommandIsReadOnly("cat ~/.aws/credentials")).toBe(false);
+    expect(bashCommandIsReadOnly("cat ~/.docker/config.json")).toBe(false);
+    expect(bashCommandIsReadOnly("cat ~/.kube/config")).toBe(false);
+    expect(bashCommandIsReadOnly("cat ~/.git-credentials")).toBe(false);
+    expect(bashCommandIsReadOnly("cat ~/.netrc")).toBe(false);
+    expect(bashCommandIsReadOnly("cat /etc/ssl/cert.pem")).toBe(false);
+    expect(bashCommandIsReadOnly("cat /etc/passwd")).toBe(false);
+    expect(bashCommandIsReadOnly("cat ./.env")).toBe(false);
+    expect(bashCommandIsReadOnly("cat ../.env")).toBe(false);
+    // Unresolved variable in a path position → fail-closed.
+    expect(bashCommandIsReadOnly("cat $SECRET_DIR/x")).toBe(false);
+  });
+
+  it("still auto-approves benign reads", () => {
+    expect(bashCommandIsReadOnly("cat src/readme.md")).toBe(true);
+    expect(bashCommandIsReadOnly("cat a.txt")).toBe(true);
+    expect(bashCommandIsReadOnly("echo $HOME")).toBe(true);
+    expect(bashCommandIsReadOnly("cat $HOME/project/file.txt")).toBe(true);
+    expect(bashCommandIsReadOnly("ls $HOME")).toBe(true);
+  });
+
   it("rejects write-capable git subcommands", () => {
     expect(bashCommandIsReadOnly("git commit -am x")).toBe(false);
     expect(bashCommandIsReadOnly("git checkout -b new")).toBe(false);

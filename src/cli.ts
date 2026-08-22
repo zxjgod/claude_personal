@@ -564,7 +564,22 @@ async function main() {
   const mcpManager = new MCPManager();
   const mcpConfigs = discoverMCPConfigs(workspaceRoot);
   for (const configPath of mcpConfigs) {
-    await mcpManager.loadConfig(configPath);
+    const isProjectConfig = path.resolve(configPath) === path.resolve(workspaceRoot, ".mcp.json");
+    await mcpManager.loadConfig(configPath, {
+      requireTrust: isProjectConfig,
+      confirm:
+        isProjectConfig && process.stdin.isTTY && process.stdout.isTTY
+          ? async (descriptions) => {
+              console.log(
+                chalk.yellow(
+                  "\nThis project defines MCP servers that can execute external actions:",
+                ),
+              );
+              for (const description of descriptions) console.log(chalk.gray(`   ${description}`));
+              return askYesNo("Trust and enable these project MCP servers? [y/N] ");
+            }
+          : undefined,
+    });
   }
   for (const mcpTool of mcpManager.getAllTools()) {
     toolRegistry.register(mcpTool, "mcp");

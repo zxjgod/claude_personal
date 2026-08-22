@@ -8,6 +8,7 @@ import { isCloudGateway, resolveGateway } from "./cloud-gateway.js";
 import { DEFAULT_MAX_RESULT_CHARS, truncateToolResult } from "./tools/truncation.js";
 import { getEffort, modelSupportsReasoningEffort, openaiReasoningEffort } from "./tui/effort.js";
 import type { Message, ModelCaller, ModelConfig, StreamEvent, Tool } from "./types.js";
+import { combineAbortSignals } from "./utils/cancellation.js";
 
 // --- Provider Default Configurations ---
 
@@ -156,123 +157,125 @@ async function* openAICompatibleCaller(
   // timeout so a hung provider stream can't pin the loop indefinitely. The
   // OpenAI SDK forwards `signal` to fetch, aborting the in-flight request.
   const STREAM_TIMEOUT_MS = 5 * 60 * 1000;
-  const timeoutSignal = AbortSignal.timeout(STREAM_TIMEOUT_MS);
-  const combinedSignal = abortSignal
-    ? AbortSignal.any([abortSignal, timeoutSignal])
-    : timeoutSignal;
+  const combined = combineAbortSignals(abortSignal, STREAM_TIMEOUT_MS);
+  const combinedSignal = combined.signal;
 
-  const stream = await client.chat.completions.create(
-    {
-      model,
-      messages: requestMessages,
-      tools: tools.length > 0 ? formatToolsForOpenAI(tools) : undefined,
-      tool_choice: tools.length > 0 ? "auto" : undefined,
-      max_tokens: config.maxTokens ?? DEFAULT_MAX_TOKENS,
-      temperature: isReasoningModel ? undefined : (config.temperature ?? 0.1),
-      ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
-      stream: true,
-      // Ask the provider to emit a final usage chunk. Without this, streamed
-      // responses carry no token counts and usage stays at zero — breaking
-      // both the CLI token display and the auto-compaction threshold.
-      stream_options: { include_usage: true },
-    },
-    { signal: combinedSignal },
-  );
+  try {
+    const stream = await client.chat.completions.create(
+      {
+        model,
+        messages: requestMessages,
+        tools: tools.length > 0 ? formatToolsForOpenAI(tools) : undefined,
+        tool_choice: tools.length > 0 ? "auto" : undefined,
+        max_tokens: config.maxTokens ?? DEFAULT_MAX_TOKENS,
+        temperature: isReasoningModel ? undefined : (config.temperature ?? 0.1),
+        ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+        stream: true,
+        // Ask the provider to emit a final usage chunk. Without this, streamed
+        // responses carry no token counts and usage stays at zero — breaking
+        // both the CLI token display and the auto-compaction threshold.
+        stream_options: { include_usage: true },
+      },
+      { signal: combinedSignal },
+    );
 
-  // Parse streaming response
-  const toolCallBuffers: Map<number, { id: string; name: string; arguments: string }> = new Map();
+    // Parse streaming response
+    const toolCallBuffers: Map<number, { id: string; name: string; arguments: string }> = new Map();
 
-  let usage: { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number } = {
-    input_tokens: 0,
-    output_tokens: 0,
-  };
-  let finishReason = "stop";
-  let toolCallsEmitted = false;
+    let usage: { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number } = {
+      input_tokens: 0,
+      output_tokens: 0,
+    };
+    let finishReason = "stop";
+    let toolCallsEmitted = false;
 
-  const emitToolCalls = function* (): Generator<StreamEvent> {
-    if (toolCallsEmitted) return;
-    toolCallsEmitted = true;
-    for (const [, buf] of toolCallBuffers) {
-      try {
-        const input = JSON.parse(buf.arguments);
-        yield { type: "tool_use", id: buf.id, name: buf.name, input };
-      } catch {
-        // A truncated stream (finish_reason === "length") leaves tool-call
-        // arguments incomplete. That is recoverable — drop the partial call and
-        // let the loop continue from the accumulated text — not a fatal error.
-        if (finishReason === "length") {
-          continue;
+    const emitToolCalls = function* (): Generator<StreamEvent> {
+      if (toolCallsEmitted) return;
+      toolCallsEmitted = true;
+      for (const [, buf] of toolCallBuffers) {
+        try {
+          const input = JSON.parse(buf.arguments);
+          yield { type: "tool_use", id: buf.id, name: buf.name, input };
+        } catch {
+          // A truncated stream (finish_reason === "length") leaves tool-call
+          // arguments incomplete. That is recoverable — drop the partial call and
+          // let the loop continue from the accumulated text — not a fatal error.
+          if (finishReason === "length") {
+            continue;
+          }
+          yield {
+            type: "error",
+            error: new Error(`Failed to parse tool arguments for "${buf.name}"`),
+          };
         }
-        yield {
-          type: "error",
-          error: new Error(`Failed to parse tool arguments for "${buf.name}"`),
+      }
+    };
+
+    for await (const chunk of stream) {
+      if (abortSignal?.aborted) break;
+      const delta = chunk.choices[0]?.delta;
+
+      // Text delta
+      if (delta?.content) {
+        yield { type: "text_delta", delta: delta.content };
+      }
+
+      // Tool call delta
+      if (delta?.tool_calls) {
+        for (const tc of delta.tool_calls) {
+          if (!toolCallBuffers.has(tc.index)) {
+            toolCallBuffers.set(tc.index, {
+              id: tc.id || "",
+              name: tc.function?.name || "",
+              arguments: "",
+            });
+          }
+          const buf = toolCallBuffers.get(tc.index)!;
+          if (tc.id) buf.id = tc.id;
+          if (tc.function?.name) buf.name = tc.function.name;
+          if (tc.function?.arguments) buf.arguments += tc.function.arguments;
+        }
+      }
+
+      // Usage — with stream_options.include_usage this arrives in a final
+      // chunk whose `choices` array is empty, AFTER the finish_reason chunk.
+      // OpenAI's prompt_tokens is the total input billed for the call; when the
+      // provider serves a prompt-cache hit it reports `prompt_tokens_details.
+      // cached_tokens` separately. We keep input_tokens == prompt_tokens (the
+      // non-cached + cached total billed) and surface cached_tokens as
+      // cache_read so /cost and autoCompact see a cache breakdown consistent
+      // with the Anthropic path. (input_tokens here is NOT double-counted:
+      // prompt_tokens already includes cached tokens, so we do not add
+      // cache_read on top — unlike Anthropic where input_tokens excludes them.)
+      if (chunk.usage) {
+        const cached = (chunk.usage as any).prompt_tokens_details?.cached_tokens ?? 0;
+        usage = {
+          input_tokens: chunk.usage.prompt_tokens || 0,
+          output_tokens: chunk.usage.completion_tokens || 0,
+          cache_read_input_tokens: cached,
         };
       }
-    }
-  };
 
-  for await (const chunk of stream) {
-    if (abortSignal?.aborted) break;
-    const delta = chunk.choices[0]?.delta;
-
-    // Text delta
-    if (delta?.content) {
-      yield { type: "text_delta", delta: delta.content };
-    }
-
-    // Tool call delta
-    if (delta?.tool_calls) {
-      for (const tc of delta.tool_calls) {
-        if (!toolCallBuffers.has(tc.index)) {
-          toolCallBuffers.set(tc.index, {
-            id: tc.id || "",
-            name: tc.function?.name || "",
-            arguments: "",
-          });
-        }
-        const buf = toolCallBuffers.get(tc.index)!;
-        if (tc.id) buf.id = tc.id;
-        if (tc.function?.name) buf.name = tc.function.name;
-        if (tc.function?.arguments) buf.arguments += tc.function.arguments;
+      // Finish reason — emit completed tool calls now, but defer the `done`
+      // event until the stream fully drains so the usage chunk is included.
+      if (chunk.choices[0]?.finish_reason) {
+        finishReason = chunk.choices[0].finish_reason;
+        yield* emitToolCalls();
       }
     }
 
-    // Usage — with stream_options.include_usage this arrives in a final
-    // chunk whose `choices` array is empty, AFTER the finish_reason chunk.
-    // OpenAI's prompt_tokens is the total input billed for the call; when the
-    // provider serves a prompt-cache hit it reports `prompt_tokens_details.
-    // cached_tokens` separately. We keep input_tokens == prompt_tokens (the
-    // non-cached + cached total billed) and surface cached_tokens as
-    // cache_read so /cost and autoCompact see a cache breakdown consistent
-    // with the Anthropic path. (input_tokens here is NOT double-counted:
-    // prompt_tokens already includes cached tokens, so we do not add
-    // cache_read on top — unlike Anthropic where input_tokens excludes them.)
-    if (chunk.usage) {
-      const cached = (chunk.usage as any).prompt_tokens_details?.cached_tokens ?? 0;
-      usage = {
-        input_tokens: chunk.usage.prompt_tokens || 0,
-        output_tokens: chunk.usage.completion_tokens || 0,
-        cache_read_input_tokens: cached,
-      };
+    // Stream drained — emit tool calls if finish_reason never fired, then done.
+    // If the caller aborted mid-stream, surface a recoverable error so the loop
+    // can stop cleanly instead of committing partial tool calls.
+    if (abortSignal?.aborted) {
+      yield { type: "error", error: new Error("Aborted") };
+      return;
     }
-
-    // Finish reason — emit completed tool calls now, but defer the `done`
-    // event until the stream fully drains so the usage chunk is included.
-    if (chunk.choices[0]?.finish_reason) {
-      finishReason = chunk.choices[0].finish_reason;
-      yield* emitToolCalls();
-    }
+    yield* emitToolCalls();
+    yield { type: "done", usage, finish_reason: finishReason };
+  } finally {
+    combined.cleanup();
   }
-
-  // Stream drained — emit tool calls if finish_reason never fired, then done.
-  // If the caller aborted mid-stream, surface a recoverable error so the loop
-  // can stop cleanly instead of committing partial tool calls.
-  if (abortSignal?.aborted) {
-    yield { type: "error", error: new Error("Aborted") };
-    return;
-  }
-  yield* emitToolCalls();
-  yield { type: "done", usage, finish_reason: finishReason };
 }
 
 // --- Format Tools for OpenAI ---

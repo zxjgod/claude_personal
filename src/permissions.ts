@@ -216,6 +216,14 @@ const BLOCKED_PATTERNS = [
   /(^|[/\\])\.env\./,
   /credentials\.json$/,
   /\.npmrc$/,
+  // --- cloud / identity credentials (long-lived secrets outside the repo) ---
+  /(^|[/\\])\.aws([/\\]|$)/,
+  /(^|[/\\])\.kube([/\\]|$)/,
+  /(^|[/\\])\.docker([/\\]|$)/,
+  /(^|[/\\])\.azure([/\\]|$)/,
+  /(^|[/\\])\.config[/\\](gcloud|gh)([/\\]|$)/,
+  /(^|[/\\])\.git-credentials$/,
+  /(^|[/\\])\.netrc$/,
   // --- VCS internals: the whole .git/ tree, not just config/hooks. Editing
   //     refs/objects/index can corrupt the repo or smuggle in hooks. ---
   /(^|[/\\])\.git([/\\]|$)/,
@@ -228,7 +236,10 @@ const BLOCKED_PATTERNS = [
 ];
 
 export function isBlockedPath(filePath: string): boolean {
-  return BLOCKED_PATTERNS.some((pattern) => pattern.test(filePath));
+  // Windows paths are case-insensitive; normalize separators and case before
+  // applying the platform-neutral safety rules.
+  const normalized = filePath.replaceAll("\\", "/").toLowerCase();
+  return BLOCKED_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
 // --- LLM-Assisted Risk Classifier (M15.3) ---

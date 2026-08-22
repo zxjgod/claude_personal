@@ -14,7 +14,10 @@
 // No network beyond loopback; the http server binds 127.0.0.1:0.
 // ============================================================
 
+import * as fs from "node:fs";
 import * as http from "node:http";
+import * as os from "node:os";
+import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -322,4 +325,55 @@ describe("MCP transport routing + failure handling", () => {
   it("getAllTools is empty before any connection", () => {
     expect(new MCPManager().getAllTools()).toEqual([]);
   });
+});
+
+// ============================================================
+// project MCP trust gate — persist across launches
+// ============================================================
+
+describe("project MCP trust gate persists", () => {
+  it("prompts once, then trusts the unchanged config without re-prompting", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-mcp-trust-"));
+    const configPath = path.join(tmp, ".mcp.json");
+    fs.writeFileSync(configPath, JSON.stringify({ mcpServers: { mock: STDIO_CONFIG } }));
+    const prevStore = process.env.CCR_TRUST_STORE_MCP;
+    process.env.CCR_TRUST_STORE_MCP = path.join(tmp, "trusted-mcp.json");
+
+    let prompts = 0;
+    const confirm = vi.fn(async () => {
+      prompts += 1;
+      return true;
+    });
+
+    try {
+      // First launch: untrusted → prompt once, connect, persist.
+      const first = new MCPManager();
+      await first.loadConfig(configPath, { requireTrust: true, confirm });
+      expect(prompts).toBe(1);
+      expect(first.serverCount).toBe(1);
+      await first.disconnectAll();
+
+      // Second launch, identical config: already trusted → no prompt, still connects.
+      const second = new MCPManager();
+      await second.loadConfig(configPath, { requireTrust: true, confirm });
+      expect(prompts).toBe(1);
+      expect(second.serverCount).toBe(1);
+      await second.disconnectAll();
+
+      // An edited config changes the fingerprint → prompts again.
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({ mcpServers: { mock: STDIO_CONFIG }, _note: "edited" }),
+      );
+      const third = new MCPManager();
+      await third.loadConfig(configPath, { requireTrust: true, confirm });
+      expect(prompts).toBe(2);
+      expect(third.serverCount).toBe(1);
+      await third.disconnectAll();
+    } finally {
+      if (prevStore === undefined) delete process.env.CCR_TRUST_STORE_MCP;
+      else process.env.CCR_TRUST_STORE_MCP = prevStore;
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }, 30_000);
 });
