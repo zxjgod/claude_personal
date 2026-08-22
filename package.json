@@ -19,6 +19,7 @@
     "format": "biome format --write src",
     "check": "biome check src",
     "smoke": "node scripts/smoke.mjs",
+    "smoke:provider": "node scripts/provider-smoke.mjs",
     "docs:sync": "node --import tsx scripts/doc-sync.mjs",
     "prepare": "husky"
   },
@@ -34,6 +35,7 @@
     "ink": "^7.1.0",
     "marked": "^12.0.0",
     "openai": "^4.52.0",
+    "proper-lockfile": "^4.1.2",
     "react": "^19.2.7",
     "zod": "^3.25.76",
     "zod-to-json-schema": "^3.25.2"

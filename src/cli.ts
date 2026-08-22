@@ -29,6 +29,7 @@ import { discoverMCPConfigs, MCPManager } from "./mcp/index.js";
 import { MemoryStore } from "./memory-extract.js";
 import { PersistenceManager } from "./persistence.js";
 import { renderPrefetchAttachment, startPrefetch } from "./prefetch.js";
+import { normalizeFinishReason } from "./session-memory.js";
 import { loadSkillsDir } from "./skills/loadSkillsDir.js";
 import { listSkills } from "./skills.js";
 import { formatSpeculationLine } from "./speculation.js";
@@ -365,9 +366,8 @@ function parseMaxTurns(raw: string | undefined): number | undefined {
 
 /**
  * Resolve the main agent loop's maxTurns bound. Precedence: CLI `--max-turns <n>`
- * → env `CCR_MAX_TURNS` → default 50. Set 0 / unlimited / infinity to run without
- * a turn cap — auto-compact still bounds context, and Ctrl+C still aborts, so
- * "unlimited" is not a hard lock-up.
+ * → env `CCR_MAX_TURNS` → unlimited by default. A finite value is an explicit
+ * operator safety ceiling, never an implicit reason to cut off a main task.
  */
 function resolveMaxTurns(): number {
   const flagIdx = process.argv.indexOf("--max-turns");
@@ -377,7 +377,7 @@ function resolveMaxTurns(): number {
   }
   const envParsed = parseMaxTurns(process.env.CCR_MAX_TURNS);
   if (envParsed !== undefined) return envParsed;
-  return 50;
+  return Number.POSITIVE_INFINITY;
 }
 
 // --- Load CLAUDE.md ---
@@ -472,13 +472,15 @@ async function main() {
   // If no session specified, list available ones in verbose mode only.
   // Use /sessions during normal use.
   if (!sessionId && verbose) {
-    const sessions = await persistence.listSessions();
-    const incomplete = sessions.filter((s) => !s.completed);
+    const sessions = await persistence.searchSessions("");
+    const incomplete = sessions.filter((s) => s.taskState !== "stopped_by_user");
     if (incomplete.length > 0) {
       console.log("Recent incomplete sessions:");
       for (const s of incomplete.slice(0, 5)) {
+        const pin = s.pinned ? "📌 " : "";
+        const preview = s.preview ? ` — ${s.preview}` : "";
         console.log(
-          `  ${s.sessionId.slice(0, 8)}... — ${s.messageCount} msgs — ${new Date(s.updatedAt).toLocaleString()}`,
+          `  ${pin}${s.sessionId.slice(0, 8)}... — ${s.messageCount} msgs — ${new Date(s.updatedAt).toLocaleString()}${preview}`,
         );
       }
       console.log("  Use --session=<id> to resume, or continue for a new session.");
@@ -842,7 +844,7 @@ async function main() {
   };
 
   const resumeSession = async (idOrPrefix: string): Promise<boolean> => {
-    const sessions = await persistence.listSessions();
+    const sessions = await persistence.searchSessions(idOrPrefix);
     const matches = sessions.filter((s) => s.sessionId.startsWith(idOrPrefix));
     if (matches.length !== 1) return false;
     const existing = await persistence.load(matches[0].sessionId);
@@ -922,13 +924,17 @@ async function main() {
       // M36: background memory/skill prefetch + (opt-in) tool-batch digest.
       prefetch: prefetchMemories,
       summarizeToolBatch,
-      onSave: () => {
-        persistence.save(sessionId!, messages).catch((err) => {
-          console.error("Warning: TUI save failed:", formatCliError(err));
-        });
+      onSave: (taskState, lastTerminalReason) => {
+        persistence
+          .save(sessionId!, messages, {
+            taskState,
+            lastTerminalReason: normalizeFinishReason(lastTerminalReason),
+          })
+          .catch((err) => {
+            console.error("Warning: TUI save failed:", formatCliError(err));
+          });
       },
     });
-    await persistence.save(sessionId!, messages, { completed: true });
     await mcpManager.disconnectAll();
     return;
   }
@@ -1059,7 +1065,7 @@ async function main() {
       /* telemetry is best-effort */
     }
     try {
-      await persistence.save(sessionId!, messages, { completed: true });
+      await persistence.save(sessionId!, messages, { taskState: "stopped_by_user" });
     } catch (err) {
       console.error("Warning: failed to save session on exit:", formatCliError(err));
     }
@@ -1164,6 +1170,7 @@ async function main() {
         controller.abort("User interrupted");
       };
       process.on("SIGINT", onSigint);
+      await persistence.save(sessionId!, messages, { taskState: "waiting_for_model" });
 
       const renderer = new StreamingRenderer();
       turnInProgress = true;
@@ -1248,6 +1255,7 @@ async function main() {
       for await (const event of loop) {
         switch (event.type) {
           case "thinking":
+            void persistence.save(sessionId!, messages, { taskState: "waiting_for_model" });
             thinkingStart = Date.now();
             thoughtReported = false;
             resetIdleTimer();
@@ -1289,6 +1297,7 @@ async function main() {
           }
 
           case "tool_use": {
+            void persistence.save(sessionId!, messages, { taskState: "waiting_for_tool" });
             resetIdleTimer();
             spinner.stop();
             renderer.flush();
@@ -1333,6 +1342,7 @@ async function main() {
           }
 
           case "compacting":
+            void persistence.save(sessionId!, messages, { taskState: "recovering" });
             spinner.stop();
             renderer.flush();
             console.log("\n  " + chalk.cyan("⏳") + " " + chalk.gray("正在压缩上下文…"));
@@ -1368,6 +1378,7 @@ async function main() {
             break;
 
           case "error":
+            void persistence.save(sessionId!, messages, { taskState: "failed" });
             spinner.stop();
             renderer.flush();
             recordTranscript({ type: "error", message: formatCliError(event.error) });
@@ -1389,9 +1400,14 @@ async function main() {
               if (line) console.log(chalk.gray(`  ${line}`));
             }
             // Final assistant text was added to messages in the loop
-            persistence.save(sessionId!, messages).catch((err) => {
-              console.error("Warning: end-of-turn save failed:", formatCliError(err));
-            });
+            persistence
+              .save(sessionId!, messages, {
+                taskState: "paused",
+                lastTerminalReason: normalizeFinishReason(event.finishReason),
+              })
+              .catch((err) => {
+                console.error("Warning: end-of-turn save failed:", formatCliError(err));
+              });
             recordTranscript({
               type: "done",
               finishReason: event.finishReason,
@@ -1404,6 +1420,10 @@ async function main() {
             break;
 
           case "aborted":
+            void persistence.save(sessionId!, messages, {
+              taskState: "stopped_by_user",
+              lastTerminalReason: "aborted_by_user",
+            });
             spinner.stop();
             renderer.flush();
             recordTranscript({ type: "aborted", reason: event.reason });

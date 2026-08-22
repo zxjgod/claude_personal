@@ -8,87 +8,71 @@
 // dependency, so this stays an estimate, but it now mirrors the real window.
 // ============================================================
 import chalk from "chalk";
+import { estimateTokens } from "../token-estimator.js";
 import type { SlashCommand } from "./types.js";
 
 // Mirror agent-loop.ts: auto-compaction fires above this many estimated tokens.
 const AUTO_COMPACT_THRESHOLD = 150_000;
 
+function chunkLabel(label: string, value: number, color: typeof chalk.green): string {
+  return `    ${label.padEnd(18)} ${color(value.toLocaleString())} tokens`;
+}
+
 export const contextCommand: SlashCommand = {
   name: "context",
   description: "Show context composition, token usage, and compaction headroom",
-  run: (_args, ctx) => {
-    // ~4 chars per token is the heuristic the agent loop's estimateTokens uses.
-    const estTokens = (text: string) => Math.round(text.length / 4);
+  run: async (_args, ctx) => {
+    try {
+      const messages = ctx.messages;
+      const total = estimateTokens(messages);
+      const systemTokens = ctx.systemPrompt
+        ? estimateTokens([{ role: "system", content: ctx.systemPrompt } as any])
+        : 0;
+      const messageTokens = Math.max(0, total - systemTokens);
+      const usedRatio = Math.min(1, total / AUTO_COMPACT_THRESHOLD);
+      const usedPct = Math.round(usedRatio * 100);
+      const barWidth = 24;
+      const filled = Math.max(0, Math.min(barWidth, Math.round(usedRatio * barWidth)));
+      const barColor = usedRatio >= 0.9 ? chalk.red : usedRatio >= 0.6 ? chalk.yellow : chalk.green;
+      const bar = barColor("█".repeat(filled)) + chalk.gray("░".repeat(barWidth - filled));
+      const recent = messages.slice(-8);
+      const recentTokens = estimateTokens(recent);
+      const headroom = AUTO_COMPACT_THRESHOLD - total;
 
-    let sysTokens = ctx.systemPrompt ? estTokens(ctx.systemPrompt) : 0;
-    let userTokens = 0;
-    let assistantTokens = 0;
-    let toolTokens = 0;
+      console.log("");
+      console.log(chalk.bold("  Context layers:"));
+      console.log(chunkLabel("System", systemTokens, chalk.cyan));
+      console.log(chunkLabel("Conversation", messageTokens, chalk.cyan));
+      console.log(chunkLabel("Recent tail", recentTokens, chalk.cyan));
+      console.log(chunkLabel("Total", total, chalk.bold));
 
-    for (const m of ctx.messages) {
-      if (m.role === "user") {
-        for (const block of m.content) {
-          if (block.type === "text") userTokens += estTokens(block.text);
-        }
-      } else if (m.role === "assistant") {
-        if (typeof m.content === "string") assistantTokens += estTokens(m.content);
-        for (const tc of m.tool_calls ?? []) {
-          assistantTokens += estTokens(tc.function.arguments) + estTokens(tc.function.name);
-        }
-      } else if (m.role === "tool") {
-        toolTokens += estTokens(m.content);
-      } else if (m.role === "system") {
-        sysTokens += estTokens(m.content);
+      console.log("");
+      console.log(chalk.bold("  Compaction window:"));
+      console.log(
+        `    [${bar}] ${barColor(`${usedPct}%`)} of ${AUTO_COMPACT_THRESHOLD.toLocaleString()} tokens`,
+      );
+      if (total > AUTO_COMPACT_THRESHOLD) {
+        console.log(
+          chalk.yellow(
+            "    Over the threshold — the next turn will auto-compact. Run /compact to preview.",
+          ),
+        );
+      } else {
+        console.log(
+          chalk.gray(`    ${headroom.toLocaleString()} tokens of headroom before auto-compaction.`),
+        );
       }
+      console.log(chalk.gray(`    (~4 chars/token heuristic; ${ctx.messages.length} messages)`));
+      if (ctx.systemPrompt) {
+        console.log(
+          chalk.gray(
+            `    System prompt currently contributes about ${systemTokens.toLocaleString()} tokens.`,
+          ),
+        );
+      }
+    } catch (error: any) {
+      console.log(chalk.yellow(`  Failed to estimate tokens: ${error?.message || error}`));
     }
-
-    const total = sysTokens + userTokens + assistantTokens + toolTokens;
-    const pct = (n: number) => (total > 0 ? `${Math.round((n / total) * 100)}%` : "0%");
-
-    console.log("");
-    console.log(chalk.bold("  Context (estimated tokens):"));
-    console.log(
-      `    System prompt: ${chalk.cyan(sysTokens.toLocaleString().padStart(8))}  ${chalk.gray(pct(sysTokens))}`,
-    );
-    console.log(
-      `    User msgs:     ${chalk.cyan(userTokens.toLocaleString().padStart(8))}  ${chalk.gray(pct(userTokens))}`,
-    );
-    console.log(
-      `    Assistant:     ${chalk.cyan(assistantTokens.toLocaleString().padStart(8))}  ${chalk.gray(pct(assistantTokens))}`,
-    );
-    console.log(
-      `    Tool results:  ${chalk.cyan(toolTokens.toLocaleString().padStart(8))}  ${chalk.gray(pct(toolTokens))}`,
-    );
-    console.log(
-      `    ${chalk.bold("Total:")}         ${chalk.cyan(total.toLocaleString().padStart(8))}`,
-    );
-
-    // --- Compaction headroom (18.8) ---
-    const usedRatio = total / AUTO_COMPACT_THRESHOLD;
-    const usedPct = Math.round(usedRatio * 100);
-    const barWidth = 24;
-    const filled = Math.min(barWidth, Math.round(usedRatio * barWidth));
-    const barColor = usedRatio >= 0.9 ? chalk.red : usedRatio >= 0.6 ? chalk.yellow : chalk.green;
-    const bar = barColor("█".repeat(filled)) + chalk.gray("░".repeat(barWidth - filled));
-
-    console.log("");
-    console.log(chalk.bold("  Compaction window:"));
-    console.log(
-      `    [${bar}] ${barColor(`${usedPct}%`)} of ${AUTO_COMPACT_THRESHOLD.toLocaleString()} tokens`,
-    );
-    if (total > AUTO_COMPACT_THRESHOLD) {
-      console.log(
-        chalk.yellow(
-          "    Over the threshold — the next turn will auto-compact. Run /compact to preview.",
-        ),
-      );
-    } else {
-      const remaining = AUTO_COMPACT_THRESHOLD - total;
-      console.log(
-        chalk.gray(`    ${remaining.toLocaleString()} tokens of headroom before auto-compaction.`),
-      );
-    }
-    console.log(chalk.gray(`    (~4 chars/token heuristic; ${ctx.messages.length} messages)`));
   },
 };
 

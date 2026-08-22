@@ -216,8 +216,10 @@ export const TaskTool: Tool = buildTool({
     let toolCallCount = 0;
     let errorMessage: string | undefined;
 
-    await acquireSlot(context.abortSignal);
+    let slotAcquired = false;
     try {
+      await acquireSlot(context.abortSignal);
+      slotAcquired = true;
       const coreTools = await getCoreToolsForSubagents();
       // Fork inherits the full core tool set (it IS the current agent); a typed
       // sub-agent is restricted to its declared tools.
@@ -285,7 +287,7 @@ export const TaskTool: Tool = buildTool({
     } catch (error: any) {
       errorMessage = error.message || String(error);
     } finally {
-      releaseSlot();
+      if (slotAcquired) releaseSlot();
       scope.dispose();
     }
 

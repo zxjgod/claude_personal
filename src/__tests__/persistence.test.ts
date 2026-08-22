@@ -89,6 +89,44 @@ describe("PersistenceManager", () => {
     expect(loaded!.completed).toBe(true);
   });
 
+  it("persists runtime state without claiming business completion", async () => {
+    const sessionId = pm.generateId();
+    await pm.save(
+      sessionId,
+      [{ role: "user", content: [{ type: "text", text: "Continue work" }] }],
+      { taskState: "waiting_for_tool" },
+    );
+
+    const loaded = await pm.load(sessionId);
+    expect(loaded!.taskState).toBe("waiting_for_tool");
+    expect(loaded!.completed).toBe(false);
+  });
+
+  it("migrates legacy v2 sessions to a resumable paused state", async () => {
+    const sessionId = pm.generateId();
+    const sessionsDir = path.join(tmpDir, ".claude", "sessions");
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(sessionsDir, `${sessionId}.json`),
+      JSON.stringify({
+        version: 2,
+        sessionId,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        workspaceRoot: tmpDir,
+        messages: [{ role: "user", content: [{ type: "text", text: "Resume me" }] }],
+        messageCount: 1,
+        completed: true,
+      }),
+      "utf-8",
+    );
+
+    const loaded = await pm.load(sessionId);
+    expect(loaded!.version).toBe(SESSION_FORMAT_VERSION);
+    expect(loaded!.taskState).toBe("paused");
+    expect(loaded!.completed).toBe(true);
+  });
+
   it("should update existing session on re-save", async () => {
     const sessionId = pm.generateId();
 

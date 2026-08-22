@@ -11,7 +11,7 @@
 
 import { SessionMemory } from "./session-memory.js";
 
-export type { SessionData, SessionMeta } from "./session-memory.js";
+export type { SessionCatalogEntry, SessionData, SessionMeta } from "./session-memory.js";
 
 /**
  * Backward-compatible alias for SessionMemory. Stores conversation history as

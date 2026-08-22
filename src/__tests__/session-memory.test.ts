@@ -67,6 +67,25 @@ describe("SessionMemory", () => {
     expect(await sm.load(id)).toBeNull();
   });
 
+  it("tracks pinned sessions in a sidecar catalog", async () => {
+    const first = "11111111-1111-4111-8111-111111111111";
+    const second = "22222222-2222-4222-8222-222222222222";
+    await sm.save(first, [{ role: "user", content: [{ type: "text", text: "old task" }] }]);
+    await new Promise((r) => setTimeout(r, 8));
+    await sm.save(second, [{ role: "user", content: [{ type: "text", text: "new needle task" }] }]);
+
+    await sm.setPinned(first, true);
+    const all = await sm.searchSessions("");
+    expect(all[0]!.sessionId).toBe(first);
+    expect(all[0]!.pinned).toBe(true);
+    expect(all[0]!.preview).toBe("old task");
+
+    const found = await sm.searchSessions("needle");
+    expect(found.map((s) => s.sessionId)).toEqual([second]);
+
+    await sm.deleteSession(first);
+    expect(await sm.isPinned(first)).toBe(false);
+  });
   it("PersistenceManager is a SessionMemory (backward-compatible)", async () => {
     const pm = new PersistenceManager(tmpDir);
     expect(pm).toBeInstanceOf(SessionMemory);

@@ -23,17 +23,19 @@ export const compactCommand: SlashCommand = {
       console.log(chalk.gray("  Nothing to compact."));
       return;
     }
+
     const before = ctx.messages.length;
     const total = 4;
-    printCompactProgress(1, total, "Preparing conversation for compaction");
-    printCompactProgress(2, total, "Trimming cheap context layers");
-    printCompactProgress(3, total, "Summarizing with the model");
+    printCompactProgress(1, total, `Scanning ${before} messages`);
+    console.log(chalk.gray(`  Current window: ${before} messages.`));
+    console.log(chalk.gray("  Running compaction summary…"));
     let compacted: Message[];
     try {
       compacted = await autoCompact(ctx.messages, ctx.callModel, ctx.modelConfig);
     } catch (e) {
       // autoCompact throws (instead of committing an empty/partial summary)
       // when the summarization stream fails — the original messages are kept.
+      printCompactProgress(total, total, "Compaction failed");
       console.log(
         chalk.yellow(
           `  Compaction failed: ${e instanceof Error ? e.message : String(e)}. ` +
@@ -42,6 +44,7 @@ export const compactCommand: SlashCommand = {
       );
       return;
     }
+    printCompactProgress(3, total, "Replacing history with summary + tail");
     // Replace contents in place so the caller keeps the same array reference.
     ctx.messages.length = 0;
     ctx.messages.push(...compacted);

@@ -16,17 +16,19 @@ export const resumeCommand: SlashCommand = {
         console.log(chalk.yellow("  Usage: /resume <session-prefix-or-id>"));
         return;
       }
-      const sessions = await ctx.persistence.listSessions();
+      const sessions = await ctx.persistence.searchSessions("");
       if (sessions.length === 0) {
         console.log(chalk.gray("  No saved sessions to resume."));
         return;
       }
       console.log("");
-      console.log(chalk.bold("  Sessions (newest first):"));
+      console.log(chalk.bold("  Sessions (pinned first):"));
       for (const s of sessions.slice(0, 10)) {
         const marker = s.sessionId === ctx.sessionId ? chalk.green("*") : " ";
+        const pin = s.pinned ? chalk.yellow("📌 ") : "   ";
+        const preview = s.preview ? chalk.gray(` — ${s.preview}`) : "";
         console.log(
-          `  ${marker} ${s.sessionId.slice(0, 8)} — ${s.messageCount} msgs — ${new Date(s.updatedAt).toLocaleString()} — ${s.completed ? "done" : "open"}`,
+          `  ${marker} ${pin}${s.sessionId.slice(0, 8)} — ${s.messageCount} msgs — ${new Date(s.updatedAt).toLocaleString()} — ${s.taskState}${preview}`,
         );
       }
       console.log(chalk.gray("  Use /resume <prefix> to restore one (no tokens used)."));

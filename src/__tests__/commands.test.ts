@@ -113,19 +113,53 @@ describe("handleSlashCommand", () => {
   it("/sessions lists saved sessions", async () => {
     const ctx = makeCtx([]);
     ctx.persistence = {
-      listSessions: async () => [
+      searchSessions: async () => [
         {
           sessionId: "abc123",
           createdAt: "2026-06-19T00:00:00.000Z",
           updatedAt: "2026-06-19T00:00:00.000Z",
           messageCount: 2,
           completed: false,
+          pinned: true,
+          preview: "hello there",
         },
       ],
     } as any;
     const r = await handleSlashCommand("/sessions", ctx);
     expect(r.handled).toBe(true);
     expect(console.log).toHaveBeenCalled();
+  });
+
+  it("/sessions pin and search use the catalog helpers", async () => {
+    const ctx = makeCtx([]);
+    const calls: string[] = [];
+    const setPinned = vi.fn(async () => {});
+    ctx.persistence = {
+      searchSessions: async (query: string) => {
+        calls.push(query);
+        return query
+          ? [
+              {
+                sessionId: "abc123456789",
+                createdAt: "2026-06-19T00:00:00.000Z",
+                updatedAt: "2026-06-19T00:00:00.000Z",
+                messageCount: 2,
+                completed: false,
+                pinned: true,
+                preview: "needle in haystack",
+              },
+            ]
+          : [];
+      },
+      load: async () => null,
+      setPinned,
+      deleteSession: vi.fn(async () => {}),
+    } as any;
+
+    await handleSlashCommand("/sessions search needle", ctx);
+    await handleSlashCommand("/sessions pin abc123", ctx);
+    expect(calls).toContain("needle");
+    expect(setPinned).toHaveBeenCalledWith("abc123456789", true);
   });
 
   it("/sessions delete removes a uniquely matched session", async () => {
@@ -172,7 +206,7 @@ describe("handleSlashCommand", () => {
     await handleSlashCommand("/sessions delete abc", ctx);
     expect(deleteSession).not.toHaveBeenCalled();
     const out = (console.log as any).mock.calls.flat().join("\n");
-    expect(out).toContain("use a longer prefix");
+    expect(out).toContain("Ambiguous session prefix");
   });
 
   it("/resume delegates to resumeSession", async () => {
@@ -292,8 +326,8 @@ describe("handleSlashCommand", () => {
     const r = await handleSlashCommand("/compact", ctx);
     expect(r.handled).toBe(true);
     const out = (console.log as any).mock.calls.flat().join("\n");
-    expect(out).toContain("Preparing conversation");
-    expect(out).toContain("Summarizing with the model");
+    expect(out).toContain("Scanning");
+    expect(out).toContain("Running compaction summary");
     expect(out).toContain("Compaction complete");
   });
 

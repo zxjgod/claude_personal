@@ -91,7 +91,9 @@ export async function* agentLoop(
   options: LoopOptions,
 ): AsyncGenerator<LoopEvent, Terminal> {
   const {
-    maxTurns = 50,
+    // A main task must not be silently cut short by an arbitrary loop count.
+    // Callers that need a safety ceiling can still pass a finite maxTurns.
+    maxTurns = Number.POSITIVE_INFINITY,
     autoCompactThreshold = 150_000,
     contextHardLimit = 200_000,
     systemPrompt,

@@ -32,6 +32,20 @@ export class AbortError extends Error {
   }
 }
 
+/**
+ * A watchdog protects one tool call only. It must never be treated as a
+ * cancellation of the parent agent loop.
+ */
+export class ToolWatchdogTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(
+      `Tool call timed out after ${Math.round(timeoutMs / 1000)}s. ` +
+        "The tool was asked to stop; its final state may be unknown. Check its status before retrying.",
+    );
+    this.name = "ToolWatchdogTimeoutError";
+  }
+}
+
 // --- Types for tool execution ---
 
 export interface IndexedResult {
@@ -106,10 +120,20 @@ async function withToolWatchdog<T>(
   operation: (signal: AbortSignal) => Promise<T>,
   abortSignal?: AbortSignal,
 ): Promise<T> {
-  const combined = combineAbortSignals(abortSignal, toolTimeoutMs());
+  const timeoutMs = toolTimeoutMs();
+  const combined = combineAbortSignals(abortSignal, timeoutMs);
   try {
     return await new Promise<T>((resolve, reject) => {
-      const onAbort = () => reject(new AbortError("Tool execution aborted or timed out"));
+      const onAbort = () => {
+        // A parent abort is an explicit cancellation of the agent turn. A
+        // watchdog expiry is only a failed tool result, so the next LLM turn
+        // can inspect it and decide how to recover.
+        reject(
+          abortSignal?.aborted
+            ? new AbortError("Tool execution aborted")
+            : new ToolWatchdogTimeoutError(timeoutMs),
+        );
+      };
       if (combined.signal.aborted) {
         onAbort();
         return;
@@ -317,7 +341,10 @@ export async function executeSingleTool(
       result = cached;
     } else {
       const toolContext = { ...context, abortSignal };
-      result = await withToolWatchdog(() => tool.call(input, toolContext), abortSignal);
+      result = await withToolWatchdog(
+        (signal) => tool.call(input, { ...toolContext, abortSignal: signal }),
+        abortSignal,
+      );
     }
     const duration = Date.now() - startTime;
 

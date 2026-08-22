@@ -42,6 +42,116 @@ const testConfig: ModelConfig = {
 };
 
 describe("agentLoop", () => {
+  it("does not apply an implicit turn limit to a main task", async () => {
+    let callCount = 0;
+    const readTool: Tool = {
+      name: "read",
+      description: "Read",
+      promptDescription: "Read",
+      inputSchema: { type: "object", properties: {}, required: [] },
+      isEnabled: () => true,
+      isReadOnly: () => true,
+      isConcurrencySafe: () => true,
+      call: async () => ({ content: "ok" }),
+      formatResult: (result) => result.content,
+      checkPermissions: async () => ({ allowed: true }),
+    };
+    const caller: ModelCaller = async function* () {
+      callCount++;
+      if (callCount <= 51) {
+        yield { type: "tool_use", id: `read-${callCount}`, name: "read", input: {} };
+        yield {
+          type: "done",
+          usage: { input_tokens: 1, output_tokens: 1 },
+          finish_reason: "tool_calls",
+        };
+        return;
+      }
+      yield { type: "text_delta", delta: "Task completed after 51 tool turns." };
+      yield {
+        type: "done",
+        usage: { input_tokens: 1, output_tokens: 1 },
+        finish_reason: "stop",
+      };
+    };
+
+    const events = await drain(
+      agentLoop(messages("finish the long task"), [readTool], caller, testConfig, {
+        systemPrompt: "s",
+        speculation: false,
+      }),
+    );
+
+    expect(callCount).toBe(52);
+    expect(events.terminal.reason).toBe("completed");
+    expect(events.events.some((event: any) => event.type === "aborted")).toBe(false);
+  });
+
+  it("returns a watchdog timeout to the agent and continues the parent task", async () => {
+    const savedTimeout = process.env.CLAUDE_CODE_TOOL_TIMEOUT_MS;
+    process.env.CLAUDE_CODE_TOOL_TIMEOUT_MS = "10";
+    let toolSawAbort = false;
+    let sawTimeoutResult = false;
+    const slowTool: Tool = {
+      name: "slow_tool",
+      description: "Slow tool",
+      promptDescription: "Runs a slow operation",
+      inputSchema: { type: "object", properties: {}, required: [] },
+      isEnabled: () => true,
+      isReadOnly: () => true,
+      isConcurrencySafe: () => true,
+      call: async (_input, context) =>
+        new Promise((resolve) => {
+          context.abortSignal?.addEventListener(
+            "abort",
+            () => {
+              toolSawAbort = true;
+              resolve({ content: "stopped" });
+            },
+            { once: true },
+          );
+        }),
+      formatResult: (result) => result.content,
+      checkPermissions: async () => ({ allowed: true }),
+    };
+    const caller: ModelCaller = async function* (messages) {
+      sawTimeoutResult = messages.some(
+        (message) =>
+          message.role === "tool" &&
+          typeof message.content === "string" &&
+          message.content.includes("Tool call timed out"),
+      );
+      if (!sawTimeoutResult) {
+        yield { type: "tool_use", id: "slow-1", name: "slow_tool", input: {} };
+        yield {
+          type: "done",
+          usage: { input_tokens: 1, output_tokens: 1 },
+          finish_reason: "tool_calls",
+        };
+        return;
+      }
+      yield { type: "text_delta", delta: "Recovered after checking the tool timeout." };
+      yield { type: "done", usage: { input_tokens: 1, output_tokens: 1 }, finish_reason: "stop" };
+    };
+
+    try {
+      const events = await drain(
+        agentLoop(messages("run the task"), [slowTool], caller, testConfig, {
+          systemPrompt: "s",
+          maxTurns: 4,
+          speculation: false,
+        }),
+      );
+      expect(toolSawAbort).toBe(true);
+      expect(sawTimeoutResult).toBe(true);
+      expect(events.terminal.reason).toBe("completed");
+      expect(events.events.some((event: any) => event.type === "aborted")).toBe(false);
+    } finally {
+      if (savedTimeout === undefined) delete process.env.CLAUDE_CODE_TOOL_TIMEOUT_MS;
+      else process.env.CLAUDE_CODE_TOOL_TIMEOUT_MS = savedTimeout;
+    }
+  });
+
   it("should yield done event for simple text response", async () => {
     const caller = makeMockCaller([
       [

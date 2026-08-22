@@ -16,18 +16,50 @@
 // Version History:
 //   v1: Initial format with version, sessionId, createdAt, updatedAt, messages
 //   v2: Added workspaceRoot, messageCount, completed fields
+//   v3: Added taskState and lastTerminalReason. These describe runtime facts,
+//       never whether an arbitrary user task is business-complete.
 // ============================================================
 
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as fsPromises from "node:fs/promises";
 import * as path from "node:path";
+import lockfile from "proper-lockfile";
+import { firstUserPreview } from "./tui/history-replay.js";
 import type { Message } from "./types.js";
 
 // --- Format Version ---
 
 /** Current session format version. Increment when the schema changes. */
-export const SESSION_FORMAT_VERSION = 2;
+export const SESSION_FORMAT_VERSION = 3;
+
+/** Durable lifecycle facts for a resumable main task. */
+export type TaskState =
+  | "waiting_for_model"
+  | "waiting_for_tool"
+  | "recovering"
+  | "paused"
+  | "failed"
+  | "stopped_by_user";
+
+/**
+ * Normalize finish_reason from different providers to standard values.
+ * Different LLM providers return different strings for the same concept.
+ */
+export function normalizeFinishReason(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  const lower = raw.toLowerCase();
+  // Natural completion
+  if (["stop", "end_turn", "completed", "end"].includes(lower)) return "stop";
+  // Token limit reached
+  if (["length", "max_tokens", "token_limit"].includes(lower)) return "length";
+  // Tool use
+  if (["tool_calls", "tool_use", "function_call"].includes(lower)) return "tool_calls";
+  // Content filter
+  if (["content_filter", "safety"].includes(lower)) return "content_filter";
+  // Return as-is if unknown
+  return raw;
+}
 
 /** Version migration map: old version → migration function */
 type MigrationFn = (data: unknown) => SessionData;
@@ -35,22 +67,59 @@ type MigrationFn = (data: unknown) => SessionData;
 const migrations: Record<number, MigrationFn> = {
   // v1 → v2: Add workspaceRoot, messageCount, completed fields
   1: (data: unknown) => {
-    const d = data as {
-      version: number;
-      sessionId: string;
-      createdAt: string;
-      updatedAt: string;
-      messages: Message[];
-    };
+    const d = data as any;
+    if (!d || typeof d !== "object") {
+      throw new Error("Invalid v1 session: data is not an object");
+    }
+    if (typeof d.sessionId !== "string" || !d.sessionId) {
+      throw new Error("Invalid v1 session: missing or invalid sessionId");
+    }
+    if (!Array.isArray(d.messages)) {
+      throw new Error("Invalid v1 session: missing or invalid messages array");
+    }
+    if (typeof d.createdAt !== "string" || typeof d.updatedAt !== "string") {
+      throw new Error("Invalid v1 session: missing or invalid timestamps");
+    }
     return {
       version: SESSION_FORMAT_VERSION,
       sessionId: d.sessionId,
       createdAt: d.createdAt,
       updatedAt: d.updatedAt,
-      workspaceRoot: "",
+      workspaceRoot: d.workspaceRoot || "",
       messages: d.messages,
       messageCount: d.messages.length,
-      completed: false,
+      completed: Boolean(d.completed),
+      taskState: "paused" as TaskState,
+    };
+  },
+  // v2 → v3: Existing "completed" only meant that the process exited cleanly.
+  // Preserve it for compatibility, but represent the resumable lifecycle as
+  // paused rather than inferring that the user's work is complete.
+  2: (data: unknown) => {
+    const d = data as any;
+    if (!d || typeof d !== "object") {
+      throw new Error("Invalid v2 session: data is not an object");
+    }
+    if (typeof d.sessionId !== "string" || !d.sessionId) {
+      throw new Error("Invalid v2 session: missing or invalid sessionId");
+    }
+    if (!Array.isArray(d.messages)) {
+      throw new Error("Invalid v2 session: missing or invalid messages array");
+    }
+    if (typeof d.messageCount !== "number" || d.messageCount < 0) {
+      throw new Error("Invalid v2 session: missing or invalid messageCount");
+    }
+    return {
+      version: SESSION_FORMAT_VERSION,
+      sessionId: d.sessionId,
+      createdAt: d.createdAt,
+      updatedAt: d.updatedAt,
+      workspaceRoot: d.workspaceRoot || "",
+      messages: d.messages,
+      messageCount: d.messageCount,
+      completed: Boolean(d.completed),
+      taskState: "paused" as TaskState,
+      lastTerminalReason: undefined,
     };
   },
 };
@@ -66,6 +135,10 @@ export interface SessionData {
   messages: Message[];
   messageCount: number;
   completed: boolean;
+  /** Runtime state only; it intentionally carries no business-completion claim. */
+  taskState: TaskState;
+  /** Last terminal reason emitted by the agent loop, when one exists. */
+  lastTerminalReason?: string;
 }
 
 export interface SessionMeta {
@@ -74,6 +147,13 @@ export interface SessionMeta {
   updatedAt: string;
   messageCount: number;
   completed: boolean;
+  taskState: TaskState;
+  lastTerminalReason?: string;
+}
+
+export interface SessionCatalogEntry extends SessionMeta {
+  pinned: boolean;
+  preview: string;
 }
 
 // --- Session memory store ---
@@ -108,6 +188,157 @@ export class SessionMemory {
     return path.join(this.sessionsDir, `${sessionId}.json`);
   }
 
+  private catalogPath(): string {
+    return path.join(this.sessionsDir, "catalog.json");
+  }
+
+  private async readCatalog(): Promise<Record<string, { pinned?: boolean; preview?: string }>> {
+    try {
+      const raw = await fsPromises.readFile(this.catalogPath(), "utf-8");
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object") return {};
+      const out: Record<string, { pinned?: boolean; preview?: string }> = {};
+      for (const [sessionId, value] of Object.entries(parsed as Record<string, unknown>)) {
+        if (!value || typeof value !== "object") continue;
+        const pinned = (value as { pinned?: unknown }).pinned;
+        const preview = (value as { preview?: unknown }).preview;
+        out[sessionId] = {
+          pinned: Boolean(pinned),
+          preview: typeof preview === "string" ? preview : undefined,
+        };
+      }
+      return out;
+    } catch (error: any) {
+      if (error?.code === "ENOENT") return {};
+      return {};
+    }
+  }
+
+  private async writeCatalog(
+    catalog: Record<string, { pinned?: boolean; preview?: string }>,
+  ): Promise<void> {
+    this.ensureDir();
+    const filePath = this.catalogPath();
+    const tmpPath = `${filePath}.tmp`;
+
+    // Use file lock to prevent concurrent writes
+    let release: (() => Promise<void>) | undefined;
+    try {
+      // Create catalog file if it doesn't exist (lockfile needs the file to exist)
+      if (!fs.existsSync(filePath)) {
+        await fsPromises.writeFile(filePath, "{}", "utf-8");
+      }
+
+      release = await lockfile.lock(filePath, {
+        retries: { retries: 5, minTimeout: 50, maxTimeout: 200 },
+        stale: 10000, // 10 seconds
+      });
+
+      await fsPromises.writeFile(tmpPath, JSON.stringify(catalog, null, 2), "utf-8");
+      await fsPromises.rename(tmpPath, filePath);
+    } finally {
+      if (release) {
+        await release().catch(() => {
+          // Ignore unlock errors (file may have been deleted)
+        });
+      }
+    }
+  }
+
+  async setPinned(sessionId: string, pinned: boolean): Promise<void> {
+    const catalog = await this.readCatalog();
+    if (pinned) {
+      catalog[sessionId] = { ...(catalog[sessionId] ?? {}), pinned: true };
+    } else {
+      // Unpin but keep preview if it exists
+      const existing = catalog[sessionId];
+      if (existing?.preview) {
+        catalog[sessionId] = { preview: existing.preview };
+      } else {
+        delete catalog[sessionId];
+      }
+    }
+    await this.writeCatalog(catalog);
+  }
+
+  async deleteSession(sessionId: string): Promise<void> {
+    const filePath = this.sessionPath(sessionId);
+    try {
+      fs.unlinkSync(filePath);
+    } catch (error: any) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    const catalog = await this.readCatalog();
+    if (catalog[sessionId]) {
+      delete catalog[sessionId];
+      await this.writeCatalog(catalog);
+    }
+  }
+
+  async isPinned(sessionId: string): Promise<boolean> {
+    const catalog = await this.readCatalog();
+    return Boolean(catalog[sessionId]?.pinned);
+  }
+
+  async getCatalogEntry(
+    sessionId: string,
+    messagePreview?: string,
+  ): Promise<SessionCatalogEntry | null> {
+    const data = await this.load(sessionId);
+    if (!data) return null;
+    const catalog = await this.readCatalog();
+    return {
+      sessionId: data.sessionId,
+      createdAt: data.createdAt,
+      updatedAt: data.updatedAt,
+      messageCount: data.messageCount,
+      completed: data.completed,
+      taskState: data.taskState,
+      lastTerminalReason: data.lastTerminalReason,
+      pinned: Boolean(catalog[sessionId]?.pinned),
+      preview: messagePreview ?? firstUserPreview(data.messages),
+    };
+  }
+
+  async searchSessions(query: string): Promise<SessionCatalogEntry[]> {
+    const q = query.trim().toLowerCase();
+    const sessions = await this.listSessions();
+    const catalog = await this.readCatalog();
+    const enriched: SessionCatalogEntry[] = [];
+    for (const session of sessions) {
+      // Use cached preview from catalog, only load full session if not cached
+      let preview = catalog[session.sessionId]?.preview;
+      if (!preview) {
+        const data = await this.load(session.sessionId);
+        preview = data ? firstUserPreview(data.messages) : "";
+      }
+      const entry: SessionCatalogEntry = {
+        ...session,
+        pinned: Boolean(catalog[session.sessionId]?.pinned),
+        preview,
+      };
+      if (!q) {
+        enriched.push(entry);
+        continue;
+      }
+      const haystack = [
+        entry.sessionId,
+        entry.createdAt,
+        entry.updatedAt,
+        entry.preview,
+        entry.taskState,
+        entry.pinned ? "pinned" : "",
+      ]
+        .join(" ")
+        .toLowerCase();
+      if (haystack.includes(q)) enriched.push(entry);
+    }
+    return enriched.sort((a, b) => {
+      if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+      return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+    });
+  }
+
   /**
    * Generate a new session ID
    */
@@ -128,7 +359,7 @@ export class SessionMemory {
   async save(
     sessionId: string,
     messages: Message[],
-    options?: { completed?: boolean },
+    options?: { completed?: boolean; taskState?: TaskState; lastTerminalReason?: string },
   ): Promise<void> {
     // Chain onto the tail of any in-flight save. Each link captures its own
     // sessionId/messages snapshot, so the serialized writes stay independent.
@@ -142,7 +373,9 @@ export class SessionMemory {
   private async saveSerialized(
     sessionId: string,
     messages: Message[],
-    options: { completed?: boolean } | undefined,
+    options:
+      | { completed?: boolean; taskState?: TaskState; lastTerminalReason?: string }
+      | undefined,
   ): Promise<void> {
     this.ensureDir();
 
@@ -160,6 +393,8 @@ export class SessionMemory {
         messages,
         messageCount: messages.length,
         completed: options?.completed ?? existing.completed,
+        taskState: options?.taskState ?? existing.taskState,
+        lastTerminalReason: options?.lastTerminalReason ?? existing.lastTerminalReason,
       };
     } else {
       data = {
@@ -171,6 +406,8 @@ export class SessionMemory {
         messages,
         messageCount: messages.length,
         completed: options?.completed ?? false,
+        taskState: options?.taskState ?? "paused",
+        lastTerminalReason: options?.lastTerminalReason,
       };
     }
 
@@ -183,6 +420,19 @@ export class SessionMemory {
     const tmpPath = `${filePath}.${process.pid}.tmp`;
     await fsPromises.writeFile(tmpPath, json, "utf-8");
     await fsPromises.rename(tmpPath, filePath);
+
+    // Update catalog with preview for faster searchSessions
+    try {
+      const preview = firstUserPreview(messages);
+      if (preview) {
+        const catalog = await this.readCatalog();
+        catalog[sessionId] = { ...(catalog[sessionId] ?? {}), preview };
+        await this.writeCatalog(catalog);
+      }
+    } catch (error) {
+      // Catalog update is best-effort; don't fail the save if it errors
+      console.warn("session-memory: failed to update catalog preview:", error);
+    }
   }
 
   /**
@@ -273,6 +523,8 @@ export class SessionMemory {
           updatedAt: data.updatedAt,
           messageCount: data.messageCount,
           completed: data.completed,
+          taskState: data.taskState,
+          lastTerminalReason: data.lastTerminalReason,
         });
       }
 
@@ -286,19 +538,6 @@ export class SessionMemory {
       // degrade gracefully instead of crashing.
       console.warn("session-memory: failed to list sessions:", error);
       return [];
-    }
-  }
-
-  /**
-   * Delete a session
-   */
-  async deleteSession(sessionId: string): Promise<void> {
-    const filePath = this.sessionPath(sessionId);
-    try {
-      fs.unlinkSync(filePath);
-    } catch (error: any) {
-      if (error.code === "ENOENT") return;
-      throw error;
     }
   }
 

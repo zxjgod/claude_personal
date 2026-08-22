@@ -184,8 +184,14 @@ function runCommandHook(
     }, timeoutMs);
 
     child.stdout?.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString();
-      if (stdout.length > MAX_STDOUT_BYTES) killTree();
+      if (stdout.length >= MAX_STDOUT_BYTES) return;
+      const text = chunk.toString();
+      const remaining = MAX_STDOUT_BYTES - stdout.length;
+      stdout += text.slice(0, remaining);
+      if (text.length > remaining) {
+        killTree();
+        finish({});
+      }
     });
     child.on("error", () => finish({}));
     child.on("close", () => finish(parseJson(stdout) ?? {}));

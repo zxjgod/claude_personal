@@ -20,6 +20,8 @@ import {
   loadProviderProfiles,
   type ProviderProfile,
 } from "./../provider-profiles.js";
+import type { TaskState } from "../session-memory.js";
+import { normalizeFinishReason } from "../session-memory.js";
 import { formatSpeculationLine } from "./../speculation.js";
 import { expandFileRefs } from "../tools/utils/file-refs.js";
 import type {
@@ -36,7 +38,7 @@ import type {
 import { App } from "./App.js";
 import { printBanner, renderBannerLines } from "./banner.js";
 import { EFFORT_DESCRIPTIONS, getEffort } from "./effort.js";
-import { firstUserPreview, messagesToTranscript } from "./history-replay.js";
+import { messagesToTranscript } from "./history-replay.js";
 import type { CommandInfo } from "./InputBox.js";
 import { InputQueue } from "./input-queue.js";
 import { type ProviderPickerItem, type SessionPickerItem, TuiStore } from "./store.js";
@@ -69,7 +71,7 @@ export interface TuiDeps {
   summarizeToolBatch?: (prompt: string) => Promise<string | null>;
   /** M25.2: opt-in full-screen alt-screen layout (default off). */
   fullscreen?: boolean;
-  onSave: () => void;
+  onSave: (taskState?: TaskState, lastTerminalReason?: string) => void;
 }
 
 /** Run one user turn through the agent loop, pushing events into the store. */
@@ -103,7 +105,6 @@ async function runTurn(
     : deps.systemPrompt;
   const loop = agentLoop(deps.messages, deps.tools, deps.callModel, deps.modelConfig, {
     systemPrompt: turnSystemPrompt,
-    maxTurns: 50,
     toolContext: {
       workspaceRoot: deps.getWorkspaceRoot?.() ?? deps.workspaceRoot,
       sessionId: deps.sessionId,
@@ -166,6 +167,7 @@ async function runTurn(
     for await (const event of loop) {
       switch (event.type) {
         case "thinking":
+          deps.onSave("waiting_for_model");
           thinkingStart = Date.now();
           thoughtReported = false;
           store.setSpinner("thinking");
@@ -183,6 +185,7 @@ async function runTurn(
           debugLogger.logDelta(event.delta, streamedCharsThisCall);
           break;
         case "tool_use": {
+          deps.onSave("waiting_for_tool");
           streamBuffer.flush();
           store.commitStreaming();
           const detail = toolDetail(event.input);
@@ -197,7 +200,7 @@ async function runTurn(
         }
         case "tool_results":
           // Batch boundary: every tool in this turn is done. Persist now.
-          deps.onSave();
+          deps.onSave("waiting_for_model");
           break;
         case "usage":
           store.addUsage(event.usage.input_tokens, event.usage.output_tokens);
@@ -207,14 +210,17 @@ async function runTurn(
           store.setSpinnerTokens(committedOutputTokens);
           break;
         case "compacting":
+          deps.onSave("recovering");
           store.addNotice("Compacting context…");
           break;
         case "error":
+          deps.onSave("failed");
           streamBuffer.flush();
           store.commitStreaming();
           store.addNotice(`⎿ ${formatCliError(event.error)}`);
           break;
         case "aborted":
+          deps.onSave("stopped_by_user", "aborted_by_user");
           streamBuffer.flush();
           store.commitStreaming();
           store.addNotice(`⎿ Aborted: ${event.reason}`);
@@ -229,7 +235,7 @@ async function runTurn(
             const line = formatSpeculationLine(event.speculation);
             if (line) store.addNotice(line);
           }
-          deps.onSave();
+          deps.onSave("paused", normalizeFinishReason(event.finishReason));
           break;
       }
     }
@@ -302,29 +308,25 @@ async function runResumePicker(store: TuiStore, deps: TuiDeps): Promise<void> {
     return;
   }
 
-  const metas = await persistence.listSessions();
+  const metas = await persistence.searchSessions("");
   if (metas.length === 0) {
     store.addNotice("  No saved sessions to resume.");
     return;
   }
 
   // Cap the picker so a huge history dir can't trigger hundreds of file reads
-  // (metas are already sorted most-recent-first).
+  // (metas are already sorted pinned-first, most-recent-first).
   const MAX_SHOWN = 50;
   const shown = metas.slice(0, MAX_SHOWN);
 
   const items: SessionPickerItem[] = [];
   for (const meta of shown) {
-    // Load the full session only to surface a first-message preview; this is
-    // local JSON and bounded by MAX_SHOWN.
-    const data = await persistence.load(meta.sessionId);
-    const preview = data ? firstUserPreview(data.messages) : "";
     const when = new Date(meta.updatedAt).toLocaleString();
     const plural = meta.messageCount === 1 ? "msg" : "msgs";
     items.push({
       sessionId: meta.sessionId,
-      label: `${meta.sessionId.slice(0, 8)} · ${meta.messageCount} ${plural} · ${when} · ${meta.completed ? "done" : "open"}`,
-      preview: preview || undefined,
+      label: `${meta.pinned ? "📌 " : ""}${meta.sessionId.slice(0, 8)} · ${meta.messageCount} ${plural} · ${when} · ${meta.completed ? "done" : "open"}`,
+      preview: meta.preview || undefined,
       current: meta.sessionId === ctx.sessionId,
     });
   }
