@@ -135,6 +135,16 @@ describe("handleSlashCommand", () => {
     const calls: string[] = [];
     const setPinned = vi.fn(async () => {});
     ctx.persistence = {
+      listSessions: async () => [
+        {
+          sessionId: "abc123456789",
+          createdAt: "2026-06-19T00:00:00.000Z",
+          updatedAt: "2026-06-19T00:00:00.000Z",
+          messageCount: 2,
+          completed: false,
+          taskState: "paused",
+        },
+      ],
       searchSessions: async (query: string) => {
         calls.push(query);
         return query
@@ -145,6 +155,7 @@ describe("handleSlashCommand", () => {
                 updatedAt: "2026-06-19T00:00:00.000Z",
                 messageCount: 2,
                 completed: false,
+                taskState: "paused",
                 pinned: true,
                 preview: "needle in haystack",
               },
