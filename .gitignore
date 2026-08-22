@@ -20,6 +20,7 @@ coverage/
 
 # Local session state (runtime artifacts, not source)
 .claude/sessions/
+.claude/worktrees/
 
 # Spilled tool results (M30) — runtime artifacts written when output exceeds the cap
 .ccr/
