@@ -16,7 +16,10 @@ import { bashCommandIsReadOnly } from "../utils/command.js";
 const BashSchema = z.strictObject({
   command: z.string().describe("The CLI command to execute"),
   description: z.string().describe("What this command does (shown to user)"),
-  timeout: z.number().optional().describe("Timeout in ms (default: 120000)"),
+  timeout: z
+    .number()
+    .optional()
+    .describe("Timeout in ms (default: 120000; background default: 2 hours)"),
   run_in_background: z
     .boolean()
     .optional()
@@ -28,6 +31,8 @@ type BashInput = z.infer<typeof BashSchema>;
 
 /** 10MB cap on accumulated output — overflow kills the process tree. */
 const MAX_OUTPUT = 10 * 1024 * 1024;
+const DEFAULT_BACKGROUND_TTL_MS = 2 * 60 * 60 * 1000;
+const MAX_BACKGROUND_TTL_MS = 24 * 60 * 60 * 1000;
 
 export const BashTool: Tool = buildTool({
   name: "bash",
@@ -309,13 +314,12 @@ function runInBackground(input: BashInput, context: ToolContext, cwd: string): T
     }
   });
 
-  // Honor an explicit `timeout` for background jobs too. The foreground path
-  // defaults to 120s; background work deliberately has NO default (it exists
-  // to outlive a turn — a dev server or long build must not be reaped at
-  // 120s). But a caller-supplied timeout still applies, so a silent no-output
-  // infinite loop gets a hard bound instead of pinning a session job slot
-  // forever.
-  const timeoutMs = input.timeout && input.timeout > 0 ? input.timeout : 0;
+  // Background jobs get a bounded default TTL. An explicit timeout is still
+  // honored, but values above the cap are clamped to prevent accidental
+  // effectively-infinite jobs from leaking process trees.
+  const requestedTimeout =
+    input.timeout && input.timeout > 0 ? input.timeout : DEFAULT_BACKGROUND_TTL_MS;
+  const timeoutMs = Math.min(requestedTimeout, MAX_BACKGROUND_TTL_MS);
   let timer: ReturnType<typeof setTimeout> | null = null;
   if (timeoutMs > 0) {
     timer = setTimeout(() => {

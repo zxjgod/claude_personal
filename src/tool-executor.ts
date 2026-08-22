@@ -18,7 +18,9 @@ import type {
   ToolCall,
   ToolContext,
   ToolExecutionResult,
+  ToolResult,
 } from "./types.js";
+import { combineAbortSignals } from "./utils/cancellation.js";
 import { all, maxToolConcurrency } from "./utils/generators.js";
 
 // Sentinel thrown so a pending Promise.race can be interrupted by an abort
@@ -91,7 +93,38 @@ export function abortedResult(call: ToolCall): ToolExecutionResult {
   };
 }
 
-// --- Single Tool Execution ---
+const DEFAULT_TOOL_TIMEOUT_MS = 5 * 60 * 1000;
+const MAX_TOOL_TIMEOUT_MS = 30 * 60 * 1000;
+
+function toolTimeoutMs(): number {
+  const raw = Number(process.env.CLAUDE_CODE_TOOL_TIMEOUT_MS);
+  if (Number.isFinite(raw) && raw > 0) return Math.min(raw, MAX_TOOL_TIMEOUT_MS);
+  return DEFAULT_TOOL_TIMEOUT_MS;
+}
+
+async function withToolWatchdog<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  abortSignal?: AbortSignal,
+): Promise<T> {
+  const combined = combineAbortSignals(abortSignal, toolTimeoutMs());
+  try {
+    return await new Promise<T>((resolve, reject) => {
+      const onAbort = () => reject(new AbortError("Tool execution aborted or timed out"));
+      if (combined.signal.aborted) {
+        onAbort();
+        return;
+      }
+      combined.signal.addEventListener("abort", onAbort, { once: true });
+      operation(combined.signal)
+        .then(resolve, reject)
+        .finally(() => {
+          combined.signal.removeEventListener("abort", onAbort);
+        });
+    });
+  } finally {
+    combined.cleanup();
+  }
+}
 
 /**
  * Execute a single tool call with full permission checks, input validation,
@@ -161,7 +194,10 @@ export async function executeSingleTool(
 
     // === PreToolUse hook (before permission + side effects) ===
     if (hooks) {
-      const pre = await hooks.runPre({ toolName: tool.name, input });
+      const pre = await withToolWatchdog(
+        () => hooks.runPre({ toolName: tool.name, input }),
+        abortSignal,
+      );
       if (pre.block) {
         const reason = pre.reason ?? "blocked by hook";
         return {
@@ -273,7 +309,16 @@ export async function executeSingleTool(
 
     const startTime = Date.now();
     // 12.2: Serve from the speculation cache if we prefetched this exact call.
-    let result = (await specCache?.take(tool.name, input)) ?? (await tool.call(input, context));
+    let result: ToolResult;
+    const cached = specCache
+      ? await withToolWatchdog(() => specCache.take(tool.name, input), abortSignal)
+      : null;
+    if (cached) {
+      result = cached;
+    } else {
+      const toolContext = { ...context, abortSignal };
+      result = await withToolWatchdog(() => tool.call(input, toolContext), abortSignal);
+    }
     const duration = Date.now() - startTime;
 
     // Audit the executed outcome (success / tool-reported error). Decisions
@@ -290,7 +335,10 @@ export async function executeSingleTool(
 
     // === PostToolUse hook (may rewrite the result) ===
     if (hooks) {
-      const post = await hooks.runPost({ toolName: tool.name, input, result });
+      const post = await withToolWatchdog(
+        () => hooks.runPost({ toolName: tool.name, input, result }),
+        abortSignal,
+      );
       if (post.result) result = post.result;
     }
 

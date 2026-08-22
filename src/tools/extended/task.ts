@@ -67,22 +67,51 @@ type TaskInput = z.infer<typeof TaskSchema>;
 
 // --- Concurrency semaphore ---
 
-let activeCount = 0;
-const waitQueue: Array<() => void> = [];
+interface SlotWaiter {
+  resolve: () => void;
+  reject: (error: Error) => void;
+  signal?: AbortSignal;
+  onAbort?: () => void;
+}
 
-async function acquireSlot(): Promise<void> {
+let activeCount = 0;
+const waitQueue: SlotWaiter[] = [];
+
+async function acquireSlot(signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) throw new Error("Sub-agent aborted before acquiring a slot");
   if (activeCount < MAX_CONCURRENCY) {
     activeCount++;
     return;
   }
-  await new Promise<void>((resolve) => waitQueue.push(resolve));
+
+  await new Promise<void>((resolve, reject) => {
+    const waiter: SlotWaiter = { resolve, reject, signal };
+    if (signal) {
+      waiter.onAbort = () => {
+        const index = waitQueue.indexOf(waiter);
+        if (index >= 0) waitQueue.splice(index, 1);
+        reject(new Error("Sub-agent aborted while waiting for a slot"));
+      };
+      signal.addEventListener("abort", waiter.onAbort, { once: true });
+    }
+    waitQueue.push(waiter);
+  });
   activeCount++;
 }
 
 function releaseSlot(): void {
   activeCount--;
-  const next = waitQueue.shift();
-  if (next) next();
+  while (waitQueue.length > 0) {
+    const next = waitQueue.shift()!;
+    if (next.signal?.aborted) {
+      if (next.onAbort && next.signal) next.signal.removeEventListener("abort", next.onAbort);
+      next.reject(new Error("Sub-agent aborted while waiting for a slot"));
+      continue;
+    }
+    if (next.onAbort && next.signal) next.signal.removeEventListener("abort", next.onAbort);
+    next.resolve();
+    return;
+  }
 }
 
 // --- Tool ---
@@ -187,7 +216,7 @@ export const TaskTool: Tool = buildTool({
     let toolCallCount = 0;
     let errorMessage: string | undefined;
 
-    await acquireSlot();
+    await acquireSlot(context.abortSignal);
     try {
       const coreTools = await getCoreToolsForSubagents();
       // Fork inherits the full core tool set (it IS the current agent); a typed

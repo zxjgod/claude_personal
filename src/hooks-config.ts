@@ -152,8 +152,24 @@ function runCommandHook(
       cwd,
       shell: true,
       windowsHide: true,
+      detached: process.platform !== "win32",
       stdio: ["pipe", "pipe", "ignore"],
     });
+    const killTree = (): void => {
+      if (child.pid === undefined) return;
+      try {
+        if (process.platform === "win32") {
+          spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+            windowsHide: true,
+            stdio: "ignore",
+          }).unref();
+        } else {
+          process.kill(-child.pid, "SIGKILL");
+        }
+      } catch {
+        // Process may already be gone.
+      }
+    };
     let stdout = "";
     let settled = false;
     const finish = (value: Record<string, unknown>): void => {
@@ -163,13 +179,13 @@ function runCommandHook(
       resolve(value);
     };
     const timer = setTimeout(() => {
-      child.kill();
+      killTree();
       finish({});
     }, timeoutMs);
 
     child.stdout?.on("data", (chunk: Buffer) => {
       stdout += chunk.toString();
-      if (stdout.length > MAX_STDOUT_BYTES) child.kill();
+      if (stdout.length > MAX_STDOUT_BYTES) killTree();
     });
     child.on("error", () => finish({}));
     child.on("close", () => finish(parseJson(stdout) ?? {}));
