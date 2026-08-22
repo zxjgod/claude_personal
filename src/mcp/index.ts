@@ -80,6 +80,41 @@ export function expandEnvRecord(
 const CONNECT_TIMEOUT_MS = 30_000;
 const LIST_TOOLS_TIMEOUT_MS = 20_000;
 const CALL_TOOL_TIMEOUT_MS = 60_000;
+const RESOURCE_TIMEOUT_MS = 20_000;
+const CLOSE_TIMEOUT_MS = 5_000;
+
+interface McpTransport {
+  close?: () => Promise<void> | void;
+}
+
+async function closeMcpConnection(
+  label: string,
+  client?: Client,
+  transport?: McpTransport,
+): Promise<void> {
+  try {
+    if (client) {
+      await withTimeout(
+        `${label}.client`,
+        Promise.resolve().then(() => client.close()),
+        CLOSE_TIMEOUT_MS,
+      );
+    }
+  } catch {
+    // Transport cleanup below is the hard stop if graceful close hangs.
+  }
+  try {
+    if (transport?.close) {
+      await withTimeout(
+        `${label}.transport`,
+        Promise.resolve().then(() => transport.close!()),
+        CLOSE_TIMEOUT_MS,
+      );
+    }
+  } catch {
+    // Best-effort teardown must never pin CLI shutdown.
+  }
+}
 
 // --- MCP Server Config ---
 
@@ -106,6 +141,7 @@ export interface MCPConfig {
 interface ServerEntry {
   config: MCPServerConfig;
   client: Client;
+  transport?: McpTransport;
   tools: Tool[];
 }
 
@@ -157,7 +193,8 @@ export class MCPManager {
       return;
     }
 
-    let client: Client;
+    let client: Client | undefined;
+    let activeTransport: McpTransport | undefined;
 
     try {
       // --- Create transport based on type ---
@@ -171,6 +208,7 @@ export class MCPManager {
           args: config.args || [],
           env: { ...process.env, ...expandEnvRecord(config.env) } as Record<string, string>,
         });
+        activeTransport = transport;
         client = new Client(
           { name: "claude-code-replica", version: "1.0.0" },
           { capabilities: {} as any },
@@ -201,6 +239,7 @@ export class MCPManager {
           expandEnvRecord(config.headers),
           authProvider,
         );
+        activeTransport = transport;
 
         try {
           await withTimeout("connect(network)", client.connect(transport), CONNECT_TIMEOUT_MS);
@@ -216,6 +255,8 @@ export class MCPManager {
               expandEnvRecord(config.headers),
               authProvider,
             );
+            await closeMcpConnection(`connect(${name}:unauthorized)`, client, activeTransport);
+            activeTransport = reTransport;
             // finishAuth exchanges the code for tokens on the transport.
             await (reTransport as any).finishAuth(code);
             await withTimeout(
@@ -233,6 +274,9 @@ export class MCPManager {
       }
 
       // --- Discover tools ---
+      if (!client) throw new Error("MCP client was not initialized");
+      const connectedClient = client;
+      const manager = this;
       const toolsResult = await withTimeout("listTools", client.listTools(), LIST_TOOLS_TIMEOUT_MS);
       const mcpTools: Tool[] = toolsResult.tools
         .map((remoteTool: any) => {
@@ -280,7 +324,7 @@ export class MCPManager {
               try {
                 const result = await withTimeout(
                   `callTool(${toolName})`,
-                  client.callTool({
+                  connectedClient.callTool({
                     name: remoteTool.name,
                     arguments: input,
                   }),
@@ -295,6 +339,7 @@ export class MCPManager {
 
                 return { content: content || "(no text output)" };
               } catch (error: any) {
+                if (error instanceof TimeoutError) await manager.disconnectServer(name);
                 return {
                   content: "",
                   error: `MCP tool error (${toolName}): ${error.message}`,
@@ -348,10 +393,16 @@ export class MCPManager {
         })
         .filter((t): t is Tool => t !== null);
 
-      this.servers.set(name, { config, client, tools: mcpTools });
+      this.servers.set(name, {
+        config,
+        client: connectedClient,
+        transport: activeTransport,
+        tools: mcpTools,
+      });
       console.log(`MCP server "${name}" connected (${config.type}) — ${mcpTools.length} tool(s)`);
     } catch (error: any) {
       console.error(`Failed to connect MCP server "${name}": ${error.message}`);
+      await closeMcpConnection(`connect(${name})`, client, activeTransport);
       // Don't crash — MCP is optional
     }
   }
@@ -399,7 +450,7 @@ export class MCPManager {
    */
   getAllTools(): Tool[] {
     const allTools: Tool[] = [];
-    for (const [, server] of this.servers) {
+    for (const [name, server] of this.servers) {
       allTools.push(...server.tools);
     }
     return allTools;
@@ -430,11 +481,16 @@ export class MCPManager {
     const out: Array<{ server: string; uri: string; name?: string; mimeType?: string }> = [];
     for (const [name, server] of this.servers) {
       try {
-        const res: any = await server.client.listResources();
+        const res: any = await withTimeout(
+          `listResources(${name})`,
+          server.client.listResources(),
+          RESOURCE_TIMEOUT_MS,
+        );
         for (const r of res.resources ?? []) {
           out.push({ server: name, uri: r.uri, name: r.name, mimeType: r.mimeType });
         }
-      } catch {
+      } catch (error) {
+        if (error instanceof TimeoutError) await this.disconnectServer(name);
         // Server doesn't expose resources — skip quietly.
       }
     }
@@ -446,9 +502,13 @@ export class MCPManager {
    * Returns the concatenated text contents, or null if not found anywhere.
    */
   async readResource(uri: string): Promise<string | null> {
-    for (const [, server] of this.servers) {
+    for (const [name, server] of this.servers) {
       try {
-        const res: any = await server.client.readResource({ uri });
+        const res: any = await withTimeout(
+          `readResource(${uri})`,
+          server.client.readResource({ uri }),
+          RESOURCE_TIMEOUT_MS,
+        );
         const text = (res.contents ?? [])
           .map((c: any) => (typeof c.text === "string" ? c.text : ""))
           .filter(Boolean)
@@ -456,7 +516,8 @@ export class MCPManager {
         if (text) return text;
         // Resource existed but had no text content (e.g. blob).
         if ((res.contents ?? []).length > 0) return "(non-text resource content)";
-      } catch {
+      } catch (error) {
+        if (error instanceof TimeoutError) await this.disconnectServer(name);
         // Not on this server — try the next.
       }
     }
@@ -467,15 +528,14 @@ export class MCPManager {
    * Disconnect all MCP servers
    */
   async disconnectAll(): Promise<void> {
-    for (const [name, server] of this.servers) {
-      try {
-        await server.client.close();
-        console.log(`MCP server "${name}" disconnected.`);
-      } catch (error: any) {
-        console.error(`Error disconnecting MCP server "${name}": ${error.message}`);
-      }
-    }
+    const entries = [...this.servers.entries()];
     this.servers.clear();
+    await Promise.all(
+      entries.map(async ([name, server]) => {
+        await closeMcpConnection(`disconnect(${name})`, server.client, server.transport);
+        console.log(`MCP server "${name}" disconnected.`);
+      }),
+    );
   }
 
   /**
@@ -485,11 +545,10 @@ export class MCPManager {
     const server = this.servers.get(name);
     if (!server) return;
     try {
-      await server.client.close();
-    } catch (error: any) {
-      console.error(`Error disconnecting MCP server "${name}": ${error.message}`);
+      await closeMcpConnection(`disconnect(${name})`, server.client, server.transport);
+    } finally {
+      this.servers.delete(name);
     }
-    this.servers.delete(name);
   }
 
   /**

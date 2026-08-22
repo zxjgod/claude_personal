@@ -1,85 +1,84 @@
-// ============================================================
-// Workflow — model-written orchestration scripts (Phase 3)
-// ============================================================
-// Mirrors Claude Code's "dynamic workflows": the model writes a small JS
-// orchestration script that fans out worker sub-agents in parallel, verifies
-// their output, and returns a synthesis. The script runs in a `vm` sandbox
-// with a handful of injected helpers; `agent()` spawns a real sub-agent loop
-// (read-only by default) and returns only its final text, so a wide fan-out
-// stays within a bounded concurrency cap instead of hammering the provider.
-// ============================================================
+// Workflow orchestration scripts with bounded worker execution.
 
-import * as vm from "node:vm";
+import { Worker } from "node:worker_threads";
 import { agentLoop } from "./agent-loop.js";
 import { createModelCaller } from "./llm-adapter.js";
 import { extractLastAssistantText, getCoreToolsForSubagents } from "./subagents.js";
 import type { Message, ToolContext } from "./types.js";
-
-// --- worker sub-agent -------------------------------------------------------
+import { CancellationScope } from "./utils/cancellation.js";
 
 const WORKER_PROMPT = [
   "You are a workflow worker sub-agent.",
   "Complete the given task using the available tools.",
-  "Be thorough but efficient; do not ask clarifying questions — work with what you have.",
+  "Be thorough but efficient; do not ask clarifying questions - work with what you have.",
   "Your final reply is the ONLY thing returned to the orchestrator, so make it a",
   "self-contained report: state your conclusion and include any file paths the",
-  "orchestrator needs (it does not see your intermediate tool output).",
+  "orchestrator needs (it does not see intermediate tool output).",
 ].join("\n");
 
 const WORKER_MAX_TURNS = 8;
-
-// Cap concurrent worker agents so a wide fan-out can't fire the provider at
-// once. Mirrors the Task tool's semaphore.
 const MAX_WORKER_CONCURRENCY = (() => {
   const raw = Number(process.env.WORKFLOW_MAX_CONCURRENCY);
   return Number.isInteger(raw) && raw > 0 ? raw : 4;
 })();
 
-let activeWorkers = 0;
-const workerQueue: Array<() => void> = [];
+interface WorkerWaiter {
+  resolve: () => void;
+  reject: (error: Error) => void;
+  signal?: AbortSignal;
+  onAbort?: () => void;
+}
 
-/**
- * Counting semaphore over activeWorkers + a FIFO queue. Invariant: a slot is
- * either counted in activeWorkers or currently owned by a queued waiter being
- * woken — never both, never neither.
- *
- * The previous implementation raced: release() decremented BEFORE waking a
- * waiter, and the waiter re-incremented only after its microtask ran. In that
- * window a newcomer on the fast path could ALSO take the slot, after which the
- * waiter's increment overshot the cap — silently defeating the concurrency
- * limit that exists to protect the provider.
- */
-async function acquireWorkerSlot(): Promise<void> {
-  // Fast path only when nobody is waiting: otherwise a newcomer could grab a
-  // slot that releaseWorkerSlot() just transferred to a queued waiter.
+let activeWorkers = 0;
+const workerQueue: WorkerWaiter[] = [];
+
+async function acquireWorkerSlot(signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) throw new Error("Workflow worker aborted before acquiring a slot");
   if (workerQueue.length === 0 && activeWorkers < MAX_WORKER_CONCURRENCY) {
     activeWorkers++;
     return;
   }
-  await new Promise<void>((resolve) => workerQueue.push(resolve));
-  // Slot ownership was TRANSFERRED by releaseWorkerSlot (count unchanged) —
-  // do NOT increment here.
+
+  await new Promise<void>((resolve, reject) => {
+    const waiter: WorkerWaiter = { resolve, reject, signal };
+    if (signal) {
+      waiter.onAbort = () => {
+        const index = workerQueue.indexOf(waiter);
+        if (index >= 0) workerQueue.splice(index, 1);
+        reject(new Error("Workflow worker aborted while waiting for a slot"));
+      };
+      signal.addEventListener("abort", waiter.onAbort, { once: true });
+    }
+    workerQueue.push(waiter);
+  });
 }
 
 function releaseWorkerSlot(): void {
-  const next = workerQueue.shift();
-  if (next) {
-    // Hand the slot directly to the waiter; the count stays the same.
-    next();
-  } else {
-    activeWorkers--;
+  while (workerQueue.length > 0) {
+    const next = workerQueue.shift()!;
+    if (next.signal?.aborted) {
+      if (next.onAbort && next.signal) next.signal.removeEventListener("abort", next.onAbort);
+      next.reject(new Error("Workflow worker aborted while waiting for a slot"));
+      continue;
+    }
+    if (next.onAbort && next.signal) next.signal.removeEventListener("abort", next.onAbort);
+    next.resolve();
+    return;
   }
+  activeWorkers--;
 }
 
-/** Exposed for tests only — the semaphore is module-internal by design. */
 export const __workerSlots = {
   acquire: acquireWorkerSlot,
   release: releaseWorkerSlot,
   max: MAX_WORKER_CONCURRENCY,
 };
 
-/** Spawn one read-only worker sub-agent and return its final assistant text. */
-export async function runWorkerAgent(prompt: string, context: ToolContext): Promise<string> {
+export async function runWorkerAgent(
+  prompt: string,
+  context: ToolContext,
+  abortSignal?: AbortSignal,
+): Promise<string> {
   if (!context.modelConfig) throw new Error("workflow requires modelConfig in context");
   const coreTools = await getCoreToolsForSubagents();
   const tools = coreTools.filter((t) => ["read", "glob", "grep", "bash"].includes(t.name));
@@ -87,7 +86,7 @@ export async function runWorkerAgent(prompt: string, context: ToolContext): Prom
   const subCaller = createModelCaller(context.modelConfig);
   let errorMessage: string | undefined;
 
-  await acquireWorkerSlot();
+  await acquireWorkerSlot(abortSignal);
   try {
     for await (const event of agentLoop(subMessages, tools, subCaller, context.modelConfig, {
       systemPrompt: WORKER_PROMPT,
@@ -99,11 +98,13 @@ export async function runWorkerAgent(prompt: string, context: ToolContext): Prom
         permissionMode: context.permissionMode,
         modelConfig: context.modelConfig,
         askUser: context.askUser,
+        abortSignal,
       },
       askUser: context.askUser,
+      abortSignal,
     })) {
       if (event.type === "error") errorMessage = String(event.error);
-      else if (event.type === "aborted") errorMessage = event.reason;
+      else if (event.type === "aborted") errorMessage = String(event.reason);
     }
   } catch (error: any) {
     errorMessage = error?.message ?? String(error);
@@ -117,8 +118,6 @@ export async function runWorkerAgent(prompt: string, context: ToolContext): Prom
   return "(no output)";
 }
 
-// --- registry ---------------------------------------------------------------
-
 export interface WorkflowRecord {
   id: string;
   status: "running" | "completed" | "failed";
@@ -131,7 +130,6 @@ export interface WorkflowRecord {
 const WORKFLOWS = new Map<string, WorkflowRecord>();
 let wfCounter = 0;
 
-/** List all workflow records, most-recent first. */
 export function listWorkflows(): WorkflowRecord[] {
   return [...WORKFLOWS.values()].sort((a, b) => b.startedAt - a.startedAt);
 }
@@ -140,36 +138,21 @@ export function getWorkflow(id: string): WorkflowRecord | undefined {
   return WORKFLOWS.get(id);
 }
 
-/** Test/util: clear all workflow records. */
 export function resetWorkflows(): void {
   WORKFLOWS.clear();
   wfCounter = 0;
 }
 
-// --- script runner ----------------------------------------------------------
-
 export interface WorkflowOptions {
-  /** Value exposed to the script as the global `args`. */
   args?: unknown;
-  /** Inject a worker runner for tests; defaults to the real sub-agent loop. */
-  agentRunner?: (prompt: string, context: ToolContext) => Promise<string>;
-  /** Total wall-clock budget for the whole workflow (ms). */
+  agentRunner?: (
+    prompt: string,
+    context: ToolContext,
+    abortSignal?: AbortSignal,
+  ) => Promise<string>;
   timeoutMs?: number;
 }
 
-/**
- * Run a model-written orchestration script. The script is an async expression
- * body (it may `return` a value) with these globals injected:
- *
- *   agent(prompt, {label}) — run ONE worker sub-agent, return its final text
- *   parallel([thunks])      — run the thunks concurrently, return their results
- *   pipeline(items, ...stages) — run items through each stage concurrently
- *   log(msg) / phase(title)  — progress lines captured into the record
- *   args                     — the caller-supplied args value
- *
- * The script is NOT arbitrary shell — it's an async JS expression over these
- * helpers, run in a `vm` sandbox with no fs/network/process access.
- */
 export async function runWorkflow(
   script: string,
   context: ToolContext,
@@ -185,77 +168,167 @@ export async function runWorkflow(
   };
   WORKFLOWS.set(id, record);
 
-  const timeoutMs = options.timeoutMs ?? 120_000;
-  // When the wall-clock budget expires we flip `revoked` so the sandbox's
-  // helpers (agent/parallel/pipeline) start throwing — pending async work
-  // stops making progress instead of running on in the background forever.
+  const timeoutMs = Math.max(1, options.timeoutMs ?? 120_000);
+  const workflowScope = new CancellationScope(context.abortSignal);
   let revoked = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
       revoked = true;
       reject(new Error(`workflow timed out after ${timeoutMs}ms`));
+      workflowScope.cancel("hard", "workflow timed out");
     }, timeoutMs);
-    // Don't let a completed workflow's lingering timer keep the process alive.
     timer.unref?.();
   });
 
-  const agent = async (prompt: string, opts?: { label?: string }) => {
-    if (revoked) throw new Error("workflow timed out (revoked)");
-    const label = opts?.label ?? (prompt.length > 60 ? `${prompt.slice(0, 57)}…` : prompt);
-    record.logs.push(`agent: ${label}`);
-    return agentRunner(prompt, context);
-  };
-  const parallel = (thunks: Array<() => Promise<unknown>>): Promise<unknown[]> =>
-    Promise.all(thunks.map((t) => Promise.resolve().then(t)));
-  const pipeline = async (
-    items: unknown[],
-    ...stages: Array<(item: unknown, index: number) => Promise<unknown>>
-  ): Promise<unknown[]> => {
-    let acc = items;
-    for (const stage of stages) {
-      acc = await Promise.all(acc.map(async (item, i) => stage(item, i)));
-    }
-    return acc;
-  };
-
-  const sandbox: Record<string, unknown> = {
-    agent,
-    parallel,
-    pipeline,
-    log: (m: unknown) => record.logs.push(String(m)),
-    phase: (t: unknown) => record.logs.push(`[phase] ${String(t)}`),
-    args: options.args,
-  };
-  vm.createContext(sandbox);
-
   try {
-    const wrapped = `(async () => {\n${script}\n})()`;
-    // vm's own `timeout` option covers a SYNCHRONOUS infinite loop during the
-    // initial evaluation (e.g. a bare `while (true) {}` — the async IIFE body
-    // runs synchronously up to its first await, inside runInContext), which
-    // would otherwise freeze the event loop and leave the Promise.race timer
-    // no chance to fire. A sync loop hidden BEHIND an await still cannot be
-    // preempted from this thread — that would require running the script in a
-    // worker thread, deliberately out of scope for a personal CLI.
-    const syncBudget = Math.min(timeoutMs, 10_000);
-    const result: unknown = await Promise.race([
-      vm.runInContext(wrapped, sandbox, { timeout: syncBudget }),
+    const result = await Promise.race([
+      runWorkflowScriptInWorker(
+        script,
+        options.args,
+        Math.min(timeoutMs, 10_000),
+        async (prompt, label) => {
+          if (revoked || workflowScope.aborted) throw new Error("workflow timed out (revoked)");
+          const displayLabel = label ?? (prompt.length > 60 ? `${prompt.slice(0, 57)}...` : prompt);
+          record.logs.push(`agent: ${displayLabel}`);
+          return agentRunner(prompt, context, workflowScope.signal);
+        },
+        (line) => record.logs.push(line),
+        workflowScope.signal,
+      ),
       timeout,
     ]);
     record.status = "completed";
     record.finishedAt = Date.now();
-    record.result = result === undefined ? undefined : String(result);
+    record.result = result;
   } catch (error: any) {
     record.status = "failed";
     record.finishedAt = Date.now();
     record.logs.push(`error: ${error?.message ?? error}`);
-    if (revoked) {
-      record.logs.push("note: timed out — in-flight worker calls were revoked mid-flight");
-    }
+    if (revoked) record.logs.push("note: timed out; in-flight worker calls were revoked");
   } finally {
     if (timer) clearTimeout(timer);
+    if (!workflowScope.aborted) workflowScope.cancel("hard", "workflow completed");
+    workflowScope.dispose();
   }
 
   return record;
 }
+
+function runWorkflowScriptInWorker(
+  script: string,
+  args: unknown,
+  syncBudget: number,
+  runAgent: (prompt: string, label?: string) => Promise<string>,
+  onLog: (line: string) => void,
+  abortSignal: AbortSignal,
+): Promise<string | undefined> {
+  const worker = new Worker(WORKFLOW_WORKER_SOURCE, {
+    eval: true,
+    workerData: { script, args, syncBudget },
+  });
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const send = (message: unknown): void => {
+      try {
+        worker.postMessage(message);
+      } catch {
+        // The worker may already be terminated after timeout.
+      }
+    };
+    const finish = (error?: Error, result?: string): void => {
+      if (settled) return;
+      settled = true;
+      abortSignal.removeEventListener("abort", onAbort);
+      void worker.terminate().catch(() => {});
+      if (error) reject(error);
+      else resolve(result);
+    };
+    const onAbort = () => finish(new Error("Workflow aborted"));
+
+    worker.on("message", (message: any) => {
+      if (message?.type === "log") {
+        onLog(String(message.message));
+      } else if (message?.type === "agent") {
+        void runAgent(String(message.prompt), message.label)
+          .then((result) => send({ type: "agent_result", id: message.id, result }))
+          .catch((error: unknown) =>
+            send({
+              type: "agent_result",
+              id: message.id,
+              error: error instanceof Error ? error.message : String(error),
+            }),
+          );
+      } else if (message?.type === "result") {
+        finish(undefined, message.result === undefined ? undefined : String(message.result));
+      } else if (message?.type === "error") {
+        finish(new Error(String(message.error)));
+      }
+    });
+    worker.on("error", (error) => finish(error));
+    worker.on("exit", (code) => {
+      if (!settled && code !== 0) finish(new Error(`Workflow worker exited with code ${code}`));
+    });
+    abortSignal.addEventListener("abort", onAbort, { once: true });
+    if (abortSignal.aborted) onAbort();
+  });
+}
+
+const WORKFLOW_WORKER_SOURCE = String.raw`
+const { parentPort, workerData } = require("node:worker_threads");
+const vm = require("node:vm");
+const pendingAgents = new Map();
+let nextAgentId = 1;
+
+parentPort.on("message", (message) => {
+  if (!message || message.type !== "agent_result") return;
+  const pending = pendingAgents.get(message.id);
+  if (!pending) return;
+  pendingAgents.delete(message.id);
+  if (message.error) pending.reject(new Error(message.error));
+  else pending.resolve(message.result);
+});
+
+function agent(prompt, opts) {
+  return new Promise((resolve, reject) => {
+    const id = nextAgentId++;
+    pendingAgents.set(id, { resolve, reject });
+    parentPort.postMessage({
+      type: "agent",
+      id,
+      prompt: String(prompt),
+      label: opts && opts.label ? String(opts.label) : undefined,
+    });
+  });
+}
+
+const parallel = (thunks) => Promise.all(thunks.map((thunk) => Promise.resolve().then(thunk)));
+const pipeline = async (items, ...stages) => {
+  let acc = items;
+  for (const stage of stages) {
+    acc = await Promise.all(acc.map((item, index) => stage(item, index)));
+  }
+  return acc;
+};
+
+const sandbox = {
+  agent,
+  parallel,
+  pipeline,
+  log: (message) => parentPort.postMessage({ type: "log", message: String(message) }),
+  phase: (title) => parentPort.postMessage({ type: "log", message: "[phase] " + String(title) }),
+  args: workerData.args,
+};
+vm.createContext(sandbox);
+
+(async () => {
+  try {
+    const wrapped = "(async () => {\n" + workerData.script + "\n})()";
+    const result = await vm.runInContext(wrapped, sandbox, { timeout: workerData.syncBudget });
+    parentPort.postMessage({ type: "result", result: result === undefined ? undefined : String(result) });
+  } catch (error) {
+    parentPort.postMessage({ type: "error", error: error && error.message ? error.message : String(error) });
+  }
+})();
+`;

@@ -90,6 +90,17 @@ describe("runWorkflow", () => {
     expect(record.logs.some((l) => /timed out/i.test(l))).toBe(true);
   });
 
+  it("terminates a synchronous infinite loop after an await", async () => {
+    const started = Date.now();
+    const record = await runWorkflow("await Promise.resolve(); while (true) {}", ctx, {
+      agentRunner: fakeAgent,
+      timeoutMs: 100,
+    });
+    expect(record.status).toBe("failed");
+    expect(record.logs.some((l) => /timed out/i.test(l))).toBe(true);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
   it("wall-clock timeout fails the run and revokes pending agent calls", async () => {
     const neverAgent = (): Promise<string> => new Promise<string>(() => {});
     const record = await runWorkflow(`return await agent("hang")`, ctx, {
@@ -99,6 +110,47 @@ describe("runWorkflow", () => {
     expect(record.status).toBe("failed");
     expect(record.result).toBeUndefined();
     expect(record.logs.some((l) => /timed out/i.test(l))).toBe(true);
+  });
+
+  it("aborts an active worker when the workflow times out", async () => {
+    let aborted = false;
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const blockingAgent = async (
+      _prompt: string,
+      _context: ToolContext,
+      signal?: AbortSignal,
+    ): Promise<string> => {
+      markStarted();
+      await new Promise<void>((resolve, reject) => {
+        signal?.addEventListener(
+          "abort",
+          () => {
+            aborted = true;
+            reject(new Error("aborted"));
+          },
+          { once: true },
+        );
+        if (signal?.aborted) reject(new Error("aborted"));
+      });
+      return "unreachable";
+    };
+    const controller = new AbortController();
+    const run = runWorkflow(
+      `return await agent("hang")`,
+      { ...ctx, abortSignal: controller.signal },
+      {
+        agentRunner: blockingAgent,
+        timeoutMs: 10_000,
+      },
+    );
+    await started;
+    controller.abort();
+    const record = await run;
+    expect(record.status).toBe("failed");
+    expect(aborted).toBe(true);
   });
 
   it("never exceeds the worker concurrency cap", async () => {
@@ -120,5 +172,17 @@ describe("runWorkflow", () => {
     await Promise.all(Array.from({ length: 12 }, () => worker()));
     expect(maxActive).toBeLessThanOrEqual(max);
     expect(maxActive).toBeGreaterThan(1); // sanity: work actually overlapped
+  });
+
+  it("removes an aborted waiter from the worker queue", async () => {
+    const { acquire, release, max } = __workerSlots;
+    await Promise.all(Array.from({ length: max }, () => acquire()));
+    const controller = new AbortController();
+    const waiting = acquire(controller.signal);
+    controller.abort();
+    await expect(waiting).rejects.toThrow(/aborted/i);
+    for (let i = 0; i < max; i++) release();
+    await acquire();
+    release();
   });
 });

@@ -8,8 +8,14 @@
 // TimeoutError when the timer wins, and never leaks the timer.
 // ============================================================
 
-import { describe, expect, it } from "vitest";
-import { expandEnvRecord, expandEnvTemplate, TimeoutError, withTimeout } from "../mcp/index.js";
+import { describe, expect, it, vi } from "vitest";
+import {
+  expandEnvRecord,
+  expandEnvTemplate,
+  MCPManager,
+  TimeoutError,
+  withTimeout,
+} from "../mcp/index.js";
 
 describe("mcp withTimeout", () => {
   it("resolves with the operation's value when it finishes in time", async () => {
@@ -55,6 +61,45 @@ describe("mcp withTimeout", () => {
       setTimeout(() => reject(new Error("server crashed")), 5),
     );
     await expect(withTimeout("op", boom, 1000)).rejects.toThrow("server crashed");
+  });
+
+  it("bounds MCP resource listing when a server stops responding", async () => {
+    vi.useFakeTimers();
+    try {
+      const manager = new MCPManager();
+      const close = vi.fn();
+      (manager as any).servers.set("hung", {
+        config: { type: "http", url: "http://127.0.0.1:1" },
+        client: { listResources: () => new Promise(() => {}) },
+        transport: { close },
+        tools: [],
+      });
+      const pending = manager.listResources();
+      await vi.advanceTimersByTimeAsync(20_000);
+      await expect(pending).resolves.toEqual([]);
+      expect(close).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds MCP shutdown when graceful close hangs", async () => {
+    vi.useFakeTimers();
+    try {
+      const manager = new MCPManager();
+      (manager as any).servers.set("hung", {
+        config: { type: "stdio", command: "mock" },
+        client: { close: () => new Promise(() => {}) },
+        transport: { close: () => undefined },
+        tools: [],
+      });
+      const pending = manager.disconnectAll();
+      await vi.advanceTimersByTimeAsync(5_000);
+      await expect(pending).resolves.toBeUndefined();
+      expect(manager.serverCount).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
