@@ -27,38 +27,46 @@ export function useStoreField<K extends keyof StoreState>(store: TuiStore, key: 
   return useSyncExternalStore(store.subscribe, getField);
 }
 
-/** True when two objects have the same keys and `Object.is`-equal values. */
-function shallowEqual(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
-  if (a === b) return true;
+/** True when two selected values are equivalent: Object.is for primitives,
+ *  shallow key-by-key compare for objects. Exported for tests. */
+export function selectionEqual(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
   const ak = Object.keys(a);
   const bk = Object.keys(b);
   if (ak.length !== bk.length) return false;
   for (const k of ak) {
-    if (!Object.is(a[k], b[k])) return false;
+    if (!Object.is((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]))
+      return false;
   }
   return true;
 }
 
 /**
  * Subscribe to a derived slice of the store. The selector typically returns a
- * fresh object ({ a, b }); we memoize the previous result and return it
- * unchanged while it's shallow-equal, so the component only re-renders when a
- * selected value actually changes. Without this cache the fresh-object identity
- * would defeat React's bail-out (and break getSnapshot stability).
+ * fresh object ({ a, b }) or a primitive; we memoize the previous result and
+ * return it unchanged while it's equal, so the component only re-renders when
+ * a selected value actually changes. Without this cache the fresh-object
+ * identity would defeat React's bail-out (and break getSnapshot stability).
  */
-export function useStoreSelector<T extends Record<string, unknown>>(
-  store: TuiStore,
-  selector: (state: StoreState) => T,
-): T {
+export function useStoreSelector<T>(store: TuiStore, selector: (state: StoreState) => T): T {
   // One cache per hook instance. `useRef` survives re-renders without causing
   // them; the getSnapshot closure reads/writes it.
-  const cache = useRef<T | null>(null);
+  const cache = useRef<{ value: T } | null>(null);
+  // Keep the LATEST selector in a ref instead of the useCallback deps: an
+  // inline arrow selector gets a fresh identity every render, which would
+  // otherwise recreate getSelection and force useSyncExternalStore to
+  // unsubscribe/resubscribe (and re-run the selector) on every render. The
+  // value cache below keeps the snapshot stable, so the component still only
+  // re-renders when a selected value actually changes.
+  const selectorRef = useRef(selector);
+  selectorRef.current = selector;
   const getSelection = useCallback(() => {
-    const next = selector(store.getSnapshot());
+    const next = selectorRef.current(store.getSnapshot());
     const prev = cache.current;
-    if (prev !== null && shallowEqual(prev, next)) return prev;
-    cache.current = next;
+    if (prev !== null && selectionEqual(prev.value, next)) return prev.value;
+    cache.current = { value: next };
     return next;
-  }, [store, selector]);
+  }, [store]);
   return useSyncExternalStore(store.subscribe, getSelection);
 }

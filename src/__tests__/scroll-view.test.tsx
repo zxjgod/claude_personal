@@ -153,7 +153,7 @@ describe("full-screen App scrolling (M25.2 fix)", () => {
     expect(scrolled).toContain("line 0"); // earlier content now visible
     expect(scrolled).not.toContain("line 39"); // newest scrolled off
     // The "scrolled" hint replaces the live status line.
-    expect(scrolled).toContain("return to latest");
+    expect(scrolled).toContain("正在查看历史");
 
     // Scroll back down to the bottom — newest content returns.
     for (let i = 0; i < 8; i++) {

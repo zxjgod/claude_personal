@@ -34,9 +34,8 @@ const SHORTCUTS = [
   ["?", "Show this help panel"],
   ["/", "Open command palette"],
   ["← (left arrow)", "Switch to agent list panel"],
-  ["PgUp", "Open transcript review (scrollable pager, Esc to close)"],
-  ["PgUp / Ctrl+U", "Scroll up (full-screen mode)"],
-  ["PgDn / Ctrl+D", "Scroll down (full-screen mode)"],
+  ["↑↓ / 鼠标滚轮", "滚动查看历史消息"],
+  ["Ctrl+U / Ctrl+D", "快速滚动半页（全屏模式）"],
   ["Ctrl+End or G", "Jump to bottom (full-screen mode)"],
 ];
 

@@ -105,7 +105,7 @@ describe("App", () => {
     const frame = lastFrame()!;
     const lineCount = frame.split("\n").length;
     expect(lineCount).toBeLessThanOrEqual(24);
-    expect(frame).toContain("PgUp 回滚查看"); // elision hint
+    expect(frame).toContain("行已省略"); // elision hint
     expect(frame).toContain("finding 39"); // the live tail stays visible
     expect(frame).not.toContain("finding 0"); // scrolled-off head is hidden
   });
@@ -128,7 +128,26 @@ describe("App", () => {
     expect(frame).not.toContain("reasoning step 0");
   });
 
-  it("caps the pinned todo list with an overflow line", () => {
+  it("windows a long todo list around the in_progress item (not the head)", () => {
+    const store = new TuiStore("p/m");
+    // 7 items, the ACTIVE one deep in the list — a head-slice would hide it.
+    store.setTodos(
+      Array.from({ length: 7 }, (_, i) => ({
+        content: `task ${i}`,
+        status: (i === 5 ? "in_progress" : "pending") as "in_progress" | "pending",
+      })),
+    );
+    const { lastFrame } = render(
+      <App store={store} commands={commands} onSubmit={noopSubmit} expandedId={null} />,
+    );
+    const frame = lastFrame()!;
+    expect(frame).toContain("task 5"); // the active task is always visible
+    expect(frame).toContain("■ task 5");
+    expect(frame).not.toContain("task 0"); // windowed off
+    expect(frame).toContain("↑ 还有"); // overflow indicator above
+  });
+
+  it("shows the head of an all-pending todo list with a below-overflow row", () => {
     const store = new TuiStore("p/m");
     store.setTodos(
       Array.from({ length: 7 }, (_, i) => ({
@@ -142,8 +161,8 @@ describe("App", () => {
     const frame = lastFrame()!;
     expect(frame).toContain("task 0");
     expect(frame).toContain("task 3");
-    expect(frame).not.toContain("task 4"); // beyond the 4-item window
-    expect(frame).toContain("还有 3 项");
+    expect(frame).not.toContain("task 4"); // beyond the window
+    expect(frame).toContain("↓ 还有 3 项");
   });
 
   it("caps concurrent active tool cards with an overflow line", () => {
@@ -174,6 +193,32 @@ describe("App", () => {
     expect(frame).toContain("Transcript —");
     expect(frame).toContain("old question");
     expect(frame).toContain("Esc 返回");
+  });
+
+  it("keeps the Static transcript MOUNTED while reviewing (no reprint on exit)", async () => {
+    // Regression cover for P2: Ink's <Static> restarts its emitted-index at 0
+    // on remount — unmounting it while the pager is open would reprint the
+    // entire transcript into the terminal when the pager closes. The review
+    // body must keep TranscriptRegion mounted alongside the pager.
+    const store = new TuiStore("p/m");
+    store.addUserMessage("old question");
+    const { stdin, lastFrame } = render(
+      <App store={store} commands={commands} onSubmit={noopSubmit} expandedId={null} />,
+    );
+    await new Promise((r) => setTimeout(r, 10));
+    stdin.write("\x1b[5~"); // PgUp → reviewing
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Static region AND pager both render the message → mounted twice.
+    const during = lastFrame()!;
+    expect(during).toContain("Transcript —");
+    expect(during.split("old question").length - 1).toBe(2);
+
+    stdin.write("q"); // close pager
+    await new Promise((r) => setTimeout(r, 10));
+    const after = lastFrame()!;
+    expect(after).not.toContain("Transcript —");
+    expect(after.split("old question").length - 1).toBe(1); // single Static copy
   });
 });
 

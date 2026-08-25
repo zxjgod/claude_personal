@@ -35,6 +35,7 @@ import { StatusLine } from "./StatusLine.js";
 import { actionLabel } from "./spinner-core.js";
 import type { StoreState, TuiStore } from "./store.js";
 import { Toast } from "./Toast.js";
+import { TodoList } from "./TodoList.js";
 import { modeColor } from "./theme.js";
 import { transcriptToLines } from "./transcript-lines.js";
 import { useStoreField, useStoreSelector } from "./useStoreSelector.js";
@@ -99,7 +100,7 @@ function FsStatusBar({ store }: { store: TuiStore }) {
       <Text dimColor>
         {busy
           ? "working… (Ctrl+C interrupt)"
-          : "? shortcuts · / commands · @path attach · PgUp/PgDn scroll"}
+          : "? shortcuts · / commands · @path attach · 鼠标滚轮/↑↓ 滚动"}
         {" · "}
       </Text>
       <Text color={modeColor(permissionMode)} bold>
@@ -175,33 +176,12 @@ function FsInteraction({
 }
 
 /** Pinned live todo list between the scroll region and the status line (the
- *  same projection of Todo-tool state as App.tsx's TodoRegion). */
+ *  same projection of Todo-tool state as App.tsx's TodoRegion). Rendering and
+ *  windowing are shared via TodoList. */
 function FsTodoRegion({ store }: { store: TuiStore }) {
   const todos = useStoreField(store, "todos");
   if (todos.length === 0) return null;
-  return (
-    <Box flexDirection="column">
-      {todos.map((t, i) => {
-        const prefix = i === 0 ? "  ⎿  " : "     ";
-        if (t.status === "completed") {
-          return (
-            <Text key={i} dimColor>
-              {prefix}☑ <Text strikethrough>{t.content}</Text>
-            </Text>
-          );
-        }
-        if (t.status === "in_progress") {
-          return (
-            <Text key={i}>
-              {prefix}■ {t.content}
-              {t.activeForm ? <Text dimColor>{` — ${t.activeForm}`}</Text> : null}
-            </Text>
-          );
-        }
-        return <Text key={i} dimColor>{`${prefix}□ ${t.content}`}</Text>;
-      })}
-    </Box>
-  );
+  return <TodoList todos={todos} />;
 }
 
 /** Mode hotkey — self-contained so FullScreenApp works without App.tsx. */
@@ -286,6 +266,9 @@ export function FullScreenApp({
   };
 
   useInput((input, key) => {
+    // Support arrow keys and mouse wheel for scrolling
+    if (key.upArrow) return void scrollBy(-1, 0.1);
+    if (key.downArrow) return void scrollBy(1, 0.1);
     if (key.pageUp || (key.ctrl && input === "u")) return void scrollBy(-1, 0.5);
     if (key.ctrl && input === "b") return void scrollBy(-1, 0.95);
     if (key.pageDown || (key.ctrl && input === "d")) return void scrollBy(1, 0.5);
@@ -307,7 +290,7 @@ export function FullScreenApp({
       />
       <FsTodoRegion store={store} />
       {!sticky ? (
-        <Text dimColor>{"  ↑ scrolled — PgDn / Ctrl+End to return to latest"}</Text>
+        <Text dimColor>{"  ↑ 正在查看历史 — Ctrl+End 或按 G 返回最新"}</Text>
       ) : (
         <FsStatusLine store={store} />
       )}

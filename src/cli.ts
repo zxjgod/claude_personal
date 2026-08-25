@@ -1284,9 +1284,11 @@ async function main() {
 
           case "thinking_delta": {
             // Live reasoning content (Anthropic extended thinking). Raw prose —
-            // bypass the markdown renderer and stream inline, dimmed.
+            // bypass the markdown renderer and stream inline, dimmed. The
+            // "⏱ 推理耗时 Ns" report is deferred to the END of the thinking
+            // segment (first text/tool/done) so the seconds reflect the full
+            // reasoning duration, not the time to the first delta.
             resetIdleTimer();
-            reportThought();
             spinner.stop();
             if (!thinkingStreamed) {
               thinkingStreamed = true;
@@ -1297,15 +1299,17 @@ async function main() {
           }
 
           case "text_delta": {
+            // Terminate the dimmed thinking line BEFORE printing the "Thought
+            // for Ns" report — otherwise the report glues onto the thinking
+            // text tail mid-line.
+            if (thinkingStreamed) {
+              process.stdout.write("\n");
+              thinkingStreamed = false;
+            }
             // First visible text ends the "thinking" phase: print the
             // "Thought for Ns" line, then switch the spinner to responding.
             reportThought();
             spinner.stop();
-            if (thinkingStreamed) {
-              // Separate the dimmed thinking line from the answer body.
-              process.stdout.write("\n");
-              thinkingStreamed = false;
-            }
             renderer.write(event.delta);
             streamedChars += event.delta.length;
             spinner.update({ tokens: Math.round(streamedChars / 4) });
@@ -1329,6 +1333,9 @@ async function main() {
               process.stdout.write("\n");
               thinkingStreamed = false;
             }
+            // A thinking-only prefix (no text before this tool call) still
+            // gets its duration report, now that thinking has ended.
+            reportThought();
             renderer.flush();
             // Official Claude Code style: orange ● + Name(detail).
             renderToolStart(event.name, event.input);
@@ -1416,6 +1423,13 @@ async function main() {
 
           case "done":
             spinner.stop();
+            if (thinkingStreamed) {
+              // Thinking-only turn (no text, no tool call): terminate the
+              // dimmed line and emit the deferred duration report.
+              process.stdout.write("\n");
+              thinkingStreamed = false;
+              reportThought();
+            }
             renderer.flush();
             if (uiState.showTokens && (turnInputTokens || turnOutputTokens)) {
               console.log(

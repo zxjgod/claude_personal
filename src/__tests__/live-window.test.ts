@@ -76,4 +76,27 @@ describe("tailVisualLines", () => {
     expect(r.text).toBe("");
     expect(r.hiddenLines).toBe(0);
   });
+
+  it("never emits an empty line when breaking at a leading space", () => {
+    // A space at the wrap boundary with no preceding content would emit an
+    // empty segment if the space-break path fired at index 0.
+    const r = tailVisualLines(" " + "x".repeat(90), 5, W); // 91 cols at W=40
+    for (const line of r.text.split("\n")) {
+      expect(line.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("counts tabs as width 4 so tabbed code cannot exceed the width bound", () => {
+    // 10 tabs + 40 chars: naive width 50 > 40 → must wrap; with tab=0 the
+    // line would pass through at 40 visible + 10 zero-width tabs and the
+    // terminal would render it wider than the budget.
+    const r = tailVisualLines("\t".repeat(10) + "y".repeat(40), 5, W);
+    expect(r.text).toContain("\n"); // wrapped
+    // Every emitted line stays within the budget when tabs render as ≤4.
+    for (const line of r.text.split("\n")) {
+      let w = 0;
+      for (const ch of line) w += ch === "\t" ? 4 : 1;
+      expect(w).toBeLessThanOrEqual(W);
+    }
+  });
 });

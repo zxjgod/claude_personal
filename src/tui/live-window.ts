@@ -30,11 +30,18 @@
 import { visualWidth } from "./terminal-width.js";
 
 /**
- * Rows reserved around the streaming window: status line (1) + todo list (≤5) +
- * active tools (≤4) + input box (3) + status bar (1) + margins (2). The caps in
- * App.tsx keep those regions inside this budget, so streaming gets rows − 16.
+ * Width of one code point for wrapping. terminal-width's visualWidth treats
+ * control chars as 0, but a tab physically occupies up to several columns —
+ * count it as 4 so tab-indented code can't sneak past the width bound.
  */
-export const LIVE_CHROME_ROWS = 16;
+const cellWidth = (ch: string): number => (ch === "\t" ? 4 : visualWidth(ch));
+
+/** visualWidth, but tab-aware (see cellWidth). */
+function measureWidth(s: string): number {
+  let w = 0;
+  for (const ch of s) w += cellWidth(ch);
+  return w;
+}
 
 /** Min column width we ever wrap at (tiny terminals / tests). */
 const MIN_COL_WIDTH = 20;
@@ -43,7 +50,7 @@ const MIN_COL_WIDTH = 20;
  *  for the fits-check fast path and the hiddenLines estimate; the kept tail is
  *  re-wrapped explicitly, so its rendered height is exact. */
 function lineCost(line: string, colWidth: number): number {
-  return Math.max(1, Math.ceil(visualWidth(line) / colWidth));
+  return Math.max(1, Math.ceil(measureWidth(line) / colWidth));
 }
 
 /**
@@ -53,7 +60,7 @@ function lineCost(line: string, colWidth: number): number {
  * boundary. Never splits a surrogate pair or a wide glyph.
  */
 function hardWrapLine(line: string, width: number): string[] {
-  if (visualWidth(line) <= width) return [line];
+  if (measureWidth(line) <= width) return [line];
   const cps = Array.from(line);
   const out: string[] = [];
   let cur: string[] = [];
@@ -69,11 +76,12 @@ function hardWrapLine(line: string, width: number): string[] {
     wAfterSpace = 0;
   };
   for (const ch of cps) {
-    const w = visualWidth(ch);
+    const w = cellWidth(ch);
     if (curW + w > width) {
-      if (lastSpace >= 0 && lastSpace < cur.length - 1) {
-        // Break at the last space: emit what precedes it, continue with the
-        // word tail (the space itself is dropped).
+      // Break at the last space when it leaves a non-empty head AND a word
+      // tail (lastSpace === 0 would emit an empty line — fall through to a
+      // hard break instead, preserving leading whitespace e.g. in code).
+      if (lastSpace > 0 && lastSpace < cur.length - 1) {
         out.push(cur.slice(0, lastSpace).join(""));
         cur = cur.slice(lastSpace + 1);
         curW = wAfterSpace;
@@ -133,7 +141,7 @@ export function tailVisualLines(text: string, maxLines: number, colWidth: number
   let anyWide = false;
   for (const l of lines) {
     total += lineCost(l, width);
-    if (!anyWide && visualWidth(l) > width) anyWide = true;
+    if (!anyWide && measureWidth(l) > width) anyWide = true;
   }
   if (total <= maxLines && !anyWide) return { text, hiddenLines: 0 };
 
@@ -149,7 +157,7 @@ export function tailVisualLines(text: string, maxLines: number, colWidth: number
   let budget = 0;
   let start = lines.length;
   while (start > 0) {
-    const w = visualWidth(lines[start - 1]!);
+    const w = measureWidth(lines[start - 1]!);
     if (budget + w > charBudget && start < lines.length) break;
     budget += w;
     start--;
@@ -161,7 +169,7 @@ export function tailVisualLines(text: string, maxLines: number, colWidth: number
     let w = 0;
     let cut = cps.length;
     while (cut > 0) {
-      const cw = visualWidth(cps[cut - 1]!);
+      const cw = cellWidth(cps[cut - 1]!);
       if (w + cw > charBudget) break;
       w += cw;
       cut--;

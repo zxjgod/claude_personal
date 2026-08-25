@@ -87,7 +87,7 @@ export function TranscriptReview({ store }: { store: TuiStore }) {
       <Box height={viewportHeight} flexShrink={0}>
         <ScrollView lines={lines} scrollTop={scrollTop} fallbackHeight={viewportHeight} />
       </Box>
-      <Text dimColor>{"  ↑/↓ 行 · PgUp/PgDn 翻页 · Home/G 顶/底 · Esc 返回"}</Text>
+      <Text dimColor>{"  ↑/↓ 滚动 · Home/End 顶/底 · Esc 返回"}</Text>
     </Box>
   );
 }

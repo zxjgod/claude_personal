@@ -4,6 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 import { TuiStore } from "../tui/store.js";
+import { selectionEqual } from "../tui/useStoreSelector.js";
 import type { ToolExecutionResult } from "../types.js";
 
 function fakeResult(name: string, formatted = "ok"): ToolExecutionResult {
@@ -292,5 +293,27 @@ describe("TuiStore frame batching (M24.1)", () => {
     expect(count).toBe(1); // pending notify flushed by the switch
     store.appendStreaming("more");
     expect(count).toBe(2); // now synchronous again
+  });
+});
+
+describe("selectionEqual (selector memoization compare)", () => {
+  it("treats same-length equal arrays as equal, different lengths as NOT equal", () => {
+    // Regression: a shallow compare must check key COUNT first, otherwise
+    // [1,2] would be wrongly judged equal to [1,2,3] (prefix match).
+    expect(selectionEqual([1, 2], [1, 2])).toBe(true);
+    expect(selectionEqual([1, 2], [1, 2, 3])).toBe(false);
+    expect(selectionEqual([1, 2, 3], [1, 2])).toBe(false);
+  });
+
+  it("compares primitives with Object.is and objects shallowly", () => {
+    expect(selectionEqual(0, 0)).toBe(true);
+    expect(selectionEqual(0, -0)).toBe(false);
+    expect(selectionEqual(NaN, NaN)).toBe(true);
+    expect(selectionEqual("a", "b")).toBe(false);
+    expect(selectionEqual({ a: 1, b: "x" }, { a: 1, b: "x" })).toBe(true);
+    expect(selectionEqual({ a: 1 }, { a: 2 })).toBe(false);
+    expect(selectionEqual({ a: 1 }, { a: 1, b: 2 })).toBe(false);
+    expect(selectionEqual(null, {})).toBe(false);
+    expect(selectionEqual(null, null)).toBe(true);
   });
 });

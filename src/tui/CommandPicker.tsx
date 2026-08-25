@@ -84,7 +84,7 @@ export function CommandPicker({
         <Text dimColor>{hiddenBelow > 0 ? `  ↓ ${hiddenBelow} more` : " "}</Text>
       </Box>
 
-      <Text dimColor>↑↓ move · PgUp/PgDn page · Enter run · Esc cancel · Shift+Tab mode</Text>
+      <Text dimColor>↑↓ 移动 · Enter 运行 · Esc 取消 · Shift+Tab 切换模式</Text>
     </Box>
   );
 }

@@ -146,6 +146,20 @@ async function runTurn(
 
   let thinkingStart = Date.now();
   let thoughtReported = false;
+  // Settle the "Thought for Ns" marker when the thinking phase ENDS (first
+  // text delta / tool call / turn end), so the seconds reflect the FULL
+  // reasoning duration — reporting at the first thinking_delta (which arrives
+  // early in the stream) would systematically under-count. For providers
+  // without thinking content this still fires on the first text delta,
+  // measuring time-to-first-token as before.
+  const settleThinking = () => {
+    if (!thoughtReported && thinkingStart > 0) {
+      const secs = Math.max(1, Math.round((Date.now() - thinkingStart) / 1000));
+      store.addThought(secs);
+      thoughtReported = true;
+    }
+    store.commitThinking();
+  };
   // Real output tokens reconciled with a live estimate: each model call ends
   // with a `usage` event carrying the true output_tokens, which we accumulate
   // into `committedOutputTokens`. Between usage events we show that committed
@@ -174,21 +188,12 @@ async function runTurn(
           break;
         case "thinking_delta":
           // Live reasoning content: dims in the live region, commits to the
-          // transcript when text/tool events arrive or the turn ends.
-          if (!thoughtReported && thinkingStart > 0) {
-            const secs = Math.max(1, Math.round((Date.now() - thinkingStart) / 1000));
-            store.addThought(secs);
-            thoughtReported = true;
-          }
+          // transcript when text/tool events arrive or the turn ends. The
+          // duration marker is deferred to settleThinking (commit time).
           store.appendThinking(event.delta);
           break;
         case "text_delta":
-          if (!thoughtReported && thinkingStart > 0) {
-            const secs = Math.max(1, Math.round((Date.now() - thinkingStart) / 1000));
-            store.addThought(secs);
-            thoughtReported = true;
-          }
-          store.commitThinking();
+          settleThinking();
           store.setSpinner("responding");
           streamedCharsThisCall += event.delta.length;
           streamBuffer.push(event.delta);
@@ -198,7 +203,7 @@ async function runTurn(
         case "tool_use": {
           deps.onSave("waiting_for_tool");
           streamBuffer.flush();
-          store.commitThinking();
+          settleThinking();
           store.commitStreaming();
           const detail = toolDetail(event.input);
           toolDetails.set(event.id, detail);
@@ -234,20 +239,20 @@ async function runTurn(
         case "error":
           deps.onSave("failed");
           streamBuffer.flush();
-          store.commitThinking();
+          settleThinking();
           store.commitStreaming();
           store.addNotice(`⎿ ${formatCliError(event.error)}`);
           break;
         case "aborted":
           deps.onSave("stopped_by_user", "aborted_by_user");
           streamBuffer.flush();
-          store.commitThinking();
+          settleThinking();
           store.commitStreaming();
           store.addNotice(`⎿ Aborted: ${event.reason}`);
           break;
         case "done":
           streamBuffer.flush();
-          store.commitThinking();
+          settleThinking();
           store.commitStreaming();
           // Log commit for debugging
           debugLogger.logCommit(store.getSnapshot().streamingText, streamedCharsThisCall);
@@ -562,7 +567,12 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
           });
           if (lines.length > 0) store.addLog(lines);
           if (result.exit) return;
-          if (result.handled && !result.prompt) return; // purely local command
+          if (result.handled && !result.prompt) {
+            // /clear wiped the conversation (and the tool's todo state) — the
+            // pinned todo projection in the live region must go too.
+            if (/^\/clear\b/i.test(value)) store.setTodos([]);
+            return; // purely local command
+          }
           if (result.prompt) effectiveText = result.prompt;
         }
 
@@ -590,11 +600,24 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
           // before busy flipped off) is still pending here. The loop already
           // ended, so drain it ourselves and run it as a follow-up turn. The
           // line was already echoed at queue time; just feed it to the model.
-          while (queueRef.current.hasPending) {
+          // Defensive bound: every queued line costs a full LLM turn, so an
+          // unbounded drain lets type-ahead (or scripted stdin) stack unlimited
+          // back-to-back turns. 10 consecutive follow-ups is already
+          // pathological; beyond that, drop with a notice rather than spin.
+          const MAX_FOLLOWUP_TURNS = 10;
+          let followUps = 0;
+          while (queueRef.current.hasPending && followUps < MAX_FOLLOWUP_TURNS) {
+            followUps++;
             for (const text of queueRef.current.drain()) {
               deps.messages.push({ role: "user", content: [{ type: "text", text }] });
             }
             await runTurn(store, deps, controller, askUser, askUserQuestion, queueRef.current);
+          }
+          if (queueRef.current.hasPending) {
+            const dropped = queueRef.current.drain();
+            store.addNotice(
+              `  ⎿ 连续排队回合已达上限（${MAX_FOLLOWUP_TURNS}），丢弃 ${dropped.length} 条排队输入`,
+            );
           }
         } catch (err) {
           store.addNotice(`⎿ ${formatCliError(err)}`);
@@ -703,6 +726,10 @@ export function runTui(deps: TuiDeps): Promise<void> {
       // Ctrl+C is handled by Root's InterruptHotkey (interrupt turn / exit when
       // idle) — Ink's default would hard-exit the process mid-turn.
       exitOnCtrlC: false,
+      // Enable mouse input for scrolling support
+      stdin: process.stdin,
+      stdout: process.stdout,
+      stderr: process.stderr,
     });
     return (waitUntilExit() as Promise<void>).finally(restoreScreen);
   }
@@ -724,6 +751,10 @@ export function runTui(deps: TuiDeps): Promise<void> {
   const { waitUntilExit } = render(<Root store={store} deps={deps} />, {
     // See the fullscreen render above: Ctrl+C belongs to InterruptHotkey.
     exitOnCtrlC: false,
+    // Enable mouse input for scrolling support
+    stdin: process.stdin,
+    stdout: process.stdout,
+    stderr: process.stderr,
   });
   return waitUntilExit() as Promise<void>;
 }

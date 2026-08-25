@@ -17,14 +17,13 @@
 
 import { Box, Static, Text, useInput } from "ink";
 import type { ReactNode } from "react";
-import type { TodoDisplayItem } from "../types.js";
 import { CommandPicker } from "./CommandPicker.js";
 import { EffortPrompt } from "./EffortPrompt.js";
 import { FullScreenApp } from "./FullScreenApp.js";
 import { HelpPanel } from "./HelpPanel.js";
 import { type CommandInfo, InputBox } from "./InputBox.js";
 import { createResolver, DEFAULT_BINDINGS, loadUserBindings } from "./keybindings/index.js";
-import { LIVE_CHROME_ROWS, tailVisualLines } from "./live-window.js";
+import { tailVisualLines } from "./live-window.js";
 import { renderMarkdown } from "./markdown.js";
 import { ConfirmPrompt, PermissionPrompt, QuestionPrompt } from "./Prompts.js";
 import { ProviderPicker } from "./ProviderPicker.js";
@@ -34,6 +33,7 @@ import { StreamingMarkdown } from "./StreamingMarkdown.js";
 import { actionLabel } from "./spinner-core.js";
 import type { StoreState, TranscriptItem, TuiStore } from "./store.js";
 import { Toast } from "./Toast.js";
+import { TODO_MAX_ROWS, TodoList } from "./TodoList.js";
 import { ActiveToolCard, CompletedToolCard } from "./ToolCard.js";
 import { TranscriptReview } from "./TranscriptReview.js";
 import { modeColor, palette } from "./theme.js";
@@ -133,6 +133,40 @@ function TranscriptRegion({ store, expandedId }: { store: TuiStore; expandedId: 
 }
 
 /**
+ * Live-chrome rows around the streaming window, derived from ACTUAL state
+ * (not a worst-case constant): the status line hides while tools run, the
+ * todo list and tool cards are capped, toast/help are transient. Keeping this
+ * exact is what makes the frame-height invariant hold when everything is
+ * visible at once, without wasting space in the common case.
+ */
+function selectLiveChromeRows(s: StoreState): number {
+  let rows = 0;
+  // Status line (hidden while tools run — the tool cards replace it).
+  if (s.busy && s.activeTools.length === 0 && s.spinner !== "idle") rows += 1;
+  // Todo region: windowed to at most TODO_MAX_ROWS rows.
+  if (s.todos.length > 0) rows += Math.min(s.todos.length, TODO_MAX_ROWS);
+  // Active tool cards: ≤3 + one overflow row.
+  rows += Math.min(s.activeTools.length, 3) + (s.activeTools.length > 3 ? 1 : 0);
+  if (s.toast) rows += 1;
+  // Help panel is clipped to max(5, rows-8) — while it's open, conservatively
+  // assume the clip fills (streaming shrinks to the floor; the user is reading
+  // help, not the stream).
+  if (s.showHelp) rows += 20;
+  return rows;
+}
+
+/** Rows the streaming window must always leave: input box (4) + status bar
+ *  (1) + its own margin (1) + elision hint (1) + wrap-estimation slack (1). */
+const LIVE_FIXED_ROWS = 8;
+
+function useLiveMaxLines(store: TuiStore, termRows: number): number {
+  const chromeRows = useStoreSelector(store, selectLiveChromeRows);
+  // Pathological case (tiny terminal + everything visible): the floor of 2 can
+  // still overflow — the pager (PgUp) is the escape hatch there.
+  return Math.max(2, termRows - chromeRows - LIVE_FIXED_ROWS);
+}
+
+/**
  * Live streaming assistant text. Subscribes to ONLY `streamingText`, so the
  * ~30fps stream of token deltas re-renders this leaf and nothing else (M24.3).
  * Markdown is rendered LIVE via StreamingMarkdown: completed blocks settle into
@@ -149,8 +183,8 @@ function TranscriptRegion({ store, expandedId }: { store: TuiStore; expandedId: 
 function StreamingRegion({ store }: { store: TuiStore }) {
   const streamingText = useStoreField(store, "streamingText");
   const { rows, columns } = useTerminalSize();
+  const maxLines = useLiveMaxLines(store, rows);
   if (!streamingText) return null;
-  const maxLines = Math.max(3, rows - LIVE_CHROME_ROWS);
   // Slice the tail and re-wrap it a few columns NARROWER than the body column,
   // so Ink's own wrap never reflows these lines (wrap-ansi trim:false can push
   // a boundary segment past the terminal width, which wraps mid-frame and
@@ -160,9 +194,7 @@ function StreamingRegion({ store }: { store: TuiStore }) {
   const { text, hiddenLines } = tailVisualLines(streamingText, maxLines, columns - 8);
   return (
     <Box marginBottom={1} flexDirection="column">
-      {hiddenLines > 0 ? (
-        <Text dimColor>{`  … 上文约 ${hiddenLines} 行（PgUp 回滚查看）`}</Text>
-      ) : null}
+      {hiddenLines > 0 ? <Text dimColor>{`  … 上文约 ${hiddenLines} 行已省略`}</Text> : null}
       <Box maxHeight={maxLines} overflowY="hidden" flexDirection="column">
         <AssistantMessage>
           <StreamingMarkdown>{text}</StreamingMarkdown>
@@ -179,14 +211,12 @@ function StreamingRegion({ store }: { store: TuiStore }) {
 function ThinkingRegion({ store }: { store: TuiStore }) {
   const streamingThinking = useStoreField(store, "streamingThinking");
   const { rows, columns } = useTerminalSize();
+  const maxLines = useLiveMaxLines(store, rows);
   if (!streamingThinking) return null;
-  const maxLines = Math.max(3, rows - LIVE_CHROME_ROWS);
   const { text, hiddenLines } = tailVisualLines(streamingThinking, maxLines, columns - 6);
   return (
     <Box flexDirection="column">
-      {hiddenLines > 0 ? (
-        <Text dimColor>{`  … 思考前文约 ${hiddenLines} 行（PgUp 回滚查看）`}</Text>
-      ) : null}
+      {hiddenLines > 0 ? <Text dimColor>{`  … 思考前文约 ${hiddenLines} 行已省略`}</Text> : null}
       <Box maxHeight={maxLines} overflowY="hidden" flexDirection="column">
         <Text dimColor italic>
           {text}
@@ -213,49 +243,15 @@ function ActiveToolsRegion({ store }: { store: TuiStore }) {
   );
 }
 
-/** One row of the pinned todo list. The first row carries the `⎿` connector
- *  (hanging from the status line above); continuation rows align under it. */
-function TodoRow({ item, first }: { item: TodoDisplayItem; first: boolean }) {
-  const prefix = first ? "  ⎿  " : "     ";
-  if (item.status === "completed") {
-    return (
-      <Text dimColor>
-        {prefix}☑ <Text strikethrough>{item.content}</Text>
-      </Text>
-    );
-  }
-  if (item.status === "in_progress") {
-    return (
-      <Text>
-        {prefix}
-        <Text color={palette.accent}>■ </Text>
-        {item.content}
-        {item.activeForm ? <Text dimColor>{` — ${item.activeForm}`}</Text> : null}
-      </Text>
-    );
-  }
-  return <Text dimColor>{`${prefix}□ ${item.content}`}</Text>;
-}
-
 /** Pinned live todo list, hanging below the status line (mirrors the reference
  *  layout: spinner on top, todo list attached under it via `⎿`). The list is a
  *  projection of the Todo tool's session state — it updates in place on every
- *  todo call and persists after the turn ends until the next update.
- *  Capped at 5 rows (4 items + overflow line) to respect the frame-height
- *  invariant; the full list is always visible in the PgUp pager. */
+ *  todo call and persists after the turn ends until the next update. Rendering
+ *  (incl. the active-item-centered window for long lists) lives in TodoList. */
 function TodoRegion({ store }: { store: TuiStore }) {
   const todos = useStoreField(store, "todos");
   if (todos.length === 0) return null;
-  const visible = todos.length > 5 ? todos.slice(0, 4) : todos;
-  const hidden = todos.length - visible.length;
-  return (
-    <Box flexDirection="column">
-      {visible.map((t, i) => (
-        <TodoRow key={i} item={t} first={i === 0} />
-      ))}
-      {hidden > 0 ? <Text dimColor>{`     … 还有 ${hidden} 项`}</Text> : null}
-    </Box>
-  );
+  return <TodoList todos={todos} />;
 }
 
 /**
@@ -362,7 +358,7 @@ function StatusBar({ store }: { store: TuiStore }) {
   return (
     <Box>
       <Text dimColor>
-        {busy ? "working… (Ctrl+C interrupt)" : "? shortcuts · ← agents · / commands · PgUp 回滚"}
+        {busy ? "working… (Ctrl+C interrupt)" : "? shortcuts · ← agents · / commands"}
         {" · "}
       </Text>
       <Text color={modeColor(permissionMode)} bold>
@@ -412,9 +408,14 @@ function ModeHotkey({ store }: { store: TuiStore }) {
 }
 
 /**
- * The regions between Toast and StatusBar. Subscribes to `reviewing` only: when
- * the transcript pager is open it REPLACES the transcript/live/input regions
- * (the InputBox must unmount so its ↑/↓ history keys don't fight the pager).
+ * The regions between Toast and StatusBar. Subscribes to `reviewing` only.
+ * When the transcript pager is open it REPLACES the live/input regions (the
+ * InputBox must unmount so its ↑/↓ history keys don't fight the pager) — but
+ * TranscriptRegion stays MOUNTED either way: Ink's <Static> restarts its
+ * emitted-index at 0 on remount, so unmounting it here would reprint the
+ * entire transcript into the scrollback every time the pager closes. New
+ * items committed while reviewing simply print above the pager (normal
+ * terminal scroll); the pager itself becomes the live region.
  */
 function ReviewableBody({
   store,
@@ -430,7 +431,14 @@ function ReviewableBody({
   editorMode?: { value: "default" | "vim" };
 }) {
   const reviewing = useStoreField(store, "reviewing");
-  if (reviewing) return <TranscriptReview store={store} />;
+  if (reviewing) {
+    return (
+      <>
+        <TranscriptRegion store={store} expandedId={expandedId} />
+        <TranscriptReview store={store} />
+      </>
+    );
+  }
   return (
     <>
       <TranscriptRegion store={store} expandedId={expandedId} />
