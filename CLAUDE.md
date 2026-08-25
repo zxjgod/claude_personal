@@ -35,6 +35,8 @@ CLI Entry --> Config/API Client --> System Prompt Builder --> Agent Loop --> Too
   - `快速开始.md` — install / config / run / smoke-test flow
   - `项目总览.md` — architecture, module list, completion status
   - `项目评审报告.md` — source-level review with findings & fixes
+  - `architecture/` — Claude Code internals analysis (tool-call flow, agent
+    loop & extended thinking, terminal status UI; with source line refs)
   - `archive/` — historical ROADMAPs, changelogs, comparison tables (numbers may be stale)
 
 ## Implementation Phases

@@ -1242,6 +1242,7 @@ async function main() {
       let streamedChars = 0;
       let thinkingStart = 0;
       let thoughtReported = false;
+      let thinkingStreamed = false;
       // P2-1: Track idle time for long response warning
       let lastActivityTime = Date.now();
       let idleWarningShown = false;
@@ -1252,37 +1253,59 @@ async function main() {
         idleWarningShown = false;
       };
 
+      // One-line "⏱ 推理耗时 Ns" report, fired at the first sign of reasoning
+      // (thinking delta) or answer text — whichever arrives first.
+      const reportThought = () => {
+        if (thoughtReported || thinkingStart <= 0) return;
+        const secs = Math.max(1, Math.round((Date.now() - thinkingStart) / 1000));
+        spinner.stop();
+        // P1-3: Enhanced thinking report with context
+        const contextTip =
+          secs > 30
+            ? chalk.gray(" (模型正在推理复杂任务)")
+            : secs > 10
+              ? chalk.gray(" (等待模型响应)")
+              : "";
+        console.log(chalk.dim(`  ⏱ 推理耗时 ${secs}s${contextTip}`));
+        thoughtReported = true;
+      };
+
       for await (const event of loop) {
         switch (event.type) {
           case "thinking":
             void persistence.save(sessionId!, messages, { taskState: "waiting_for_model" });
             thinkingStart = Date.now();
             thoughtReported = false;
+            thinkingStreamed = false;
             resetIdleTimer();
             spinner.setMode("thinking");
             spinner.start();
             break;
 
+          case "thinking_delta": {
+            // Live reasoning content (Anthropic extended thinking). Raw prose —
+            // bypass the markdown renderer and stream inline, dimmed.
+            resetIdleTimer();
+            reportThought();
+            spinner.stop();
+            if (!thinkingStreamed) {
+              thinkingStreamed = true;
+              process.stdout.write(chalk.dim("  💭 "));
+            }
+            process.stdout.write(chalk.dim(event.delta));
+            break;
+          }
+
           case "text_delta": {
             // First visible text ends the "thinking" phase: print the
             // "Thought for Ns" line, then switch the spinner to responding.
-            if (!thoughtReported && thinkingStart > 0) {
-              const secs = Math.max(1, Math.round((Date.now() - thinkingStart) / 1000));
-              spinner.stop();
-              // P1-3: Enhanced thinking report with context
-              const contextTip =
-                secs > 30
-                  ? chalk.gray(" (模型正在推理复杂任务)")
-                  : secs > 10
-                    ? chalk.gray(" (等待模型响应)")
-                    : "";
-              console.log(
-                chalk.dim(`  ⏱ 推理耗时 ${secs}s${contextTip}`) +
-                  chalk.gray(" (ctrl+o 查看完整思考过程)"),
-              );
-              thoughtReported = true;
-            }
+            reportThought();
             spinner.stop();
+            if (thinkingStreamed) {
+              // Separate the dimmed thinking line from the answer body.
+              process.stdout.write("\n");
+              thinkingStreamed = false;
+            }
             renderer.write(event.delta);
             streamedChars += event.delta.length;
             spinner.update({ tokens: Math.round(streamedChars / 4) });
@@ -1300,6 +1323,12 @@ async function main() {
             void persistence.save(sessionId!, messages, { taskState: "waiting_for_tool" });
             resetIdleTimer();
             spinner.stop();
+            if (thinkingStreamed) {
+              // Thinking → tool call with no intervening text: terminate the
+              // dimmed line before the tool card renders.
+              process.stdout.write("\n");
+              thinkingStreamed = false;
+            }
             renderer.flush();
             // Official Claude Code style: orange ● + Name(detail).
             renderToolStart(event.name, event.input);

@@ -53,6 +53,128 @@ describe("App", () => {
     );
     expect(lastFrame()).toMatch(/Thinking|working/);
   });
+
+  it("pins the live todo list under the status line (⎿ connector)", () => {
+    const store = new TuiStore("p/m");
+    store.setBusy(true);
+    store.setSpinner("thinking");
+    store.setTodos([
+      { content: "研究三大机制", status: "completed" },
+      { content: "编写原理文档", status: "in_progress", activeForm: "编写原理文档" },
+      { content: "实现 mini-agent", status: "pending" },
+    ]);
+    const { lastFrame } = render(
+      <App store={store} commands={commands} onSubmit={noopSubmit} expandedId={null} />,
+    );
+    const frame = lastFrame()!;
+    // First row hangs off the status line via the ⎿ connector.
+    expect(frame).toContain("⎿");
+    expect(frame).toContain("☑ 研究三大机制");
+    expect(frame).toContain("■ 编写原理文档");
+    expect(frame).toContain("□ 实现 mini-agent");
+  });
+
+  it("hides the todo region when the list is empty", () => {
+    const store = new TuiStore("p/m");
+    const { lastFrame } = render(
+      <App store={store} commands={commands} onSubmit={noopSubmit} expandedId={null} />,
+    );
+    expect(lastFrame()).not.toContain("⎿");
+  });
+
+  // Regression cover for the frame-leak bug: a live frame taller than the
+  // terminal breaks Ink's erase math and leaks the frame's top line into the
+  // scrollback on every redraw (the "● line repeated 50×" symptom). The stream
+  // regions must window themselves so the frame never exceeds the viewport
+  // (ink-testing-library falls back to 80×24, so the budget is 24 rows).
+  it("windows a very long streaming reply so the frame stays within 24 rows", () => {
+    const store = new TuiStore("p/m");
+    store.setBusy(true);
+    store.setSpinner("responding");
+    // ~60 visual lines at 80 cols — far taller than the 24-row viewport.
+    store.appendStreaming(
+      "I'll conduct a comprehensive code review. ".repeat(6) +
+        "\n" +
+        Array.from({ length: 40 }, (_, i) => `finding ${i}: the agent loop handles this path`).join(
+          "\n",
+        ),
+    );
+    const { lastFrame } = render(
+      <App store={store} commands={commands} onSubmit={noopSubmit} expandedId={null} />,
+    );
+    const frame = lastFrame()!;
+    const lineCount = frame.split("\n").length;
+    expect(lineCount).toBeLessThanOrEqual(24);
+    expect(frame).toContain("PgUp 回滚查看"); // elision hint
+    expect(frame).toContain("finding 39"); // the live tail stays visible
+    expect(frame).not.toContain("finding 0"); // scrolled-off head is hidden
+  });
+
+  it("windows a very long thinking stream the same way", () => {
+    const store = new TuiStore("p/m");
+    store.setBusy(true);
+    store.setSpinner("thinking");
+    store.appendStreaming(""); // keep text empty; thinking is the live region
+    store.appendThinking(
+      Array.from({ length: 40 }, (_, i) => `reasoning step ${i} about the codebase`).join("\n"),
+    );
+    const { lastFrame } = render(
+      <App store={store} commands={commands} onSubmit={noopSubmit} expandedId={null} />,
+    );
+    const frame = lastFrame()!;
+    expect(frame.split("\n").length).toBeLessThanOrEqual(24);
+    expect(frame).toContain("思考前文");
+    expect(frame).toContain("reasoning step 39");
+    expect(frame).not.toContain("reasoning step 0");
+  });
+
+  it("caps the pinned todo list with an overflow line", () => {
+    const store = new TuiStore("p/m");
+    store.setTodos(
+      Array.from({ length: 7 }, (_, i) => ({
+        content: `task ${i}`,
+        status: "pending" as const,
+      })),
+    );
+    const { lastFrame } = render(
+      <App store={store} commands={commands} onSubmit={noopSubmit} expandedId={null} />,
+    );
+    const frame = lastFrame()!;
+    expect(frame).toContain("task 0");
+    expect(frame).toContain("task 3");
+    expect(frame).not.toContain("task 4"); // beyond the 4-item window
+    expect(frame).toContain("还有 3 项");
+  });
+
+  it("caps concurrent active tool cards with an overflow line", () => {
+    const store = new TuiStore("p/m");
+    for (let i = 0; i < 5; i++) store.startTool("read", `file-${i}.ts`, `c${i}`);
+    const { lastFrame } = render(
+      <App store={store} commands={commands} onSubmit={noopSubmit} expandedId={null} />,
+    );
+    const frame = lastFrame()!;
+    expect(frame).toContain("file-0.ts");
+    expect(frame).toContain("file-2.ts");
+    expect(frame).not.toContain("file-3.ts"); // beyond the 3-card window
+    expect(frame).toContain("+2 个工具运行中");
+  });
+
+  it("PgUp opens the transcript review pager (and swaps out the input box)", async () => {
+    const store = new TuiStore("p/m");
+    store.addUserMessage("old question");
+    const { stdin, lastFrame } = render(
+      <App store={store} commands={commands} onSubmit={noopSubmit} expandedId={null} />,
+    );
+    await new Promise((r) => setTimeout(r, 10));
+    stdin.write("\x1b[5~"); // PgUp
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(store.getSnapshot().reviewing).toBe(true);
+    const frame = lastFrame()!;
+    expect(frame).toContain("Transcript —");
+    expect(frame).toContain("old question");
+    expect(frame).toContain("Esc 返回");
+  });
 });
 
 describe("CompletedToolCard collapse (9.4)", () => {

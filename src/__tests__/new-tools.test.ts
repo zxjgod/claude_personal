@@ -119,6 +119,20 @@ describe("TodoTool", () => {
     const todosB = getTodos("other-session");
     expect(todosB).toHaveLength(0);
   });
+
+  it("exposes the structured list + compact summary in metadata (TUI live region)", async () => {
+    const input = [
+      { content: "Done task", status: "completed", activeForm: "Finishing" },
+      { content: "Active task", status: "in_progress", activeForm: "Working" },
+      { content: "Later task", status: "pending", activeForm: "Waiting" },
+    ];
+    const result = await TodoTool.call({ todos: input }, ctx);
+
+    // The TUI pins metadata.todos under the spinner — it must carry the full
+    // structured state, and the committed tool row uses the compact summary.
+    expect(result.metadata?.todos).toEqual(input);
+    expect(result.metadata?.summary).toBe("Updated todo list: 3 items (1 done)");
+  });
 });
 
 // --- WebFetchTool (static tests, no network) ---

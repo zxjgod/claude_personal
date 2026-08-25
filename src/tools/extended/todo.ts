@@ -7,16 +7,14 @@
 // ============================================================
 
 import { z } from "zod";
-import type { Tool, ToolResult } from "../../types.js";
+import type { TodoDisplayItem, Tool, ToolResult } from "../../types.js";
 import { buildTool } from "../registry.js";
 
 // --- Types ---
 
-interface TodoItem {
-  content: string;
-  status: "pending" | "in_progress" | "completed";
-  activeForm: string;
-}
+// The tool's item shape IS the display shape: the TUI pins the list under the
+// spinner as a live projection of this state (via metadata.todos).
+type TodoItem = TodoDisplayItem;
 
 const TodoItemSchema = z.strictObject({
   content: z.string().describe("Task description"),
@@ -104,6 +102,10 @@ export const TodoTool: Tool = buildTool({
       content,
       metadata: {
         linesRead: counts.total,
+        // Compact committed row for both UIs; the TUI's live region reads the
+        // structured list below instead of this text.
+        summary: `Updated todo list: ${counts.total} items (${counts.completed} done)`,
+        todos: todos.map((t) => ({ ...t })),
       },
     };
   },

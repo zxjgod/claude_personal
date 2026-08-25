@@ -35,6 +35,9 @@ function itemLines(item: TranscriptItem): string[] {
     }
     case "thought":
       return [`  Thought for ${item.seconds}s`];
+    case "thinking_text":
+      // Reasoning content, plain text (color is dropped in this path anyway).
+      return item.text.split("\n").map((l) => `  ${l}`);
     case "notice":
       return [item.text];
     case "log":
@@ -59,11 +62,18 @@ function itemLines(item: TranscriptItem): string[] {
  * A blank spacer row follows assistant/tool blocks to mirror the marginBottom
  * the <Static> path uses.
  */
-export function transcriptToLines(transcript: TranscriptItem[], streamingText: string): string[] {
+export function transcriptToLines(
+  transcript: TranscriptItem[],
+  streamingText: string,
+  streamingThinking = "",
+): string[] {
   const out: string[] = [];
   for (const item of transcript) {
     out.push(...itemLines(item));
     if (item.kind === "assistant" || item.kind === "tool") out.push("");
+  }
+  if (streamingThinking.trim()) {
+    out.push(...streamingThinking.split("\n").map((l) => `  ${l}`));
   }
   if (streamingText.trim()) {
     const md = renderMarkdown(streamingText).split("\n");

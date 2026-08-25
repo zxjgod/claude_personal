@@ -32,6 +32,14 @@ export interface AssistantMessage {
   role: "assistant";
   content: string | null;
   tool_calls?: ToolCall[];
+  /**
+   * Verbatim thinking blocks produced in this turn (Anthropic only). The API
+   * requires these — `signature` included — to be passed back unchanged at the
+   * START of the assistant content when interleaved thinking is enabled;
+   * dropping them 400s the next request after a tool-use turn. Absent on
+   * OpenAI-compatible paths.
+   */
+  thinking?: Array<ThinkingBlock | RedactedThinkingBlock>;
 }
 
 export interface ToolResultMessage {
@@ -66,6 +74,22 @@ export interface ImageContent {
   };
 }
 
+// --- Thinking Blocks (Anthropic, verbatim passback) ---
+// ============================================================================
+
+/** A completed thinking block from the model; pass back unchanged. */
+export interface ThinkingBlock {
+  type: "thinking";
+  thinking: string;
+  signature: string;
+}
+
+/** Redacted variant: encrypted payload, passed back verbatim as `data`. */
+export interface RedactedThinkingBlock {
+  type: "redacted_thinking";
+  data: string;
+}
+
 // --- Tool Calls ---
 // ============================================================================
 
@@ -98,6 +122,17 @@ export interface ToolResult {
   images?: ImageContent[];
 }
 
+/**
+ * One row of the live todo display. Shared by the Todo tool (producer, via
+ * ToolResultMetadata.todos) and the TUI store (consumer) so the pinned list
+ * under the spinner is always a projection of the tool's internal state.
+ */
+export interface TodoDisplayItem {
+  content: string;
+  status: "pending" | "in_progress" | "completed";
+  activeForm?: string;
+}
+
 export interface ToolResultMetadata {
   durationMs?: number;
   linesRead?: number;
@@ -117,6 +152,11 @@ export interface ToolResultMetadata {
    * folded content preview.
    */
   summary?: string;
+  /**
+   * Structured todo list (Todo tool only). The TUI pins this under the spinner
+   * as a live region; the committed tool row stays compact via `summary`.
+   */
+  todos?: TodoDisplayItem[];
 }
 
 export interface ToolContext {
@@ -380,6 +420,14 @@ export type StreamEvent =
         cache_creation_input_tokens?: number;
       };
       finish_reason: string;
+      /**
+       * Final, signed thinking blocks from the completed message (Anthropic
+       * only). Delivered atomically on `done` because the signature arrives
+       * via `signature_delta` at the very end of the block — deltas alone
+       * cannot reconstruct a passback-ready block. Absent when the model
+       * produced no thinking.
+       */
+      thinking?: Array<ThinkingBlock | RedactedThinkingBlock>;
     }
   | { type: "error"; error: Error };
 
@@ -392,6 +440,10 @@ export type LoopEvent =
   | { type: "tool_result"; id: string; result: ToolExecutionResult }
   | { type: "tool_results"; results: ToolExecutionResult[] }
   | { type: "thinking" }
+  /** Live reasoning content, dimmed display only. Distinct from the
+   * `{type:"thinking"}` phase marker so consumers don't reset spinner state
+   * per token. */
+  | { type: "thinking_delta"; delta: string }
   | { type: "compacting" }
   | { type: "compacted"; summary: string }
   | {

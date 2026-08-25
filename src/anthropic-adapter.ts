@@ -12,7 +12,15 @@ import { checkResponseForCacheBreak, recordPromptState } from "./prompt-cache.js
 import { DYNAMIC_BOUNDARY } from "./system-prompt.js";
 import { DEFAULT_MAX_RESULT_CHARS, truncateToolResult } from "./tools/truncation.js";
 import { anthropicEffort, getEffort } from "./tui/effort.js";
-import type { Message, ModelCaller, ModelConfig, StreamEvent, Tool } from "./types.js";
+import type {
+  Message,
+  ModelCaller,
+  ModelConfig,
+  RedactedThinkingBlock,
+  StreamEvent,
+  ThinkingBlock,
+  Tool,
+} from "./types.js";
 import { combineAbortSignals } from "./utils/cancellation.js";
 
 // --- Types kept intentionally local ---
@@ -122,6 +130,12 @@ export function convertMessagesToAnthropic(
 
       case "assistant": {
         const content: Array<Record<string, unknown>> = [];
+        // Interleaved thinking invariant: thinking blocks (signature included)
+        // must come FIRST in the assistant content and be passed back verbatim —
+        // spread-copy, never rebuild — or the API 400s the follow-up request.
+        for (const tb of msg.thinking ?? []) {
+          content.push({ ...tb });
+        }
         if (msg.content) {
           content.push({ type: "text", text: msg.content });
         }
@@ -177,6 +191,10 @@ export function convertMessagesToAnthropic(
 }
 
 function mergeAdjacentSameRoleMessages(messages: AnthropicMessage[]): AnthropicMessage[] {
+  // Note: if two assistant messages were ever merged, the second's thinking
+  // blocks would land mid-content and violate the thinking-first ordering rule.
+  // In practice tool_result user messages always separate assistant turns, so
+  // this path only merges same-role user/tool runs.
   const merged: AnthropicMessage[] = [];
   for (const msg of messages) {
     const prev = merged[merged.length - 1];
@@ -270,6 +288,13 @@ export const anthropicCaller: ModelCaller = async function* (
     effort: getEffort(config.options),
   });
 
+  // Claude 4.8 benefits from adaptive thinking; harmlessly omitted when the
+  // caller uses a non-Claude provider because this adapter only runs for
+  // provider="anthropic". An explicit options.thinking still wins.
+  const thinking = config.options?.thinking ?? { type: "adaptive" };
+  const thinkingEnabled =
+    typeof thinking === "object" && (thinking as { type?: string }).type !== "disabled";
+
   const stream = client.messages.stream(
     {
       model: config.model || "claude-opus-4-8",
@@ -277,17 +302,22 @@ export const anthropicCaller: ModelCaller = async function* (
       system: formatSystemForAnthropic(systemPrompt) as any,
       messages: withMessageCacheBreakpoint(convertMessagesToAnthropic(messages, tools)) as any,
       tools: tools.length > 0 ? (formatToolsForAnthropic(tools) as any) : undefined,
-      // Claude 4.8 benefits from adaptive thinking; harmlessly omitted when the
-      // caller uses a non-Claude provider because this adapter only runs for
-      // provider="anthropic".
-      thinking: config.options?.thinking ?? { type: "adaptive" },
+      thinking,
       // The /effort tier drives reasoning depth. An explicit output_config in
       // options still wins; otherwise map the tier (default "high").
       output_config: config.options?.output_config ?? {
         effort: anthropicEffort(getEffort(config.options)),
       },
     } as any,
-    { signal: combinedSignal },
+    {
+      signal: combinedSignal,
+      // Interleaved thinking beta (SDK 0.105 has no `betas` request param, so
+      // go through RequestOptions.headers). Lets thinking blocks appear between
+      // tool_use rounds in one turn; required for the passback invariant below.
+      ...(thinkingEnabled
+        ? { headers: { "anthropic-beta": "interleaved-thinking-2025-05-14" } }
+        : {}),
+    },
   );
 
   // If the caller aborts (Ctrl+C), ask the SDK to stop the stream immediately
@@ -312,6 +342,10 @@ export const anthropicCaller: ModelCaller = async function* (
       if (event.type === "content_block_delta") {
         if (event.delta.type === "text_delta") {
           yield { type: "text_delta", delta: event.delta.text };
+        } else if (event.delta.type === "thinking_delta") {
+          // Live reasoning content for the UI. `signature_delta` has no live
+          // consumer — finalMessage() carries the complete signed block.
+          yield { type: "thinking", delta: event.delta.thinking };
         }
         // `input_json_delta` is accumulated by the SDK finalMessage helper;
         // no partial tool input event is needed by the current agent loop.
@@ -328,6 +362,11 @@ export const anthropicCaller: ModelCaller = async function* (
 
     const final = await stream.finalMessage();
 
+    // Collect signed thinking blocks alongside tool_use. They are attached to
+    // the `done` event (atomic handoff: the signature only exists here, never
+    // in deltas) and the agent loop stores them on the assistant message for
+    // verbatim passback in convertMessagesToAnthropic above.
+    const thinkingBlocks: Array<ThinkingBlock | RedactedThinkingBlock> = [];
     for (const block of final.content as any[]) {
       if (block.type === "tool_use") {
         yield {
@@ -336,6 +375,14 @@ export const anthropicCaller: ModelCaller = async function* (
           name: block.name,
           input: block.input ?? {},
         };
+      } else if (block.type === "thinking") {
+        thinkingBlocks.push({
+          type: "thinking",
+          thinking: block.thinking,
+          signature: block.signature,
+        });
+      } else if (block.type === "redacted_thinking") {
+        thinkingBlocks.push({ type: "redacted_thinking", data: block.data });
       }
     }
 
@@ -378,6 +425,7 @@ export const anthropicCaller: ModelCaller = async function* (
         cache_creation_input_tokens: cacheCreation,
       },
       finish_reason: finishReason,
+      ...(thinkingBlocks.length > 0 ? { thinking: thinkingBlocks } : {}),
     };
   } finally {
     abortSignal?.removeEventListener("abort", onAbort);

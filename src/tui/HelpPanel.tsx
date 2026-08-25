@@ -34,6 +34,7 @@ const SHORTCUTS = [
   ["?", "Show this help panel"],
   ["/", "Open command palette"],
   ["← (left arrow)", "Switch to agent list panel"],
+  ["PgUp", "Open transcript review (scrollable pager, Esc to close)"],
   ["PgUp / Ctrl+U", "Scroll up (full-screen mode)"],
   ["PgDn / Ctrl+D", "Scroll down (full-screen mode)"],
   ["Ctrl+End or G", "Jump to bottom (full-screen mode)"],

@@ -186,6 +186,32 @@ describe("TuiStore", () => {
     expect(store.getSnapshot().turnStartedAt).toBe(0);
   });
 
+  it("toggles transcript review mode", () => {
+    const store = new TuiStore("p/m");
+    expect(store.getSnapshot().reviewing).toBe(false);
+    store.setReviewing(true);
+    expect(store.getSnapshot().reviewing).toBe(true);
+    store.setReviewing(false);
+    expect(store.getSnapshot().reviewing).toBe(false);
+  });
+
+  it("setTodos replaces the live todo list (projection of Todo tool state)", () => {
+    const store = new TuiStore("p/m");
+    expect(store.getSnapshot().todos).toEqual([]);
+
+    const todos = [
+      { content: "First", status: "completed" as const },
+      { content: "Second", status: "in_progress" as const, activeForm: "Doing second" },
+      { content: "Third", status: "pending" as const },
+    ];
+    store.setTodos(todos);
+    expect(store.getSnapshot().todos).toEqual(todos);
+
+    // Complete replacement (the tool sends the FULL list each time).
+    store.setTodos([{ content: "Only", status: "pending" }]);
+    expect(store.getSnapshot().todos).toEqual([{ content: "Only", status: "pending" }]);
+  });
+
   it("cycles permission modes in the Shift+Tab order", () => {
     const store = new TuiStore("p/m", { permissionMode: "default" });
     expect(store.getPermissionMode()).toBe("default");

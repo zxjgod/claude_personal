@@ -17,6 +17,7 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       "shift+tab": "chat:cycleMode",
       "?": "help:toggle",
       "ctrl+c": "app:interrupt",
+      pageup: "transcript:review",
     },
   },
 ];

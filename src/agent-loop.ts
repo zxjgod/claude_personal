@@ -33,6 +33,7 @@ import {
 import { startToolSummary } from "./tools/summary.js";
 import type {
   AskUserFn,
+  AssistantMessage,
   LoopEvent,
   LoopOptions,
   Message,
@@ -266,6 +267,9 @@ export async function* agentLoop(
 
     let textBuffer = "";
     let lastTurnOutput = 0;
+    // Signed thinking blocks from the model, captured at `done` and stored on
+    // the assistant message for verbatim passback (see anthropic-adapter.ts).
+    let thinkingBlocks: AssistantMessage["thinking"];
     const toolCalls: ToolCall[] = [];
     let usage: { input_tokens: number; output_tokens: number } | null = null;
     const windowAtCall = messages.length;
@@ -288,6 +292,12 @@ export async function* agentLoop(
             yield { type: "text_delta", delta: event.delta };
             break;
 
+          case "thinking":
+            // Live reasoning content → UI display only. The signed blocks for
+            // history arrive on `done` (signature is final-only).
+            if (event.delta) yield { type: "thinking_delta", delta: event.delta };
+            break;
+
           case "tool_use":
             toolCalls.push({
               id: event.id,
@@ -302,6 +312,7 @@ export async function* agentLoop(
             usage = event.usage;
             lastTurnOutput = event.usage.output_tokens;
             modelFinishReason = event.finish_reason;
+            thinkingBlocks = event.thinking;
             const promptTokens = event.usage.input_tokens;
             state = {
               ...state,
@@ -401,8 +412,14 @@ export async function* agentLoop(
 
     // === STEP 3: No tool calls — turn would end here (kernel §8) ===
     if (toolCalls.length === 0) {
-      if (textBuffer) {
-        messages.push({ role: "assistant", content: textBuffer });
+      // A thinking-only turn (no text, no tools) must still persist its signed
+      // thinking blocks — the history would otherwise silently drop them.
+      if (textBuffer || thinkingBlocks?.length) {
+        messages.push({
+          role: "assistant",
+          content: textBuffer,
+          ...(thinkingBlocks?.length ? { thinking: thinkingBlocks } : {}),
+        });
       }
 
       if (hooks?.runStop) {
@@ -486,7 +503,14 @@ export async function* agentLoop(
     }
 
     // === STEP 4: Add assistant message to history ===
-    messages.push({ role: "assistant", content: textBuffer || null, tool_calls: toolCalls });
+    // The thinking blocks MUST ride along here: with interleaved thinking the
+    // API 400s the next request if the tool_use turn lost its thinking block.
+    messages.push({
+      role: "assistant",
+      content: textBuffer || null,
+      tool_calls: toolCalls,
+      ...(thinkingBlocks?.length ? { thinking: thinkingBlocks } : {}),
+    });
 
     // === STEP 5: Execute tool calls ===
     const toolResults: ToolExecutionResult[] = new Array(toolCalls.length);

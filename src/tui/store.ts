@@ -9,12 +9,13 @@
 // testable. Components read snapshots via useSyncExternalStore.
 // ============================================================
 
-import type { PermissionMode, ToolExecutionResult } from "./../types.js";
+import type { PermissionMode, TodoDisplayItem, ToolExecutionResult } from "./../types.js";
 import type { EffortLevel } from "./effort.js";
 
 export type TranscriptItem =
   | { kind: "user"; id: number; text: string }
   | { kind: "assistant"; id: number; text: string }
+  | { kind: "thinking_text"; id: number; text: string }
   | { kind: "tool"; id: number; name: string; detail: string; result?: ToolExecutionResult }
   | { kind: "thought"; id: number; seconds: number }
   | { kind: "notice"; id: number; text: string }
@@ -112,6 +113,14 @@ export interface StoreState {
   transcript: TranscriptItem[];
   /** Live assistant text currently streaming (not yet committed). */
   streamingText: string;
+  /** Live reasoning content (extended thinking) currently streaming. */
+  streamingThinking: string;
+  /**
+   * Current todo list — a live projection of the Todo tool's session state,
+   * updated from the tool's result metadata on every todo call. Pinned under
+   * the spinner as a persistent live region (empty = hidden).
+   */
+  todos: TodoDisplayItem[];
   /**
    * Live tool cards currently executing (not yet committed). Multiple tools
    * run concurrently (parallel-safe reads/greps), so this is a list keyed by
@@ -142,6 +151,14 @@ export interface StoreState {
   showHelp: boolean;
   /** M41: input command history for ↑/↓ navigation. */
   inputHistory: string[];
+  /**
+   * Transcript review mode (PgUp opens, Esc closes). When true the App swaps
+   * the transcript/live/input regions for the in-app scrollable pager — the
+   * default <Static> path has no scrollback of its own (the terminal owns it),
+   * and on consoles with scroll-on-output snap the terminal fights the user
+   * while content streams. The pager makes scrolling app-controlled.
+   */
+  reviewing: boolean;
 }
 
 type Listener = () => void;
@@ -181,6 +198,8 @@ export class TuiStore {
     this.state = {
       transcript: [],
       streamingText: "",
+      streamingThinking: "",
+      todos: [],
       activeTools: [],
       spinner: "idle",
       spinnerTokens: 0,
@@ -194,6 +213,7 @@ export class TuiStore {
       toast: null,
       showHelp: false,
       inputHistory: [],
+      reviewing: false,
     };
   }
 
@@ -343,6 +363,23 @@ export class TuiStore {
     const text = this.state.streamingText.trim();
     if (text) this.push({ kind: "assistant", text } as TranscriptItem);
     this.set({ streamingText: "" });
+  }
+
+  /** Append streamed thinking content to the live region. */
+  appendThinking(delta: string): void {
+    this.set({ streamingThinking: this.state.streamingThinking + delta });
+  }
+
+  /** Commit streamed thinking as a finished transcript item (dimmed render). */
+  commitThinking(): void {
+    const text = this.state.streamingThinking.trim();
+    if (text) this.push({ kind: "thinking_text", text } as TranscriptItem);
+    this.set({ streamingThinking: "" });
+  }
+
+  /** Replace the live todo list (called on every Todo tool result). */
+  setTodos(todos: TodoDisplayItem[]): void {
+    this.set({ todos });
   }
 
   addThought(seconds: number): void {
@@ -524,6 +561,11 @@ export class TuiStore {
   /** Set the input history (e.g. after loading from a session). */
   setInputHistory(history: string[]): void {
     this.set({ inputHistory: history.slice(-100) }); // Keep max 100 items
+  }
+
+  /** Enter/leave transcript review mode (PgUp / Esc). */
+  setReviewing(on: boolean): void {
+    this.set({ reviewing: on });
   }
 
   /** Update the status-bar model label (e.g. after a /provider switch). */

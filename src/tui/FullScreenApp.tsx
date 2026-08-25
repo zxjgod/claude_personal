@@ -174,6 +174,36 @@ function FsInteraction({
   );
 }
 
+/** Pinned live todo list between the scroll region and the status line (the
+ *  same projection of Todo-tool state as App.tsx's TodoRegion). */
+function FsTodoRegion({ store }: { store: TuiStore }) {
+  const todos = useStoreField(store, "todos");
+  if (todos.length === 0) return null;
+  return (
+    <Box flexDirection="column">
+      {todos.map((t, i) => {
+        const prefix = i === 0 ? "  ⎿  " : "     ";
+        if (t.status === "completed") {
+          return (
+            <Text key={i} dimColor>
+              {prefix}☑ <Text strikethrough>{t.content}</Text>
+            </Text>
+          );
+        }
+        if (t.status === "in_progress") {
+          return (
+            <Text key={i}>
+              {prefix}■ {t.content}
+              {t.activeForm ? <Text dimColor>{` — ${t.activeForm}`}</Text> : null}
+            </Text>
+          );
+        }
+        return <Text key={i} dimColor>{`${prefix}□ ${t.content}`}</Text>;
+      })}
+    </Box>
+  );
+}
+
 /** Mode hotkey — self-contained so FullScreenApp works without App.tsx. */
 function FsModeHotkey({ store }: { store: TuiStore }) {
   useInput((input, key) => {
@@ -200,8 +230,9 @@ export function FullScreenApp({
   const { rows } = useTerminalSize();
   const transcript = useStoreField(store, "transcript");
   const streamingText = useStoreField(store, "streamingText");
+  const streamingThinking = useStoreField(store, "streamingThinking");
 
-  const lines = transcriptToLines(transcript, streamingText);
+  const lines = transcriptToLines(transcript, streamingText, streamingThinking);
   const [scrollTop, setScrollTop] = useState(0);
   const [sticky, setSticky] = useState(true);
   const stickyRef = useRef(true);
@@ -274,6 +305,7 @@ export function FullScreenApp({
         fallbackHeight={Math.max(3, rows - 5)}
         onHeight={onViewportHeight}
       />
+      <FsTodoRegion store={store} />
       {!sticky ? (
         <Text dimColor>{"  ↑ scrolled — PgDn / Ctrl+End to return to latest"}</Text>
       ) : (

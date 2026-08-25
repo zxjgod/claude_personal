@@ -172,12 +172,23 @@ async function runTurn(
           thoughtReported = false;
           store.setSpinner("thinking");
           break;
+        case "thinking_delta":
+          // Live reasoning content: dims in the live region, commits to the
+          // transcript when text/tool events arrive or the turn ends.
+          if (!thoughtReported && thinkingStart > 0) {
+            const secs = Math.max(1, Math.round((Date.now() - thinkingStart) / 1000));
+            store.addThought(secs);
+            thoughtReported = true;
+          }
+          store.appendThinking(event.delta);
+          break;
         case "text_delta":
           if (!thoughtReported && thinkingStart > 0) {
             const secs = Math.max(1, Math.round((Date.now() - thinkingStart) / 1000));
             store.addThought(secs);
             thoughtReported = true;
           }
+          store.commitThinking();
           store.setSpinner("responding");
           streamedCharsThisCall += event.delta.length;
           streamBuffer.push(event.delta);
@@ -187,6 +198,7 @@ async function runTurn(
         case "tool_use": {
           deps.onSave("waiting_for_tool");
           streamBuffer.flush();
+          store.commitThinking();
           store.commitStreaming();
           const detail = toolDetail(event.input);
           toolDetails.set(event.id, detail);
@@ -196,6 +208,12 @@ async function runTurn(
         }
         case "tool_result": {
           store.finishTool(event.result, toolDetails.get(event.id) ?? "", event.id);
+          // Todo tool → live region: the pinned list is a projection of the
+          // tool's session state, delivered on every call via metadata.todos.
+          const todos = event.result.result?.metadata?.todos;
+          if (event.result.toolName === "todo" && Array.isArray(todos)) {
+            store.setTodos(todos);
+          }
           break;
         }
         case "tool_results":
@@ -216,17 +234,20 @@ async function runTurn(
         case "error":
           deps.onSave("failed");
           streamBuffer.flush();
+          store.commitThinking();
           store.commitStreaming();
           store.addNotice(`⎿ ${formatCliError(event.error)}`);
           break;
         case "aborted":
           deps.onSave("stopped_by_user", "aborted_by_user");
           streamBuffer.flush();
+          store.commitThinking();
           store.commitStreaming();
           store.addNotice(`⎿ Aborted: ${event.reason}`);
           break;
         case "done":
           streamBuffer.flush();
+          store.commitThinking();
           store.commitStreaming();
           // Log commit for debugging
           debugLogger.logCommit(store.getSnapshot().streamingText, streamedCharsThisCall);
