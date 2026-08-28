@@ -28,15 +28,21 @@ const MODES: Array<{ name: string; description: string }> = [
   },
 ];
 
-const SHORTCUTS = [
+// Only shortcuts that are actually wired. Every row here must have a live
+// handler — this panel is the source users trust, so documented-but-unimplemented
+// keys ("← agents", mouse-wheel scroll) must not reappear.
+const SHORTCUTS: Array<[string, string]> = [
   ["Shift+Tab", "Cycle permission mode (default → acceptEdits → bypassPermissions → plan)"],
-  ["Ctrl+C", "Interrupt the current agent turn"],
+  ["Esc / Ctrl+C", "Interrupt the running turn · Ctrl+C exits when idle"],
+  ["Ctrl+R", "Expand the latest collapsed tool output"],
   ["?", "Show this help panel"],
-  ["/", "Open command palette"],
-  ["← (left arrow)", "Switch to agent list panel"],
-  ["↑↓ / 鼠标滚轮", "滚动查看历史消息"],
-  ["Ctrl+U / Ctrl+D", "快速滚动半页（全屏模式）"],
-  ["Ctrl+End or G", "Jump to bottom (full-screen mode)"],
+  ["/", "Slash command palette (Tab accepts the selection)"],
+  ["@path", "File-path completion at the cursor (Tab inserts · Esc closes)"],
+  ["↑ / ↓", "Palette selection · input history when the palette is closed"],
+  ["Ctrl+← / Ctrl+→", "Jump to the previous / next word in the input"],
+  ["PgUp", "Open the transcript pager (scroll while the model streams)"],
+  ["PgUp/PgDn · Ctrl+B/F", "Scroll the transcript (full-screen mode)"],
+  ["Ctrl+End / G", "Jump to the bottom (full-screen mode)"],
 ];
 
 function Section({ title, children }: { title: string; children: ReactNode }) {

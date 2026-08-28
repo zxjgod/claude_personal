@@ -48,6 +48,34 @@ describe("i18n", () => {
       expect(t("tool.notFound", { name: "bash" })).toBe("Tool not found: bash");
     });
 
+    it("respects setLanguage for known keys (single source drives the UI)", () => {
+      // Regression: t() used to re-read the ENVIRONMENT on every call, so
+      // setLanguage() could never switch the UI language at runtime.
+      setLanguage("zh-CN");
+      expect(t("permission.denied")).toBe("权限被拒绝");
+      setLanguage("en");
+      expect(t("permission.denied")).toBe("Permission denied");
+    });
+
+    it("serves the UI chrome keys in both languages (P3-13)", () => {
+      setLanguage("en");
+      expect(t("ui.permission.yes")).toBe("Yes");
+      expect(t("ui.permission.always")).toBe("Yes, and always allow this");
+      expect(t("ui.status.busy")).toContain("Esc/Ctrl+C");
+      expect(t("ui.elide.above", { n: 12 })).toContain("12");
+      expect(t("ui.paste.note", { n: 7 })).toContain("7");
+      expect(t("ui.tool.write")).toBe("Write file");
+      expect(t("ui.tool.fallback", { name: "Webfetch" })).toBe("Webfetch operation");
+
+      setLanguage("zh-CN");
+      expect(t("ui.permission.yes")).toBe("允许");
+      expect(t("ui.permission.always")).toBe("始终允许");
+      expect(t("ui.elide.above", { n: 12 })).toContain("12");
+      expect(t("ui.paste.note", { n: 7 })).toContain("7");
+      expect(t("ui.tool.write")).toBe("写入文件");
+      expect(t("ui.tool.fallback", { name: "Webfetch" })).toBe("Webfetch 操作");
+    });
+
     it("should replace placeholders", () => {
       expect(t("tool.timeout", { seconds: "30" })).toBe("Tool timed out after 30 seconds");
       expect(t("file.notFound", { path: "/etc/passwd" })).toBe("File not found: /etc/passwd");

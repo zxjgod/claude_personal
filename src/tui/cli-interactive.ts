@@ -13,7 +13,8 @@
 // ============================================================
 
 import chalk from "chalk";
-import { terminalColumns, visualWidth } from "./terminal-width.js";
+import { t } from "./i18n.js";
+import { terminalColumns, truncateVisual, visualWidth } from "./terminal-width.js";
 
 const CLAUDE_ORANGE = chalk.rgb(215, 119, 87);
 
@@ -514,11 +515,12 @@ export function promptPermissionMenu(opts: {
 }): Promise<PermissionChoice> {
   const input = opts.input ?? process.stdin;
   const output = opts.output ?? process.stdout;
-  // P1-4: Enhanced permission menu with Chinese text
+  // P3-13: labels/descs come from i18n — the same source the Ink permission
+  // prompt uses, so both UI paths speak one language (follows LANG/CCR_LANGUAGE).
   const options: Array<{ label: string; value: PermissionChoice; desc: string }> = [
-    { label: "允许", value: "yes", desc: "仅本次允许" },
-    { label: "始终允许", value: "always", desc: "本会话内不再询问" },
-    { label: "拒绝", value: "no", desc: "取消操作" },
+    { label: t("ui.permission.yes"), value: "yes", desc: t("ui.permission.yes.desc") },
+    { label: t("ui.permission.always"), value: "always", desc: t("ui.permission.always.desc") },
+    { label: t("ui.permission.no"), value: "no", desc: t("ui.permission.no.desc") },
   ];
 
   return new Promise((resolve) => {
@@ -530,8 +532,7 @@ export function promptPermissionMenu(opts: {
       const top = chalk.dim("┌" + "─".repeat(width - 2) + "┐");
       const bottom = chalk.dim("└" + "─".repeat(width - 2) + "┘");
       const lines: string[] = [top];
-      // P1-4: Use Chinese header
-      lines.push(boxLine(chalk.bold.cyan("⚠️ 权限请求"), width));
+      lines.push(boxLine(chalk.bold.cyan(t("ui.permission.title")), width));
       lines.push(boxLine("", width));
 
       if (opts.header) {
@@ -553,7 +554,7 @@ export function promptPermissionMenu(opts: {
 
       lines.push(bottom);
       lines.push("");
-      lines.push(chalk.gray("  选择操作:"));
+      lines.push(chalk.gray(`  ${t("ui.permission.chooseAction")}`));
 
       options.forEach((opt, i) => {
         const marker = i === selected ? chalk.cyan("❯ ") : "  ";
@@ -563,7 +564,7 @@ export function promptPermissionMenu(opts: {
       });
 
       lines.push("");
-      lines.push(chalk.dim("  ↑↓ 选择 · Enter 确认 · Esc 取消"));
+      lines.push(chalk.dim(`  ${t("ui.permission.hint")}`));
       lines.push("");
       region.paint(lines);
     };
@@ -750,6 +751,7 @@ function wrapPlain(text: string, width: number): string[] {
 }
 
 function truncate(value: string, max: number): string {
-  if (max <= 1) return "";
-  return value.length <= max ? value : value.slice(0, max - 1) + "…";
+  // P3-15: column-aware — CJK descriptions must be cut by display width, not
+  // by code-unit count (a .length cut overflows the intended width by ~2×).
+  return truncateVisual(value, max);
 }

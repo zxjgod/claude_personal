@@ -11,8 +11,9 @@
 
 import chalk from "chalk";
 import type { SubAgentProgress, ToolExecutionResult } from "../types.js";
+import { t } from "./i18n.js";
 import { renderMarkdown } from "./markdown.js";
-import { terminalColumns, visualWidth } from "./terminal-width.js";
+import { terminalColumns, truncateVisual, visualWidth } from "./terminal-width.js";
 import { toolResultSummary } from "./tool-result-summary.js";
 
 // Windows-safe glyphs (see constants/figures.ts in the reference source).
@@ -204,21 +205,18 @@ export function renderPermissionPrompt(
   const width = Math.min(terminalColumns() - 2, 100);
   const top = "┌" + "─".repeat(width - 2) + "┐";
   const bottom = "└" + "─".repeat(width - 2) + "┘";
-  // P1-4: Enhanced permission prompt with Chinese text
+  // P3-13: title/labels/hint come from i18n so this fallback speaks the same
+  // language as the interactive menu and the Ink prompt (follows LANG).
   process.stdout.write("\n" + chalk.yellow(top) + "\n");
-  process.stdout.write(boxLine(chalk.bold.yellow("⚠️  权限请求"), width) + "\n");
+  process.stdout.write(boxLine(chalk.bold.yellow(t("ui.permission.title")), width) + "\n");
   process.stdout.write(boxLine("", width) + "\n");
 
-  const toolLabels: Record<string, string> = {
-    bash: "Shell 命令",
-    write: "写入文件",
-    edit: "编辑文件",
-    read: "读取文件",
-    glob: "搜索文件",
-    grep: "搜索内容",
-    task: "子代理任务",
-  };
-  const header = toolLabels[toolName] || capitalize(toolName) + " 操作";
+  // Unknown tools: t() echoes the key back — detect that and use the generic
+  // "{name} operation" label instead.
+  const known = t(`ui.tool.${toolName}`);
+  const header = known.startsWith("ui.tool.")
+    ? t("ui.tool.fallback", { name: capitalize(toolName) })
+    : known;
   process.stdout.write(boxLine("  " + chalk.bold(header), width) + "\n");
   process.stdout.write(boxLine("", width) + "\n");
 
@@ -228,14 +226,13 @@ export function renderPermissionPrompt(
   }
   if (riskHint) {
     process.stdout.write(boxLine("", width) + "\n");
-    // P1-4: Better formatting for risk hints
     const wrapped = wrapText(riskHint, width - 6);
     for (const line of wrapped) {
       process.stdout.write(boxLine("  " + chalk.yellow("⚠️ " + line), width) + "\n");
     }
   }
   process.stdout.write(chalk.dim(bottom) + "\n");
-  process.stdout.write(chalk.dim("  输入 y 允许 / a 始终允许 / n 拒绝 (Esc 取消)\n"));
+  process.stdout.write(chalk.dim(`  ${t("ui.permission.textHint")}\n`));
 }
 
 // Helper function to wrap text
@@ -280,7 +277,10 @@ function renderFormattedToolOutput(text: string): string {
 
   if (wasClipped) {
     const extra = lines.length - MAX_LINES;
-    return rendered + chalk.dim(`\n… +${extra} lines (ctrl+r to expand)`);
+    // No expand affordance here: the line-based REPL has no key handler while
+    // a turn runs, so an "(ctrl+r to expand)" hint would be a promise the
+    // input loop can't keep (the Ink TUI implements it; this path cannot).
+    return rendered + chalk.dim(`\n… +${extra} lines`);
   }
   return rendered;
 }
@@ -301,7 +301,9 @@ function formatToolDetail(input?: Record<string, unknown>): string {
 }
 
 function truncate(value: string, max: number): string {
-  return value.length <= max ? value : value.slice(0, max - 1) + "…";
+  // P3-15: column-aware truncation (CJK paths/commands measured in display
+  // columns — see truncateVisual).
+  return truncateVisual(value, max);
 }
 
 function capitalize(name: string): string {

@@ -15,11 +15,32 @@ import type React from "react";
 import { useEffect, useState } from "react";
 import { parseError } from "../tui/markdown.js";
 import type { ToolExecutionResult } from "./../types.js";
-import { actionLabel, STATUS_GRAY, STATUS_GRAY_BRIGHT, STATUS_GREEN } from "./spinner-core.js";
+import {
+  actionLabel,
+  formatDuration,
+  isReducedMotion,
+  STATUS_GRAY,
+  STATUS_GRAY_BRIGHT,
+  STATUS_GREEN,
+} from "./spinner-core.js";
+import { truncateVisual } from "./terminal-width.js";
 import { palette } from "./theme.js";
 import { toolResultSummary } from "./tool-result-summary.js";
 
 const PREVIEW_LINES = 12;
+
+/**
+ * True when a completed card renders collapsed with an expand hint — i.e.
+ * ctrl+r would reveal more content. Mirrors the collapse logic inside
+ * CompletedToolCard (summary-collapse OR clipped preview); exported so the
+ * ctrl+r hotkey can find the latest expandable card without duplicating the
+ * rule.
+ */
+export function isToolExpandable(result: ToolExecutionResult): boolean {
+  if (result.error) return false;
+  if (toolResultSummary(result)) return true;
+  return (result.formatted ?? "").split("\n").length > PREVIEW_LINES;
+}
 
 function colorizeLine(line: string): React.ReactNode {
   if (line.startsWith("+ ")) return <Text color={palette.success}>{line}</Text>;
@@ -28,16 +49,19 @@ function colorizeLine(line: string): React.ReactNode {
   return <Text>{line}</Text>;
 }
 
-/** Tool status glyph: gray blinking while executing, green static when done */
+/** Tool status glyph: gray blinking while executing, green static when done.
+ *  The blink is decorative — under reduced motion (CCR_REDUCED_MOTION=1) the
+ *  dot stays a static gray instead. */
 function ToolStatusGlyph({ isActive }: { isActive: boolean }) {
   const [flash, setFlash] = useState(false);
+  const reduced = isReducedMotion();
 
   useEffect(() => {
-    if (!isActive) return;
+    if (!isActive || reduced) return;
     // Blink between gray and bright-gray at ~500ms interval
     const t = setInterval(() => setFlash((f) => !f), 500);
     return () => clearInterval(t);
-  }, [isActive]);
+  }, [isActive, reduced]);
 
   if (isActive) {
     return <Text color={flash ? STATUS_GRAY_BRIGHT : STATUS_GRAY}>●</Text>;
@@ -46,12 +70,43 @@ function ToolStatusGlyph({ isActive }: { isActive: boolean }) {
   }
 }
 
-/** The live "tool is running" card: gray blinking glyph + concrete action. */
-export function ActiveToolCard({ name, detail }: { name: string; detail: string }) {
+/**
+ * The live "tool is running" card: gray blinking glyph + concrete action +
+ * a running elapsed clock ("Reading App.tsx (12s)") so a long npm install
+ * shows how long it's been running, not just that it started. ONE interval
+ * drives both the blink and the seconds; under reduced motion the blink is
+ * off but the clock keeps ticking — elapsed time is information, not
+ * decoration.
+ */
+export function ActiveToolCard({
+  name,
+  detail,
+  startedAt,
+}: {
+  name: string;
+  detail: string;
+  startedAt?: number;
+}) {
+  const reduced = isReducedMotion();
+  const [flash, setFlash] = useState(false);
+  const [, setTick] = useState(0);
+
+  useEffect(() => {
+    const t = setInterval(() => {
+      setTick((n) => n + 1);
+      if (!reduced) setFlash((f) => !f);
+    }, 500);
+    return () => clearInterval(t);
+  }, [reduced]);
+
+  const elapsed = startedAt ? ` (${formatDuration(Date.now() - startedAt)})` : "";
   return (
     <Box>
-      <ToolStatusGlyph isActive={true} />
-      <Text> {actionLabel(name, detail)}</Text>
+      <Text color={reduced || !flash ? STATUS_GRAY : STATUS_GRAY_BRIGHT}>●</Text>
+      <Text>
+        {` ${actionLabel(name, detail)}`}
+        {elapsed ? <Text dimColor>{elapsed}</Text> : null}
+      </Text>
     </Box>
   );
 }
@@ -116,7 +171,8 @@ export function CompletedToolCard({
 }
 
 function truncate(value: string, max: number): string {
-  return value.length <= max ? value : value.slice(0, max - 1) + "…";
+  // P3-15: column-aware truncation (see truncateVisual).
+  return truncateVisual(value, max);
 }
 
 function capitalize(name: string): string {

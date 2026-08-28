@@ -9,7 +9,7 @@
 // ============================================================
 
 import { render, useApp, useInput } from "ink";
-import { type RefObject, useCallback, useRef, useState } from "react";
+import { type RefObject, useCallback, useRef } from "react";
 import { agentLoop } from "./../agent-loop.js";
 import { formatCliError } from "./../cli-errors.js";
 import type { CommandContext } from "./../commands.js";
@@ -38,14 +38,24 @@ import type {
 import { App } from "./App.js";
 import { printBanner, renderBannerLines } from "./banner.js";
 import { EFFORT_DESCRIPTIONS, getEffort } from "./effort.js";
+import { completeFiles as completeFilesInRoot } from "./file-completions.js";
 import { messagesToTranscript } from "./history-replay.js";
 import type { CommandInfo } from "./InputBox.js";
 import { InputQueue } from "./input-queue.js";
+import { createResolver, DEFAULT_BINDINGS, loadUserBindings } from "./keybindings/index.js";
+import { lookupContextWindow } from "./session-stats.js";
 import { type ProviderPickerItem, type SessionPickerItem, TuiStore } from "./store.js";
 import { StreamBuffer } from "./stream-buffer.js";
+import { isToolExpandable } from "./ToolCard.js";
+import { truncateVisual } from "./terminal-width.js";
 
 // Debug monitoring - enabled via DEBUG_STREAM env var
 const DEBUG_STREAM = process.env.DEBUG_STREAM;
+
+// Global-hotkey resolver for the runner-owned hotkeys (tool:expandLast):
+// defaults + user overrides from ~/.claude/keybindings.json. App.tsx keeps
+// its own instance for its hotkeys; both read the same sources.
+const globalResolver = createResolver(DEFAULT_BINDINGS, loadUserBindings());
 
 export interface TuiDeps {
   messages: Message[];
@@ -140,8 +150,13 @@ async function runTurn(
     // continues the SAME turn with it (kernel §9), so a message typed while the
     // agent works is picked up without waiting for the turn to end. The TUI
     // echoes the queued line at push time (see Root.onSubmit); here the loop
-    // injects it into `messages` so the model actually sees it.
-    drainQueuedInput: () => queue.drain(),
+    // injects it into `messages` so the model actually sees it. The drain also
+    // re-syncs the status bar's "queued N" badge.
+    drainQueuedInput: () => {
+      const drained = queue.drain();
+      store.setQueuedInputs(queue.size);
+      return drained;
+    },
   });
 
   let thinkingStart = Date.now();
@@ -226,7 +241,15 @@ async function runTurn(
           deps.onSave("waiting_for_model");
           break;
         case "usage":
-          store.addUsage(event.usage.input_tokens, event.usage.output_tokens);
+          store.addUsage(
+            event.usage.input_tokens,
+            event.usage.output_tokens,
+            {
+              read: event.usage.cache_read_input_tokens,
+              creation: event.usage.cache_creation_input_tokens,
+            },
+            estimateContextUsed(event.usage, deps.modelConfig.provider),
+          );
           // Reconcile the live estimate to the real output-token count.
           committedOutputTokens += event.usage.output_tokens;
           streamedCharsThisCall = 0;
@@ -292,12 +315,36 @@ function toolDetail(input?: Record<string, unknown>): string {
   return "";
 }
 
+/**
+ * Tokens occupying the context window after one model call — the estimate the
+ * status-bar gauge plots. The two adapter families report input differently:
+ * Anthropic's input_tokens EXCLUDES cache read/creation (sum all three),
+ * OpenAI's prompt_tokens already INCLUDES cached tokens (summing again would
+ * double-count). Mirrors the accounting note in session-stats.ts.
+ */
+function estimateContextUsed(
+  u: {
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
+  },
+  provider: string,
+): number {
+  const base = u.input_tokens + u.output_tokens;
+  if (provider === "anthropic") {
+    return base + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
+  }
+  return base;
+}
+
 function capitalize(name: string): string {
   return name.length === 0 ? name : name[0]!.toUpperCase() + name.slice(1);
 }
 
 function truncate(value: string, max: number): string {
-  return value.length <= max ? value : value.slice(0, max - 1) + "…";
+  // P3-15: column-aware truncation (see truncateVisual).
+  return truncateVisual(value, max);
 }
 
 /** Capture console.log output produced while `fn` runs, returning the lines. */
@@ -410,7 +457,11 @@ async function runProviderPicker(store: TuiStore, deps: TuiDeps): Promise<void> 
 
   const prev = `${cfg.provider}/${cfg.model}`;
   applyProfile(cfg, profile);
-  store.setModelLabel(`${cfg.provider}/${cfg.model}`);
+  store.setModel(cfg.model, `${cfg.provider}/${cfg.model}`);
+  // The new model may have a different context window (and price) — the gauge
+  // must resize with it or it would plot the next model's usage against the
+  // previous model's limit.
+  store.setContextLimit(lookupContextWindow(cfg.model) ?? 0);
   store.addNotice(`  Provider: ${prev} → ${cfg.provider}/${cfg.model} (${profile.name})`);
 }
 
@@ -435,7 +486,6 @@ async function runCommandPicker(store: TuiStore, deps: TuiDeps): Promise<string 
  * current turn (9.6) without tearing down the session.
  */
 function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
-  const [expandedId] = useState<number | null>(null);
   // M36: one type-ahead queue per session. Stable across renders so a message
   // typed while the agent is busy survives until the loop drains it.
   const queueRef = useRef<InputQueue>(new InputQueue());
@@ -468,6 +518,14 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
     [store],
   );
 
+  // P2-10: "@" path completion against the live workspace root (TTL-cached
+  // listing — see file-completions.ts). /cd changes the root, so read it per
+  // query rather than capturing the startup value.
+  const completeFiles = useCallback(
+    (query: string) => completeFilesInRoot(deps.getWorkspaceRoot?.() ?? deps.workspaceRoot, query),
+    [deps],
+  );
+
   const onSubmit = useCallback(
     (raw: string) => {
       const value = raw.trim();
@@ -498,6 +556,7 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
         store.addUserMessage(value);
         store.addNotice("  ⏎ queued — will run after the current turn");
         queueRef.current.push(value);
+        store.setQueuedInputs(queueRef.current.size);
         return;
       }
 
@@ -611,10 +670,12 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
             for (const text of queueRef.current.drain()) {
               deps.messages.push({ role: "user", content: [{ type: "text", text }] });
             }
+            store.setQueuedInputs(queueRef.current.size);
             await runTurn(store, deps, controller, askUser, askUserQuestion, queueRef.current);
           }
           if (queueRef.current.hasPending) {
             const dropped = queueRef.current.drain();
+            store.setQueuedInputs(0);
             store.addNotice(
               `  ⎿ 连续排队回合已达上限（${MAX_FOLLOWUP_TURNS}），丢弃 ${dropped.length} 条排队输入`,
             );
@@ -638,13 +699,18 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
 
   return (
     <>
-      <InterruptHotkey store={store} controllerRef={turnControllerRef} />
+      <InterruptHotkey
+        store={store}
+        controllerRef={turnControllerRef}
+        editorMode={deps.makeCommandContext().editorMode}
+      />
+      <ExpandHotkey store={store} />
       <App
         store={store}
         commands={deps.commands}
         onSubmit={onSubmit}
-        expandedId={expandedId}
         editorMode={deps.makeCommandContext().editorMode}
+        completeFiles={completeFiles}
         fullscreen={deps.fullscreen}
       />
     </>
@@ -652,31 +718,66 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
 }
 
 /**
- * Ctrl+C in the TUI: interrupt the in-flight turn when busy, exit when idle.
+ * Ctrl+R (remappable via keybindings.json → "tool:expandLast"): expand the
+ * latest collapsed tool card. Ink's <Static> is write-once, so the collapsed
+ * card in scrollback can't be re-rendered in place — store.expandTool appends
+ * a full-output copy below it (idempotent per card). The "(ctrl+r to expand)"
+ * hint on collapsed cards refers to THIS handler.
+ */
+function ExpandHotkey({ store }: { store: TuiStore }) {
+  useInput((input, key) => {
+    const result = globalResolver(input, key, ["Global"]);
+    if (result.type !== "match" || result.action !== "tool:expandLast") return;
+    // Overlays and the transcript pager own the keyboard while active.
+    const s = store.getSnapshot();
+    if (s.overlay || s.reviewing) return;
+    const items = s.transcript;
+    for (let i = items.length - 1; i >= 0; i--) {
+      const item = items[i]!;
+      if (item.kind === "tool" && item.result && !item.expanded && isToolExpandable(item.result)) {
+        store.expandTool(item.id);
+        return;
+      }
+    }
+  });
+  return null;
+}
+
+/**
+ * Ctrl+C / Esc in the TUI: interrupt the in-flight turn when busy; Ctrl+C
+ * exits when idle. Esc-interrupt matches Claude Code's muscle memory (Esc
+ * while streaming stops the turn). Guards:
+ *   • overlays own their input (their Esc cancels the overlay itself);
+ *   • the transcript pager owns the keyboard while reviewing;
+ *   • vim editor mode keeps Esc for normal-mode — vim users still have
+ *     Ctrl+C (Esc-to-normal is too frequent a key to hijack mid-edit).
  * Ink runs stdin in raw mode, so Ctrl+C arrives as a keypress (not SIGINT) —
  * with exitOnCtrlC disabled at the render() call sites, THIS is the only
- * Ctrl+C behavior. Without it, Ctrl+C hard-exited the process mid-turn and the
- * status line's "(Ctrl+C interrupt)" hint was a lie.
+ * Ctrl+C behavior.
  */
-function InterruptHotkey({
+export function InterruptHotkey({
   store,
   controllerRef,
+  editorMode,
 }: {
   store: TuiStore;
   controllerRef: RefObject<AbortController | null>;
+  editorMode?: { value: "default" | "vim" };
 }) {
   const { exit } = useApp();
   useInput((input, key) => {
-    if (!(key.ctrl && input === "c")) return;
-    // Overlays (permission prompt, question prompt) own their input — let
-    // their own cancel handling deal with Ctrl+C.
-    if (store.getSnapshot().overlay) return;
+    const isCtrlC = key.ctrl && input === "c";
+    const isEsc = key.escape === true;
+    if (!isCtrlC && !isEsc) return;
+    if (store.getSnapshot().overlay || store.getSnapshot().reviewing) return;
+    if (isEsc && editorMode?.value === "vim") return;
     const controller = controllerRef.current;
     if (controller && store.getSnapshot().busy) {
       controller.abort("用户中断");
-    } else {
+    } else if (isCtrlC) {
       exit();
     }
+    // Esc while idle: intentionally nothing — too easy to lose the session.
   });
   return null;
 }
@@ -713,7 +814,9 @@ export function runTui(deps: TuiDeps): Promise<void> {
     const store = new TuiStore(`${deps.modelConfig.provider}/${deps.modelConfig.model}`, {
       batching: true,
       permissionMode: deps.permissionMode,
+      modelId: deps.modelConfig.model,
     });
+    store.setContextLimit(lookupContextWindow(deps.modelConfig.model) ?? 0);
     store.loadTranscript(
       renderBannerLines({
         version: "1.0.0",
@@ -747,7 +850,10 @@ export function runTui(deps: TuiDeps): Promise<void> {
     // re-render per write. Tests construct the store without this (synchronous).
     batching: true,
     permissionMode: deps.permissionMode,
+    modelId: deps.modelConfig.model,
   });
+  // Context gauge: unknown models get 0 → gauge hidden rather than mis-sized.
+  store.setContextLimit(lookupContextWindow(deps.modelConfig.model) ?? 0);
   const { waitUntilExit } = render(<Root store={store} deps={deps} />, {
     // See the fullscreen render above: Ctrl+C belongs to InterruptHotkey.
     exitOnCtrlC: false,

@@ -7,14 +7,19 @@
 // ============================================================
 
 import { render } from "ink-testing-library";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { App } from "../tui/App.js";
 import { CommandPicker } from "../tui/CommandPicker.js";
 import { EffortPrompt } from "../tui/EffortPrompt.js";
+import { setLanguage } from "../tui/i18n.js";
 import { PermissionPrompt, QuestionPrompt } from "../tui/Prompts.js";
 import { nextOffset, SessionPicker } from "../tui/SessionPicker.js";
 import { TuiStore } from "../tui/store.js";
-import { CompletedToolCard } from "../tui/ToolCard.js";
+import { CompletedToolCard, isToolExpandable } from "../tui/ToolCard.js";
+
+// Pin the UI language so literal-string assertions hold on zh-locale machines.
+beforeAll(() => setLanguage("en"));
+
 import type { ToolExecutionResult } from "../types.js";
 
 const noopSubmit = () => {};
@@ -105,7 +110,7 @@ describe("App", () => {
     const frame = lastFrame()!;
     const lineCount = frame.split("\n").length;
     expect(lineCount).toBeLessThanOrEqual(24);
-    expect(frame).toContain("行已省略"); // elision hint
+    expect(frame).toContain("lines above elided"); // i18n elision hint (en)
     expect(frame).toContain("finding 39"); // the live tail stays visible
     expect(frame).not.toContain("finding 0"); // scrolled-off head is hidden
   });
@@ -123,7 +128,7 @@ describe("App", () => {
     );
     const frame = lastFrame()!;
     expect(frame.split("\n").length).toBeLessThanOrEqual(24);
-    expect(frame).toContain("思考前文");
+    expect(frame).toContain("earlier thinking lines elided"); // i18n hint (en)
     expect(frame).toContain("reasoning step 39");
     expect(frame).not.toContain("reasoning step 0");
   });
@@ -255,6 +260,40 @@ describe("CompletedToolCard collapse (9.4)", () => {
       <CompletedToolCard result={errResult} detail="a.ts" expanded={false} />,
     );
     expect(lastFrame()).toContain("old_string not found");
+  });
+
+  it("isToolExpandable mirrors the collapse rule (ctrl+r target finding)", () => {
+    const shortResult: ToolExecutionResult = { toolName: "bash", formatted: "ok", durationMs: 1 };
+    const summaryResult: ToolExecutionResult = {
+      toolName: "read",
+      formatted: `${"x\n".repeat(40)}file content`,
+      durationMs: 2,
+      result: { metadata: { summary: "Read 41 lines" } },
+    } as unknown as ToolExecutionResult;
+    const errResult: ToolExecutionResult = {
+      toolName: "edit",
+      formatted: "",
+      error: "boom",
+    };
+    expect(isToolExpandable(longResult)).toBe(true); // clipped preview
+    expect(isToolExpandable(summaryResult)).toBe(true); // summary-collapsed
+    expect(isToolExpandable(shortResult)).toBe(false); // nothing hidden
+    expect(isToolExpandable(errResult)).toBe(false); // errors have no content
+  });
+
+  it("renders a transcript tool item's own expanded flag (ctrl+r copy)", () => {
+    // store.expandTool appends an expanded COPY of the collapsed card; the
+    // App renders it fully expanded with no expandedId prop involved.
+    const store = new TuiStore("p/m");
+    store.startTool("grep", "foo", "c1");
+    store.finishTool(longResult, "foo", "c1");
+    const collapsedId = store.getSnapshot().transcript.at(-1)!.id;
+    store.expandTool(collapsedId);
+    const { lastFrame } = render(<App store={store} commands={commands} onSubmit={noopSubmit} />);
+    const frame = lastFrame()!;
+    // Collapsed original (clipped at 12 lines) and the expanded copy (full).
+    expect(frame).toContain("ctrl+r to expand");
+    expect(frame).toContain("line 29"); // only the expanded copy shows this
   });
 });
 

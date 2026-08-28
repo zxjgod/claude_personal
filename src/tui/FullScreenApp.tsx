@@ -12,13 +12,16 @@
 // Layout: the whole terminal height is a flex column. ScrollView grows to fill
 // the space ABOVE the bottom chrome (status line + status bar + input box),
 // which sizes itself. The transcript + live streaming text are flattened to
-// plain text lines and windowed by the ScrollView (color is dropped in the
-// scroll region so the windowing can be exact without per-node measurement —
-// the default path keeps full color). The InputBox is the LAST rendered element
+// per-role COLORED lines (P3-16: user blue, tool head accent, bodies dim —
+// one color per row keeps the windowing exact without per-node measurement)
+// and windowed by the ScrollView. The InputBox is the LAST rendered element
 // with no bottom rule, so the terminal parks its real cursor on the prompt row.
 //
-// Scroll keys: PgUp/PgDn and less-style Ctrl+U/Ctrl+D (half page) / Ctrl+B/
-// Ctrl+F (full page); Ctrl+End or G jumps to the bottom and re-sticks.
+// Scroll keys: PgUp/PgDn (half page) and less-style Ctrl+B/Ctrl+F (full
+// page); Ctrl+End or G jumps to the bottom and re-sticks. ↑/↓ and Ctrl+U
+// deliberately do NOT scroll — they belong to the InputBox (history /
+// delete-to-line-start) and Ink delivers each keypress to every active
+// useInput handler.
 // ============================================================
 
 import { Box, Text, useInput } from "ink";
@@ -27,16 +30,17 @@ import { CommandPicker } from "./CommandPicker.js";
 import { EffortPrompt } from "./EffortPrompt.js";
 import { HelpPanel } from "./HelpPanel.js";
 import { type CommandInfo, InputBox } from "./InputBox.js";
+import { t } from "./i18n.js";
 import { ConfirmPrompt, PermissionPrompt, QuestionPrompt } from "./Prompts.js";
 import { ProviderPicker } from "./ProviderPicker.js";
 import { bottomScrollTop, clampScrollTop, ScrollView } from "./ScrollView.js";
 import { SessionPicker } from "./SessionPicker.js";
+import { StatusBar } from "./StatusBar.js";
 import { StatusLine } from "./StatusLine.js";
 import { actionLabel } from "./spinner-core.js";
 import type { StoreState, TuiStore } from "./store.js";
 import { Toast } from "./Toast.js";
 import { TodoList } from "./TodoList.js";
-import { modeColor } from "./theme.js";
 import { transcriptToLines } from "./transcript-lines.js";
 import { useStoreField, useStoreSelector } from "./useStoreSelector.js";
 import { useTerminalSize } from "./useTerminalSize.js";
@@ -83,37 +87,6 @@ function FsStatusLine({ store }: { store: TuiStore }) {
   );
 }
 
-function selectStatusBar(s: StoreState) {
-  return {
-    busy: s.busy,
-    permissionMode: s.permissionMode,
-    tokensIn: s.tokensIn,
-    tokensOut: s.tokensOut,
-  };
-}
-
-/** Bottom status bar. */
-function FsStatusBar({ store }: { store: TuiStore }) {
-  const { busy, permissionMode, tokensIn, tokensOut } = useStoreSelector(store, selectStatusBar);
-  return (
-    <Box>
-      <Text dimColor>
-        {busy
-          ? "working… (Ctrl+C interrupt)"
-          : "? shortcuts · / commands · @path attach · 鼠标滚轮/↑↓ 滚动"}
-        {" · "}
-      </Text>
-      <Text color={modeColor(permissionMode)} bold>
-        {permissionMode}
-      </Text>
-      <Text dimColor>
-        {" · "}
-        {tokensIn}↑ {tokensOut}↓ tokens
-      </Text>
-    </Box>
-  );
-}
-
 function selectInteraction(s: StoreState) {
   return { overlay: s.overlay, busy: s.busy, inputHistory: s.inputHistory };
 }
@@ -135,11 +108,13 @@ function FsInteraction({
   commands,
   onSubmit,
   editorMode,
+  completeFiles,
 }: {
   store: TuiStore;
   commands: CommandInfo[];
   onSubmit: (value: string) => void;
   editorMode?: { value: "default" | "vim" };
+  completeFiles?: (query: string) => string[];
 }) {
   const { overlay, busy, inputHistory } = useStoreSelector(store, selectInteraction);
   if (overlay) {
@@ -167,6 +142,7 @@ function FsInteraction({
       busy={busy}
       onSubmit={onSubmit}
       editorMode={editorMode}
+      completeFiles={completeFiles}
       keepColorWhenDisabled
       hideBottomRule
       history={inputHistory}
@@ -201,11 +177,13 @@ export function FullScreenApp({
   commands,
   onSubmit,
   editorMode,
+  completeFiles,
 }: {
   store: TuiStore;
   commands: CommandInfo[];
   onSubmit: (value: string) => void;
   editorMode?: { value: "default" | "vim" };
+  completeFiles?: (query: string) => string[];
 }) {
   const { rows } = useTerminalSize();
   const transcript = useStoreField(store, "transcript");
@@ -245,10 +223,12 @@ export function FullScreenApp({
     }
   }, [lines.length]);
 
-  // Scroll handler — always active so it works whether or not the input box is
-  // focused (Ink delivers each keypress to every active useInput). We bind
-  // several keys because terminals disagree on PgUp/PgDn; less-style Ctrl+U/D
-  // (half) and Ctrl+B/F (full) are the reliable fallback.
+  // Scroll handler. Keys are chosen to NEVER collide with the InputBox, which
+  // is always mounted below and receives the same Ink keypresses: ↑/↓ are the
+  // input history / multi-line cursor, and Ctrl+U is delete-to-line-start —
+  // binding them here too made one keypress both scroll and edit the buffer.
+  // That leaves PgUp/PgDn (some terminals disagree, so less-style Ctrl+B/F are
+  // the full-page fallback) plus Ctrl+End/G to re-stick at the bottom.
   const scrollBy = (sign: -1 | 1, frac: number, opts?: { toBottom?: boolean }) => {
     const total = linesLenRef.current;
     const h = viewportRef.current;
@@ -266,12 +246,9 @@ export function FullScreenApp({
   };
 
   useInput((input, key) => {
-    // Support arrow keys and mouse wheel for scrolling
-    if (key.upArrow) return void scrollBy(-1, 0.1);
-    if (key.downArrow) return void scrollBy(1, 0.1);
-    if (key.pageUp || (key.ctrl && input === "u")) return void scrollBy(-1, 0.5);
+    if (key.pageUp) return void scrollBy(-1, 0.5);
+    if (key.pageDown) return void scrollBy(1, 0.5);
     if (key.ctrl && input === "b") return void scrollBy(-1, 0.95);
-    if (key.pageDown || (key.ctrl && input === "d")) return void scrollBy(1, 0.5);
     if (key.ctrl && input === "f") return void scrollBy(1, 0.95);
     if ((key.ctrl && (key.downArrow || (key as { end?: boolean }).end)) || input === "G") {
       return void scrollBy(1, 0, { toBottom: true });
@@ -290,11 +267,11 @@ export function FullScreenApp({
       />
       <FsTodoRegion store={store} />
       {!sticky ? (
-        <Text dimColor>{"  ↑ 正在查看历史 — Ctrl+End 或按 G 返回最新"}</Text>
+        <Text dimColor>{`  ${t("ui.fs.scrolled")}`}</Text>
       ) : (
         <FsStatusLine store={store} />
       )}
-      <FsStatusBar store={store} />
+      <StatusBar store={store} idleHint={t("ui.status.idleFullscreen")} />
       <FsHelpRegion store={store} />
       {/* InputBox MUST be the last element: the terminal parks the real cursor
           at the end of the final rendered row, so the prompt has to be that row
@@ -304,6 +281,7 @@ export function FullScreenApp({
         commands={commands}
         onSubmit={onSubmit}
         editorMode={editorMode}
+        completeFiles={completeFiles}
       />
     </Box>
   );

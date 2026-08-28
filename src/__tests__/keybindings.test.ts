@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   chordToString,
   createResolver,
+  DEFAULT_BINDINGS,
   getKeyName,
   type InkKey,
   parseBindings,
@@ -99,5 +100,22 @@ describe("match / resolver", () => {
       [{ context: "Global", bindings: { "?": "app:globalSearch" } }],
     );
     expect(resolve("?", {}, ["Global"])).toEqual({ type: "match", action: "app:globalSearch" });
+  });
+
+  it("default bindings map ctrl+r to tool:expandLast (remappable expand)", () => {
+    const resolve = createResolver(DEFAULT_BINDINGS, null);
+    expect(resolve("r", { ctrl: true }, ["Global"])).toEqual({
+      type: "match",
+      action: "tool:expandLast",
+    });
+    // A user override can move expand off ctrl+r entirely.
+    const remapped = createResolver(DEFAULT_BINDINGS, [
+      { context: "Global", bindings: { "ctrl+r": null, "ctrl+e": "tool:expandLast" } },
+    ]);
+    expect(remapped("r", { ctrl: true }, ["Global"])).toEqual({ type: "unbound" });
+    expect(remapped("e", { ctrl: true }, ["Global"])).toEqual({
+      type: "match",
+      action: "tool:expandLast",
+    });
   });
 });

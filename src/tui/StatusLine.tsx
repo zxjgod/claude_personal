@@ -23,9 +23,11 @@ import {
   formatDuration,
   formatTokens,
   glyphAt,
+  isReducedMotion,
   ORANGE_HEX,
   SHIMMER_HEX,
   SHIMMER_INTERVAL_MS,
+  TEARDROP_ASTERISK,
   UP_ARROW,
   verbAt,
 } from "./spinner-core.js";
@@ -60,21 +62,28 @@ export function StatusLine({
    *  every VERB_CYCLE_MS, seeded by `startedAt` so turns don't all start alike. */
   cycleVerbs?: boolean;
 }) {
+  // Reduced motion (CCR_REDUCED_MOTION=1): freeze the decorative parts (glyph
+  // animation, shimmer sweep) but keep the elapsed clock ticking — it carries
+  // information, not decoration. The slower tick cadence still updates the
+  // seconds display every frame it changes.
+  const reduced = isReducedMotion();
   // A monotonically increasing tick drives the clock + glyph + shimmer. We read
   // the wall clock on each tick rather than storing elapsed, so a paused render
   // can't drift.
   const [, setTick] = useState(0);
   useEffect(() => {
-    const t = setInterval(() => setTick((n) => n + 1), TICK_MS);
+    const t = setInterval(() => setTick((n) => n + 1), reduced ? 250 : TICK_MS);
     return () => clearInterval(t);
-  }, []);
+  }, [reduced]);
 
   const elapsedMs = startedAt > 0 ? Date.now() - startedAt : 0;
-  const glyph = glyphAt(elapsedMs);
+  const glyph = reduced ? TEARDROP_ASTERISK : glyphAt(elapsedMs);
   // The thinking phase cycles verbs; every other phase keeps its concrete label
   // ("Reading App.tsx", "Responding") unchanged.
   const shown = cycleVerbs ? verbAt(elapsedMs, startedAt) : label;
-  const { before, shimmer, after } = shimmerParts(shown, elapsedMs);
+  const { before, shimmer, after } = reduced
+    ? { before: shown, shimmer: "", after: "" }
+    : shimmerParts(shown, elapsedMs);
 
   const suffixParts: string[] = [formatDuration(elapsedMs)];
   if (tokens > 0) suffixParts.push(`${UP_ARROW} ${formatTokens(tokens)} tokens`);

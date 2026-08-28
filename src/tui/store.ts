@@ -11,12 +11,23 @@
 
 import type { PermissionMode, TodoDisplayItem, ToolExecutionResult } from "./../types.js";
 import type { EffortLevel } from "./effort.js";
+import { t } from "./i18n.js";
 
 export type TranscriptItem =
   | { kind: "user"; id: number; text: string }
   | { kind: "assistant"; id: number; text: string }
   | { kind: "thinking_text"; id: number; text: string }
-  | { kind: "tool"; id: number; name: string; detail: string; result?: ToolExecutionResult }
+  | {
+      kind: "tool";
+      id: number;
+      name: string;
+      detail: string;
+      result?: ToolExecutionResult;
+      /** True on an appended full-output copy (ctrl+r) — renders expanded. */
+      expanded?: boolean;
+      /** On an expanded copy: the source item's id (dedupe for ctrl+r). */
+      expandedOf?: number;
+    }
   | { kind: "thought"; id: number; seconds: number }
   | { kind: "notice"; id: number; text: string }
   | { kind: "log"; id: number; lines: string[] };
@@ -29,6 +40,8 @@ export interface ActiveTool {
   id: string;
   name: string;
   detail: string;
+  /** Epoch ms when the tool started (drives the live elapsed clock). */
+  startedAt: number;
 }
 
 /**
@@ -137,14 +150,33 @@ export interface StoreState {
   /** Session-wide token totals for the status bar. */
   tokensIn: number;
   tokensOut: number;
+  /** Session-cumulative prompt-cache read tokens (cache-hit visibility). */
+  cacheReadTokens: number;
+  /**
+   * Estimated tokens occupying the context window after the LAST model call
+   * (input + cache + output of that call, provider semantics reconciled by
+   * the caller — see run.tsx estimateContextUsed). Not cumulative across
+   * calls: it answers "how full is the window right now". 0 = no usage yet.
+   */
+  contextUsed: number;
+  /** Context-window size of the active model (0 = unknown → gauge hidden). */
+  contextLimit: number;
   /** Current pending overlay, if any. */
   overlay: Overlay | null;
   /** True while the agent loop is running (input disabled). */
   busy: boolean;
+  /**
+   * Messages typed while busy, waiting in the type-ahead queue (mirrored from
+   * the InputQueue so the status bar can show "queued N"). The queue itself
+   * lives in the runner; this is a display projection.
+   */
+  queuedInputs: number;
   /** Current permission mode, shared by Shift+Tab, status bar, and tool checks. */
   permissionMode: PermissionMode;
   /** Model label for the status bar. */
   modelLabel: string;
+  /** Raw model id (pricing / context-window lookups); the label is for display. */
+  modelId: string;
   /** Transient toast message shown briefly after mode changes etc. */
   toast: string | null;
   /** Help panel visibility (triggered by "?" key). */
@@ -168,6 +200,13 @@ type Listener = () => void;
 // one React re-render per store write. State itself is always written
 // synchronously (see `set`), so `getSnapshot` stays current regardless.
 const FRAME_MS = 16;
+
+// Context-gauge thresholds, as a fraction of contextLimit. The warn level
+// mirrors agent-loop's defaults (auto-compact fires at 150k on a 200k window
+// = 75%): by the time the gauge goes yellow, compaction is imminent. Shared
+// by the StatusBar colors and the crossing toasts below.
+export const CTX_WARN_PCT = 0.75;
+export const CTX_CRITICAL_PCT = 0.9;
 
 export const PERMISSION_MODE_CYCLE: PermissionMode[] = [
   "default",
@@ -193,7 +232,10 @@ export class TuiStore {
   private emitScheduled = false;
   private frameTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(modelLabel: string, opts?: { batching?: boolean; permissionMode?: PermissionMode }) {
+  constructor(
+    modelLabel: string,
+    opts?: { batching?: boolean; permissionMode?: PermissionMode; modelId?: string },
+  ) {
     this.batching = opts?.batching ?? false;
     this.state = {
       transcript: [],
@@ -206,10 +248,15 @@ export class TuiStore {
       turnStartedAt: 0,
       tokensIn: 0,
       tokensOut: 0,
+      cacheReadTokens: 0,
+      contextUsed: 0,
+      contextLimit: 0,
       overlay: null,
       busy: false,
+      queuedInputs: 0,
       permissionMode: opts?.permissionMode ?? "default",
       modelLabel,
+      modelId: opts?.modelId ?? "",
       toast: null,
       showHelp: false,
       inputHistory: [],
@@ -323,6 +370,11 @@ export class TuiStore {
     this.set({ busy });
   }
 
+  /** Mirror the type-ahead queue's length (status-bar "queued N" badge). */
+  setQueuedInputs(n: number): void {
+    this.set({ queuedInputs: Math.max(0, n) });
+  }
+
   setSpinner(mode: SpinnerMode): void {
     this.set({ spinner: mode });
   }
@@ -386,9 +438,14 @@ export class TuiStore {
     this.push({ kind: "thought", seconds } as TranscriptItem);
   }
 
-  /** Mark a tool as started (shown live in the active region). */
+  /** Mark a tool as started (shown live in the active region with its clock). */
   startTool(name: string, detail: string, id?: string): void {
-    const tool: ActiveTool = { id: id ?? `${name}:${this.nextId++}`, name, detail };
+    const tool: ActiveTool = {
+      id: id ?? `${name}:${this.nextId++}`,
+      name,
+      detail,
+      startedAt: Date.now(),
+    };
     this.set({ activeTools: [...this.state.activeTools, tool] });
   }
 
@@ -418,8 +475,69 @@ export class TuiStore {
     this.set({ activeTools: remaining });
   }
 
-  addUsage(inTok: number, outTok: number): void {
-    this.set({ tokensIn: this.state.tokensIn + inTok, tokensOut: this.state.tokensOut + outTok });
+  /**
+   * Record one API call's usage. `tokensIn/Out` accumulate session-wide;
+   * `contextUsed` is the caller's reconciled "how full is the window after
+   * this call" estimate (Anthropic input excludes cache tokens, OpenAI's
+   * prompt_tokens already includes them — run.tsx reconciles). The fallback
+   * sum assumes split cache reporting, so prefer passing the explicit value.
+   * Crossing a gauge threshold fires a one-shot toast so compaction being
+   * imminent is announced, not just recolored.
+   */
+  addUsage(
+    inTok: number,
+    outTok: number,
+    cache?: { read?: number; creation?: number },
+    contextUsed?: number,
+  ): void {
+    const read = cache?.read ?? 0;
+    const used = contextUsed ?? inTok + outTok + read + (cache?.creation ?? 0);
+    const prevPct =
+      this.state.contextLimit > 0 ? this.state.contextUsed / this.state.contextLimit : 0;
+    const nextPct = this.state.contextLimit > 0 ? used / this.state.contextLimit : 0;
+    this.set({
+      tokensIn: this.state.tokensIn + inTok,
+      tokensOut: this.state.tokensOut + outTok,
+      cacheReadTokens: this.state.cacheReadTokens + read,
+      contextUsed: used,
+    });
+    if (this.state.contextLimit <= 0) return;
+    if (nextPct >= CTX_CRITICAL_PCT && prevPct < CTX_CRITICAL_PCT) {
+      this.showToast(t("ui.ctx.critical", { pct: Math.floor(nextPct * 100) }), 3000);
+    } else if (nextPct >= CTX_WARN_PCT && prevPct < CTX_WARN_PCT) {
+      this.showToast(t("ui.ctx.warn", { pct: Math.floor(nextPct * 100) }), 3000);
+    }
+  }
+
+  /** Set the context-window size for the gauge (0 = unknown → gauge hidden). */
+  setContextLimit(limit: number): void {
+    this.set({ contextLimit: Math.max(0, limit) });
+  }
+
+  /**
+   * Append a full-output copy of a completed tool card (ctrl+r). Ink's
+   * <Static> is write-once: an already-printed collapsed card can't be
+   * re-rendered in place, so "expanding" appends a sibling card with the same
+   * result rendered expanded. Idempotent — if this source item already has a
+   * copy, or the item itself is a copy, nothing is appended.
+   * Returns true when a copy landed.
+   */
+  expandTool(id: number): boolean {
+    const src = this.state.transcript.find((t) => t.id === id);
+    if (src?.kind !== "tool" || !src.result || src.expanded) return false;
+    const alreadyExpanded = this.state.transcript.some(
+      (t) => t.kind === "tool" && t.expandedOf === id,
+    );
+    if (alreadyExpanded) return false;
+    this.push({
+      kind: "tool",
+      name: src.name,
+      detail: src.detail,
+      result: src.result,
+      expanded: true,
+      expandedOf: id,
+    } as TranscriptItem);
+    return true;
   }
 
   // --- overlays (return promises the orchestration awaits) ---
@@ -571,6 +689,15 @@ export class TuiStore {
   /** Update the status-bar model label (e.g. after a /provider switch). */
   setModelLabel(label: string): void {
     this.set({ modelLabel: label });
+  }
+
+  /**
+   * Update model id + display label together (e.g. after a /provider switch).
+   * The id drives pricing / context-window lookups, so it must travel with
+   * the label or the status bar keeps costing/sizing the previous model.
+   */
+  setModel(modelId: string, label: string): void {
+    this.set({ modelId, modelLabel: label });
   }
 
   /**

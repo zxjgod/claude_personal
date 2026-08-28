@@ -12,7 +12,7 @@
 // claude test/src/src/components/Spinner/* and bridge/bridgeStatusUtil.ts.
 // ============================================================
 
-import { graphemes, visualWidth } from "./terminal-width.js";
+import { graphemes, truncateVisual, visualWidth } from "./terminal-width.js";
 
 // --- Verbs -------------------------------------------------------------------
 
@@ -73,6 +73,17 @@ export const SPINNER_VERBS = [
 
 export function pickVerb(): string {
   return SPINNER_VERBS[Math.floor(Math.random() * SPINNER_VERBS.length)]!;
+}
+
+/**
+ * True when decorative animation should be disabled (CCR_REDUCED_MOTION=1).
+ * One source of truth for every animated surface — the line-CLI spinner, the
+ * Ink StatusLine glyph/shimmer, and the ToolCard status-dot blink — so the
+ * preference is honored everywhere, not just where it happened to be checked.
+ * (Purely informational updates like the elapsed clock still tick.)
+ */
+export function isReducedMotion(): boolean {
+  return process.env.CCR_REDUCED_MOTION === "1";
 }
 
 /** How long each thinking verb stays on screen before the next one (ms). */
@@ -211,7 +222,8 @@ function host(url: string): string {
 }
 
 function clip(value: string, max = 40): string {
-  return value.length <= max ? value : value.slice(0, max - 1) + "…";
+  // P3-15: column-aware so a CJK command/detail clips to real display width.
+  return truncateVisual(value, max);
 }
 
 /**

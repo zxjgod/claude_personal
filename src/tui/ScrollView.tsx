@@ -22,6 +22,7 @@
 
 import { Box, measureElement, Text } from "ink";
 import { useEffect, useRef, useState } from "react";
+import type { TranscriptLine } from "./transcript-lines.js";
 
 /** Pure windowing math, exported for tests. Returns the slice [start, end) of
  *  `lines` visible for a given scrollTop and viewport height. */
@@ -55,6 +56,10 @@ export function bottomScrollTop(totalLines: number, viewportHeight: number): num
  * Windowed scroll view that fills its flex parent. Reports its measured height
  * back through `onHeight` so the parent can size scroll math (page steps,
  * sticky-bottom) against the real viewport rather than a guessed row count.
+ *
+ * P3-16: lines may be plain strings OR TranscriptLine objects carrying a role
+ * color/dim — the pager and full-screen view render colored transcript rows
+ * through the same windowing.
  */
 export function ScrollView({
   lines,
@@ -62,7 +67,7 @@ export function ScrollView({
   fallbackHeight,
   onHeight,
 }: {
-  lines: string[];
+  lines: Array<string | TranscriptLine>;
   scrollTop: number;
   /** Used before the first measurement settles (and under ink-testing). */
   fallbackHeight: number;
@@ -90,11 +95,14 @@ export function ScrollView({
   const pad = Math.max(0, height - slice.length);
   return (
     <Box ref={ref} flexDirection="column" flexGrow={1}>
-      {slice.map((line, i) => (
-        <Text key={start + i} wrap="truncate-end">
-          {line.length > 0 ? line : " "}
-        </Text>
-      ))}
+      {slice.map((line, i) => {
+        const l = typeof line === "string" ? { text: line } : line;
+        return (
+          <Text key={start + i} wrap="truncate-end" color={l.color} dimColor={l.dim}>
+            {l.text.length > 0 ? l.text : " "}
+          </Text>
+        );
+      })}
       {Array.from({ length: pad }, (_, i) => (
         <Text key={`pad-${i}`}> </Text>
       ))}

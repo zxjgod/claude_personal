@@ -60,6 +60,50 @@ const translations: Record<Language, Record<string, string>> = {
     "error.unknown": "An unknown error occurred",
     "error.aborted": "Operation aborted",
     "error.cancelled": "Operation cancelled",
+
+    // --- UI chrome (P3-13: one source for the mixed-language TUI strings) ---
+    // Permission menus (Ink Prompts.tsx + raw-mode cli-interactive.ts)
+    "ui.permission.yes": "Yes",
+    "ui.permission.always": "Yes, and always allow this",
+    "ui.permission.no": "No",
+    "ui.permission.yes.desc": "Allow once",
+    "ui.permission.always.desc": "Don't ask again this session",
+    "ui.permission.no.desc": "Cancel the operation",
+    "ui.permission.proceed": "Do you want to proceed?",
+    "ui.permission.chooseAction": "Choose an action:",
+    "ui.permission.hint": "↑↓ choose · Enter confirm · Esc cancel",
+    "ui.permission.title": "⚠️ Permission request",
+    "ui.permission.textHint": "type y allow / a always / n deny (Esc cancels)",
+
+    // Permission prompt tool labels (line-CLI text fallback)
+    "ui.tool.bash": "Shell command",
+    "ui.tool.write": "Write file",
+    "ui.tool.edit": "Edit file",
+    "ui.tool.read": "Read file",
+    "ui.tool.glob": "Find files",
+    "ui.tool.grep": "Search content",
+    "ui.tool.task": "Sub-agent task",
+    "ui.tool.fallback": "{name} operation",
+
+    // Status bar
+    "ui.status.busy": "working… (Esc/Ctrl+C interrupt)",
+    "ui.status.idle": "? shortcuts · / commands",
+    "ui.status.idleFullscreen": "? shortcuts · / commands · @path attach · PgUp/PgDn scroll",
+
+    // Live-region elision hints
+    "ui.elide.above": "… {n} lines above elided",
+    "ui.elide.thinking": "… {n} earlier thinking lines elided",
+
+    // Input box
+    "ui.paste.note": "Pasted {n} lines — review, then Enter to send",
+    "ui.file.hint": "Tab insert · Esc close",
+
+    // Context-gauge toasts
+    "ui.ctx.warn": "Context at {pct}% — nearing auto-compact",
+    "ui.ctx.critical": "Context at {pct}% — auto-compact imminent",
+
+    // Full-screen scrolled hint
+    "ui.fs.scrolled": "↑ viewing history — Ctrl+End or G to jump to latest",
   },
   "zh-CN": {
     // Permission errors
@@ -93,15 +137,58 @@ const translations: Record<Language, Record<string, string>> = {
     "error.unknown": "发生未知错误",
     "error.aborted": "操作已中止",
     "error.cancelled": "操作已取消",
+
+    // --- UI chrome（P3-13：TUI 混杂文案的单一来源） ---
+    "ui.permission.yes": "允许",
+    "ui.permission.always": "始终允许",
+    "ui.permission.no": "拒绝",
+    "ui.permission.yes.desc": "仅本次允许",
+    "ui.permission.always.desc": "本会话内不再询问",
+    "ui.permission.no.desc": "取消操作",
+    "ui.permission.proceed": "是否执行此操作？",
+    "ui.permission.chooseAction": "选择操作：",
+    "ui.permission.hint": "↑↓ 选择 · Enter 确认 · Esc 取消",
+    "ui.permission.title": "⚠️ 权限请求",
+    "ui.permission.textHint": "输入 y 允许 / a 始终允许 / n 拒绝 (Esc 取消)",
+
+    // 权限提示工具标签（行式文本回退路径）
+    "ui.tool.bash": "Shell 命令",
+    "ui.tool.write": "写入文件",
+    "ui.tool.edit": "编辑文件",
+    "ui.tool.read": "读取文件",
+    "ui.tool.glob": "搜索文件",
+    "ui.tool.grep": "搜索内容",
+    "ui.tool.task": "子代理任务",
+    "ui.tool.fallback": "{name} 操作",
+
+    "ui.status.busy": "处理中…（Esc/Ctrl+C 中断）",
+    "ui.status.idle": "? 快捷键 · / 命令",
+    "ui.status.idleFullscreen": "? 快捷键 · / 命令 · @path 附件 · PgUp/PgDn 滚动",
+
+    "ui.elide.above": "… 上文约 {n} 行已省略",
+    "ui.elide.thinking": "… 思考前文约 {n} 行已省略",
+
+    "ui.paste.note": "已粘贴 {n} 行 — 检查后 Enter 发送",
+    "ui.file.hint": "Tab 插入 · Esc 关闭",
+
+    "ui.ctx.warn": "上下文已用 {pct}% — 接近自动压缩阈值",
+    "ui.ctx.critical": "上下文已用 {pct}% — 即将自动压缩",
+
+    "ui.fs.scrolled": "↑ 正在查看历史 — Ctrl+End 或按 G 返回最新",
   },
 };
 
 /**
  * Get a translated message by key.
  * Replaces {placeholder} with provided values.
+ *
+ * Reads the `currentLanguage` singleton (seeded from detectLanguage at import
+ * time) — NOT the environment on every call. Otherwise setLanguage()/a /lang
+ * command could never take effect, and a mid-process env change would silently
+ * flip the UI language.
  */
 export function t(key: string, values?: Record<string, string | number>): string {
-  const lang = detectLanguage();
+  const lang = currentLanguage;
   let message = translations[lang][key] || translations.en[key] || key;
 
   if (values) {

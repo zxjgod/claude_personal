@@ -22,12 +22,14 @@ import { EffortPrompt } from "./EffortPrompt.js";
 import { FullScreenApp } from "./FullScreenApp.js";
 import { HelpPanel } from "./HelpPanel.js";
 import { type CommandInfo, InputBox } from "./InputBox.js";
+import { t } from "./i18n.js";
 import { createResolver, DEFAULT_BINDINGS, loadUserBindings } from "./keybindings/index.js";
 import { tailVisualLines } from "./live-window.js";
 import { renderMarkdown } from "./markdown.js";
 import { ConfirmPrompt, PermissionPrompt, QuestionPrompt } from "./Prompts.js";
 import { ProviderPicker } from "./ProviderPicker.js";
 import { SessionPicker } from "./SessionPicker.js";
+import { StatusBar } from "./StatusBar.js";
 import { StatusLine } from "./StatusLine.js";
 import { StreamingMarkdown } from "./StreamingMarkdown.js";
 import { actionLabel } from "./spinner-core.js";
@@ -36,7 +38,7 @@ import { Toast } from "./Toast.js";
 import { TODO_MAX_ROWS, TodoList } from "./TodoList.js";
 import { ActiveToolCard, CompletedToolCard } from "./ToolCard.js";
 import { TranscriptReview } from "./TranscriptReview.js";
-import { modeColor, palette } from "./theme.js";
+import { palette } from "./theme.js";
 import { useStoreField, useStoreSelector } from "./useStoreSelector.js";
 import { useTerminalSize } from "./useTerminalSize.js";
 
@@ -99,7 +101,11 @@ function TranscriptRow({ item, expanded }: { item: TranscriptItem; expanded: boo
       );
     case "tool":
       return item.result ? (
-        <CompletedToolCard result={item.result} detail={item.detail} expanded={expanded} />
+        <CompletedToolCard
+          result={item.result}
+          detail={item.detail}
+          expanded={item.expanded === true || expanded}
+        />
       ) : null;
     case "thought":
       return <Text dimColor>{`  Thought for ${item.seconds}s`}</Text>;
@@ -194,7 +200,9 @@ function StreamingRegion({ store }: { store: TuiStore }) {
   const { text, hiddenLines } = tailVisualLines(streamingText, maxLines, columns - 8);
   return (
     <Box marginBottom={1} flexDirection="column">
-      {hiddenLines > 0 ? <Text dimColor>{`  … 上文约 ${hiddenLines} 行已省略`}</Text> : null}
+      {hiddenLines > 0 ? (
+        <Text dimColor>{`  ${t("ui.elide.above", { n: hiddenLines })}`}</Text>
+      ) : null}
       <Box maxHeight={maxLines} overflowY="hidden" flexDirection="column">
         <AssistantMessage>
           <StreamingMarkdown>{text}</StreamingMarkdown>
@@ -216,7 +224,9 @@ function ThinkingRegion({ store }: { store: TuiStore }) {
   const { text, hiddenLines } = tailVisualLines(streamingThinking, maxLines, columns - 6);
   return (
     <Box flexDirection="column">
-      {hiddenLines > 0 ? <Text dimColor>{`  … 思考前文约 ${hiddenLines} 行已省略`}</Text> : null}
+      {hiddenLines > 0 ? (
+        <Text dimColor>{`  ${t("ui.elide.thinking", { n: hiddenLines })}`}</Text>
+      ) : null}
       <Box maxHeight={maxLines} overflowY="hidden" flexDirection="column">
         <Text dimColor italic>
           {text}
@@ -236,7 +246,7 @@ function ActiveToolsRegion({ store }: { store: TuiStore }) {
   return (
     <>
       {visible.map((t) => (
-        <ActiveToolCard key={t.id} name={t.name} detail={t.detail} />
+        <ActiveToolCard key={t.id} name={t.name} detail={t.detail} startedAt={t.startedAt} />
       ))}
       {hidden > 0 ? <Text dimColor>{`  … +${hidden} 个工具运行中`}</Text> : null}
     </>
@@ -293,11 +303,13 @@ function InteractionRegion({
   commands,
   onSubmit,
   editorMode,
+  completeFiles,
 }: {
   store: TuiStore;
   commands: CommandInfo[];
   onSubmit: (value: string) => void;
   editorMode?: { value: "default" | "vim" };
+  completeFiles?: (query: string) => string[];
 }) {
   const { overlay, busy, inputHistory } = useStoreSelector(store, selectInteraction);
   if (overlay) {
@@ -325,6 +337,7 @@ function InteractionRegion({
       busy={busy}
       onSubmit={onSubmit}
       editorMode={editorMode}
+      completeFiles={completeFiles}
       history={inputHistory}
       onHistoryChange={(history) => store.setInputHistory(history)}
     />
@@ -352,34 +365,8 @@ function HelpRegion({ store }: { store: TuiStore }) {
   );
 }
 
-/** Bottom status bar. Subscribes to `busy` + token totals + permission mode. */
-function StatusBar({ store }: { store: TuiStore }) {
-  const { busy, permissionMode, tokensIn, tokensOut } = useStoreSelector(store, selectStatusBar);
-  return (
-    <Box>
-      <Text dimColor>
-        {busy ? "working… (Ctrl+C interrupt)" : "? shortcuts · ← agents · / commands"}
-        {" · "}
-      </Text>
-      <Text color={modeColor(permissionMode)} bold>
-        {permissionMode}
-      </Text>
-      <Text dimColor>
-        {" · "}
-        {tokensIn}↑ {tokensOut}↓ tokens
-      </Text>
-    </Box>
-  );
-}
-
-function selectStatusBar(s: StoreState) {
-  return {
-    busy: s.busy,
-    permissionMode: s.permissionMode,
-    tokensIn: s.tokensIn,
-    tokensOut: s.tokensOut,
-  };
-}
+/** Bottom status bar (model · mode · tokens · ctx gauge · cost). See
+ *  StatusBar.tsx — one shared implementation for both app layouts. */
 
 // Global-hotkey resolver: defaults + any user overrides from
 // ~/.claude/keybindings.json. Loaded once at startup (not hot-reloaded).
@@ -423,12 +410,14 @@ function ReviewableBody({
   onSubmit,
   expandedId,
   editorMode,
+  completeFiles,
 }: {
   store: TuiStore;
   commands: CommandInfo[];
   onSubmit: (value: string) => void;
   expandedId: number | null;
   editorMode?: { value: "default" | "vim" };
+  completeFiles?: (query: string) => string[];
 }) {
   const reviewing = useStoreField(store, "reviewing");
   if (reviewing) {
@@ -453,6 +442,7 @@ function ReviewableBody({
         commands={commands}
         onSubmit={onSubmit}
         editorMode={editorMode}
+        completeFiles={completeFiles}
       />
     </>
   );
@@ -462,15 +452,20 @@ export function App({
   store,
   commands,
   onSubmit,
-  expandedId,
+  expandedId = null,
   editorMode,
+  completeFiles,
   fullscreen,
 }: {
   store: TuiStore;
   commands: CommandInfo[];
   onSubmit: (value: string) => void;
-  expandedId: number | null;
+  /** Legacy per-item expansion prop (tests). Production expansion is driven
+   *  by the item's own `expanded` flag (ctrl+r → store.expandTool). */
+  expandedId?: number | null;
   editorMode?: { value: "default" | "vim" };
+  /** Workspace path matcher for the InputBox's "@" dropdown. */
+  completeFiles?: (query: string) => string[];
   /** M25.2: when true, render the alt-screen full-screen layout (input pinned
    *  to the bottom + in-app PgUp/PgDn scrollback) instead of the default
    *  <Static> native-scrollback layout. */
@@ -484,6 +479,7 @@ export function App({
         commands={commands}
         onSubmit={onSubmit}
         editorMode={editorMode}
+        completeFiles={completeFiles}
       />
     );
   }
@@ -502,6 +498,7 @@ export function App({
         onSubmit={onSubmit}
         expandedId={expandedId}
         editorMode={editorMode}
+        completeFiles={completeFiles}
       />
       <StatusBar store={store} />
     </Box>

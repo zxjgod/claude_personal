@@ -44,4 +44,18 @@ export function modeColor(mode: string): string {
   return palette.modeColors[mode] ?? palette.accent;
 }
 
+/** Short friendly badge labels for permission modes — enum names like
+ *  "bypassPermissions" read as identifiers, not UI copy. */
+const MODE_LABELS: Record<string, string> = {
+  default: "default",
+  acceptEdits: "accept edits",
+  bypassPermissions: "bypass",
+  plan: "plan",
+};
+
+/** Friendly label for a permission mode. Falls back to the raw name. */
+export function modeLabel(mode: string): string {
+  return MODE_LABELS[mode] ?? mode;
+}
+
 export type PaletteColor = (typeof palette)[keyof typeof palette];

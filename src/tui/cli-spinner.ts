@@ -26,12 +26,13 @@ import {
   formatDuration,
   formatTokens,
   GLYPH_FRAME_MS,
-  pickVerb,
+  isReducedMotion,
   SHIMMER_INTERVAL_MS,
   SPINNER_FRAMES,
   SPINNER_VERBS,
   TEARDROP_ASTERISK,
   UP_ARROW,
+  verbAt,
 } from "./spinner-core.js";
 import { terminalColumns, visualWidth } from "./terminal-width.js";
 
@@ -58,7 +59,6 @@ export class Spinner {
   private timer: ReturnType<typeof setInterval> | null = null;
   private startedAt = 0;
   private elapsedBase = 0;
-  private verb = pickVerb();
   private mode: SpinnerMode = "thinking";
   private tokens = 0;
   private reducedMotion: boolean;
@@ -67,21 +67,21 @@ export class Spinner {
 
   constructor(opts: SpinnerOptions = {}) {
     this.out = opts.out ?? process.stdout;
-    this.reducedMotion =
-      opts.reducedMotion ?? (process.env.CCR_REDUCED_MOTION === "1" || !this.out.isTTY);
+    this.reducedMotion = opts.reducedMotion ?? (isReducedMotion() || !this.out.isTTY);
   }
 
   get isActive(): boolean {
     return this.active;
   }
 
-  /** Begin animating. Picks a fresh verb each turn. */
+  /** Begin animating. The verb rotates deterministically from the turn's start
+   *  time (verbAt) — the same cycle the Ink StatusLine shows, so both UI paths
+   *  play the same gerunds instead of the line CLI freezing on one word. */
   start(): void {
     if (this.active) return;
     // No-op on non-TTY: the caller prints plain status instead.
     if (!this.out.isTTY) return;
     this.active = true;
-    this.verb = pickVerb();
     this.startedAt = Date.now();
     this.elapsedBase = 0;
     this.tokens = 0;
@@ -134,7 +134,9 @@ export class Spinner {
     const glyphChar = this.reducedMotion ? TEARDROP_ASTERISK : SPINNER_FRAMES[frame]!;
     const glyph = chalk.rgb(CLAUDE_ORANGE.r, CLAUDE_ORANGE.g, CLAUDE_ORANGE.b)(glyphChar);
 
-    const message = `${this.verb}…`;
+    // P3-15: rotate the verb with elapsed time (seeded by the turn start) —
+    // deterministic like the Ink StatusLine, not a one-time random pick.
+    const message = `${verbAt(elapsedMs, this.startedAt)}…`;
     const verbText = this.reducedMotion
       ? chalk.rgb(CLAUDE_ORANGE.r, CLAUDE_ORANGE.g, CLAUDE_ORANGE.b)(message)
       : this.renderShimmer(message, elapsedMs);

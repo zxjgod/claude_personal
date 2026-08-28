@@ -7,6 +7,7 @@
 
 import { Box, Text, useInput } from "ink";
 import { useState } from "react";
+import { t } from "./i18n.js";
 import type { Overlay } from "./store.js";
 
 const CYAN = "cyan";
@@ -48,10 +49,13 @@ export function PermissionPrompt({
 }: {
   overlay: Extract<Overlay, { kind: "permission" }>;
 }) {
+  // P3-13: option labels come from i18n so the Ink prompt and the raw-mode
+  // line-CLI menu (cli-interactive.ts) render the SAME language — previously
+  // one showed English while the other showed Chinese.
   const options: Array<{ label: string; value: "yes" | "always" | "no" }> = [
-    { label: "Yes", value: "yes" },
-    { label: "Yes, and always allow this", value: "always" },
-    { label: "No", value: "no" },
+    { label: t("ui.permission.yes"), value: "yes" },
+    { label: t("ui.permission.always"), value: "always" },
+    { label: t("ui.permission.no"), value: "no" },
   ];
   const [selected, setSelected] = useState(0);
 
@@ -88,7 +92,7 @@ export function PermissionPrompt({
         <Text color="yellow">{overlay.riskHint}</Text>
       ) : null}
       <Box marginTop={1} flexDirection="column">
-        <Text>Do you want to proceed?</Text>
+        <Text>{t("ui.permission.proceed")}</Text>
         {options.map((opt, i) => (
           <Text key={opt.value} color={i === selected ? CYAN : undefined}>
             {i === selected ? "❯ " : "  "}
@@ -96,7 +100,7 @@ export function PermissionPrompt({
           </Text>
         ))}
       </Box>
-      <Text dimColor>↑↓ choose · Enter confirm · Esc cancel · Shift+Tab mode</Text>
+      <Text dimColor>{`${t("ui.permission.hint")} · Shift+Tab mode`}</Text>
     </Box>
   );
 }

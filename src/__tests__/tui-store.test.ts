@@ -2,10 +2,14 @@
 // Tests: TUI store (agent-loop ↔ React bridge)
 // ============================================================
 
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
+import { setLanguage } from "../tui/i18n.js";
 import { TuiStore } from "../tui/store.js";
 import { selectionEqual } from "../tui/useStoreSelector.js";
 import type { ToolExecutionResult } from "../types.js";
+
+// Pin the UI language so literal-string assertions hold on zh-locale machines.
+beforeAll(() => setLanguage("en"));
 
 function fakeResult(name: string, formatted = "ok"): ToolExecutionResult {
   return { toolName: name, formatted, durationMs: 5 };
@@ -45,8 +49,8 @@ describe("TuiStore", () => {
   it("tracks active tool then commits the result", () => {
     const store = new TuiStore("p/m");
     store.startTool("read", "a.ts", "call_1");
-    expect(store.getSnapshot().activeTools).toEqual([
-      { id: "call_1", name: "read", detail: "a.ts" },
+    expect(store.getSnapshot().activeTools).toMatchObject([
+      { id: "call_1", name: "read", detail: "a.ts", startedAt: expect.any(Number) },
     ]);
     store.finishTool(fakeResult("read"), "a.ts", "call_1");
     const snap = store.getSnapshot();
@@ -61,7 +65,9 @@ describe("TuiStore", () => {
     expect(store.getSnapshot().activeTools).toHaveLength(2);
     // Finish the second one first — the first must remain active.
     store.finishTool(fakeResult("grep"), "foo", "c2");
-    expect(store.getSnapshot().activeTools).toEqual([{ id: "c1", name: "read", detail: "a.ts" }]);
+    expect(store.getSnapshot().activeTools).toMatchObject([
+      { id: "c1", name: "read", detail: "a.ts" },
+    ]);
     store.finishTool(fakeResult("read"), "a.ts", "c1");
     expect(store.getSnapshot().activeTools).toEqual([]);
   });
@@ -73,6 +79,63 @@ describe("TuiStore", () => {
     const snap = store.getSnapshot();
     expect(snap.tokensIn).toBe(120);
     expect(snap.tokensOut).toBe(80);
+  });
+
+  it("accumulates cache-read tokens and tracks the live context estimate", () => {
+    const store = new TuiStore("p/m");
+    store.addUsage(100, 50, { read: 800, creation: 100 }, 1050);
+    store.addUsage(200, 60, { read: 900 }, 1160);
+    const snap = store.getSnapshot();
+    expect(snap.tokensIn).toBe(300);
+    expect(snap.tokensOut).toBe(110);
+    expect(snap.cacheReadTokens).toBe(1700); // cumulative across calls
+    expect(snap.contextUsed).toBe(1160); // LAST call's window, not cumulative
+  });
+
+  it("falls back to split-reporting context math when no explicit estimate is given", () => {
+    const store = new TuiStore("p/m");
+    store.addUsage(100, 50, { read: 800, creation: 100 });
+    expect(store.getSnapshot().contextUsed).toBe(1050); // in+out+read+creation
+  });
+
+  it("toasts once when the context gauge crosses the warn threshold", () => {
+    const store = new TuiStore("p/m");
+    store.setContextLimit(1000);
+    store.addUsage(500, 0, undefined, 600); // 60% — below warn, silent
+    expect(store.getSnapshot().toast).toBeNull();
+    store.addUsage(100, 0, undefined, 800); // crosses 75% — announce
+    expect(store.getSnapshot().toast).toContain("nearing auto-compact"); // i18n (en)
+    store.addUsage(100, 0, undefined, 850); // still above — no re-toast
+    const afterSecond = store.getSnapshot().toast;
+    expect(afterSecond).toContain("nearing auto-compact");
+  });
+
+  it("expandTool appends one expanded copy and is idempotent", () => {
+    const store = new TuiStore("p/m");
+    store.startTool("read", "a.ts", "c1");
+    store.finishTool(fakeResult("read"), "a.ts", "c1");
+    const original = store.getSnapshot().transcript.at(-1)!;
+    expect(store.expandTool(original.id)).toBe(true);
+    const after = store.getSnapshot().transcript;
+    expect(after).toHaveLength(2);
+    expect(after.at(-1)).toMatchObject({
+      kind: "tool",
+      expanded: true,
+      expandedOf: original.id,
+    });
+    // Second press on the same card: no duplicate copy.
+    expect(store.expandTool(original.id)).toBe(false);
+    expect(store.getSnapshot().transcript).toHaveLength(2);
+    // Expanding an expanded copy itself is rejected.
+    expect(store.expandTool(after.at(-1)!.id)).toBe(false);
+  });
+
+  it("setModel updates id and label together", () => {
+    const store = new TuiStore("p/m", { modelId: "model-a" });
+    store.setModel("model-b", "prov/model-b");
+    const snap = store.getSnapshot();
+    expect(snap.modelId).toBe("model-b");
+    expect(snap.modelLabel).toBe("prov/model-b");
   });
 
   it("assigns unique ids to transcript items", () => {

@@ -11,13 +11,16 @@ import {
   renderToolStart,
   StreamingRenderer,
 } from "../tui/cli-renderer.js";
+import { setLanguage } from "../tui/i18n.js";
 import { renderMarkdown } from "../tui/markdown.js";
 import type { ToolExecutionResult } from "../types.js";
 
-// Force chalk on so color codes are deterministic in CI.
+// Force chalk on so color codes are deterministic in CI, and pin the UI
+// language so literal-string assertions hold on zh-locale machines too.
 const prevLevel = chalk.level;
 beforeEach(() => {
   chalk.level = 1;
+  setLanguage("en");
 });
 afterEach(() => {
   chalk.level = prevLevel;
@@ -113,7 +116,10 @@ describe("renderToolResult", () => {
     } as ToolExecutionResult;
     const out = captureStdout(() => renderToolResult(result));
     expect(out).toContain("⎿");
-    expect(out).toContain("ctrl+r to expand");
+    // The line-based REPL has no key handler mid-turn, so the fold hint must
+    // not promise a ctrl+r affordance only the Ink TUI implements.
+    expect(out).toContain("+18 lines");
+    expect(out).not.toContain("ctrl+r");
   });
 
   it("shows the error on failure", () => {
@@ -197,10 +203,15 @@ describe("renderToolStart / renderPermissionPrompt", () => {
     const out = captureStdout(() =>
       renderPermissionPrompt("write", { filePath: "a.txt" }, "overwrites file"),
     );
-    // P1-4: Updated to expect Chinese output
-    expect(out).toContain("写入文件");
+    // P3-13: labels come from i18n (en by default in tests).
+    expect(out).toContain("Write file");
     expect(out).toContain("overwrites file");
     expect(out).toContain("a.txt");
     expect(out).toMatch(/[┌┐└┘│─]/);
+  });
+
+  it("renders the generic label for tools without a dedicated i18n key", () => {
+    const out = captureStdout(() => renderPermissionPrompt("webfetch", { url: "https://x" }));
+    expect(out).toContain("Webfetch operation");
   });
 });

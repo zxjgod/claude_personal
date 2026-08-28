@@ -107,6 +107,26 @@ export function* graphemes(input: string): Generator<{ segment: string; width: n
 }
 
 /**
+ * Truncate `value` to at most `max` VISUAL columns, appending an ellipsis when
+ * anything was cut. Unlike String.slice-based helpers, a CJK/fullwidth string
+ * is measured in display columns: truncation can never leave a wide glyph
+ * half-cut at the screen edge, and the result never overflows `max` columns.
+ * Never splits a surrogate pair or combining sequence.
+ */
+export function truncateVisual(value: string, max: number): string {
+  if (max <= 1) return "";
+  if (visualWidth(value) <= max) return value;
+  let out = "";
+  let w = 0;
+  for (const { segment, width } of graphemes(value)) {
+    if (w + width > max - 1) break;
+    out += segment;
+    w += width;
+  }
+  return out + "…";
+}
+
+/**
  * Pad a (possibly ANSI-styled) string to a target visual width.
  * `textWidth` is the pre-computed visual width of `text` (without padding).
  */

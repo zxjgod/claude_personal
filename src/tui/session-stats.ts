@@ -40,6 +40,33 @@ export function lookupPricing(model: string): ModelPricing | null {
   return null;
 }
 
+// Known context-window sizes (tokens), keyed like PRICING by lowercase model-id
+// substring. Order matters: more specific keys first ("gpt-4o" before "gpt-4",
+// or "gpt-4o-2024" would match the wrong row). Best-effort like the pricing
+// table — unknown models return null and the status-bar gauge stays hidden
+// rather than guessing a window the model doesn't have.
+const CONTEXT_WINDOWS: Array<{ match: string; window: number }> = [
+  { match: "claude-opus", window: 200_000 },
+  { match: "claude-sonnet", window: 200_000 },
+  { match: "claude-haiku", window: 200_000 },
+  { match: "gpt-4o-mini", window: 128_000 },
+  { match: "gpt-4o", window: 128_000 },
+  { match: "gpt-4", window: 8_192 },
+  { match: "gpt-3.5", window: 16_385 },
+  { match: "deepseek", window: 64_000 },
+  { match: "qwen", window: 131_072 },
+  { match: "moonshot", window: 128_000 },
+];
+
+/** Look up the context-window size for a model id, or null if unknown. */
+export function lookupContextWindow(model: string): number | null {
+  const m = model.toLowerCase();
+  for (const entry of CONTEXT_WINDOWS) {
+    if (m.includes(entry.match)) return entry.window;
+  }
+  return null;
+}
+
 /**
  * Estimate cost in USD for a token count under a model's pricing.
  * Returns null when the model isn't in the table.

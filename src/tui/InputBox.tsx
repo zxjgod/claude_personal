@@ -1,10 +1,11 @@
 // ============================================================
-// InputBox — bordered prompt with cursor editing + "/" autocomplete
+// InputBox — bordered prompt with cursor editing + "/" and "@" autocomplete
 // ============================================================
 // Built on Ink's useInput so we control editing precisely. A bordered "> "
 // box with a movable cursor, and a dropdown of slash commands filtered by
 // what's typed. Editing keys:
 //   • ←/→        move the cursor within the buffer
+//   • Ctrl+←/→   jump to the previous/next word
 //   • Home/End   jump to start / end of the buffer
 //   • Backspace  delete the char *before* the cursor (input only)
 //   • Delete     delete the char *under* the cursor
@@ -14,6 +15,17 @@
 //   • Ctrl+U     delete from cursor to beginning of line (M41)
 //   • Ctrl+K     delete from cursor to end of line (M41)
 //   • Ctrl+W     delete word before cursor (M41)
+//   • Esc        close the open dropdown ("/" palette or "@" files)
+//
+// Two dropdown sources, mutually exclusive by their trigger:
+//   "/" at the start of the buffer → slash-command palette
+//   "@word" at the cursor          → workspace file completion (P2-10);
+//                                    Tab inserts the full path. The submit
+//                                    side (expandFileRefs) attaches it.
+//
+// Pasted text arrives through Ink's usePaste (bracketed paste): newlines are
+// normalized to "\n" and a paste of >5 lines shows a one-shot note so an
+// accidental middle-click paste of 50 lines is visible before Enter sends it.
 //
 // The cursor is rendered *inline* — the buffer is split at the cursor and the
 // char under it is drawn inverse. This lets Ink wrap the text naturally and
@@ -30,8 +42,9 @@
 // turns.
 // ============================================================
 
-import { Box, Text, useInput } from "ink";
+import { Box, Text, useInput, usePaste } from "ink";
 import { useEffect, useRef, useState } from "react";
+import { t } from "./i18n.js";
 import { nextOffset } from "./SessionPicker.js";
 import { terminalColumns } from "./terminal-width.js";
 import { palette } from "./theme.js";
@@ -143,6 +156,38 @@ function inkKeyToVim(
   return input;
 }
 
+/**
+ * The "@word" at the cursor: the run of non-whitespace ending at the cursor
+ * that begins with '@'. Returns the query plus the buffer offset of the '@'
+ * so an accepted completion can replace exactly that span (nothing before or
+ * after the word moves). `@` alone (no chars typed) opens nothing — dumping
+ * eight arbitrary paths before the user narrows is noise.
+ */
+function atTokenAt(buffer: string, cursor: number): { query: string; start: number } | null {
+  let start = cursor;
+  while (start > 0 && !/\s/.test(buffer[start - 1]!)) start--;
+  const word = buffer.slice(start, cursor);
+  if (!word.startsWith("@") || word.length < 2) return null;
+  return { query: word.slice(1), start };
+}
+
+/** Offset of the start of the word before `cursor` (skips whitespace, then
+ *  the non-whitespace run) — the Ctrl+← jump target. */
+function wordStartBefore(buffer: string, cursor: number): number {
+  let i = cursor;
+  while (i > 0 && /\s/.test(buffer[i - 1]!)) i--;
+  while (i > 0 && !/\s/.test(buffer[i - 1]!)) i--;
+  return i;
+}
+
+/** Offset just past the end of the word after `cursor` — the Ctrl+→ target. */
+function wordEndAfter(buffer: string, cursor: number): number {
+  let i = cursor;
+  while (i < buffer.length && /\s/.test(buffer[i]!)) i++;
+  while (i < buffer.length && !/\s/.test(buffer[i]!)) i++;
+  return i;
+}
+
 export interface InputBoxProps {
   commands: CommandInfo[];
   disabled: boolean;
@@ -151,12 +196,18 @@ export interface InputBoxProps {
   editorMode?: { value: "default" | "vim" };
   keepColorWhenDisabled?: boolean;
   hideBottomRule?: boolean;
+  /** P2-10: workspace path matcher for "@" completions. Absent = the "@"
+   *  dropdown is disabled (e.g. tests that don't touch the fs). */
+  completeFiles?: (query: string) => string[];
   /** M41: input history for ↑/↓ navigation. Pass an array and a setter;
    *  the component pushes submitted values onto the array and drives the
    *  navigation index internally. */
   history?: string[];
   onHistoryChange?: (history: string[]) => void;
 }
+
+/** Pastes longer than this show the "已粘贴 N 行" note (lines, threshold). */
+const PASTE_NOTE_LINES = 5;
 
 export function InputBox({
   commands,
@@ -166,6 +217,7 @@ export function InputBox({
   editorMode,
   keepColorWhenDisabled,
   hideBottomRule,
+  completeFiles,
   history: externalHistory,
   onHistoryChange,
 }: InputBoxProps) {
@@ -179,6 +231,14 @@ export function InputBox({
   // First-visible index of the dropdown scroll window; nudged as `selected`
   // moves so the highlighted command stays on screen (see MAX_SUGGESTIONS).
   const [suggestOffset, setSuggestOffset] = useState(0);
+  // Dropdown dismissal (Esc): stores the query that was dismissed so the
+  // dropdown reopens only once the user types a different query. One marker
+  // per dropdown kind ("/" and "@").
+  const [slashDismissed, setSlashDismissed] = useState<string | null>(null);
+  const [atDismissed, setAtDismissed] = useState<string | null>(null);
+  const [fileSelected, setFileSelected] = useState(0);
+  // One-shot note shown after a large paste; cleared by the next keypress.
+  const [pasteNote, setPasteNote] = useState<string | null>(null);
   // Vim sub-mode (only meaningful when vimActive). Starts in insert so typing
   // works immediately after /vim on; Esc drops to normal.
   const [vimMode, setVimMode] = useState<"normal" | "insert">("insert");
@@ -193,24 +253,23 @@ export function InputBox({
   // keystrokes. Lazily created; text/offset re-synced from buffer on each key.
   const vimEngineRef = useRef<VimEngine | null>(null);
 
-  // Wrapper that keeps cursorRef in sync with state
+  // Wrappers that keep the refs in sync SYNCHRONOUSLY (computed from the ref,
+  // not inside React's updater). A single stdin chunk can carry several
+  // keypresses (key bursts / fast terminals); if the ref write waited inside
+  // the state updater, the second keypress in the same batch would read the
+  // pre-first-keypress value (e.g. two Ctrl+← jumps in one chunk both jumping
+  // from the same origin). The refs are the handler-side source of truth;
+  // state just mirrors them for render.
   const setCursor = (updater: number | ((prev: number) => number)) => {
-    setCursorState((prev) => {
-      const next =
-        typeof updater === "function" ? (updater as (p: number) => number)(prev) : updater;
-      cursorRef.current = next;
-      return next;
-    });
+    const next = typeof updater === "function" ? updater(cursorRef.current) : updater;
+    cursorRef.current = next;
+    setCursorState(next);
   };
 
-  // Wrapper that keeps bufferRef in sync with state
   const setBuffer = (updater: string | ((prev: string) => string)) => {
-    setBufferState((prev) => {
-      const next =
-        typeof updater === "function" ? (updater as (p: string) => string)(prev) : updater;
-      bufferRef.current = next;
-      return next;
-    });
+    const next = typeof updater === "function" ? updater(bufferRef.current) : updater;
+    bufferRef.current = next;
+    setBufferState(next);
   };
 
   // M41: input history state. Managed internally but synced to external array
@@ -241,9 +300,12 @@ export function InputBox({
 
   // Full filtered command list (no longer capped): the palette windows over
   // this so a long list scrolls with the cursor instead of truncating at 8.
-  const suggestions = buffer.startsWith("/")
-    ? commands.filter((c) => c.name.startsWith(buffer.slice(1).split(/\s+/)[0]!.toLowerCase()))
-    : [];
+  // Esc-dismissed queries hide the palette until the query changes.
+  const slashQuery = buffer.startsWith("/") ? buffer.slice(1).split(/\s+/)[0]!.toLowerCase() : null;
+  const suggestions =
+    slashQuery !== null && slashQuery !== slashDismissed
+      ? commands.filter((c) => c.name.startsWith(slashQuery))
+      : [];
   const windowSize = Math.min(MAX_SUGGESTIONS, suggestions.length);
 
   // `selected` is plain state that can outlive a shrinking filtered list:
@@ -253,17 +315,44 @@ export function InputBox({
   // (This was a latent crash: `suggestions[selected]!.name` on a stale index.)
   const safeSelected = suggestions.length > 0 ? Math.min(selected, suggestions.length - 1) : 0;
 
+  // "@path" completion (P2-10): the '@'-word at the cursor, matched against
+  // the workspace by the injected `completeFiles`. Mutually exclusive with
+  // the slash palette by construction ("/…" has no '@'-word at its cursor
+  // position while the query is being typed). Esc-dismissed queries hide it.
+  const atToken = completeFiles ? atTokenAt(buffer, cursor) : null;
+  const fileSuggestions =
+    atToken && atToken.query !== atDismissed ? (completeFiles?.(atToken.query) ?? []) : [];
+  const safeFileSelected =
+    fileSuggestions.length > 0 ? Math.min(fileSelected, fileSuggestions.length - 1) : 0;
+
   const reset = () => {
     setBuffer("");
     setCursor(0);
     setSelected(0);
     setSuggestOffset(0);
+    setFileSelected(0);
+    setSlashDismissed(null);
+    setAtDismissed(null);
+    setPasteNote(null);
     setHistoryIndex(-1);
     historyRestoreRef.current = null;
   };
 
   useInput(
     (input, key) => {
+      // Any keypress retires the paste note — it has done its job once seen.
+      if (pasteNote !== null) setPasteNote(null);
+
+      // --- Esc: close the open dropdown ("/" palette or "@" files) ---
+      // Runs BEFORE the vim branch: leaving insert mode with a dropdown open
+      // is the rarer intent than dismissing the list you're looking at.
+      if (key.escape && (suggestions.length > 0 || fileSuggestions.length > 0)) {
+        if (fileSuggestions.length > 0 && atToken) setAtDismissed(atToken.query);
+        if (suggestions.length > 0 && slashQuery !== null) setSlashDismissed(slashQuery);
+        setFileSelected(0);
+        return;
+      }
+
       // --- Vim normal mode (M18.10): drive the VimEngine state machine ---
       if (vimActive && vimMode === "normal") {
         if (key.return) {
@@ -329,11 +418,37 @@ export function InputBox({
         onSubmit(value);
         return;
       }
-      if (key.tab && suggestions.length > 0) {
+      // Tab accepts the highlighted completion — but NOT Shift+Tab: Ink sets
+      // key.tab for Shift+Tab too (shift is a modifier flag), and Shift+Tab is
+      // the global permission-mode cycle (keybindings/defaults). Accepting the
+      // completion as well made one keypress do both.
+      if (key.tab && !key.shift && suggestions.length > 0) {
         const next = "/" + suggestions[safeSelected].name + " ";
         setBuffer(next);
         setCursor(next.length);
         setSelected(0);
+        return;
+      }
+      // Tab on the "@" dropdown: replace the '@'-word at the cursor with the
+      // selected path (plus a trailing space to end the word). Only the
+      // [start, cursor) span is replaced — surrounding text is untouched.
+      if (key.tab && !key.shift && fileSuggestions.length > 0 && atToken) {
+        const path = fileSuggestions[safeFileSelected]!;
+        const replacement = `@${path} `;
+        setBuffer((b) => b.slice(0, atToken.start) + replacement + b.slice(cursorRef.current));
+        setCursor(atToken.start + replacement.length);
+        setFileSelected(0);
+        setAtDismissed(null);
+        return;
+      }
+
+      // --- "@" file dropdown navigation (palette closed; P2-10) ---
+      if (key.upArrow && suggestions.length === 0 && fileSuggestions.length > 0) {
+        setFileSelected((s) => (s - 1 + fileSuggestions.length) % fileSuggestions.length);
+        return;
+      }
+      if (key.downArrow && suggestions.length === 0 && fileSuggestions.length > 0) {
+        setFileSelected((s) => (s + 1) % fileSuggestions.length);
         return;
       }
 
@@ -405,6 +520,15 @@ export function InputBox({
       }
 
       // --- Cursor movement ---
+      // Ctrl+←/→ jump by word (Ink reports the CSI modifier as ctrl:true).
+      if (key.leftArrow && key.ctrl) {
+        setCursor(wordStartBefore(bufferRef.current, cursorRef.current));
+        return;
+      }
+      if (key.rightArrow && key.ctrl) {
+        setCursor(wordEndAfter(bufferRef.current, cursorRef.current));
+        return;
+      }
       if (key.leftArrow) {
         setCursor((c) => Math.max(0, c - 1));
         return;
@@ -469,14 +593,37 @@ export function InputBox({
       }
 
       // --- Printable insertion at the cursor ---
-      // Any printable input exits history browsing mode (M41).
+      // Any printable input exits history browsing mode (M41) and re-arms the
+      // dropdowns (an Esc-dismissed query stays dismissed only until the
+      // query itself changes).
       if (input && !key.ctrl && !key.meta && !key.escape) {
         setHistoryIndex(-1);
         historyRestoreRef.current = null;
+        setSlashDismissed(null);
+        setAtDismissed(null);
         const insertPos = cursorRef.current;
         setBuffer((b) => b.slice(0, insertPos) + input + b.slice(insertPos));
         setCursor(insertPos + input.length);
       }
+    },
+    { isActive: !disabled },
+  );
+
+  // P2-11: bracketed paste via Ink's dedicated channel — pasted text arrives
+  // as ONE string (never misparsed as keypresses, so a pasted \r can't submit
+  // early). Newlines normalize to "\n" for the multi-line buffer; a large
+  // paste surfaces a note so the user notices before Enter sends it.
+  usePaste(
+    (text) => {
+      const sanitized = text.replace(/\r\n?/g, "\n");
+      if (sanitized.length === 0) return;
+      const pos = cursorRef.current;
+      setBuffer((b) => b.slice(0, pos) + sanitized + b.slice(pos));
+      setCursor(pos + sanitized.length);
+      setHistoryIndex(-1);
+      historyRestoreRef.current = null;
+      const lines = sanitized.split("\n").length;
+      if (lines > PASTE_NOTE_LINES) setPasteNote(t("ui.paste.note", { n: lines }));
     },
     { isActive: !disabled },
   );
@@ -527,6 +674,29 @@ export function InputBox({
       <Text dimColor>{"  ⏎ queues your next message (runs after the current turn)"}</Text>
     ) : null;
 
+  // One-shot note after a large paste (cleared by the next keypress).
+  const pasteNoteLine = pasteNote ? <Text color="#e0af68">{`  ${pasteNote}`}</Text> : null;
+
+  // The "@" file dropdown — mirrors the slash palette's styling, rows are
+  // "@relative/path", highlighted row in accent orange.
+  const fileList =
+    fileSuggestions.length > 0 ? (
+      <Box flexDirection="column">
+        {fileSuggestions.map((path, i) => {
+          const sel = i === safeFileSelected;
+          return (
+            <Text key={path} color={sel ? ORANGE : palette.command}>
+              {`${sel ? "❯ " : "  "}@${path}`}
+            </Text>
+          );
+        })}
+        <Text dimColor>{`  ${t("ui.file.hint")}`}</Text>
+      </Box>
+    ) : null;
+
+  // Whichever dropdown is open (they're mutually exclusive by trigger).
+  const dropdown = suggestionList ?? fileList;
+
   const promptRows = lines.map((line, i) => (
     <Box key={i}>
       {i === 0 && vimActive ? (
@@ -551,7 +721,7 @@ export function InputBox({
   if (hideBottomRule) {
     return (
       <Box flexDirection="column">
-        {suggestionList}
+        {dropdown}
         {typeAheadHint}
         <Text color={frameColor}>{rule}</Text>
         {promptRows}
@@ -567,7 +737,8 @@ export function InputBox({
       {promptRows}
       <Text color={frameColor}>{rule}</Text>
       {typeAheadHint}
-      {suggestionList}
+      {pasteNoteLine}
+      {dropdown}
     </Box>
   );
 }

@@ -59,6 +59,7 @@ docs/更新日志/
 
 | 日期 | 类型 | 模块 | 主题 | commit | 关联 |
 |---|---|---|---|---|---|
+| 2026-08-28 | feature | TUI / StatusBar / InputBox / ToolCard | [TUI 状态显示与交互升级（StatusBar v2 含 ctx 水位/成本/queued、ctrl+r 展开兑现、Esc 中断、@ 文件补全、usePaste 粘贴、按键冲突修复、reduced-motion 贯通、P3 i18n/列宽截断/翻页器上色）](./20260828-tui-status-interaction-upgrade.md) | 待提交 | — |
 | 2026-08-14 | feature | 上下文压缩 | [按工具类型选择性清除（`COMPACTABLE_TOOLS` 保护 Task/Skill 语义工具，只清 bulk I/O 工具结果）](./20260814-tool-type-aware-microcompact.md) | 待提交 | [参考源码移植路线图](../参考源码移植路线图.md) |
 | 2026-08-14 | feature | 权限系统 | [`dontAsk` 权限档（ask→deny）+ 权限模式配置优先级链（`--permission-mode`/env/settings）](./20260814-dontask-mode-precedence.md) | 待提交 | [参考源码移植路线图](../参考源码移植路线图.md) |
 | 2026-08-14 | feature | 权限分类器 | [权限分类器规则层（allow/soft_deny/environment + 用户覆盖，从 yoloClassifier 结构移植 + 6 测试）](./20260814-classifier-rule-layer.md) | 待提交 | [参考源码移植路线图](../参考源码移植路线图.md) |

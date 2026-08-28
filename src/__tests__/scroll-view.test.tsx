@@ -3,16 +3,20 @@
 // ============================================================
 
 import { render } from "ink-testing-library";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { App } from "../tui/App.js";
+import { setLanguage, t } from "../tui/i18n.js";
 import { bottomScrollTop, clampScrollTop, ScrollView, visibleWindow } from "../tui/ScrollView.js";
 import type { TranscriptItem } from "../tui/store.js";
 import { TuiStore } from "../tui/store.js";
 import { transcriptToLines } from "../tui/transcript-lines.js";
 
+// Pin the UI language so literal-string assertions hold on zh-locale machines.
+beforeAll(() => setLanguage("en"));
+
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 20));
-const CTRL_U = "\x15";
-const CTRL_D = "\x04";
+const PAGE_UP = "\x1b[5~";
+const PAGE_DOWN = "\x1b[6~";
 
 describe("ScrollView windowing math", () => {
   it("visibleWindow returns the slice for a given scrollTop", () => {
@@ -73,15 +77,55 @@ describe("transcriptToLines", () => {
       },
     ];
     const lines = transcriptToLines(items, "");
-    expect(lines[0]).toBe("> hello");
-    expect(lines.some((l) => l.startsWith("● hi there") || l.includes("hi there"))).toBe(true);
-    expect(lines.some((l) => l.includes("Read") && l.includes("a.ts"))).toBe(true);
-    expect(lines.some((l) => l.includes("file body"))).toBe(true);
+    expect(lines[0]!.text).toBe("> hello");
+    expect(lines.some((l) => l.text.includes("hi there"))).toBe(true);
+    expect(lines.some((l) => l.text.includes("Read") && l.text.includes("a.ts"))).toBe(true);
+    expect(lines.some((l) => l.text.includes("file body"))).toBe(true);
   });
 
   it("appends the in-flight streaming text as an assistant block", () => {
     const lines = transcriptToLines([], "streaming now");
-    expect(lines.some((l) => l.includes("streaming now"))).toBe(true);
+    expect(lines.some((l) => l.text.includes("streaming now"))).toBe(true);
+  });
+
+  it("colors rows by role (P3-16): user blue, tool head accent, body dim", () => {
+    const items: TranscriptItem[] = [
+      { kind: "user", id: 1, text: "hello" },
+      {
+        kind: "tool",
+        id: 2,
+        name: "read",
+        detail: "a.ts",
+        result: { toolName: "read", formatted: "file body", error: undefined } as never,
+      },
+      { kind: "notice", id: 3, text: "system note" },
+    ];
+    const lines = transcriptToLines(items, "thinking…", "reasoning line");
+    const user = lines.find((l) => l.text === "> hello")!;
+    expect(user.color).toBe("#7aa2f7"); // palette.user
+    const head = lines.find((l) => l.text.startsWith("● Read"))!;
+    expect(head.color).toBe("#d77757"); // palette.accent
+    const body = lines.find((l) => l.text.includes("file body"))!;
+    expect(body.dim).toBe(true);
+    const notice = lines.find((l) => l.text === "system note")!;
+    expect(notice.dim).toBe(true);
+    const think = lines.find((l) => l.text.includes("reasoning line"))!;
+    expect(think.dim).toBe(true);
+  });
+
+  it("colors tool errors red", () => {
+    const items: TranscriptItem[] = [
+      {
+        kind: "tool",
+        id: 1,
+        name: "bash",
+        detail: "npm test",
+        result: { toolName: "bash", formatted: "", error: "exit 1" } as never,
+      },
+    ];
+    const lines = transcriptToLines(items, "");
+    const err = lines.find((l) => l.text.includes("exit 1"))!;
+    expect(err.color).toBe("#f7768e"); // palette.error
   });
 });
 
@@ -132,7 +176,7 @@ describe("full-screen App scrolling (M25.2 fix)", () => {
     expect(last.trimStart().startsWith(">")).toBe(true);
   });
 
-  it("Ctrl+U scrolls up to reveal earlier lines; Ctrl+D returns toward bottom", async () => {
+  it("PgUp scrolls up to reveal earlier lines; PgDn returns toward bottom", async () => {
     const store = bigStore();
     const { stdin, lastFrame } = render(
       <App
@@ -145,19 +189,22 @@ describe("full-screen App scrolling (M25.2 fix)", () => {
     );
     await flush();
     // Scroll up several half-pages — earlier lines should appear, newest leaves.
+    // (PgUp/PgDn, not ↑↓/Ctrl+U/D: those belong to the InputBox's history /
+    // delete-to-line-start, and binding them here too made one keypress both
+    // scroll and edit the buffer.)
     for (let i = 0; i < 6; i++) {
-      stdin.write(CTRL_U);
+      stdin.write(PAGE_UP);
       await flush();
     }
     const scrolled = lastFrame()!;
     expect(scrolled).toContain("line 0"); // earlier content now visible
     expect(scrolled).not.toContain("line 39"); // newest scrolled off
     // The "scrolled" hint replaces the live status line.
-    expect(scrolled).toContain("正在查看历史");
+    expect(scrolled).toContain(t("ui.fs.scrolled"));
 
     // Scroll back down to the bottom — newest content returns.
     for (let i = 0; i < 8; i++) {
-      stdin.write(CTRL_D);
+      stdin.write(PAGE_DOWN);
       await flush();
     }
     expect(lastFrame()!).toContain("line 39");
