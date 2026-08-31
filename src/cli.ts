@@ -8,6 +8,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as readline from "node:readline";
+import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import dotenv from "dotenv";
 
@@ -67,8 +68,22 @@ import type {
   UserQuestion,
 } from "./types.js";
 
-// Load environment variables
+/**
+ * Installation directory of the CLI (the repo root), resolved from the module
+ * location — src/cli.ts and dist/cli.js both sit one level below it. Unlike
+ * process.cwd(), this is stable no matter which directory ccr is launched
+ * from, so the user's API-key .env is found even when ccr is installed
+ * globally and started inside an arbitrary project workspace.
+ */
+function getInstallDir(): string {
+  return path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+}
+
+// Load environment variables: a workspace-local .env takes precedence (per-
+// project API config), then fall back to the installation directory's .env
+// (global config). dotenv does not override already-set variables.
 dotenv.config();
+dotenv.config({ path: path.join(getInstallDir(), ".env") });
 
 // --- CLI info flags (--version / --help) ---
 // Handled before any config load so they work without an API key or network.
@@ -95,9 +110,12 @@ function readPackageVersion(): string {
 async function checkOrCreateEnv(): Promise<boolean> {
   const envPath = ".env";
   const envExamplePath = ".env.example";
+  const installEnvPath = path.join(getInstallDir(), ".env");
+  const installEnvExamplePath = path.join(getInstallDir(), ".env.example");
 
-  // .env already exists, nothing to do
-  if (fs.existsSync(envPath)) {
+  // A workspace-local .env (per-project API config) or the installation
+  // directory's .env (global config) — either is enough to start.
+  if (fs.existsSync(envPath) || fs.existsSync(installEnvPath)) {
     return true;
   }
 
@@ -115,8 +133,13 @@ async function checkOrCreateEnv(): Promise<boolean> {
   console.log(chalk.yellow("  ⚠️  未检测到 .env 配置文件"));
   console.log("");
 
-  // Check if .env.example exists
-  if (!fs.existsSync(envExamplePath)) {
+  // Check if .env.example exists (workspace first, then installation dir)
+  const examplePath = fs.existsSync(envExamplePath)
+    ? envExamplePath
+    : fs.existsSync(installEnvExamplePath)
+      ? installEnvExamplePath
+      : undefined;
+  if (!examplePath) {
     console.log(chalk.red("  ✗ .env.example 模板文件不存在"));
     console.log(chalk.gray("  请手动创建 .env 文件，参考文档: docs/快速开始.md"));
     return false;
@@ -156,14 +179,14 @@ async function checkOrCreateEnv(): Promise<boolean> {
 
     if (choice === "2" || choice === "") {
       // Just copy the template
-      fs.copyFileSync(envExamplePath, envPath);
+      fs.copyFileSync(examplePath, envPath);
       console.log(chalk.green("\n  ✓ 已复制 .env.example → .env"));
       console.log(chalk.gray("  请编辑 .env 文件填入您的 API Key 后重新启动。\n"));
       return false;
     }
 
     // Default: choice === "1" or any other input - copy and guide
-    fs.copyFileSync(envExamplePath, envPath);
+    fs.copyFileSync(examplePath, envPath);
     console.log(chalk.green("\n  ✓ 已复制 .env.example → .env"));
     console.log("");
     console.log(chalk.bold("  📝 下一步操作:"));
@@ -185,7 +208,7 @@ async function checkOrCreateEnv(): Promise<boolean> {
   }
 
   // Non-interactive mode - just copy the template
-  fs.copyFileSync(envExamplePath, envPath);
+  fs.copyFileSync(examplePath, envPath);
   console.log(chalk.green("  ✓ 已复制 .env.example → .env"));
   console.log(chalk.yellow("  请编辑 .env 文件填入 API Key 后重新启动。\n"));
   return false;
