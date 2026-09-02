@@ -223,6 +223,7 @@ Usage:
 Options:
   --version, -V              Print version and exit
   --help, -h                 Print this help and exit
+  --print-command            List built-in slash commands and exit (smoke tests)
   --session=<id>             Resume a saved session by id
   --verbose                  Verbose startup + token accounting
   --quiet                    Suppress non-essential output (default)
@@ -247,6 +248,14 @@ function maybeHandleInfoFlags(argv: string[]): boolean {
   }
   if (argv.includes("--help") || argv.includes("-h")) {
     console.log(HELP_TEXT);
+    return true;
+  }
+  if (argv.includes("--print-command")) {
+    // Non-interactive introspection for smoke tests and scripting: list the
+    // built-in slash commands, then exit before any provider/TUI setup.
+    for (const cmd of COMMANDS) {
+      console.log(`/${cmd.name} — ${cmd.description}`);
+    }
     return true;
   }
   return false;

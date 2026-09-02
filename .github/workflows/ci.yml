@@ -8,7 +8,14 @@ on:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    name: verify (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Project explicitly supports Windows/PowerShell (dedicated Bash/PowerShell
+        # tools, Windows process-tree kill logic) — test where users run it.
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -28,7 +35,14 @@ jobs:
         run: npm run check
 
       - name: Unit tests (vitest)
+        # Ubuntu runs with coverage thresholds; Windows runs plain to keep the
+        # job fast and avoid platform-timing flakes tripping the coverage gate.
         run: npm test
+        if: matrix.os == 'windows-latest'
+
+      - name: Unit tests + coverage thresholds (vitest)
+        run: npm run test:coverage
+        if: matrix.os == 'ubuntu-latest'
 
       - name: Smoke (build → start → exit)
         run: npm run smoke
