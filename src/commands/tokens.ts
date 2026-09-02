@@ -5,7 +5,7 @@ import type { SlashCommand } from "./types.js";
 export const tokensCommand: SlashCommand = {
   name: "tokens",
   description: "Show message count or toggle token display (/tokens on|off)",
-  run: (_args, ctx) => {
+  run: (_args, ctx): undefined => {
     const arg = _args.trim().toLowerCase();
     if (arg === "on" || arg === "show") {
       if (ctx.ui) ctx.ui.showTokens = true;

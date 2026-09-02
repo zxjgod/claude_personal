@@ -578,7 +578,8 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
         // /effort with no args → open the interactive slider overlay (TUI).
         // With an arg (e.g. /effort max) it falls through to the static handler.
         if (/^\/effort\s*$/i.test(value)) {
-          const options = (deps.modelConfig.options ??= {});
+          deps.modelConfig.options ??= {};
+          const options = deps.modelConfig.options;
           const chosen = await store.askEffort(getEffort(options));
           if (chosen) {
             options.effort = chosen;

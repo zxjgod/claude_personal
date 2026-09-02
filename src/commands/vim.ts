@@ -12,7 +12,7 @@ import type { SlashCommand } from "./types.js";
 export const vimCommand: SlashCommand = {
   name: "vim",
   description: "Toggle vim-style input editing (/vim [on|off])",
-  run: (args, ctx) => {
+  run: (args, ctx): undefined => {
     if (!ctx.editorMode) {
       console.log(chalk.gray("  Vim mode is only available in the interactive TUI."));
       return;

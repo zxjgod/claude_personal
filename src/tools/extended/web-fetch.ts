@@ -22,7 +22,6 @@ const WebFetchSchema = z.strictObject({
   url: z.string().url().describe("The URL to fetch (must start with http:// or https://)"),
   fetchInfo: z.string().min(1).describe("What information you want to extract from this page"),
 });
-type WebFetchInput = z.infer<typeof WebFetchSchema>;
 
 // --- Helpers ---
 
@@ -130,11 +129,11 @@ export const WebFetchTool: Tool = buildTool({
       try {
         const buf = await readLimited(response, MAX_RESPONSE_SIZE);
         rawBody = new TextDecoder().decode(buf);
-      } catch (err: any) {
-        if (err.name === "AbortError") {
+      } catch (err) {
+        if ((err as Error).name === "AbortError") {
           return { content: "", error: `Request timed out after ${TIMEOUT_MS / 1000}s` };
         }
-        return { content: "", error: `Failed to read response: ${err.message}` };
+        return { content: "", error: `Failed to read response: ${(err as Error).message}` };
       } finally {
         clearTimeout(timeoutId);
       }
@@ -180,15 +179,15 @@ export const WebFetchTool: Tool = buildTool({
           linesRead: content.split("\n").length,
         },
       };
-    } catch (err: any) {
+    } catch (err) {
       clearTimeout(timeoutId);
-      if (err.name === "AbortError") {
+      if ((err as Error).name === "AbortError") {
         return { content: "", error: `Request timed out after ${TIMEOUT_MS / 1000}s` };
       }
       return {
         content: "",
         error:
-          `Fetch failed: ${err.message}\n` +
+          `Fetch failed: ${(err as Error).message}\n` +
           `Network unreachable. Check your connection, or set HTTPS_PROXY/HTTP_PROXY ` +
           `(with NODE_USE_ENV_PROXY=1).`,
       };

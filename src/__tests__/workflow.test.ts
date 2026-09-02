@@ -124,7 +124,8 @@ describe("runWorkflow", () => {
       signal?: AbortSignal,
     ): Promise<string> => {
       markStarted();
-      await new Promise<void>((resolve, reject) => {
+      // Intentionally never resolves: the worker hangs until the abort rejects it.
+      await new Promise<void>((_resolve, reject) => {
         signal?.addEventListener(
           "abort",
           () => {

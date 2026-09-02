@@ -99,5 +99,5 @@ export interface SlashCommand {
   run: (
     args: string,
     ctx: CommandContext,
-  ) => Promise<Partial<CommandResult> | void> | Partial<CommandResult> | void;
+  ) => Promise<Partial<CommandResult> | undefined> | Partial<CommandResult> | undefined;
 }

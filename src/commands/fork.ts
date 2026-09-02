@@ -12,17 +12,18 @@
 // like any other turn.
 // ============================================================
 import chalk from "chalk";
+import type { Message, TextContent } from "../types.js";
 import type { CommandResult, SlashCommand } from "./types.js";
 
-function recapOfMessages(messages: { role: string; content: any }[]): string {
+function recapOfMessages(messages: Message[]): string {
   // A compact, best-effort text recap: last ~6 user/assistant turns.
   const turns: string[] = [];
   for (const m of messages.slice(-12)) {
     if (m.role === "user") {
       const t = Array.isArray(m.content)
         ? m.content
-            .filter((b: any) => b.type === "text")
-            .map((b: any) => b.text)
+            .filter((b): b is TextContent => b.type === "text")
+            .map((b) => b.text)
             .join(" ")
         : String(m.content ?? "");
       if (t.trim()) turns.push(`User: ${t.trim().slice(0, 400)}`);
@@ -37,7 +38,7 @@ function recapOfMessages(messages: { role: string; content: any }[]): string {
 export const forkCommand: SlashCommand = {
   name: "fork",
   description: "Launch a sub-agent to explore an alternate path from here",
-  run: (args, ctx): CommandResult | void => {
+  run: (args, ctx): CommandResult | undefined => {
     if (ctx.messages.length === 0) {
       console.log(chalk.yellow("  Nothing to fork — the conversation is empty."));
       return;

@@ -92,18 +92,6 @@ export class Cursor {
     const lineStart = this.text.lastIndexOf("\n", this.offset - 1) + 1;
     return this.offset - lineStart;
   }
-  private atColumn(targetCol: number): number {
-    const lineStart = this.startOfLogicalLine().offset;
-    const line = this.text.slice(lineStart, this.endOfLogicalLine().offset);
-    // Clamp column to the line's grapheme count.
-    let o = lineStart;
-    let col = 0;
-    while (col < targetCol && o < lineStart + line.length) {
-      o = nextGraphemeOffset(this.text, o);
-      col++;
-    }
-    return o;
-  }
 
   startOfLogicalLine(): Cursor {
     const idx = this.text.lastIndexOf("\n", this.offset - 1);

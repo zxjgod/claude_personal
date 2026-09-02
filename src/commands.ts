@@ -43,7 +43,7 @@ export async function handleSlashCommand(
 ): Promise<CommandResult> {
   if (!input.startsWith("/")) return { handled: false };
 
-  const [rawName, ...rest] = input.slice(1).split(/\s+/);
+  const [rawName] = input.slice(1).split(/\s+/);
   const name = rawName.toLowerCase();
   const args = input.slice(1 + rawName.length).trim();
   // Built-in commands take precedence; disk-defined commands are consulted
@@ -64,8 +64,9 @@ export async function handleSlashCommand(
           workspaceRoot: ctx.workspaceRoot,
         });
         return { handled: true, prompt };
-      } catch (error: any) {
-        console.log(chalk.yellow(`  Skill /${name} failed to load: ${error?.message ?? error}`));
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.log(chalk.yellow(`  Skill /${name} failed to load: ${detail}`));
         return { handled: true };
       }
     }

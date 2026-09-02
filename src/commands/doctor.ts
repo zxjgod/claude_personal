@@ -26,7 +26,7 @@ async function git(args: string[], cwd: string): Promise<string | null> {
 export const doctorCommand: SlashCommand = {
   name: "doctor",
   description: "Check environment, provider, workspace, git, MCP, and disk",
-  run: async (_args, ctx) => {
+  run: async (_args, ctx): Promise<undefined> => {
     const hasKey = Boolean(ctx.modelConfig.apiKey);
     const distCli = fs.existsSync("dist/cli.js");
     const packageJson = fs.existsSync("package.json");

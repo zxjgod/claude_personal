@@ -18,7 +18,7 @@
 //                 added and nothing shifts.
 // ============================================================
 
-import chalk from "chalk";
+import chalk, { type ChalkInstance } from "chalk";
 import {
   EFFORT_DESCRIPTIONS,
   EFFORT_GRADIENT,
@@ -40,7 +40,7 @@ const ORDER: EffortLevel[] = [...EFFORT_GRADIENT, "ultracode"];
 
 /** Marker column (track-local) for a tier. */
 function markerCol(level: EffortLevel): number {
-  const gi = EFFORT_GRADIENT.indexOf(level as any);
+  const gi = EFFORT_GRADIENT.indexOf(level as (typeof EFFORT_GRADIENT)[number]);
   return gi >= 0 ? GRAD_MARKERS[gi]! : ULTRA_MARKER;
 }
 
@@ -62,7 +62,7 @@ function put(cells: Cell[], col: number, text: string, attrs: Partial<Cell> = {}
   }
 }
 function paint(cell: Cell): string {
-  let c = chalk as any;
+  let c: ChalkInstance = chalk;
   if (cell.bg) c = c.bgHex(cell.bg);
   if (cell.fg) c = c.hex(cell.fg);
   if (cell.bold) c = c.bold;

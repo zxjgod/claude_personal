@@ -59,10 +59,11 @@ export function spliceAll(content: string, oldStr: string, newStr: string): stri
   if (oldStr === "") return content;
   let result = "";
   let pos = 0;
-  let idx: number;
-  while ((idx = content.indexOf(oldStr, pos)) !== -1) {
+  let idx = content.indexOf(oldStr, pos);
+  while (idx !== -1) {
     result += content.slice(pos, idx) + newStr;
     pos = idx + oldStr.length;
+    idx = content.indexOf(oldStr, pos);
   }
   result += content.slice(pos);
   return result;

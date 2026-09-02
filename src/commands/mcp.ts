@@ -5,7 +5,7 @@ import type { SlashCommand } from "./types.js";
 export const mcpCommand: SlashCommand = {
   name: "mcp",
   description: "Show MCP server, tool, and auth status",
-  run: (_args, ctx) => {
+  run: (_args, ctx): undefined => {
     if (!ctx.mcpManager) {
       console.log(chalk.gray("  MCP manager is not available in this session."));
       return;

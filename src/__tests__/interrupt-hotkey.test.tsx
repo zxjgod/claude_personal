@@ -36,7 +36,7 @@ describe("InterruptHotkey (P2-9)", () => {
   });
 
   it("Esc while idle does NOT abort or exit (nothing to interrupt)", async () => {
-    const { store, controller, stdin } = setup();
+    const { controller, stdin } = setup();
     await flush();
     stdin.write("\x1b");
     await escFlush();

@@ -10,7 +10,7 @@ import type { SlashCommand } from "./types.js";
 export const clearCommand: SlashCommand = {
   name: "clear",
   description: "Clear the conversation history",
-  run: (_args, ctx) => {
+  run: (_args, ctx): undefined => {
     ctx.messages.length = 0;
     clearChanges(ctx.sessionId);
     // Release settled background-job output buffers and the remembered cwd for a

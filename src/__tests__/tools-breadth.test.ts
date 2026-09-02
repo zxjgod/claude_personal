@@ -14,12 +14,12 @@ import {
   LspDiagnosticsTool,
   type MCPResourceProvider,
   NotebookEditTool,
-} from "../tools/m8/index.js";
+} from "../tools/breadth/index.js";
 import {
   AskUserQuestionTool,
   EnterPlanModeTool,
   ExitPlanModeTool,
-} from "../tools/m8/interactive.js";
+} from "../tools/breadth/interactive.js";
 import type { Tool, ToolContext, UserQuestion } from "../types.js";
 
 function ctx(overrides: Partial<ToolContext> = {}): ToolContext {

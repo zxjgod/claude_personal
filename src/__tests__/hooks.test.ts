@@ -48,9 +48,8 @@ describe("HookRegistry — PreToolUse", () => {
     reg.register({ matcher: "*", pre: () => ({ block: true, reason: "stop" }) });
     reg.register({
       matcher: "*",
-      pre: () => {
+      pre: (): undefined => {
         secondRan = true;
-        return;
       },
     });
     const out = await reg.runPre({ toolName: "read", input: {} });

@@ -21,8 +21,7 @@ import {
   listSubagentSelectionHints,
   resolveSubagentTools,
 } from "../../subagents.js";
-import type { Message, ModelConfig, Tool, ToolResult } from "../../types.js";
-import { CancellationScope } from "../../utils/cancellation.js";
+import type { Message, Tool, ToolResult } from "../../types.js";
 import { createSubAgentApprover } from "../../utils/subagent-security.js";
 import { buildTool } from "../registry.js";
 
@@ -228,7 +227,6 @@ export const AgentTool: Tool = buildTool({
       const modelCaller = createModelCaller(modelConfig);
 
       // Run agent loop
-      const cancellation = new CancellationScope();
       const approver = createSubAgentApprover(context.askUser);
 
       const loop = agentLoop(messages, tools, modelCaller, modelConfig, {
@@ -248,7 +246,7 @@ export const AgentTool: Tool = buildTool({
       });
 
       // Consume loop events
-      let terminal: any;
+      let terminal: { reason: string; turns: number; error?: unknown } | undefined;
       for await (const event of loop) {
         if (event.type === "done") {
           terminal = { reason: event.finishReason, turns: event.turns };
@@ -282,7 +280,7 @@ export const AgentTool: Tool = buildTool({
           durationMs: duration,
         },
       };
-    } catch (error: any) {
+    } catch (error) {
       // Clean up worktree on error
       if (worktree) {
         await removeWorktree(context.workspaceRoot, worktree.path, worktree.branch);

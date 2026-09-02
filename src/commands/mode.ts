@@ -10,7 +10,7 @@ import type { SlashCommand } from "./types.js";
 export const modeCommand: SlashCommand = {
   name: "mode",
   description: "Show or set the permission mode (default | acceptEdits | bypassPermissions | plan)",
-  run: (args, ctx) => {
+  run: (args, ctx): undefined => {
     const current = (ctx.getPermissionMode?.() ??
       ctx.permissionMode ??
       "default") as PermissionMode;

@@ -5,7 +5,7 @@ import type { SlashCommand } from "./types.js";
 export const modelCommand: SlashCommand = {
   name: "model",
   description: "Show or switch the active model (/model <id>)",
-  run: (args, ctx) => {
+  run: (args, ctx): undefined => {
     const next = args.trim();
     if (!next) {
       console.log(`  Model: ${chalk.cyan(ctx.modelConfig.model)} (${ctx.modelConfig.provider})`);

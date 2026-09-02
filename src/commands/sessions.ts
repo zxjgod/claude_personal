@@ -108,7 +108,7 @@ async function searchSessions(
 export const sessionsCommand: SlashCommand = {
   name: "sessions",
   description: "List, search, pin, or delete saved sessions",
-  run: async (args, ctx) => {
+  run: async (args, ctx): Promise<undefined> => {
     if (!ctx.persistence) {
       console.log(chalk.yellow("  Session persistence is not available."));
       return;

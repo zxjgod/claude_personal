@@ -21,7 +21,7 @@ export class InputValidator {
    * Validate file path input
    * Checks: length, illegal characters, path traversal, workspace boundary
    */
-  static validateFilePath(filePath: string, context: ToolContext): ValidationResult {
+  static validateFilePath(filePath: string, _context: ToolContext): ValidationResult {
     // Check path length (most filesystems have limits around 4096)
     if (filePath.length > 4096) {
       return { valid: false, error: "Path exceeds maximum length (4096 characters)" };
@@ -84,7 +84,7 @@ export class InputValidator {
       }
 
       return { valid: true };
-    } catch (error) {
+    } catch {
       return { valid: false, error: "Invalid URL format" };
     }
   }

@@ -603,8 +603,8 @@ describe("handleSlashCommand", () => {
     it("lists registered hooks with their matcher and phases", async () => {
       const { HookRegistry } = await import("../hooks.js");
       const reg = new HookRegistry();
-      reg.register({ matcher: "*", pre: () => {} });
-      reg.register({ matcher: "edit", post: () => {} });
+      reg.register({ matcher: "*", pre: (): undefined => {} });
+      reg.register({ matcher: "edit", post: (): undefined => {} });
       const ctx = makeCtx([]);
       ctx.hooks = reg;
       await handleSlashCommand("/hooks", ctx);
@@ -617,7 +617,7 @@ describe("handleSlashCommand", () => {
 
   describe("/schedule (M18.14)", () => {
     it("reports no jobs when none are scheduled", async () => {
-      const { resetScheduledJobs } = await import("../tools/m8/m9.js");
+      const { resetScheduledJobs } = await import("../tools/breadth/orchestration.js");
       resetScheduledJobs();
       const r = await handleSlashCommand("/schedule", makeCtx([]));
       expect(r.handled).toBe(true);
@@ -627,7 +627,7 @@ describe("handleSlashCommand", () => {
 
     it("lists and cancels a scheduled job", async () => {
       const { ScheduleCronTool, resetScheduledJobs, listScheduledJobs } = await import(
-        "../tools/m8/m9.js"
+        "../tools/breadth/orchestration.js"
       );
       resetScheduledJobs();
       await ScheduleCronTool.call(

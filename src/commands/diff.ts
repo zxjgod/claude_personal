@@ -6,7 +6,7 @@ import type { SlashCommand } from "./types.js";
 export const diffCommand: SlashCommand = {
   name: "diff",
   description: "Show files changed during this session",
-  run: (_args, ctx) => {
+  run: (_args, ctx): undefined => {
     const changes = listChanges(ctx.sessionId);
     if (changes.length === 0) {
       console.log(chalk.gray("  No files changed this session."));

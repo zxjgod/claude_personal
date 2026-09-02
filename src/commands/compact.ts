@@ -18,7 +18,7 @@ function printCompactProgress(step: number, total: number, label: string): void 
 export const compactCommand: SlashCommand = {
   name: "compact",
   description: "Summarize and compress the conversation now",
-  run: async (_args, ctx) => {
+  run: async (_args, ctx): Promise<undefined> => {
     if (ctx.messages.length === 0) {
       console.log(chalk.gray("  Nothing to compact."));
       return;

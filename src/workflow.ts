@@ -106,8 +106,8 @@ export async function runWorkerAgent(
       if (event.type === "error") errorMessage = String(event.error);
       else if (event.type === "aborted") errorMessage = String(event.reason);
     }
-  } catch (error: any) {
-    errorMessage = error?.message ?? String(error);
+  } catch (error) {
+    errorMessage = error instanceof Error ? error.message : String(error);
   } finally {
     releaseWorkerSlot();
   }
@@ -201,10 +201,10 @@ export async function runWorkflow(
     record.status = "completed";
     record.finishedAt = Date.now();
     record.result = result;
-  } catch (error: any) {
+  } catch (error) {
     record.status = "failed";
     record.finishedAt = Date.now();
-    record.logs.push(`error: ${error?.message ?? error}`);
+    record.logs.push(`error: ${error instanceof Error ? error.message : String(error)}`);
     if (revoked) record.logs.push("note: timed out; in-flight worker calls were revoked");
   } finally {
     if (timer) clearTimeout(timer);
@@ -213,6 +213,17 @@ export async function runWorkflow(
   }
 
   return record;
+}
+
+/** Message protocol sent by the workflow worker (see WORKFLOW_WORKER_SOURCE). */
+interface WorkflowWorkerMessage {
+  type?: string;
+  id?: number;
+  message?: unknown;
+  prompt?: unknown;
+  label?: string;
+  result?: unknown;
+  error?: unknown;
 }
 
 function runWorkflowScriptInWorker(
@@ -247,7 +258,7 @@ function runWorkflowScriptInWorker(
     };
     const onAbort = () => finish(new Error("Workflow aborted"));
 
-    worker.on("message", (message: any) => {
+    worker.on("message", (message: WorkflowWorkerMessage) => {
       if (message?.type === "log") {
         onLog(String(message.message));
       } else if (message?.type === "agent") {

@@ -10,7 +10,7 @@ import type { SlashCommand } from "./types.js";
 export const cdCommand: SlashCommand = {
   name: "cd",
   description: "Change the working directory for this session",
-  run: (args, ctx) => {
+  run: (args, ctx): undefined => {
     if (!args.trim()) {
       console.log(chalk.dim(`  Current workspace: ${ctx.workspaceRoot}`));
       console.log(chalk.dim("  Usage: /cd <path>"));

@@ -76,8 +76,8 @@ async function checkFilesystem(errors: string[]): Promise<boolean> {
     await fs.promises.readFile(testPath, "utf-8");
     await fs.promises.unlink(testPath);
     return true;
-  } catch (error: any) {
-    errors.push(`Filesystem check failed: ${error.message}`);
+  } catch (error) {
+    errors.push(`Filesystem check failed: ${(error as Error).message}`);
     return false;
   }
 }

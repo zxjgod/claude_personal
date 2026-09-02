@@ -20,7 +20,6 @@ const PowerShellSchema = z.strictObject({
   description: z.string().describe("What this command does (shown to user)"),
   timeout: z.number().optional().describe("Timeout in ms (default: 120000)"),
 });
-type PowerShellInput = z.infer<typeof PowerShellSchema>;
 
 const shellFor = (): string =>
   process.platform === "win32" ? "powershell.exe" : process.env.PWSH || "pwsh";

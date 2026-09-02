@@ -256,8 +256,9 @@ export const ReplTool: Tool = buildTool({
     let session: ReplSession;
     try {
       session = getSession(context.sessionId, language);
-    } catch (e: any) {
-      return { content: "", error: `Failed to start ${language} REPL: ${e?.message ?? e}` };
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      return { content: "", error: `Failed to start ${language} REPL: ${message}` };
     }
 
     try {
@@ -272,8 +273,9 @@ export const ReplTool: Tool = buildTool({
       if (res.output) parts.push(res.output);
       if (res.value !== undefined && res.value !== "") parts.push(`=> ${res.value}`);
       return { content: parts.join("\n") || "(no output)" };
-    } catch (e: any) {
-      return { content: "", error: `REPL error: ${e?.message ?? e}` };
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      return { content: "", error: `REPL error: ${message}` };
     }
   },
 });

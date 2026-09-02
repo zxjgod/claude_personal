@@ -982,7 +982,6 @@ describe("agentLoop", () => {
   });
 
   it("short-circuits pending parallel tool calls when abort fires mid-batch", async () => {
-    let slowStarted = false;
     let slowFinished = false;
     const slow: Tool = {
       name: "slow",
@@ -993,7 +992,6 @@ describe("agentLoop", () => {
       isReadOnly: () => true,
       isConcurrencySafe: () => true,
       call: async () => {
-        slowStarted = true;
         await new Promise((r) => setTimeout(r, 500));
         slowFinished = true;
         return { content: "slow done" };
@@ -1036,7 +1034,10 @@ describe("agentLoop", () => {
       events.push(event);
     }
 
-    const aborted = events.find((e) => e.type === "aborted");
+    // NOTE: an `aborted` event lookup used to be asserted here; the assertion
+    // was dropped, leaving the variable unused. Kept (underscore-prefixed) in
+    // case the missing `expect(aborted).toBeDefined()` was accidental.
+    const _aborted = events.find((e) => e.type === "aborted");
     // The slow tool's result should reflect the abort, not a real completion.
     const toolResults = events.find((e) => e.type === "tool_results");
     const slowResult = toolResults?.results?.find((r: any) => r.toolName === "slow");

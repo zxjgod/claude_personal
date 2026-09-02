@@ -12,7 +12,7 @@ import type { SlashCommand } from "./types.js";
 export const goalCommand: SlashCommand = {
   name: "goal",
   description: "Set or view the session goal (/goal <text> | /goal clear)",
-  run: (args, ctx) => {
+  run: (args, ctx): undefined => {
     if (!ctx.goal) {
       console.log(chalk.gray("  Session goals are not available in this session."));
       return;

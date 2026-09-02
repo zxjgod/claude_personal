@@ -29,7 +29,6 @@ const EditSchema = z.strictObject({
       "Replace every occurrence of old_string instead of requiring a unique match. Defaults to false.",
     ),
 });
-type EditInput = z.infer<typeof EditSchema>;
 
 export const EditTool: Tool = buildTool({
   name: "edit",
@@ -88,13 +87,14 @@ export const EditTool: Tool = buildTool({
 
       // Count occurrences
       let count = 0;
-      let pos = 0;
-      while ((pos = content.indexOf(oldStr, pos)) !== -1) {
+      let pos = content.indexOf(oldStr, 0);
+      while (pos !== -1) {
         count++;
         // `|| 1` guards an empty old_string, which would otherwise loop forever
         // (indexOf("", pos) === pos, and pos += 0 never advances). Mirrors the
         // multi_edit guard; the schema's .min(1) rejects it earlier in practice.
         pos += oldStr.length || 1;
+        pos = content.indexOf(oldStr, pos);
       }
 
       if (count === 0) {
@@ -146,8 +146,9 @@ export const EditTool: Tool = buildTool({
         content: `${summary}\n${diff}`,
         metadata: { fileSize: Buffer.byteLength(newContent, "utf-8") },
       };
-    } catch (error: any) {
-      if (error.code === "ENOENT") {
+    } catch (error) {
+      const errno = error as NodeJS.ErrnoException;
+      if (errno.code === "ENOENT") {
         return {
           content: "",
           error:
@@ -157,7 +158,7 @@ export const EditTool: Tool = buildTool({
             ),
         };
       }
-      if (error.code === "EACCES") {
+      if (errno.code === "EACCES") {
         return {
           content: "",
           error:
@@ -165,7 +166,7 @@ export const EditTool: Tool = buildTool({
             chalk.gray("   Hint: check the file permissions"),
         };
       }
-      if (error.code === "EBUSY" || error.code === "ETXTBSY") {
+      if (errno.code === "EBUSY" || errno.code === "ETXTBSY") {
         return {
           content: "",
           error:
@@ -175,7 +176,7 @@ export const EditTool: Tool = buildTool({
       }
       return {
         content: "",
-        error: `Error editing file: ${error.message}`,
+        error: `Error editing file: ${errno.message}`,
       };
     }
   },
@@ -214,7 +215,6 @@ const MultiEditSchema = z.strictObject({
         "Applied sequentially; all must succeed or none are written.",
     ),
 });
-type MultiEditInput = z.infer<typeof MultiEditSchema>;
 
 export const MultiEditTool: Tool = buildTool({
   name: "multi_edit",
@@ -277,10 +277,11 @@ export const MultiEditTool: Tool = buildTool({
         const replace_all = edit.replace_all;
 
         let count = 0;
-        let pos = 0;
-        while ((pos = working.indexOf(oldStr, pos)) !== -1) {
+        let pos = working.indexOf(oldStr, 0);
+        while (pos !== -1) {
           count++;
           pos += oldStr.length || 1;
+          pos = working.indexOf(oldStr, pos);
         }
 
         if (count === 0) {
@@ -325,8 +326,9 @@ export const MultiEditTool: Tool = buildTool({
         content: `Applied ${input.edits.length} edits to ${input.filePath} atomically.`,
         metadata: { fileSize: Buffer.byteLength(working, "utf-8") },
       };
-    } catch (error: any) {
-      if (error.code === "ENOENT") {
+    } catch (error) {
+      const errno = error as NodeJS.ErrnoException;
+      if (errno.code === "ENOENT") {
         return {
           content: "",
           error:
@@ -336,7 +338,7 @@ export const MultiEditTool: Tool = buildTool({
             ),
         };
       }
-      if (error.code === "EACCES") {
+      if (errno.code === "EACCES") {
         return {
           content: "",
           error:
@@ -344,7 +346,7 @@ export const MultiEditTool: Tool = buildTool({
             chalk.gray("   Hint: check the file permissions"),
         };
       }
-      if (error.code === "EBUSY" || error.code === "ETXTBSY") {
+      if (errno.code === "EBUSY" || errno.code === "ETXTBSY") {
         return {
           content: "",
           error:
@@ -352,7 +354,7 @@ export const MultiEditTool: Tool = buildTool({
             chalk.gray("   Hint: the file may be open in another program; close it and retry"),
         };
       }
-      return { content: "", error: `Error editing file: ${error.message}` };
+      return { content: "", error: `Error editing file: ${errno.message}` };
     }
   },
 

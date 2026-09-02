@@ -6,7 +6,7 @@ import type { SlashCommand } from "./types.js";
 export const toolsCommand: SlashCommand = {
   name: "tools",
   description: "List loaded tools and their source (core / MCP)",
-  run: (_args, ctx) => {
+  run: (_args, ctx): undefined => {
     if (!ctx.tools || ctx.tools.length === 0) {
       console.log(chalk.gray("  Tool list is not available."));
       return;

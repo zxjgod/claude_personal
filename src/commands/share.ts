@@ -48,7 +48,7 @@ export function renderShareableTranscript(ctx: CommandContext): string {
 export const shareCommand: SlashCommand = {
   name: "share",
   description: "Export the session as shareable markdown (/share [path])",
-  run: (args, ctx): CommandResult | void => {
+  run: (args, ctx): CommandResult | undefined => {
     const md = renderShareableTranscript(ctx);
     const target = args.trim();
 
@@ -62,9 +62,11 @@ export const shareCommand: SlashCommand = {
       fs.mkdirSync(path.dirname(abs) || ".", { recursive: true });
       fs.writeFileSync(abs, md, "utf-8");
       console.log(chalk.gray(`  Shared transcript written → ${abs}`));
-    } catch (e: any) {
-      console.log(chalk.red(`  Could not write: ${e.message}`));
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : String(e);
+      console.log(chalk.red(`  Could not write: ${detail}`));
     }
+    return undefined;
   },
 };
 

@@ -56,16 +56,6 @@ function asString(v: string | string[] | undefined): string | undefined {
   return Array.isArray(v) ? v.join(", ") : v;
 }
 
-function asList(v: string | string[] | undefined): string[] | undefined {
-  if (v === undefined) return undefined;
-  return Array.isArray(v)
-    ? v
-    : v
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
-}
-
 /** Split args on whitespace into positional tokens (for `$1`..`$9`). */
 function positionalArgs(args: string): string[] {
   return args.split(/\s+/).filter(Boolean);
@@ -107,8 +97,9 @@ export async function expandCommandBody(
         { cwd: opts.workspaceRoot ?? process.cwd(), timeout: 10_000, windowsHide: true },
       );
       replacement = stdout.trimEnd();
-    } catch (error: any) {
-      replacement = `[shell expansion failed: ${error?.message ?? String(error)}]`;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      replacement = `[shell expansion failed: ${detail}]`;
     }
     out = out.replace(match[0], replacement);
   }

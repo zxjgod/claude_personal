@@ -13,7 +13,6 @@ const GlobSchema = z.strictObject({
   pattern: z.string().describe("Glob pattern, e.g. '**/*.ts' or 'src/**/*.test.ts'"),
   path: z.string().optional().describe("Directory to search in (default: workspace root)"),
 });
-type GlobInput = z.infer<typeof GlobSchema>;
 
 export const GlobTool: Tool = buildTool({
   name: "glob",
@@ -79,10 +78,10 @@ export const GlobTool: Tool = buildTool({
           summary: resultFiles.length === 1 ? "1 file" : `${resultFiles.length} files`,
         },
       };
-    } catch (error: any) {
+    } catch (error) {
       return {
         content: "",
-        error: `Error searching files: ${error.message}`,
+        error: `Error searching files: ${(error as Error).message}`,
       };
     }
   },

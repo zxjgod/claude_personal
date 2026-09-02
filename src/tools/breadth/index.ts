@@ -1,9 +1,10 @@
 // ============================================================
-// M8 Tools — NotebookEdit, ToolSearch, LSP diagnostics, MCP resources
+// Breadth Tools — NotebookEdit, ToolSearch, LSP diagnostics, MCP resources
 // ============================================================
-// Breadth tools added in milestone M8. Kept in a separate file so tools.ts
-// stays focused on the core file/shell tools. All file-touching tools reuse
-// the workspace-resolution + read-tracker safeguards from tools.ts.
+// (Originally milestone M8; directory renamed from m8/.) Kept in a separate
+// file so tools.ts stays focused on the core file/shell tools. All
+// file-touching tools reuse the workspace-resolution + read-tracker
+// safeguards from tools.ts.
 // ============================================================
 
 import { execFile } from "node:child_process";
@@ -42,7 +43,6 @@ const NotebookSchema = z.strictObject({
     .optional()
     .describe("Cell type for insert; defaults to code"),
 });
-type NotebookEditInput = z.infer<typeof NotebookSchema>;
 
 interface NotebookCell {
   cell_type: string;
@@ -159,11 +159,12 @@ export const NotebookEditTool: Tool = buildTool({
       return {
         content: `Notebook ${mode} applied to ${input.filePath} (cell ${idx}). Now ${nb.cells.length} cells.`,
       };
-    } catch (error: any) {
-      if (error.code === "ENOENT") {
+    } catch (error) {
+      const errno = error as NodeJS.ErrnoException;
+      if (errno.code === "ENOENT") {
         return { content: "", error: `File not found: "${input.filePath}"` };
       }
-      return { content: "", error: `Error editing notebook: ${error.message}` };
+      return { content: "", error: `Error editing notebook: ${errno.message}` };
     }
   },
 });
@@ -228,11 +229,12 @@ export const LspDiagnosticsTool: Tool = buildTool({
         shell: process.platform === "win32",
       });
       output = stdout;
-    } catch (error: any) {
+    } catch (error) {
       // tsc exits non-zero when diagnostics exist; its stdout still holds them.
-      output = (error.stdout as string) || "";
-      if (!output && error.message) {
-        return { content: "", error: `tsc failed: ${error.message}` };
+      const execError = error as { stdout?: string; message?: string };
+      output = execError.stdout || "";
+      if (!output && execError.message) {
+        return { content: "", error: `tsc failed: ${execError.message}` };
       }
     }
 
@@ -285,8 +287,9 @@ export const LspCompletionsTool: Tool = buildTool({
           `- ${i.name}${i.kind ? ` [${i.kind}]` : ""}${i.insertText ? ` → ${i.insertText}` : ""}`,
       );
       return { content: `Completions (${items.length}):\n${lines.join("\n")}` };
-    } catch (e: any) {
-      return { content: "", error: `Completion failed: ${e?.message ?? e}` };
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      return { content: "", error: `Completion failed: ${message}` };
     }
   },
 });

@@ -54,9 +54,9 @@ export class StreamingRenderer {
   private drainCompletedBlocks(): void {
     // Process line-by-line, tracking fence state, flushing on blank-line
     // boundaries that are NOT inside a code fence.
-    let nlIndex: number;
+    let nlIndex = this.buffer.indexOf("\n");
     let pending = "";
-    while ((nlIndex = this.buffer.indexOf("\n")) !== -1) {
+    while (nlIndex !== -1) {
       const line = this.buffer.slice(0, nlIndex);
       const rest = this.buffer.slice(nlIndex + 1);
       pending += line + "\n";
@@ -71,6 +71,7 @@ export class StreamingRenderer {
         pending = "";
       }
       this.buffer = rest;
+      nlIndex = this.buffer.indexOf("\n");
     }
     // Re-buffer the unconsumed pending text (a block still in progress).
     this.buffer = pending + this.buffer;

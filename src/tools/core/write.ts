@@ -18,7 +18,6 @@ const WriteSchema = z.strictObject({
   filePath: z.string().describe("The absolute path where to write the file"),
   content: z.string().describe("Content to write to the file"),
 });
-type WriteInput = z.infer<typeof WriteSchema>;
 
 export const WriteTool: Tool = buildTool({
   name: "write",
@@ -98,10 +97,10 @@ export const WriteTool: Tool = buildTool({
         content: `${action} file: ${input.filePath} (${formatSize(size)})`,
         metadata: { fileSize: size },
       };
-    } catch (error: any) {
+    } catch (error) {
       return {
         content: "",
-        error: `Error writing file: ${error.message}`,
+        error: `Error writing file: ${(error as Error).message}`,
       };
     }
   },

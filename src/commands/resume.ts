@@ -5,7 +5,7 @@ import type { SlashCommand } from "./types.js";
 export const resumeCommand: SlashCommand = {
   name: "resume",
   description: "Resume a saved session (/resume [id-prefix])",
-  run: async (args, ctx) => {
+  run: async (args, ctx): Promise<undefined> => {
     const id = args.trim();
 
     // No id: on a TTY the TUI intercepts this and opens an interactive picker

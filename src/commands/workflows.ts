@@ -9,7 +9,7 @@ import type { SlashCommand } from "./types.js";
 export const workflowsCommand: SlashCommand = {
   name: "workflows",
   description: "List workflow runs (fan-out orchestration)",
-  run: () => {
+  run: (): undefined => {
     const workflows = listWorkflows();
     console.log("");
     console.log(chalk.bold(`  Workflows (${workflows.length}):`));

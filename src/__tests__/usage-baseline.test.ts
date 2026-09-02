@@ -138,11 +138,6 @@ describe("Usage Baseline", () => {
 
   describe("baseline rebuild after compaction", () => {
     it("should rebuild baseline after autoCompact", () => {
-      // Before compaction: 20 messages
-      const messagesBeforeCompact: Message[] = Array.from({ length: 20 }, (_, i) =>
-        createMessage("user", `message ${i}`.repeat(100)),
-      );
-
       // After compaction: compressed to 5 messages
       const messagesAfterCompact: Message[] = [
         { role: "system", content: "[CONVERSATION SUMMARY]\nSummary of previous messages" },

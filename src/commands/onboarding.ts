@@ -51,7 +51,7 @@ function diagnose(ctx: CommandContext): OnboardingCheck[] {
 export const onboardingCommand: SlashCommand = {
   name: "onboarding",
   description: "First-use guided setup: check CLAUDE.md/.env/build and get started",
-  run: (_args, ctx): CommandResult | void => {
+  run: (_args, ctx): CommandResult | undefined => {
     const checks = diagnose(ctx);
     console.log("");
     console.log(chalk.bold("  Onboarding check:"));

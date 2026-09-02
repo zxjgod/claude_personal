@@ -14,7 +14,11 @@ export function buildClaudeMdScaffold(workspaceRoot: string): string {
   const lines: string[] = [`# ${name}`, ""];
 
   // package.json — project name, description, scripts.
-  let pkg: any = null;
+  interface PackageJsonProbe {
+    description?: string;
+    scripts?: Record<string, unknown>;
+  }
+  let pkg: PackageJsonProbe | null = null;
   try {
     pkg = JSON.parse(fs.readFileSync(path.join(workspaceRoot, "package.json"), "utf-8"));
   } catch {
@@ -78,7 +82,7 @@ export function buildClaudeMdScaffold(workspaceRoot: string): string {
 export const initCommand: SlashCommand = {
   name: "init",
   description: "Generate a starter CLAUDE.md by scanning the workspace",
-  run: (args, ctx) => {
+  run: (args, ctx): undefined => {
     const claudeMdPath = path.join(ctx.workspaceRoot, "CLAUDE.md");
     const force = args.trim().toLowerCase() === "force";
     if (fs.existsSync(claudeMdPath) && !force) {
@@ -90,8 +94,9 @@ export const initCommand: SlashCommand = {
       fs.writeFileSync(claudeMdPath, scaffold, "utf-8");
       console.log(chalk.gray(`  Wrote starter CLAUDE.md (${scaffold.length} bytes).`));
       console.log(chalk.gray("  Edit it to capture project context, then restart to load it."));
-    } catch (e: any) {
-      console.log(chalk.red(`  Could not write CLAUDE.md: ${e.message}`));
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : String(e);
+      console.log(chalk.red(`  Could not write CLAUDE.md: ${detail}`));
     }
   },
 };

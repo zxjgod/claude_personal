@@ -154,7 +154,8 @@ export interface CacheBreakReport {
 /** After the call, detect a cache break and attribute its root cause. */
 export function checkResponseForCacheBreak(
   cacheReadTokens: number,
-  cacheCreationTokens: number,
+  // Reserved for future attribution (creation-side breaks); not yet consulted.
+  _cacheCreationTokens: number,
 ): CacheBreakReport | null {
   if (!state) return null;
   const prevCacheRead = state.prevCacheRead;

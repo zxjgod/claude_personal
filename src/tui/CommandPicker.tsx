@@ -42,7 +42,7 @@ export function CommandPicker({
     setOffset((off) => nextOffset(next, off, windowSize));
   };
 
-  useInput((input, key) => {
+  useInput((_input, key) => {
     if (key.upArrow) move(-1);
     else if (key.downArrow) move(1);
     else if (key.pageUp) move(-windowSize);

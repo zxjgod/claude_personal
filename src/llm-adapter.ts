@@ -89,7 +89,7 @@ function convertToOpenAIMessage(
               image_url: { url },
             } as const;
           }
-          throw new Error(`Unknown content type: ${(block as any).type}`);
+          throw new Error(`Unknown content type: ${(block as { type: string }).type}`);
         }),
       };
 
@@ -97,7 +97,7 @@ function convertToOpenAIMessage(
       return {
         role: "assistant",
         content: msg.content,
-        tool_calls: msg.tool_calls as any,
+        tool_calls: msg.tool_calls,
       };
 
     case "tool": {
@@ -248,7 +248,7 @@ async function* openAICompatibleCaller(
       // prompt_tokens already includes cached tokens, so we do not add
       // cache_read on top — unlike Anthropic where input_tokens excludes them.)
       if (chunk.usage) {
-        const cached = (chunk.usage as any).prompt_tokens_details?.cached_tokens ?? 0;
+        const cached = chunk.usage.prompt_tokens_details?.cached_tokens ?? 0;
         usage = {
           input_tokens: chunk.usage.prompt_tokens || 0,
           output_tokens: chunk.usage.completion_tokens || 0,
@@ -305,23 +305,29 @@ export function createModelCaller(cfg: ModelConfig): ModelCaller {
 
 // --- Error Detection Helpers ---
 
-export function isRateLimitError(error: any): boolean {
-  return error?.status === 429;
+/**
+ * Minimal structural view of provider/SDK errors for status/message probing.
+ * Errors arrive as `unknown` from catch sites; only these two fields are read.
+ */
+type ApiErrorShape = { status?: number; message?: string } | null;
+
+export function isRateLimitError(error: unknown): boolean {
+  return (error as ApiErrorShape)?.status === 429;
 }
 
-export function isContextLengthError(error: any): boolean {
-  return (
-    error?.status === 400 &&
-    (error?.message?.includes("context_length") || error?.message?.includes("maximum context"))
-  );
+export function isContextLengthError(error: unknown): boolean {
+  const err = error as ApiErrorShape;
+  const msg = err?.message ?? "";
+  return err?.status === 400 && (msg.includes("context_length") || msg.includes("maximum context"));
 }
 
-export function isAuthError(error: any): boolean {
-  return error?.status === 401 || error?.status === 403;
+export function isAuthError(error: unknown): boolean {
+  const status = (error as ApiErrorShape)?.status;
+  return status === 401 || status === 403;
 }
 
-export function isProviderError(error: any): boolean {
-  return error?.status >= 500;
+export function isProviderError(error: unknown): boolean {
+  return ((error as ApiErrorShape)?.status ?? 0) >= 500;
 }
 
 // --- Provider Resolution ---

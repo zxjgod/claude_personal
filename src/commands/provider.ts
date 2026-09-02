@@ -49,7 +49,6 @@ const EXAMPLE = `  {
 /** Switch the live config to `profile` and print a detailed confirmation with model recommendation. */
 function switchTo(ctx: CommandContext, profile: ProviderProfile): void {
   const prevProvider = ctx.modelConfig.provider;
-  const prevModel = ctx.modelConfig.model;
   applyProfile(ctx.modelConfig, profile);
 
   console.log("");
@@ -87,7 +86,7 @@ function switchTo(ctx: CommandContext, profile: ProviderProfile): void {
 export const providerCommand: SlashCommand = {
   name: "provider",
   description: "Switch API endpoint profile (/provider [name]) — see .claude/providers.json",
-  run: async (args, ctx) => {
+  run: async (args, ctx): Promise<undefined> => {
     const profiles = loadProviderProfiles(ctx.workspaceRoot);
     if (profiles.length === 0) {
       console.log("");

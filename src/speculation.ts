@@ -82,7 +82,7 @@ export function rankPaths(toolName: string, paths: string[]): RankedPath[] {
     counts.set(p, (counts.get(p) ?? 0) + 1);
   }
   return [...firstSeen.entries()]
-    .map(([path, seen]) => ({ path, score: counts.get(path) ?? 1 }))
+    .map(([path]) => ({ path, score: counts.get(path) ?? 1 }))
     .sort((a, b) =>
       b.score !== a.score
         ? b.score - a.score

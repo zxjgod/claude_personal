@@ -10,7 +10,7 @@ export const memoryCommand: SlashCommand = {
   name: "memory",
   description:
     "View/append CLAUDE.md, view durable memories, or extract (/memory, /memory add <text>, /memory extract)",
-  run: (args, ctx) => {
+  run: (args, ctx): undefined => {
     const claudeMdPath = path.join(ctx.workspaceRoot, "CLAUDE.md");
     const trimmed = args.trim();
 
@@ -27,8 +27,9 @@ export const memoryCommand: SlashCommand = {
         fs.appendFileSync(claudeMdPath, `${prefix}- ${note}\n`, "utf-8");
         console.log(chalk.gray(`  Appended to CLAUDE.md: "${note}"`));
         console.log(chalk.gray("  (Restart the session to load it into the system prompt.)"));
-      } catch (e: any) {
-        console.log(chalk.red(`  Could not write CLAUDE.md: ${e.message}`));
+      } catch (e) {
+        const detail = e instanceof Error ? e.message : String(e);
+        console.log(chalk.red(`  Could not write CLAUDE.md: ${detail}`));
       }
       return;
     }

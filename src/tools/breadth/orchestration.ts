@@ -1,7 +1,7 @@
 // ============================================================
-// M14 Tools — Worktree, Skill, Cron/Sleep
+// Orchestration Tools — Worktree, Skill, Cron/Sleep
 // ============================================================
-// Breadth tools added in milestone M14. Kept in a separate file so
+// (Originally milestone M14; renamed from m9.ts.) Kept in a separate file so
 // tools.ts stays focused on the core file/shell tools.
 //
 //   14.1 EnterWorktree / ExitWorktree — git worktree isolation so
@@ -52,7 +52,9 @@ interface WorktreeEntry {
 
 const WORKTREES = new Map<string, WorktreeEntry[]>();
 
-function worktreeDir(sessionId: string): string {
+// NOTE: sessionId is accepted for API symmetry but intentionally ignored —
+// git worktrees are per-repository state, so all sessions share one root.
+function worktreeDir(_sessionId: string): string {
   return path.join(".claude", "worktrees");
 }
 
@@ -243,8 +245,9 @@ export const SkillTool: Tool = buildTool({
         args: input.args,
         workspaceRoot: context.workspaceRoot,
       });
-    } catch (error: any) {
-      return { content: "", error: `Skill "${name}" failed to load: ${error?.message ?? error}` };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { content: "", error: `Skill "${name}" failed to load: ${message}` };
     }
 
     // context:'fork' → run the body in a sub-agent and return only its final
@@ -369,7 +372,7 @@ export const SleepTool: Tool = buildTool({
 // Exports bundle
 // ============================================================
 
-export const M14_TOOLS: Tool[] = [
+export const ORCHESTRATION_TOOLS: Tool[] = [
   EnterWorktreeTool,
   ExitWorktreeTool,
   SkillTool,

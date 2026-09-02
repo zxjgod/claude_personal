@@ -21,12 +21,12 @@ function chunkLabel(label: string, value: number, color: typeof chalk.green): st
 export const contextCommand: SlashCommand = {
   name: "context",
   description: "Show context composition, token usage, and compaction headroom",
-  run: async (_args, ctx) => {
+  run: async (_args, ctx): Promise<undefined> => {
     try {
       const messages = ctx.messages;
       const total = estimateTokens(messages);
       const systemTokens = ctx.systemPrompt
-        ? estimateTokens([{ role: "system", content: ctx.systemPrompt } as any])
+        ? estimateTokens([{ role: "system", content: ctx.systemPrompt }])
         : 0;
       const messageTokens = Math.max(0, total - systemTokens);
       const usedRatio = Math.min(1, total / AUTO_COMPACT_THRESHOLD);
@@ -70,8 +70,9 @@ export const contextCommand: SlashCommand = {
           ),
         );
       }
-    } catch (error: any) {
-      console.log(chalk.yellow(`  Failed to estimate tokens: ${error?.message || error}`));
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.log(chalk.yellow(`  Failed to estimate tokens: ${detail}`));
     }
   },
 };

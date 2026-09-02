@@ -53,6 +53,15 @@ interface PendingRequest {
   reject: (err: Error) => void;
 }
 
+/** Framed JSON-RPC message received from tsserver (the response fields we read). */
+interface TsServerMessage {
+  type: string;
+  request_seq: number;
+  success?: boolean;
+  message?: string;
+  body?: unknown;
+}
+
 interface TsDiagnostic {
   file?: string;
   start?: { line: number; offset: number };
@@ -100,8 +109,9 @@ export class LspClient {
           stdio: ["pipe", "pipe", "pipe"],
           windowsHide: true,
         });
-      } catch (e: any) {
-        reject(new Error(`Failed to spawn tsserver: ${e.message}`));
+      } catch (e) {
+        const detail = e instanceof Error ? e.message : String(e);
+        reject(new Error(`Failed to spawn tsserver: ${detail}`));
         return;
       }
 
@@ -136,7 +146,7 @@ export class LspClient {
    * Open a file and fetch syntactic + semantic diagnostics for it. The
    * diagnostic shape is normalized to the shared Diagnostic interface.
    */
-  async getDiagnostics(filePath: string, timeoutMs = 20000): Promise<Diagnostic[]> {
+  async getDiagnostics(filePath: string, _timeoutMs = 20000): Promise<Diagnostic[]> {
     await this.ensureInitialized();
     const abs = path.isAbsolute(filePath) ? filePath : path.resolve(this.rootPath, filePath);
     const text = fs.existsSync(abs) ? fs.readFileSync(abs, "utf-8") : "";
@@ -169,7 +179,7 @@ export class LspClient {
     filePath: string,
     line: number,
     column: number,
-    timeoutMs = 15000,
+    _timeoutMs = 15000,
   ): Promise<CompletionItem[]> {
     await this.ensureInitialized();
     const abs = path.isAbsolute(filePath) ? filePath : path.resolve(this.rootPath, filePath);
@@ -219,7 +229,7 @@ export class LspClient {
    * `Content-Length: N\r\n\r\n<json>\n` where N = byteLength(json) + 1.
    * We parse the header for the length, then read that many body bytes.
    */
-  private extractMessage(): any | null {
+  private extractMessage(): TsServerMessage | null {
     const headerEnd = this.buffer.indexOf("\r\n\r\n");
     if (headerEnd === -1) return null;
     const header = this.buffer.slice(0, headerEnd);
@@ -241,7 +251,7 @@ export class LspClient {
     }
   }
 
-  private handleMessage(msg: any): void {
+  private handleMessage(msg: TsServerMessage): void {
     // Responses carry `seq`/`request_seq` and `success`/`body`.
     if (msg.type === "response") {
       const pending = this.pending.get(msg.request_seq);

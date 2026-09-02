@@ -417,15 +417,6 @@ describe("Session lifecycle", () => {
     });
 
     it("handles context_length error by triggering compaction", async () => {
-      const caller = makeMockCaller([
-        [{ type: "error", error: new Error("context_length_exceeded") }],
-        // After compaction, should retry successfully
-        [
-          { type: "text_delta", delta: "After compaction" },
-          { type: "done", usage: { input_tokens: 50, output_tokens: 10 }, finish_reason: "stop" },
-        ],
-      ]);
-
       const messages: Message[] = [
         { role: "user", content: [{ type: "text", text: "Long conversation" }] },
       ];

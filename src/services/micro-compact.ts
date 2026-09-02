@@ -30,6 +30,12 @@ export interface MicroCompactResult {
 }
 
 /**
+ * Sessions may stamp messages with a capture time; the field lives outside the
+ * core Message wire type, so reads go through this structural extension.
+ */
+type TimestampedMessage = Message & { timestamp?: number | string };
+
+/**
  * Check if the time-based trigger should fire: gap since last assistant
  * message exceeds the configured threshold.
  */
@@ -40,7 +46,7 @@ function shouldTrigger(messages: Message[], config: MicroCompactConfig): boolean
   let lastAssistant: Message | undefined;
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
-    if (m.role === "assistant" && (m as any).timestamp !== undefined) {
+    if (m.role === "assistant" && (m as TimestampedMessage).timestamp !== undefined) {
       lastAssistant = m;
       break;
     }
@@ -48,7 +54,7 @@ function shouldTrigger(messages: Message[], config: MicroCompactConfig): boolean
 
   if (!lastAssistant) return false;
 
-  const timestamp = (lastAssistant as any).timestamp;
+  const timestamp = (lastAssistant as TimestampedMessage).timestamp;
   if (!timestamp) return false;
 
   try {

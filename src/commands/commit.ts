@@ -6,7 +6,7 @@ import type { SlashCommand } from "./types.js";
 export const commitCommand: SlashCommand = {
   name: "commit",
   description: "Draft a commit message from the current git changes",
-  run: async (_args, ctx) => {
+  run: async (_args, ctx): Promise<undefined> => {
     const summary = await gatherDiffSummary(ctx.workspaceRoot);
     if (!summary) {
       console.log(chalk.yellow("  Not a git repository (or git unavailable)."));

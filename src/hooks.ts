@@ -62,16 +62,16 @@ export interface Hook {
   matcher: string;
   pre?: (
     payload: PreToolUsePayload,
-  ) => Promise<PreToolUseOutcome | void> | PreToolUseOutcome | void;
+  ) => Promise<PreToolUseOutcome | undefined> | PreToolUseOutcome | undefined;
   post?: (
     payload: PostToolUsePayload,
-  ) => Promise<PostToolUseOutcome | void> | PostToolUseOutcome | void;
+  ) => Promise<PostToolUseOutcome | undefined> | PostToolUseOutcome | undefined;
   /**
    * Stop hook: runs when the turn would end. Returning `blockingError` keeps the
    * agent working; `preventContinuation` hard-stops it. Not matched by tool name
    * — every registered stop hook runs.
    */
-  stop?: (payload: StopPayload) => Promise<StopOutcome | void> | StopOutcome | void;
+  stop?: (payload: StopPayload) => Promise<StopOutcome | undefined> | StopOutcome | undefined;
 }
 
 export class HookRegistry {

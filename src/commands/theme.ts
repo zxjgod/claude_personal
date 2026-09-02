@@ -5,9 +5,10 @@ import type { SlashCommand } from "./types.js";
 export const themeCommand: SlashCommand = {
   name: "theme",
   description: "Show or set the color theme (/theme [dark|light])",
-  run: (args, ctx) => {
+  run: (args, ctx): undefined => {
     const arg = args.trim().toLowerCase();
-    const options = (ctx.modelConfig.options ??= {});
+    ctx.modelConfig.options ??= {};
+    const options = ctx.modelConfig.options;
     if (arg === "dark" || arg === "light") {
       (options as Record<string, unknown>).theme = arg;
       console.log(chalk.gray(`  Theme: ${arg}`));

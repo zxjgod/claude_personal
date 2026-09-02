@@ -67,7 +67,6 @@ export function StreamingMarkdown({ children }: { children: string }) {
   }
 
   const tokens = marked.lexer(tailText);
-  const tokenCount = tokens.length;
 
   // The last non-space token is the block still growing; everything before it
   // is final. Advance the boundary past those final tokens' raw text.

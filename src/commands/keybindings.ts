@@ -6,7 +6,7 @@ import type { SlashCommand } from "./types.js";
 export const keybindingsCommand: SlashCommand = {
   name: "keybindings",
   description: "Show the active keyboard shortcuts (+ user overrides)",
-  run: () => {
+  run: (): undefined => {
     console.log("");
     console.log(chalk.bold("  Keybindings:"));
     // Only keys that are actually wired up in InputBox/App today. Multi-line

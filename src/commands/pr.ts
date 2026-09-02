@@ -6,7 +6,7 @@ import type { SlashCommand } from "./types.js";
 export const prCommand: SlashCommand = {
   name: "pr",
   description: "Draft a PR description from commits/changes vs upstream",
-  run: async (_args, ctx) => {
+  run: async (_args, ctx): Promise<undefined> => {
     const summary = await gatherDiffSummary(ctx.workspaceRoot);
     if (!summary) {
       console.log(chalk.yellow("  Not a git repository (or git unavailable)."));

@@ -12,7 +12,7 @@ import type { SlashCommand } from "./types.js";
 export const hooksCommand: SlashCommand = {
   name: "hooks",
   description: "List registered PreToolUse / PostToolUse hooks",
-  run: (_args, ctx) => {
+  run: (_args, ctx): undefined => {
     if (!ctx.hooks) {
       console.log(chalk.gray("  Hook registry is not available in this session."));
       return;

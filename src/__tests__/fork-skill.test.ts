@@ -16,7 +16,7 @@ vi.mock("../llm-adapter.js", () => ({
 }));
 
 import { registerSkill, resetSkills } from "../skills.js";
-import { SkillTool } from "../tools/m8/m9.js";
+import { SkillTool } from "../tools/breadth/orchestration.js";
 import type { ModelConfig, ToolContext } from "../types.js";
 
 const modelConfig: ModelConfig = { provider: "deepseek", model: "deepseek-chat", apiKey: "k" };

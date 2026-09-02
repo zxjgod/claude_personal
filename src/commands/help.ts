@@ -74,7 +74,7 @@ const CATEGORY_MAP: Record<string, { emoji: string; title: string }> = {
 export const helpCommand: SlashCommand = {
   name: "help",
   description: "Show available commands",
-  run: () => {
+  run: (): undefined => {
     // Group commands by category
     const categories: CommandCategory[] = [];
     const categoryMap = new Map<string, SlashCommand[]>();

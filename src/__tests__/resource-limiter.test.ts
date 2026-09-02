@@ -165,7 +165,7 @@ describe("ResourceLimiter", () => {
     });
 
     it("should be clearable", async () => {
-      const { promise, clear } = ResourceLimiter.createTimeout(10);
+      const { clear } = ResourceLimiter.createTimeout(10);
 
       clear();
 

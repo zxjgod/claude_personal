@@ -57,7 +57,7 @@ export function renderSessionMarkdown(ctx: CommandContext): string {
 export const exportCommand: SlashCommand = {
   name: "export",
   description: "Export the current session to a markdown file (/export [path])",
-  run: (args, ctx) => {
+  run: (args, ctx): undefined => {
     const target =
       args.trim() || path.join(ctx.workspaceRoot, `session-${ctx.sessionId.slice(0, 8)}.md`);
     const md = renderSessionMarkdown(ctx);
@@ -65,8 +65,9 @@ export const exportCommand: SlashCommand = {
       fs.mkdirSync(path.dirname(target) || ".", { recursive: true });
       fs.writeFileSync(target, md, "utf-8");
       console.log(chalk.gray(`  Exported ${ctx.messages.length} messages → ${target}`));
-    } catch (e: any) {
-      console.log(chalk.red(`  Could not write ${target}: ${e.message}`));
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : String(e);
+      console.log(chalk.red(`  Could not write ${target}: ${detail}`));
     }
   },
 };

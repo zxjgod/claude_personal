@@ -33,7 +33,6 @@ let ddgUnavailable = false;
 const WebSearchSchema = z.strictObject({
   query: z.string().min(1).describe("The search query"),
 });
-type WebSearchInput = z.infer<typeof WebSearchSchema>;
 
 interface SearchResult {
   title: string;
@@ -79,22 +78,22 @@ export function parseSearchResults(html: string, limit = MAX_RESULTS): SearchRes
   const snippetRe = /<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/gi;
 
   const snippets: string[] = [];
-  let sm: RegExpExecArray | null;
-  while ((sm = snippetRe.exec(html)) !== null) {
+  let sm = snippetRe.exec(html);
+  while (sm !== null) {
     snippets.push(decodeEntities(sm[1]));
+    sm = snippetRe.exec(html);
   }
 
-  let lm: RegExpExecArray | null;
+  let lm = linkRe.exec(html);
   let i = 0;
-  while ((lm = linkRe.exec(html)) !== null && results.length < limit) {
+  while (lm !== null && results.length < limit) {
     const url = unwrapUrl(lm[1]);
     const title = decodeEntities(lm[2]);
-    if (!title || !url) {
-      i++;
-      continue;
+    if (title && url) {
+      results.push({ title, url, snippet: snippets[i] ?? "" });
     }
-    results.push({ title, url, snippet: snippets[i] ?? "" });
     i++;
+    lm = linkRe.exec(html);
   }
   return results;
 }
@@ -156,10 +155,10 @@ async function searchDuckDuckGo(query: string): Promise<SearchOutcome> {
     const body = await readLimitedBody(response);
     if (body.error) return { ok: false, error: body.error };
     return { ok: true, results: parseSearchResults(body.html!) };
-  } catch (err: any) {
-    if (err.name === "AbortError")
+  } catch (err) {
+    if ((err as Error).name === "AbortError")
       return { ok: false, error: `timed out after ${TIMEOUT_MS / 1000}s` };
-    return { ok: false, error: err.message };
+    return { ok: false, error: (err as Error).message };
   } finally {
     clearTimeout(timeoutId);
   }
@@ -180,10 +179,10 @@ async function searchBing(query: string): Promise<SearchOutcome> {
     const body = await readLimitedBody(response);
     if (body.error) return { ok: false, error: body.error };
     return { ok: true, results: parseBingResults(body.html!) };
-  } catch (err: any) {
-    if (err.name === "AbortError")
+  } catch (err) {
+    if ((err as Error).name === "AbortError")
       return { ok: false, error: `timed out after ${TIMEOUT_MS / 1000}s` };
-    return { ok: false, error: err.message };
+    return { ok: false, error: (err as Error).message };
   } finally {
     clearTimeout(timeoutId);
   }

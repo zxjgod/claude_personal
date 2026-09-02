@@ -3,14 +3,18 @@
 // ============================================================
 
 // Import from other tool modules
-import { LspCompletionsTool, LspDiagnosticsTool, NotebookEditTool } from "../tools/m8/index.js";
+import {
+  LspCompletionsTool,
+  LspDiagnosticsTool,
+  NotebookEditTool,
+} from "../tools/breadth/index.js";
 import {
   AskUserQuestionTool,
   EnterPlanModeTool,
   ExitPlanModeTool,
-} from "../tools/m8/interactive.js";
-import { M14_TOOLS } from "../tools/m8/m9.js";
-import { TEAM_TOOLS } from "../tools/m8/team.js";
+} from "../tools/breadth/interactive.js";
+import { ORCHESTRATION_TOOLS } from "../tools/breadth/orchestration.js";
+import { TEAM_TOOLS } from "../tools/breadth/team.js";
 import type { Tool } from "../types.js";
 import { BashTool } from "./core/bash.js";
 import { EditTool, MultiEditTool } from "./core/edit.js";
@@ -79,5 +83,5 @@ export const CORE_TOOLS: Tool[] = [
   // Design system integration
   DesignSyncTool, // Aliases: design_sync
   ...TEAM_TOOLS,
-  ...M14_TOOLS,
+  ...ORCHESTRATION_TOOLS,
 ];

@@ -12,7 +12,7 @@ import type { CommandResult, SlashCommand } from "./types.js";
 export const reviewCommand: SlashCommand = {
   name: "review",
   description: "Review the current git changes (working-tree diff)",
-  run: (_args, ctx): CommandResult | void => {
+  run: (_args, ctx): CommandResult | undefined => {
     const prompt = [
       `You are an expert code reviewer. Review the current uncommitted changes in the workspace at \`${ctx.workspaceRoot}\`.`,
       ``,

@@ -6,7 +6,7 @@ import type { SlashCommand } from "./types.js";
 export const costCommand: SlashCommand = {
   name: "cost",
   description: "Show token usage and estimated cost this session",
-  run: (_args, ctx) => {
+  run: (_args, ctx): undefined => {
     if (!ctx.stats) {
       console.log(chalk.gray("  No usage recorded yet this session."));
       return;

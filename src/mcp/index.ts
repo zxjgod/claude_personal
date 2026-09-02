@@ -15,6 +15,7 @@ import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { WebSocketClientTransport } from "@modelcontextprotocol/sdk/client/websocket.js";
+import type { CallToolResult, TextContent } from "@modelcontextprotocol/sdk/types.js";
 import type { PermissionResult, Tool, ToolContext, ToolResult } from "../types.js";
 import { FileTokenOAuthProvider, type MCPOAuthConfig } from "./auth.js";
 
@@ -247,17 +248,24 @@ export class MCPManager {
     let raw: string;
     try {
       raw = fs.readFileSync(configPath, "utf-8");
-    } catch (error: any) {
-      if (error.code === "ENOENT") return; // Config file doesn't exist — fine
-      console.error(`Error reading MCP config from ${configPath}:`, error.message);
+    } catch (error) {
+      // Config file doesn't exist — fine
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      console.error(
+        `Error reading MCP config from ${configPath}:`,
+        error instanceof Error ? error.message : String(error),
+      );
       return;
     }
 
     let config: MCPConfig;
     try {
       config = JSON.parse(raw);
-    } catch (error: any) {
-      console.error(`Error parsing MCP config from ${configPath}:`, error.message);
+    } catch (error) {
+      console.error(
+        `Error parsing MCP config from ${configPath}:`,
+        error instanceof Error ? error.message : String(error),
+      );
       return;
     }
 
@@ -319,7 +327,7 @@ export class MCPManager {
         activeTransport = transport;
         client = new Client(
           { name: "claude-code-replica", version: "1.0.0" },
-          { capabilities: {} as any },
+          { capabilities: {} },
         );
         await withTimeout("connect(stdio)", client.connect(transport), CONNECT_TIMEOUT_MS);
       } else if (config.type === "http" || config.type === "sse" || config.type === "ws") {
@@ -330,7 +338,7 @@ export class MCPManager {
         const url = new URL(config.url);
         client = new Client(
           { name: "claude-code-replica", version: "1.0.0" },
-          { capabilities: {} as any },
+          { capabilities: {} },
         );
 
         // OAuth provider (11.2) — only meaningful for http/sse. The SDK drives
@@ -351,7 +359,7 @@ export class MCPManager {
 
         try {
           await withTimeout("connect(network)", client.connect(transport), CONNECT_TIMEOUT_MS);
-        } catch (error: any) {
+        } catch (error) {
           // Unauthorized → run the one-shot interactive OAuth exchange, then
           // reconnect with a fresh transport carrying the new token.
           if (authProvider && this.isUnauthorized(error)) {
@@ -366,7 +374,11 @@ export class MCPManager {
             await closeMcpConnection(`connect(${name}:unauthorized)`, client, activeTransport);
             activeTransport = reTransport;
             // finishAuth exchanges the code for tokens on the transport.
-            await (reTransport as any).finishAuth(code);
+            // Only http/sse transports reach this branch (authProvider is set
+            // for those types only), and both expose finishAuth.
+            await (reTransport as StreamableHTTPClientTransport | SSEClientTransport).finishAuth(
+              code,
+            );
             await withTimeout(
               "connect(network:reauth)",
               client.connect(reTransport),
@@ -377,7 +389,7 @@ export class MCPManager {
           }
         }
       } else {
-        console.error(`MCP server "${name}": unknown transport type "${(config as any).type}"`);
+        console.error(`MCP server "${name}": unknown transport type "${config.type}"`);
         return;
       }
 
@@ -387,7 +399,7 @@ export class MCPManager {
       const manager = this;
       const toolsResult = await withTimeout("listTools", client.listTools(), LIST_TOOLS_TIMEOUT_MS);
       const mcpTools: Tool[] = toolsResult.tools
-        .map((remoteTool: any) => {
+        .map((remoteTool) => {
           // P1-4: Build input schema with type-safe validation to prevent
           // malicious schema injection. Reject non-object properties.
           const rawSchema = remoteTool.inputSchema || {};
@@ -404,7 +416,7 @@ export class MCPManager {
 
           const inputSchema: Tool["inputSchema"] = {
             type: "object",
-            properties: rawProperties ?? {},
+            properties: (rawProperties ?? {}) as Tool["inputSchema"]["properties"],
             required: Array.isArray(rawSchema.required) ? rawSchema.required : [],
           };
 
@@ -440,17 +452,17 @@ export class MCPManager {
                 );
 
                 // Extract text content from result
-                const content = (result.content as any[])
-                  .filter((c: any) => c.type === "text")
-                  .map((c: any) => c.text)
+                const content = (result.content as CallToolResult["content"])
+                  .filter((c): c is TextContent => c.type === "text")
+                  .map((c) => c.text)
                   .join("\n");
 
                 return { content: content || "(no text output)" };
-              } catch (error: any) {
+              } catch (error) {
                 if (error instanceof TimeoutError) await manager.disconnectServer(name);
                 return {
                   content: "",
-                  error: `MCP tool error (${toolName}): ${error.message}`,
+                  error: `MCP tool error (${toolName}): ${error instanceof Error ? error.message : String(error)}`,
                 };
               }
             },
@@ -508,8 +520,10 @@ export class MCPManager {
         tools: mcpTools,
       });
       console.log(`MCP server "${name}" connected (${config.type}) — ${mcpTools.length} tool(s)`);
-    } catch (error: any) {
-      console.error(`Failed to connect MCP server "${name}": ${error.message}`);
+    } catch (error) {
+      console.error(
+        `Failed to connect MCP server "${name}": ${error instanceof Error ? error.message : String(error)}`,
+      );
       await closeMcpConnection(`connect(${name})`, client, activeTransport);
       // Don't crash — MCP is optional
     }
@@ -525,7 +539,7 @@ export class MCPManager {
     url: URL,
     headers?: Record<string, string>,
     authProvider?: FileTokenOAuthProvider,
-  ): any {
+  ): StreamableHTTPClientTransport | SSEClientTransport | WebSocketClientTransport {
     if (type === "ws") {
       // WebSocket transport takes no per-request headers/auth in the SDK.
       return new WebSocketClientTransport(url);
@@ -544,12 +558,21 @@ export class MCPManager {
   }
 
   /** Detect an OAuth "needs authorization" failure across SDK error shapes. */
-  private isUnauthorized(error: any): boolean {
+  private isUnauthorized(error: unknown): boolean {
     if (!error) return false;
-    const name = error.name || error.constructor?.name || "";
+    // Probe the common shapes: SDK UnauthorizedError, or an HTTP-ish error
+    // carrying a 401 code/status.
+    const e = error as {
+      name?: string;
+      constructor?: { name?: string };
+      code?: number;
+      status?: number;
+      message?: string;
+    };
+    const name = e.name || e.constructor?.name || "";
     if (name === "UnauthorizedError") return true;
-    if (error.code === 401 || error.status === 401) return true;
-    const msg = String(error.message || "").toLowerCase();
+    if (e.code === 401 || e.status === 401) return true;
+    const msg = String(e.message || "").toLowerCase();
     return msg.includes("unauthorized") || msg.includes("401");
   }
 
@@ -558,7 +581,7 @@ export class MCPManager {
    */
   getAllTools(): Tool[] {
     const allTools: Tool[] = [];
-    for (const [name, server] of this.servers) {
+    for (const server of this.servers.values()) {
       allTools.push(...server.tools);
     }
     return allTools;
@@ -589,7 +612,7 @@ export class MCPManager {
     const out: Array<{ server: string; uri: string; name?: string; mimeType?: string }> = [];
     for (const [name, server] of this.servers) {
       try {
-        const res: any = await withTimeout(
+        const res = await withTimeout(
           `listResources(${name})`,
           server.client.listResources(),
           RESOURCE_TIMEOUT_MS,
@@ -612,13 +635,13 @@ export class MCPManager {
   async readResource(uri: string): Promise<string | null> {
     for (const [name, server] of this.servers) {
       try {
-        const res: any = await withTimeout(
+        const res = await withTimeout(
           `readResource(${uri})`,
           server.client.readResource({ uri }),
           RESOURCE_TIMEOUT_MS,
         );
         const text = (res.contents ?? [])
-          .map((c: any) => (typeof c.text === "string" ? c.text : ""))
+          .map((c) => ("text" in c && typeof c.text === "string" ? c.text : ""))
           .filter(Boolean)
           .join("\n");
         if (text) return text;

@@ -98,7 +98,6 @@ export function HelpPanel({ currentMode, onClose }: { currentMode: string; onClo
   });
 
   const width = Math.min(cols, 72);
-  const pad = Math.max(0, Math.floor((cols - width) / 2));
 
   return (
     <Box justifyContent="center">

@@ -6,7 +6,7 @@ import type { SlashCommand } from "./types.js";
 export const skillsCommand: SlashCommand = {
   name: "skills",
   description: "List registered skills (loadable via the Skill tool)",
-  run: () => {
+  run: (): undefined => {
     const skills = listSkills();
     if (skills.length === 0) {
       console.log(chalk.gray("  No skills registered yet."));

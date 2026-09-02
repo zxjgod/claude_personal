@@ -1,0 +1,66 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.1/schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "files": {
+    "includes": ["src/**/*.ts", "src/**/*.tsx", "scripts/**/*.mjs"]
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "double",
+      "semicolons": "always",
+      "trailingCommas": "all"
+    }
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "suspicious": {
+        "noExplicitAny": "error",
+        "noConfusingVoidType": "error",
+        "noAssignInExpressions": "error",
+        // Terminal output is full of ANSI/control escape sequences — the regexes
+        // that parse them legitimately need control chars (e.g. \x1b, \x07).
+        "noControlCharactersInRegex": "off",
+        // TUI lists are static (menu options, command rows); index keys are
+        // stable there and adding synthetic ids would be noise.
+        "noArrayIndexKey": "off"
+      },
+      "style": {
+        // Ratchet: ~420 legacy sites, mostly post-length-check array indexing.
+        // Warn so new code sees it; fix opportunistically, don't gate CI.
+        "noNonNullAssertion": "warn",
+        // Ratchet: ~100 legacy sites (string concat), mostly in tests.
+        "useTemplate": "warn"
+      },
+      "correctness": {
+        "noUnusedVariables": "error",
+        "noUnusedFunctionParameters": "error",
+        "noUnusedPrivateClassMembers": "error"
+      }
+    }
+  },
+  "overrides": [
+    {
+      "includes": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/__tests__/**"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noTemplateCurlyInString": "off",
+            "noExplicitAny": "off"
+          }
+        }
+      }
+    }
+  ]
+}

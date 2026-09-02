@@ -20,7 +20,7 @@ function findUserTurnBoundaries(messages: { role: string }[]): number[] {
 export const rewindCommand: SlashCommand = {
   name: "rewind",
   description: "Rewind the conversation by N turns (/rewind [n], default 1)",
-  run: (args, ctx) => {
+  run: (args, ctx): undefined => {
     const n = Math.max(1, parseInt(args.trim(), 10) || 1);
     const messages = ctx.messages;
     const userIdx = findUserTurnBoundaries(messages);

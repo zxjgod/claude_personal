@@ -68,7 +68,8 @@ export class FileTokenOAuthProvider implements OAuthClientProvider {
 
   constructor(
     private readonly serverName: string,
-    private readonly serverUrl: URL,
+    /** Reserved for the authorization flow (currently the SDK drives URLs itself). */
+    _serverUrl: URL,
     private readonly config: MCPOAuthConfig,
     /** Override the auth-state directory (tests). Defaults to ~/.claude/mcp-auth. */
     storeDir: string = authDir(),
@@ -213,7 +214,7 @@ export class FileTokenOAuthProvider implements OAuthClientProvider {
           res.end("<h3>Authorized. You can close this tab and return to the CLI.</h3>");
           cleanup();
           resolve(code);
-        } catch (e: any) {
+        } catch (e) {
           cleanup();
           reject(e);
         }

@@ -8,7 +8,7 @@
 import { z } from "zod";
 import type { Tool, ToolResult } from "../../types.js";
 import { buildTool } from "../registry.js";
-// Re-export the shared job registration from m9.ts
+// Re-export the shared job registration from breadth/orchestration.ts
 import {
   getScheduledJob,
   listScheduledJobs,

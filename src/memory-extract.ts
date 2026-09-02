@@ -196,8 +196,8 @@ export class MemoryStore {
     let raw: string;
     try {
       raw = fs.readFileSync(this.filePath, "utf-8");
-    } catch (error: any) {
-      if (error.code === "ENOENT") return [];
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
       throw error;
     }
     const out: ExtractedMemory[] = [];

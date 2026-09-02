@@ -106,8 +106,9 @@ export async function expandSkillBody(
         { cwd: opts.workspaceRoot ?? process.cwd(), timeout: 10_000, windowsHide: true },
       );
       replacement = stdout.trimEnd();
-    } catch (error: any) {
-      replacement = `[shell expansion failed: ${error?.message ?? String(error)}]`;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      replacement = `[shell expansion failed: ${detail}]`;
     }
     out = out.replace(match[0], replacement);
   }

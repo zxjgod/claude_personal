@@ -274,8 +274,8 @@ export async function runAgentTurn(
           break;
       }
     }
-  } catch (e: any) {
-    error = e?.message || String(e);
+  } catch (e) {
+    error = e instanceof Error ? e.message : String(e);
   }
 
   // Context protection (kernel §4): the agent's output is ONLY its final

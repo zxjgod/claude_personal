@@ -59,7 +59,6 @@ export class Spinner {
   private timer: ReturnType<typeof setInterval> | null = null;
   private startedAt = 0;
   private elapsedBase = 0;
-  private mode: SpinnerMode = "thinking";
   private tokens = 0;
   private reducedMotion: boolean;
   private out: NodeJS.WriteStream;
@@ -85,7 +84,6 @@ export class Spinner {
     this.startedAt = Date.now();
     this.elapsedBase = 0;
     this.tokens = 0;
-    this.mode = "thinking";
     this.render(0);
     if (!this.reducedMotion) {
       this.timer = setInterval(() => this.tick(), FRAME_MS);
@@ -101,9 +99,10 @@ export class Spinner {
     }
   }
 
-  setMode(mode: SpinnerMode): void {
-    this.mode = mode;
-  }
+  // NOTE: the mode is currently not reflected in the rendered output (the
+  // write-only `mode` field was removed as dead state); kept as a no-op so
+  // callers compiling against this API keep working.
+  setMode(_mode: SpinnerMode): void {}
 
   /** Stop animating and erase the line. */
   stop(): void {

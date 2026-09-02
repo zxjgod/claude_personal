@@ -6,7 +6,7 @@ import type { SlashCommand } from "./types.js";
 export const agentsCommand: SlashCommand = {
   name: "agents",
   description: "List available sub-agent roles and their tool set",
-  run: () => {
+  run: (): undefined => {
     const names = listSubagentNames();
     if (names.length === 0) {
       console.log(chalk.gray("  No sub-agent roles registered."));

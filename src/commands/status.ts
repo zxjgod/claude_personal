@@ -8,7 +8,7 @@ import type { SlashCommand } from "./types.js";
 export const statusCommand: SlashCommand = {
   name: "status",
   description: "Show session status (model, workspace, tokens, changes)",
-  run: (_args, ctx) => {
+  run: (_args, ctx): undefined => {
     console.log("");
     console.log(chalk.bold("  Status:"));
     console.log(`    Session:     ${chalk.cyan(ctx.sessionId.slice(0, 8) + "...")}`);

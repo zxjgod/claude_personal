@@ -63,7 +63,6 @@ const TaskSchema = z.strictObject({
         `Available types: ${listSubagentNames().join(", ")}`,
     ),
 });
-type TaskInput = z.infer<typeof TaskSchema>;
 
 // --- Concurrency semaphore ---
 
@@ -284,8 +283,8 @@ export const TaskTool: Tool = buildTool({
             break;
         }
       }
-    } catch (error: any) {
-      errorMessage = error.message || String(error);
+    } catch (error) {
+      errorMessage = (error as Error).message || String(error);
     } finally {
       if (slotAcquired) releaseSlot();
       scope.dispose();

@@ -41,7 +41,7 @@ type AnthropicTool = {
 
 export function formatSystemForAnthropic(
   systemPrompt: string,
-): string | Array<Record<string, unknown>> {
+): string | Anthropic.TextBlockParam[] {
   const boundaryIndex = systemPrompt.indexOf(DYNAMIC_BOUNDARY);
   if (boundaryIndex === -1) {
     return [
@@ -55,7 +55,7 @@ export function formatSystemForAnthropic(
 
   const stable = systemPrompt.slice(0, boundaryIndex).trimEnd();
   const dynamic = systemPrompt.slice(boundaryIndex).trimStart();
-  const blocks: Array<Record<string, unknown>> = [];
+  const blocks: Anthropic.TextBlockParam[] = [];
 
   if (stable) {
     blocks.push({
@@ -123,7 +123,7 @@ export function convertMessagesToAnthropic(
                 source: { type: "url", url: block.source.url },
               };
             }
-            throw new Error(`Unknown user content block: ${(block as any).type}`);
+            throw new Error(`Unknown user content block: ${(block as { type: string }).type}`);
           }),
         });
         break;
@@ -222,7 +222,7 @@ function toContentBlocks(
 // --- Tool conversion ---
 
 export function formatToolsForAnthropic(tools: Tool[]): AnthropicTool[] {
-  const formatted = tools
+  const formatted: AnthropicTool[] = tools
     .filter((t) => t.isEnabled())
     .map((t) => ({
       name: t.name,
@@ -233,7 +233,7 @@ export function formatToolsForAnthropic(tools: Tool[]): AnthropicTool[] {
   // LAST tool tells Anthropic to cache the whole tools prefix (which is stable
   // across a session), so subsequent turns read it from cache.
   if (formatted.length > 0) {
-    (formatted[formatted.length - 1] as any).cache_control = { type: "ephemeral" };
+    formatted[formatted.length - 1].cache_control = { type: "ephemeral" };
   }
   return formatted;
 }
@@ -291,7 +291,9 @@ export const anthropicCaller: ModelCaller = async function* (
   // Claude 4.8 benefits from adaptive thinking; harmlessly omitted when the
   // caller uses a non-Claude provider because this adapter only runs for
   // provider="anthropic". An explicit options.thinking still wins.
-  const thinking = config.options?.thinking ?? { type: "adaptive" };
+  const thinking = (config.options?.thinking ?? {
+    type: "adaptive",
+  }) as Anthropic.ThinkingConfigParam;
   const thinkingEnabled =
     typeof thinking === "object" && (thinking as { type?: string }).type !== "disabled";
 
@@ -299,16 +301,18 @@ export const anthropicCaller: ModelCaller = async function* (
     {
       model: config.model || "claude-opus-4-8",
       max_tokens: config.maxTokens ?? 16_000,
-      system: formatSystemForAnthropic(systemPrompt) as any,
-      messages: withMessageCacheBreakpoint(convertMessagesToAnthropic(messages, tools)) as any,
-      tools: tools.length > 0 ? (formatToolsForAnthropic(tools) as any) : undefined,
+      system: formatSystemForAnthropic(systemPrompt),
+      messages: withMessageCacheBreakpoint(
+        convertMessagesToAnthropic(messages, tools),
+      ) as unknown as Anthropic.MessageParam[],
+      tools: tools.length > 0 ? formatToolsForAnthropic(tools) : undefined,
       thinking,
       // The /effort tier drives reasoning depth. An explicit output_config in
       // options still wins; otherwise map the tier (default "high").
-      output_config: config.options?.output_config ?? {
+      output_config: (config.options?.output_config ?? {
         effort: anthropicEffort(getEffort(config.options)),
-      },
-    } as any,
+      }) as Anthropic.OutputConfig,
+    },
     {
       signal: combinedSignal,
       // Interleaved thinking beta (SDK 0.105 has no `betas` request param, so
@@ -367,13 +371,13 @@ export const anthropicCaller: ModelCaller = async function* (
     // in deltas) and the agent loop stores them on the assistant message for
     // verbatim passback in convertMessagesToAnthropic above.
     const thinkingBlocks: Array<ThinkingBlock | RedactedThinkingBlock> = [];
-    for (const block of final.content as any[]) {
+    for (const block of final.content) {
       if (block.type === "tool_use") {
         yield {
           type: "tool_use",
           id: block.id,
           name: block.name,
-          input: block.input ?? {},
+          input: (block.input ?? {}) as Record<string, unknown>,
         };
       } else if (block.type === "thinking") {
         thinkingBlocks.push({
@@ -395,7 +399,7 @@ export const anthropicCaller: ModelCaller = async function* (
     // field (non-cached input only); the cache breakdown is carried alongside
     // so /cost can show hit rate and the loop can estimate "live" context size
     // as input + cache_read (the tokens actually occupying the context window).
-    const u = final.usage as any;
+    const u = final.usage;
     const cacheRead = u.cache_read_input_tokens ?? 0;
     const cacheCreation = u.cache_creation_input_tokens ?? 0;
 

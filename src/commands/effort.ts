@@ -32,9 +32,10 @@ export const effortCommand: SlashCommand = {
   name: "effort",
   description:
     "Reasoning effort slider (/effort opens the picker; /effort <level> sets it directly)",
-  run: (args, ctx) => {
+  run: (args, ctx): undefined => {
     const arg = args.trim().toLowerCase();
-    const options = (ctx.modelConfig.options ??= {});
+    ctx.modelConfig.options ??= {};
+    const options = ctx.modelConfig.options;
 
     // No arg → show the slider with the active tier highlighted.
     if (!arg) {

@@ -6,7 +6,7 @@ import type { SlashCommand } from "./types.js";
 export const configCommand: SlashCommand = {
   name: "config",
   description: "Show the active runtime configuration",
-  run: (_args, ctx) => {
+  run: (_args, ctx): undefined => {
     const c = ctx.modelConfig;
     console.log("");
     console.log(chalk.bold("  Config:"));

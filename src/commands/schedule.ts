@@ -1,19 +1,19 @@
 // /schedule — list or cancel cron-scheduled prompts (M18.14)
 // ============================================================
 // The schedule_cron / sleep tools register jobs that fire while the REPL is
-// idle (see tools-m9.ts). This command surfaces those jobs and lets the user
+// idle (see breadth/orchestration.ts). This command surfaces those jobs and lets the user
 // cancel one by id (or all). Read by default; "/schedule cancel <id>" or
 // "/schedule clear" mutate. The jobs registry is process-global, so no extra
 // context plumbing is needed.
 // ============================================================
 import chalk from "chalk";
-import { listScheduledJobs, removeScheduledJob } from "../tools/m8/m9.js";
+import { listScheduledJobs, removeScheduledJob } from "../tools/breadth/orchestration.js";
 import type { SlashCommand } from "./types.js";
 
 export const scheduleCommand: SlashCommand = {
   name: "schedule",
   description: "List or cancel cron-scheduled prompts (/schedule [cancel <id> | clear])",
-  run: (args) => {
+  run: (args): undefined => {
     const [sub, target] = args.trim().split(/\s+/);
 
     if (sub === "clear") {

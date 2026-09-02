@@ -8,7 +8,7 @@
 // assistant text comes back; its intermediate tool output never enters the
 // parent context.
 //
-// Kept out of tools-m9.ts so that file doesn't take a static dependency on the
+// Kept out of breadth/orchestration.ts so that file doesn't take a static dependency on the
 // agent loop; this module is imported lazily-at-use from SkillTool.
 // ============================================================
 
@@ -91,8 +91,8 @@ export async function runForkSkill(
       else if (event.type === "aborted") errorMessage = event.reason;
       else if (event.type === "error") errorMessage = String(event.error);
     }
-  } catch (error: any) {
-    errorMessage = error?.message || String(error);
+  } catch (error) {
+    errorMessage = error instanceof Error ? error.message : String(error);
   }
 
   const duration = Date.now() - startTime;

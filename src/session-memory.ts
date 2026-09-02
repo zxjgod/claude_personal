@@ -64,10 +64,21 @@ export function normalizeFinishReason(raw: string | undefined): string | undefin
 /** Version migration map: old version → migration function */
 type MigrationFn = (data: unknown) => SessionData;
 
+/** Raw on-disk session shape probed by migrations; fields validated at runtime. */
+interface RawSessionData {
+  sessionId?: unknown;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+  workspaceRoot?: unknown;
+  messages?: unknown;
+  messageCount?: unknown;
+  completed?: unknown;
+}
+
 const migrations: Record<number, MigrationFn> = {
   // v1 → v2: Add workspaceRoot, messageCount, completed fields
   1: (data: unknown) => {
-    const d = data as any;
+    const d = data as RawSessionData;
     if (!d || typeof d !== "object") {
       throw new Error("Invalid v1 session: data is not an object");
     }
@@ -85,7 +96,7 @@ const migrations: Record<number, MigrationFn> = {
       sessionId: d.sessionId,
       createdAt: d.createdAt,
       updatedAt: d.updatedAt,
-      workspaceRoot: d.workspaceRoot || "",
+      workspaceRoot: (d.workspaceRoot || "") as string,
       messages: d.messages,
       messageCount: d.messages.length,
       completed: Boolean(d.completed),
@@ -96,7 +107,7 @@ const migrations: Record<number, MigrationFn> = {
   // Preserve it for compatibility, but represent the resumable lifecycle as
   // paused rather than inferring that the user's work is complete.
   2: (data: unknown) => {
-    const d = data as any;
+    const d = data as RawSessionData;
     if (!d || typeof d !== "object") {
       throw new Error("Invalid v2 session: data is not an object");
     }
@@ -112,9 +123,9 @@ const migrations: Record<number, MigrationFn> = {
     return {
       version: SESSION_FORMAT_VERSION,
       sessionId: d.sessionId,
-      createdAt: d.createdAt,
-      updatedAt: d.updatedAt,
-      workspaceRoot: d.workspaceRoot || "",
+      createdAt: d.createdAt as string,
+      updatedAt: d.updatedAt as string,
+      workspaceRoot: (d.workspaceRoot || "") as string,
       messages: d.messages,
       messageCount: d.messageCount,
       completed: Boolean(d.completed),
@@ -208,8 +219,8 @@ export class SessionMemory {
         };
       }
       return out;
-    } catch (error: any) {
-      if (error?.code === "ENOENT") return {};
+    } catch {
+      // A missing or unreadable catalog degrades to an empty one.
       return {};
     }
   }
@@ -265,8 +276,8 @@ export class SessionMemory {
     const filePath = this.sessionPath(sessionId);
     try {
       fs.unlinkSync(filePath);
-    } catch (error: any) {
-      if (error.code !== "ENOENT") throw error;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
     const catalog = await this.readCatalog();
     if (catalog[sessionId]) {
@@ -489,9 +500,9 @@ export class SessionMemory {
       }
 
       return data as SessionData;
-    } catch (error: any) {
+    } catch (error) {
       // Missing file is expected (first save / new session) — not an error.
-      if (error.code === "ENOENT") return null;
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
       // A corrupt or partially-written session file should not crash the
       // caller (e.g. a save that re-reads to preserve createdAt). Treat it as
       // "no existing session" so a fresh one is written instead of throwing.

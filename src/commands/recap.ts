@@ -13,7 +13,7 @@ import type { CommandResult, SlashCommand } from "./types.js";
 export const recapCommand: SlashCommand = {
   name: "recap",
   description: "Summarize what was done this session",
-  run: (_args, ctx): CommandResult | void => {
+  run: (_args, ctx): CommandResult | undefined => {
     const changes = listChanges(ctx.sessionId);
     const changedLines =
       changes.length > 0

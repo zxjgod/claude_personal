@@ -13,7 +13,7 @@ import type { SlashCommand } from "./types.js";
 export const outputStyleCommand: SlashCommand = {
   name: "output-style",
   description: "List or switch the active output style",
-  run: (args, ctx) => {
+  run: (args, ctx): undefined => {
     const styles = listOutputStyles();
     const active = ctx.outputStyle?.value ?? "default";
     const target = args.trim().toLowerCase();

@@ -6,12 +6,32 @@
 // and avoids printing secrets or noisy response metadata.
 // ============================================================
 
+/**
+ * Probe a (possibly nested) field off an unknown thrown value. Provider SDK
+ * errors bury status/type/message at varying depths, so reads are guarded:
+ * any non-object step yields undefined instead of throwing.
+ */
+function probeField(value: unknown, ...path: string[]): unknown {
+  let current: unknown = value;
+  for (const key of path) {
+    if (current === null || typeof current !== "object") return undefined;
+    current = (current as Record<string, unknown>)[key];
+  }
+  return current;
+}
+
 export function formatCliError(error: unknown): string {
-  const anyErr = error as any;
-  const status = anyErr?.status;
-  const type = anyErr?.type || anyErr?.error?.type || anyErr?.error?.error?.type;
-  const message =
-    anyErr?.error?.message || anyErr?.error?.error?.message || anyErr?.message || String(error);
+  const status = probeField(error, "status");
+  const type =
+    probeField(error, "type") ||
+    probeField(error, "error", "type") ||
+    probeField(error, "error", "error", "type");
+  const message = String(
+    probeField(error, "error", "message") ||
+      probeField(error, "error", "error", "message") ||
+      probeField(error, "message") ||
+      String(error),
+  );
 
   if (status === 401 || status === 403) {
     return `Authentication/permission error (${status}). Check LLM_API_KEY, provider, base URL, and account access. ${message}`;

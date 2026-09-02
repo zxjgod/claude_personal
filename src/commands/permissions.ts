@@ -5,7 +5,7 @@ import type { SlashCommand } from "./types.js";
 export const permissionsCommand: SlashCommand = {
   name: "permissions",
   description: "Show or clear always-allow permission memory",
-  run: (args, ctx) => {
+  run: (args, ctx): undefined => {
     if (!ctx.permissions) {
       console.log(chalk.yellow("  Permission memory is not available."));
       return;

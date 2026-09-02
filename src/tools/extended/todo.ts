@@ -27,7 +27,6 @@ const TodoSchema = z.strictObject({
     .array(TodoItemSchema)
     .describe("The COMPLETE todo list. Items not included will be removed."),
 });
-type TodoInput = z.infer<typeof TodoSchema>;
 
 // Module-level session storage
 const sessionTodos: Map<string, TodoItem[]> = new Map();

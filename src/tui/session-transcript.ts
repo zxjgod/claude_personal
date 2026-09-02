@@ -146,8 +146,8 @@ export class SessionTranscript {
     let raw: string;
     try {
       raw = fs.readFileSync(this.filePath(sessionId), "utf-8");
-    } catch (error: any) {
-      if (error.code === "ENOENT") return [];
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
       throw error;
     }
 

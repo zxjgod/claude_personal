@@ -12,7 +12,7 @@ import type { SlashCommand } from "./types.js";
 export const branchCommand: SlashCommand = {
   name: "branch",
   description: "Fork the conversation into a new session at this point",
-  run: async (_args, ctx) => {
+  run: async (_args, ctx): Promise<undefined> => {
     if (!ctx.persistence) {
       console.log(chalk.yellow("  Session persistence is not available; cannot branch."));
       return;

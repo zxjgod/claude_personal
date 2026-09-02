@@ -1,7 +1,7 @@
 // ============================================================
 // Integration tests: breadth tools end-to-end (M21.1)
 // ============================================================
-// The unit suite (tools-m9.test.ts) checks each tool in isolation. This suite
+// The unit suite (tools-orchestration.test.ts) checks each tool in isolation. This suite
 // drives MULTI-STEP, real-resource flows the way the agent loop would:
 //   - Worktree: enter → mutate → commit inside the worktree → exit keep/remove,
 //     proving real git isolation (the main tree never sees the worktree's
@@ -12,7 +12,7 @@
 //     Sleep enqueues a one-shot job the scheduler can later fire.
 //
 // Every git-dependent test no-ops when git is unavailable (CI images all have
-// it, but local Windows boxes may not), mirroring tools-m9.test.ts.
+// it, but local Windows boxes may not), mirroring tools-orchestration.test.ts.
 // ============================================================
 
 import { execFileSync } from "node:child_process";
@@ -32,7 +32,7 @@ import {
   ScheduleCronTool,
   SkillTool,
   SleepTool,
-} from "../tools/m8/m9.js";
+} from "../tools/breadth/orchestration.js";
 import type { ToolContext } from "../types.js";
 
 const SESSION = "sess-int-m21";

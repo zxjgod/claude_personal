@@ -132,13 +132,14 @@ export const GrepTool: Tool = buildTool({
     // Prefer ripgrep (fast, gitignore-aware); fall back to a Node.js scan.
     try {
       return await runRipgrep(input, searchDir, context.abortSignal);
-    } catch (error: any) {
+    } catch (error) {
+      const execError = error as Record<string, unknown>;
       // Interrupt: ripgrep subprocess was killed. Do not fall back.
-      if (error.name === "AbortError" || context.abortSignal?.aborted) {
+      if (execError.name === "AbortError" || context.abortSignal?.aborted) {
         return { content: "Search aborted.", metadata: { aborted: true } };
       }
       // rg exit code 1 with empty stdout means "no matches" (not an error).
-      if (error.code === 1 && error.stdout === "") {
+      if (execError.code === 1 && execError.stdout === "") {
         return { content: "No matches found.", metadata: { linesRead: 0, summary: "No matches" } };
       }
       // rg missing (ENOENT), invalid regex, or any other error → Node.js fallback.
@@ -311,11 +312,12 @@ async function runNodeFallback(
         if (onlyRegex) {
           // -o: emit each matching substring (context lines are not emitted with
           // -o; they would duplicate the match on the same line).
-          let m: RegExpExecArray | null;
-          while ((m = onlyRegex.exec(line)) !== null) {
+          let m = onlyRegex.exec(line);
+          while (m !== null) {
             results.push(showLineNum ? `${relPath}:${i + 1}:${m[0]}` : m[0]);
             if (m.index === onlyRegex.lastIndex) onlyRegex.lastIndex++;
             if (results.length >= headLimit) break;
+            m = onlyRegex.exec(line);
           }
         } else {
           // content mode: emit match lines with optional context

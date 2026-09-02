@@ -23,7 +23,6 @@ const ReadSchema = z.strictObject({
     .describe("Line number to start reading from (1-based)"),
   limit: z.number().int().min(1).optional().describe("Maximum number of lines to read"),
 });
-type ReadInput = z.infer<typeof ReadSchema>;
 
 export const ReadTool: Tool = buildTool({
   name: "read",
@@ -168,8 +167,9 @@ export const ReadTool: Tool = buildTool({
           summary: lines.length === 1 ? "Read 1 line" : `Read ${lines.length} lines`,
         },
       };
-    } catch (error: any) {
-      if (error.code === "ENOENT") {
+    } catch (error) {
+      const errno = error as NodeJS.ErrnoException;
+      if (errno.code === "ENOENT") {
         return {
           content: "",
           error:
@@ -179,7 +179,7 @@ export const ReadTool: Tool = buildTool({
             ),
         };
       }
-      if (error.code === "EACCES") {
+      if (errno.code === "EACCES") {
         return {
           content: "",
           error:
@@ -187,7 +187,7 @@ export const ReadTool: Tool = buildTool({
             chalk.gray("   Hint: check the file permissions"),
         };
       }
-      if (error.code === "EISDIR") {
+      if (errno.code === "EISDIR") {
         return {
           content: "",
           error:
@@ -197,7 +197,7 @@ export const ReadTool: Tool = buildTool({
       }
       return {
         content: "",
-        error: `Error reading file: ${error.message}`,
+        error: `Error reading file: ${errno.message}`,
       };
     }
   },

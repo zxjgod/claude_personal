@@ -88,7 +88,7 @@ class DesignSystemAPI {
   /**
    * List files in a project
    */
-  async listFiles(projectId: string): Promise<DesignFile[]> {
+  async listFiles(_projectId: string): Promise<DesignFile[]> {
     // Mock implementation
     return [];
   }
@@ -96,7 +96,7 @@ class DesignSystemAPI {
   /**
    * Read a file from the project
    */
-  async getFile(projectId: string, path: string): Promise<string | null> {
+  async getFile(_projectId: string, _path: string): Promise<string | null> {
     // Mock implementation - would fetch actual file content
     return null;
   }
@@ -125,8 +125,8 @@ class DesignSystemAPI {
    * Write files to project (requires plan)
    */
   async writeFiles(
-    projectId: string,
-    files: Array<{ path: string; data: string; mimeType?: string }>,
+    _projectId: string,
+    _files: Array<{ path: string; data: string; mimeType?: string }>,
   ): Promise<void> {
     // Mock implementation - would upload files to design system
     // In real implementation, this would:
@@ -138,21 +138,21 @@ class DesignSystemAPI {
   /**
    * Delete files from project (requires plan)
    */
-  async deleteFiles(projectId: string, paths: string[]): Promise<void> {
+  async deleteFiles(_projectId: string, _paths: string[]): Promise<void> {
     // Mock implementation
   }
 
   /**
    * Register assets for Design System pane
    */
-  async registerAssets(projectId: string, assets: DesignAsset[]): Promise<void> {
+  async registerAssets(_projectId: string, _assets: DesignAsset[]): Promise<void> {
     // Mock implementation
   }
 
   /**
    * Unregister assets from Design System pane
    */
-  async unregisterAssets(projectId: string, paths: string[]): Promise<void> {
+  async unregisterAssets(_projectId: string, _paths: string[]): Promise<void> {
     // Mock implementation
   }
 }
@@ -477,10 +477,11 @@ export const DesignSyncTool: Tool = buildTool({
         default:
           return { content: "", error: `Unknown method: ${method}` };
       }
-    } catch (error: any) {
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
       return {
         content: "",
-        error: `DesignSync ${method} failed: ${error?.message ?? error}`,
+        error: `DesignSync ${method} failed: ${message}`,
       };
     }
   },
