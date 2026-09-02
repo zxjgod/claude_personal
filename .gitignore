@@ -18,9 +18,10 @@ Desktop.ini
 # Test coverage
 coverage/
 
-# Local session state (runtime artifacts, not source)
-.claude/sessions/
-.claude/worktrees/
+# Local session state (runtime artifacts, not source) — at any depth, so
+# nested sandboxes (e.g. sandbox/.claude/) are covered too
+**/.claude/sessions/
+**/.claude/worktrees/
 
 # Spilled tool results (M30) — runtime artifacts written when output exceeds the cap
 .ccr/
@@ -33,5 +34,4 @@ reference/
 *.pdf
 
 claude-code-参考标准/
-参考文档/.claude/worktrees/
 tsc-output.txt
