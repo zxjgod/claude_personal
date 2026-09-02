@@ -340,10 +340,12 @@ function runInBackground(input: BashInput, context: ToolContext, cwd: string): T
     // the job output instead of leaving it empty with a bare exit code.
     clearTimer();
     job.stderr += `spawn failed: ${err.message}\n`;
-    settleJob(job, "done", -1);
+    settleJob(job, "error", -1);
   });
   child.on("close", (code) => {
     clearTimer();
+    // A spawn error may be followed by close; settleJob is idempotent and
+    // preserves the first, more useful error status.
     settleJob(job, "done", code);
   });
 

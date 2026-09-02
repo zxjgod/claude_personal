@@ -5,9 +5,11 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { agentLoop } from "../agent-loop.js";
+import { createJob, settleJob } from "../tools/job-store.js";
+import { drainNotifications, resetNotifications } from "../tools/notifications.js";
 import { buildTool } from "../tools/registry.js";
 import { SPILL_DIR } from "../tools/truncation.js";
 import type { Message, ModelCaller, ModelConfig, StreamEvent, Tool } from "../types.js";
@@ -1843,5 +1845,230 @@ describe("agentLoop — tool-batch summary (M36)", () => {
       }),
     );
     expect(terminal.reason).toBe("completed");
+  });
+});
+
+// ============================================================
+// M41: background completion notifications
+// ============================================================
+
+describe("agentLoop — background notifications (M41)", () => {
+  it("delivers background completion notifications into the next model call instead of ending the turn", async () => {
+    const seenCalls: string[][] = [];
+    const caller: ModelCaller = async function* (msgs) {
+      seenCalls.push(
+        msgs.flatMap((m) => {
+          if (m.role === "user")
+            return m.content.filter((b) => b.type === "text").map((b) => b.text);
+          if (m.role === "assistant") return [m.content ?? ""];
+          return [];
+        }),
+      );
+      yield { type: "text_delta", delta: "ok" };
+      yield { type: "done", usage: { input_tokens: 1, output_tokens: 1 }, finish_reason: "stop" };
+    };
+    const msgs = messages("start");
+    let drained = false;
+    const { events, terminal } = await drain(
+      agentLoop(msgs, [], caller, testConfig, {
+        systemPrompt: "s",
+        maxTurns: 5,
+        speculation: false,
+        // One pending notification, then empty (drained).
+        drainNotifications: () => {
+          if (drained) return [];
+          drained = true;
+          return ["<task_notification>\n<task_id>job-1</task_id>\n</task_notification>"];
+        },
+      }),
+    );
+    // Call 2 exists (the notification extended the turn) and carries the XML block.
+    expect(seenCalls.length).toBe(2);
+    expect(seenCalls[1]?.some((t) => t.includes("<task_notification>"))).toBe(true);
+    // The notification landed in history as a user message.
+    const injected = msgs.find(
+      (m) => m.role === "user" && JSON.stringify(m.content).includes("<task_id>job-1</task_id>"),
+    );
+    expect(injected).toBeDefined();
+    expect(terminal.reason).toBe("completed");
+    expect(events.find((e) => e.type === "done").finishReason).toBe("end_turn");
+  });
+
+  it("caps notification continuations at MAX_NOTIFICATION_CONTINUATIONS and leaves the rest queued", async () => {
+    let callCount = 0;
+    const caller: ModelCaller = async function* () {
+      callCount++;
+      yield { type: "done", usage: { input_tokens: 1, output_tokens: 1 }, finish_reason: "stop" };
+    };
+    // A real queue, drained one notification at a time: 11 pending completions.
+    const queue = Array.from(
+      { length: 11 },
+      (_, i) => `<task_notification>n${i}</task_notification>`,
+    );
+    const { terminal } = await drain(
+      agentLoop(messages("start"), [], caller, testConfig, {
+        systemPrompt: "s",
+        maxTurns: 30,
+        speculation: false,
+        drainNotifications: () => queue.splice(0, 1),
+      }),
+    );
+    // 1 initial call + 10 capped notification continuations, then the loop ends.
+    expect(callCount).toBe(11);
+    expect(terminal.reason).toBe("completed");
+    // The 11th notification was NOT drained at the final end_turn — the budget
+    // check runs before draining, so it stays queued for the next user turn.
+    expect(queue).toHaveLength(1);
+  });
+
+  it("injects notifications at the tool-results boundary without consuming the continuation budget", async () => {
+    const echo: Tool = {
+      name: "echo",
+      description: "Echo",
+      promptDescription: "Echo",
+      inputSchema: { type: "object", properties: {}, required: [] },
+      isEnabled: () => true,
+      isReadOnly: () => true,
+      isConcurrencySafe: () => true,
+      call: async () => ({ content: "echoed" }),
+      formatResult: (r) => r.content,
+      checkPermissions: async () => ({ allowed: true }),
+    };
+    let callCount = 0;
+    const caller: ModelCaller = async function* () {
+      callCount++;
+      if (callCount === 1) {
+        yield { type: "tool_use", id: "c1", name: "echo", input: {} };
+        yield {
+          type: "done",
+          usage: { input_tokens: 1, output_tokens: 1 },
+          finish_reason: "tool_calls",
+        };
+        return;
+      }
+      yield { type: "done", usage: { input_tokens: 1, output_tokens: 1 }, finish_reason: "stop" };
+    };
+    // n0 lands while the tool runs (drained at the tool-results boundary);
+    // n1..n10 arrive one per subsequent end_turn.
+    const queue = Array.from(
+      { length: 11 },
+      (_, i) => `<task_notification>n${i}</task_notification>`,
+    );
+    const msgs = messages("start");
+    const { terminal } = await drain(
+      agentLoop(msgs, [echo], caller, testConfig, {
+        systemPrompt: "s",
+        maxTurns: 30,
+        speculation: false,
+        drainNotifications: () => queue.splice(0, 1),
+      }),
+    );
+    // 1 tool turn + 1 post-tool turn + 10 end_turn notification continuations.
+    // If the tool-boundary injection had consumed budget, only 9 end_turn
+    // continuations would fit → 11 calls instead of 12.
+    expect(callCount).toBe(12);
+    expect(queue).toHaveLength(0);
+    expect(terminal.reason).toBe("completed");
+    // n0 rode into history right alongside the tool results.
+    expect(
+      msgs.some(
+        (m) =>
+          m.role === "user" &&
+          JSON.stringify(m.content).includes("<task_notification>n0</task_notification>"),
+      ),
+    ).toBe(true);
+  });
+
+  it("resets the notification continuation budget when real queued user input is injected", async () => {
+    let callCount = 0;
+    const caller: ModelCaller = async function* () {
+      callCount++;
+      yield { type: "done", usage: { input_tokens: 1, output_tokens: 1 }, finish_reason: "stop" };
+    };
+    const notifications = Array.from(
+      { length: 5 },
+      (_, i) => `<task_notification>batch1-${i}</task_notification>`,
+    );
+    const userQueue = ["real follow-up"];
+    const msgs = messages("start");
+    const { terminal } = await drain(
+      agentLoop(msgs, [], caller, testConfig, {
+        systemPrompt: "s",
+        maxTurns: 40,
+        speculation: false,
+        drainNotifications: () => notifications.splice(0, 1),
+        drainQueuedInput: () => {
+          const queued = userQueue.splice(0, userQueue.length);
+          if (queued.length > 0) {
+            // Ten more background jobs settle while the loop works on the
+            // user's follow-up.
+            for (let i = 0; i < 10; i++)
+              notifications.push(`<task_notification>batch2-${i}</task_notification>`);
+          }
+          return queued;
+        },
+      }),
+    );
+    // 1 initial + 5 notification continuations + 1 user-input turn + 10 more
+    // notification continuations (the real user input reset the budget).
+    // Without the reset the second batch would stop after 5 → 12 calls.
+    expect(callCount).toBe(17);
+    expect(terminal.reason).toBe("completed");
+    expect(notifications).toHaveLength(0);
+    expect(
+      msgs.some((m) => m.role === "user" && JSON.stringify(m.content).includes("real follow-up")),
+    ).toBe(true);
+  });
+});
+
+describe("job-store — completion notifications (M41)", () => {
+  beforeEach(() => resetNotifications());
+
+  it("createJob threads sessionId and kind through to the job", () => {
+    const job = createJob("m41-sess-a", {
+      kind: "agent",
+      command: "summarize the repo",
+      description: "Repo summary",
+    });
+    expect(job.sessionId).toBe("m41-sess-a");
+    expect(job.kind).toBe("agent");
+    expect(job.status).toBe("running");
+  });
+
+  it("settleJob pushes a <task_notification> drainable by the owning session", () => {
+    const job = createJob("m41-sess-b", {
+      kind: "bash",
+      command: "npm test",
+      description: "run tests",
+    });
+    job.stdout = "all green";
+    settleJob(job, "done", 0);
+    const drained = drainNotifications("m41-sess-b");
+    expect(drained).toHaveLength(1);
+    expect(drained[0]).toContain("<task_notification>");
+    expect(drained[0]).toContain(`<task_id>${job.id}</task_id>`);
+    expect(drained[0]).toContain("<kind>bash</kind>");
+    expect(drained[0]).toContain("<status>done</status>");
+    expect(drained[0]).toContain("<summary>run tests</summary>");
+    expect(drained[0]).toContain("all green");
+    // Draining consumed the queue; other sessions never saw it.
+    expect(drainNotifications("m41-sess-b")).toEqual([]);
+    expect(drainNotifications("m41-sess-a")).toEqual([]);
+  });
+
+  it("caps the notification output tail at 500 chars and settles idempotently", () => {
+    const job = createJob("m41-sess-c", { kind: "bash", command: "noisy" });
+    job.stdout = "x".repeat(1000);
+    job.stderr = "E".repeat(100);
+    settleJob(job, "done", 0);
+    // Already terminal — a second settle is a no-op and must NOT re-notify.
+    settleJob(job, "killed", null);
+    const drained = drainNotifications("m41-sess-c");
+    expect(drained).toHaveLength(1);
+    const output = drained[0]?.match(/<output>\n([\s\S]*)\n<\/output>/)?.[1];
+    expect(output).toBeDefined();
+    // stdout+stderr joined, then cut to the last 500 characters.
+    expect(output?.length).toBeLessThanOrEqual(500);
+    expect(output).toContain("E".repeat(100));
   });
 });

@@ -2,16 +2,40 @@
 // Shared Cron Scheduling Logic
 // ============================================================
 // Extracted from breadth/orchestration.ts to allow reuse by both ScheduleCron and CronCreate/Delete/List.
+//
+// M41: this module is now the complete scheduling ENGINE, not just a registry:
+//   - cronMatches(): 5-field cron matching (star / list / range / step, with
+//     the standard DOM/DOW "both restricted → OR" semantics)
+//   - collectDueCronJobs(): the firing pass — minute-level dedup, one-shot
+//     removal, relative "+N seconds" delays (used by Sleep)
+//   - durable persistence: jobs marked durable round-trip through
+//     <root>/.claude/scheduled_tasks.json so they survive restarts
+// The CLI/TUI own the timer loop and the idle-delivery policy (jobs fire
+// only while the REPL is idle); see tools/extended/scheduler.ts.
 // ============================================================
+
+import * as fs from "node:fs";
+import * as path from "node:path";
 
 export interface ScheduledJob {
   id: string;
+  /**
+   * Either a 5-field cron expression (local time) or a relative delay
+   * "+<seconds>" (one-shot, used by the Sleep tool).
+   */
   cron: string;
   prompt: string;
   recurring: boolean;
   durable: boolean;
   createdAt: bigint;
+  /** Wall-clock ms at creation — anchors "+N" delays across restarts. */
+  createdAtMs: number;
+  /** Last minute (epoch minutes) this job fired; dedups within the minute. */
+  lastFiredMinute?: number;
 }
+
+/** Cap on live scheduled jobs — a runaway creator must not grow this forever. */
+export const MAX_SCHEDULED_JOBS = 50;
 
 const JOBS = new Map<string, ScheduledJob>();
 let jobCounter = 0;
@@ -23,12 +47,20 @@ function nextJobId(): string {
 }
 
 /**
- * Validate a 5-field cron expression minimally: 5 whitespace-separated
- * fields, each a recognized pattern (number, star, star-slash-n, range a-b,
- * list a,b). Returns null if valid, an error string if not.
+ * Validate a schedule expression: a 5-field cron expression (min hour dom mon
+ * dow; each field a number, star, star-slash-n, range a-b, or list a,b) or a
+ * relative delay "+<seconds>". Returns null if valid, an error string if not.
  */
 export function validateCron(cron: string): string | null {
-  const fields = cron.trim().split(/\s+/);
+  const trimmed = cron.trim();
+  if (trimmed.startsWith("+")) {
+    const secs = Number(trimmed.slice(1));
+    if (!Number.isInteger(secs) || secs <= 0) {
+      return `"${trimmed}" is not a positive integer second count`;
+    }
+    return null;
+  }
+  const fields = trimmed.split(/\s+/);
   if (fields.length !== 5) {
     return `Cron must have exactly 5 fields (min hour dom mon dow), got ${fields.length}`;
   }
@@ -70,13 +102,71 @@ function validateCronField(field: string, min: number, max: number): string | nu
   return null;
 }
 
-/** Register a new scheduled job */
+// --- cron matching -----------------------------------------------------------
+
+/** Parse one field into the set of matching values, or null when malformed. */
+function expandField(field: string, min: number, max: number): Set<number> | null {
+  const out = new Set<number>();
+  for (const part of field.split(",")) {
+    const stepped = part.split("/");
+    const base = stepped[0]!;
+    const step = stepped[1] !== undefined ? parseInt(stepped[1], 10) : 1;
+    if (!Number.isInteger(step) || step < 1) return null;
+    let lo = min;
+    let hi = max;
+    if (base !== "*") {
+      const m = base.match(/^(\d+)(?:-(\d+))?$/);
+      if (!m) return null;
+      lo = parseInt(m[1]!, 10);
+      hi = m[2] !== undefined ? parseInt(m[2], 10) : lo;
+      if (lo < min || hi > max || hi < lo) return null;
+    }
+    for (let v = lo; v <= hi; v += step) out.add(v);
+  }
+  return out;
+}
+
+/**
+ * Does `date` (local time) match a 5-field cron expression? Standard cron
+ * semantics: DOM and DOW are AND-ed unless BOTH are restricted (non-`*`),
+ * in which case a match on EITHER fires the job.
+ */
+export function cronMatches(date: Date, cron: string): boolean {
+  const fields = cron.trim().split(/\s+/);
+  if (fields.length !== 5) return false;
+  const [minF, hourF, domF, monF, dowF] = fields as [string, string, string, string, string];
+
+  const minutes = expandField(minF, 0, 59);
+  const hours = expandField(hourF, 0, 23);
+  const doms = expandField(domF, 1, 31);
+  const months = expandField(monF, 1, 12);
+  // 0 and 7 both mean Sunday — normalize into 0-6.
+  const dows = expandField(dowF, 0, 7);
+  if (!minutes || !hours || !doms || !months || !dows) return false;
+  if (dows.has(7)) dows.add(0);
+
+  if (!minutes.has(date.getMinutes())) return false;
+  if (!hours.has(date.getHours())) return false;
+  if (!months.has(date.getMonth() + 1)) return false;
+
+  const domMatch = doms.has(date.getDate());
+  const domRestricted = domF !== "*";
+  const dowMatch = dows.has(date.getDay());
+  const dowRestricted = dowF !== "*";
+  if (domRestricted && dowRestricted) return domMatch || dowMatch;
+  return domMatch && dowMatch;
+}
+
+// --- registry ----------------------------------------------------------------
+
+/** Register a new scheduled job. Returns null when the job cap is reached. */
 export function registerScheduledJob(input: {
   cron: string;
   prompt: string;
   recurring: boolean;
   durable: boolean;
-}): ScheduledJob {
+}): ScheduledJob | null {
+  if (JOBS.size >= MAX_SCHEDULED_JOBS) return null;
   const job: ScheduledJob = {
     id: nextJobId(),
     cron: input.cron.trim(),
@@ -84,6 +174,7 @@ export function registerScheduledJob(input: {
     recurring: input.recurring,
     durable: input.durable,
     createdAt: process.hrtime.bigint(),
+    createdAtMs: Date.now(),
   };
   JOBS.set(job.id, job);
   return job;
@@ -102,6 +193,119 @@ export function getScheduledJob(id: string): ScheduledJob | undefined {
 /** Remove a job. Returns true if it existed. */
 export function removeScheduledJob(id: string): boolean {
   return JOBS.delete(id);
+}
+
+/**
+ * The firing pass (M41): mark and return every job due at `now`. Cron jobs
+ * fire at most once per matched minute (minute-level dedup); relative "+N"
+ * jobs fire once when the delay elapsed; one-shots are removed after firing.
+ * The caller owns delivery (inject as user input while the REPL is idle).
+ */
+export function collectDueCronJobs(now: Date): Array<{ job: ScheduledJob; prompt: string }> {
+  const due: Array<{ job: ScheduledJob; prompt: string }> = [];
+  const minuteMarker = Math.floor(now.getTime() / 60_000);
+  for (const job of [...JOBS.values()]) {
+    if (job.cron.startsWith("+")) {
+      const delaySec = Number(job.cron.slice(1));
+      const elapsedSec = (now.getTime() - job.createdAtMs) / 1000;
+      if (elapsedSec >= delaySec) {
+        due.push({ job, prompt: `[Sleep elapsed (${job.cron}s)] ${job.prompt}` });
+        JOBS.delete(job.id); // relative delays are always one-shot
+      }
+      continue;
+    }
+    if (job.lastFiredMinute === minuteMarker) continue;
+    if (cronMatches(now, job.cron)) {
+      job.lastFiredMinute = minuteMarker;
+      due.push({ job, prompt: `[Scheduled job ${job.id}] ${job.prompt}` });
+      if (!job.recurring) JOBS.delete(job.id);
+    }
+  }
+  return due;
+}
+
+// --- durable persistence -----------------------------------------------------
+
+interface DurableJobRecord {
+  id: string;
+  cron: string;
+  prompt: string;
+  recurring: boolean;
+  createdAtMs: number;
+}
+
+function durablePath(root: string): string {
+  return path.join(root, ".claude", "scheduled_tasks.json");
+}
+
+/**
+ * Persist all durable jobs to <root>/.claude/scheduled_tasks.json. Best-effort:
+ * a write failure is swallowed (the in-memory registry stays authoritative;
+ * durability is a convenience, not a guarantee).
+ */
+export function persistDurableJobs(root: string): void {
+  try {
+    const jobs: DurableJobRecord[] = [...JOBS.values()]
+      .filter((j) => j.durable)
+      .map((j) => ({
+        id: j.id,
+        cron: j.cron,
+        prompt: j.prompt,
+        recurring: j.recurring,
+        createdAtMs: j.createdAtMs,
+      }));
+    const dir = path.dirname(durablePath(root));
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(durablePath(root), `${JSON.stringify({ version: 1, jobs }, null, 2)}\n`);
+  } catch {
+    /* best-effort */
+  }
+}
+
+/**
+ * Load durable jobs saved by a previous run. Invalid records (bad cron
+ * expression, malformed entries) are skipped rather than aborting the load;
+ * ids are preserved so CronDelete keeps working across restarts.
+ */
+export function loadDurableJobs(root: string): { loaded: number; skipped: number } {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(durablePath(root), "utf8");
+  } catch {
+    return { loaded: 0, skipped: 0 };
+  }
+  let parsed: { jobs?: DurableJobRecord[] };
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { loaded: 0, skipped: 0 };
+  }
+  let loaded = 0;
+  let skipped = 0;
+  for (const record of parsed.jobs ?? []) {
+    if (
+      typeof record?.id !== "string" ||
+      typeof record?.cron !== "string" ||
+      typeof record?.prompt !== "string" ||
+      validateCron(record.cron) !== null ||
+      JOBS.has(record.id) ||
+      JOBS.size >= MAX_SCHEDULED_JOBS
+    ) {
+      skipped++;
+      continue;
+    }
+    JOBS.set(record.id, {
+      id: record.id,
+      cron: record.cron.trim(),
+      prompt: record.prompt,
+      recurring: record.recurring !== false,
+      durable: true,
+      createdAt: process.hrtime.bigint(),
+      createdAtMs: typeof record.createdAtMs === "number" ? record.createdAtMs : Date.now(),
+    });
+    loaded++;
+  }
+  return { loaded, skipped };
 }
 
 /** Test/util: clear all scheduled jobs. */

@@ -211,3 +211,40 @@ describe("team_delete + parent-signal cascade (M35)", () => {
     expect(res.output).toBe("");
   });
 });
+
+describe("runAgentTurn — notifyResults (M41)", () => {
+  it("pushes a task notification when the turn was requested as a background handoff", async () => {
+    const { drainNotifications, resetNotifications } = await import("../tools/notifications.js");
+    resetNotifications("team-sess");
+    createAgents("team-sess", [{ role: "general", name: "w" }]);
+    const r = await runAgentTurn({ ...runContext(), notifyResults: true }, "w", "do something");
+    expect(r.output).toBe("agent reply");
+    const drained = drainNotifications("team-sess");
+    expect(drained).toHaveLength(1);
+    expect(drained[0]).toContain("<task_id>team-w</task_id>");
+    expect(drained[0]).toContain("<kind>team</kind>");
+    expect(drained[0]).toContain("<status>done</status>");
+    expect(drained[0]).toContain("agent reply");
+  });
+
+  it("pushes nothing for a synchronous turn (notifyResults off)", async () => {
+    const { drainNotifications, resetNotifications } = await import("../tools/notifications.js");
+    resetNotifications("team-sess");
+    createAgents("team-sess", [{ role: "general", name: "w" }]);
+    await runAgentTurn(runContext(), "w", "do something");
+    expect(drainNotifications("team-sess")).toEqual([]);
+  });
+
+  it("background send_message reports its completion through the notification queue", async () => {
+    const { drainNotifications, resetNotifications } = await import("../tools/notifications.js");
+    resetNotifications("team-sess");
+    await TeamCreateTool.call({ agents: [{ role: "general", name: "bg" }] }, ctx());
+    await SendMessageTool.call({ agent_id: "bg", message: "go", background: true }, ctx());
+    // Let the fire-and-forget turn settle.
+    await new Promise((res) => setTimeout(res, 20));
+    const drained = drainNotifications("team-sess");
+    expect(drained).toHaveLength(1);
+    expect(drained[0]).toContain("<task_id>team-bg</task_id>");
+    expect(drained[0]).toContain("<status>done</status>");
+  });
+});

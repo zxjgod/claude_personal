@@ -9,11 +9,18 @@
 // there is nothing meaningful to persist across a process restart.
 // ============================================================
 
-export type JobStatus = "running" | "done" | "killed";
+import { pushTaskNotification } from "./notifications.js";
+
+export type JobStatus = "running" | "done" | "killed" | "error";
+
+/** How much of a finished job's output rides along in its notification. */
+const NOTIFICATION_OUTPUT_TAIL = 500;
 
 export interface Job {
   id: string;
-  kind: "bash";
+  /** Owning session — jobs are session-scoped and notifications route by it. */
+  sessionId: string;
+  kind: "bash" | "agent";
   command: string;
   description?: string;
   status: JobStatus;
@@ -66,7 +73,7 @@ export function nextJobId(sessionId: string): string {
 }
 
 export interface NewJob {
-  kind: "bash";
+  kind: "bash" | "agent";
   command: string;
   description?: string;
 }
@@ -79,6 +86,7 @@ export function createJob(sessionId: string, entry: NewJob): Job {
   });
   const job: Job = {
     id: nextJobId(sessionId),
+    sessionId,
     kind: entry.kind,
     command: entry.command,
     description: entry.description,
@@ -124,6 +132,20 @@ export function settleJob(job: Job, status: JobStatus, exitCode: number | null):
   job.exitCode = exitCode;
   job.endedAt = Date.now();
   job.resolveSettled();
+  // M41: notify the owning session's loop that the background work settled —
+  // the model learns the completion without polling job_output.
+  const tail = [job.stdout, job.stderr]
+    .filter(Boolean)
+    .join("\n")
+    .slice(-NOTIFICATION_OUTPUT_TAIL)
+    .trim();
+  pushTaskNotification(job.sessionId, {
+    id: job.id,
+    kind: job.kind,
+    status,
+    summary: job.description || job.command.slice(0, 80),
+    outputTail: tail || undefined,
+  });
 }
 
 /**

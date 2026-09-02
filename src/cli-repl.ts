@@ -16,6 +16,8 @@ import type { HookRegistry } from "./hooks.js";
 import type { MCPManager } from "./mcp/index.js";
 import { normalizeFinishReason } from "./session-memory.js";
 import { formatSpeculationLine } from "./speculation.js";
+import { startScheduler } from "./tools/extended/scheduler.js";
+import { drainNotifications, formatNotificationLine } from "./tools/notifications.js";
 import { expandFileRefs } from "./tools/utils/file-refs.js";
 import {
   renderSubAgentActivity,
@@ -60,6 +62,10 @@ export interface ReplDeps {
   askUserQuestion: (q: UserQuestion) => Promise<string[] | null>;
   readInput: () => Promise<string | null>;
   closeInput: () => void;
+  /** Scheduler delivery: inject a synthetic user line (idle REPL only). */
+  injectInput: (line: string) => void;
+  /** M41 race guard: a pending permission/question prompt counts as busy. */
+  getPendingPromptCount: () => number;
   makeCommandContext: () => CommandContext;
   isInteractive: boolean;
   quiet: boolean;
@@ -84,6 +90,8 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
     askUserQuestion,
     readInput,
     closeInput,
+    injectInput,
+    getPendingPromptCount,
     makeCommandContext,
     isInteractive,
     quiet,
@@ -117,6 +125,11 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
   async function cleanup(): Promise<void> {
     if (cleanedUp) return;
     cleanedUp = true;
+    try {
+      stopScheduler();
+    } catch {
+      /* scheduler already stopped */
+    }
     try {
       closeInput();
     } catch {
@@ -186,6 +199,21 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
   };
   process.on("uncaughtException", onUncaughtException);
 
+  // M41: the scheduler loop — fires due cron jobs / sleeps / wakeups as
+  // synthetic user input while the REPL is idle, and surfaces background
+  // completions to the user. Deliveries deferred mid-turn are parked inside
+  // the scheduler and delivered at the busy→idle flip.
+  const stopScheduler = startScheduler({
+    sessionId: session.id,
+    workspaceRoot: getWorkspaceRoot,
+    isBusy: () => turnInProgress || getPendingPromptCount() > 0,
+    deliver: (prompt) => injectInput(prompt),
+    displayNotifications: (items) => {
+      for (const item of items) console.log(chalk.dim(`  ⎿ ${formatNotificationLine(item)}`));
+    },
+    displayParked: (p) => console.log(chalk.dim(`  ⏰ ${p.label} —— 当前回合结束后送达`)),
+  });
+
   try {
     // eslint-disable-next-line no-constant-condition
     while (true) {
@@ -216,8 +244,13 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
       const { attachments, notes } = expandFileRefs(userInput, getWorkspaceRoot());
       for (const note of notes) console.log(chalk.gray(note));
 
-      const contentText =
-        attachments.length > 0 ? `${userInput}\n\n${attachments.join("\n\n")}` : userInput;
+      // M41: background completions that arrived while the REPL was idle ride
+      // along with the new user message — the model sees them without having
+      // polled, and they don't start a turn on their own.
+      const pendingNotes = drainNotifications(session.id);
+      const contentText = [pendingNotes.join("\n\n"), userInput, ...attachments]
+        .filter(Boolean)
+        .join("\n\n");
 
       // Add user message
       messages.push({
@@ -297,6 +330,9 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
         // M36: background memory/skill prefetch + (opt-in) tool-batch digest.
         prefetch,
         summarizeToolBatch,
+        // M41: mid-turn background completions are injected at the
+        // tool_results boundary (budget-free) and gate end_turn continuations.
+        drainNotifications: () => drainNotifications(session.id),
       });
 
       let turnInputTokens = 0;

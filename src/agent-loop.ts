@@ -52,6 +52,14 @@ import { isInterrupt } from "./utils/cancellation.js";
 const defaultAskUser: AskUserFn = async () => true;
 
 /**
+ * M41: consecutive turn extensions driven only by background completion
+ * notifications. 10 completions in a row without any user input is already
+ * pathological (each costs a full model call); beyond that the notifications
+ * stay queued and are delivered with the next user turn instead.
+ */
+const MAX_NOTIFICATION_CONTINUATIONS = 10;
+
+/**
  * Loop-carried state (kernel §3/§9). A single struct rewritten as a whole at
  * each "continue" point rather than nine scattered mutable locals.
  */
@@ -80,6 +88,12 @@ interface LoopState {
    * True once a stop hook has injected a blocking error this turn-sequence.
    */
   stopHookActive: boolean;
+  /**
+   * M41: consecutive turn continuations driven solely by background
+   * completion notifications. Capped so a background job that (directly or
+   * transitively) restarts itself cannot bounce the loop forever.
+   */
+  notificationContinuations: number;
 }
 
 // --- Agent Loop (Async Generator) ---
@@ -105,6 +119,7 @@ export async function* agentLoop(
     speculation = true,
     turnOutputBudget = 0,
     drainQueuedInput,
+    drainNotifications,
   } = options;
 
   // Keep the caller-owned array identity stable. The CLI autosaves this array
@@ -159,6 +174,7 @@ export async function* agentLoop(
     transition: { reason: "start" },
     budget: createTokenBudgetState(),
     stopHookActive: false,
+    notificationContinuations: 0,
     fallbackIndex: 0,
   };
 
@@ -488,8 +504,30 @@ export async function* agentLoop(
         continue;
       }
 
+      // M41: deliver pending background completion notifications before the
+      // turn ends. A notification-driven continuation extends the turn (the
+      // model can act on the completion right away) but is budgeted — a
+      // background job that keeps restarting itself must not bounce the loop
+      // indefinitely. A real queued user message resets the budget.
+      if (
+        injectNotifications(messages, drainNotifications, state, MAX_NOTIFICATION_CONTINUATIONS)
+      ) {
+        state = {
+          ...state,
+          notificationContinuations: state.notificationContinuations + 1,
+          turnCount: turnCount + 1,
+          transition: { reason: "model_retry" },
+        };
+        continue;
+      }
+
       if (injectQueuedInput(messages, drainQueuedInput)) {
-        state = { ...state, turnCount: turnCount + 1, transition: { reason: "model_retry" } };
+        state = {
+          ...state,
+          notificationContinuations: 0,
+          turnCount: turnCount + 1,
+          transition: { reason: "model_retry" },
+        };
         continue;
       }
 
@@ -607,6 +645,11 @@ export async function* agentLoop(
 
     yield { type: "tool_results", results: toolResults };
     injectQueuedInput(messages, drainQueuedInput);
+    // M41: merge any background completions that landed while the tools ran
+    // into history now — the next model call sees them alongside the tool
+    // results (mirrors the reference: notification rides the next user-side
+    // message, so the model never polls for what already finished).
+    injectNotifications(messages, drainNotifications, state, Number.POSITIVE_INFINITY);
 
     state = { ...state, turnCount: turnCount + 1, transition: { reason: "tools_done" } };
   }
@@ -647,5 +690,29 @@ function injectQueuedInput(messages: Message[], drain?: () => string[]): boolean
   for (const text of queued) {
     messages.push({ role: "user", content: [{ type: "text", text }] });
   }
+  return true;
+}
+
+/**
+ * Inject pending background completion notifications as one user message
+ * (M41). Returns true when a notification was injected (the caller should
+ * continue the turn); false when nothing is pending or the continuation
+ * budget `maxContinuations` is exhausted (notifications stay queued and are
+ * delivered with the next user turn instead).
+ */
+function injectNotifications(
+  messages: Message[],
+  drain: (() => string[]) | undefined,
+  state: LoopState,
+  maxContinuations: number,
+): boolean {
+  if (!drain) return false;
+  if (state.notificationContinuations >= maxContinuations) return false;
+  const notifications = drain();
+  if (notifications.length === 0) return false;
+  messages.push({
+    role: "user",
+    content: notifications.map((text) => ({ type: "text", text }) as const),
+  });
   return true;
 }

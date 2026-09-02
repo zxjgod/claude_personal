@@ -23,7 +23,7 @@ import {
 import type { Tool, ToolContext, ToolResult } from "../../types.js";
 import { buildTool } from "../registry.js";
 
-function runCtx(context: ToolContext): TeamRunContext | { error: string } {
+function runCtx(context: ToolContext, notifyResults = false): TeamRunContext | { error: string } {
   if (!context.modelConfig) {
     return { error: "Team tools require modelConfig in context (CLI must provide it)." };
   }
@@ -38,6 +38,8 @@ function runCtx(context: ToolContext): TeamRunContext | { error: string } {
     askUser: context.askUser,
     // M35: thread the parent's signal so a parent abort cascades into agents.
     parentSignal: context.abortSignal,
+    // M41: background turns push their completion as a task notification.
+    notifyResults,
   };
 }
 
@@ -126,7 +128,7 @@ export const SendMessageTool: Tool = buildTool({
       return { content: "", error: `Agent "${agentId}" is busy (running). Wait or use task_get.` };
     }
 
-    const ctx = runCtx(context);
+    const ctx = runCtx(context, input.background === true);
     if ("error" in ctx) return { content: "", error: ctx.error };
 
     if (input.background === true) {

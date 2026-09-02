@@ -14,6 +14,14 @@ export interface CliInputReader {
   askQuestion(prompt: string): Promise<string | null>;
   readInput(): Promise<string | null>;
   isClosed(): boolean;
+  /**
+   * Inject a line as if the user had typed it (scheduler delivery). When the
+   * REPL is idle the pending readInput waiter resolves with the line; when
+   * nobody is waiting it is unshifted so the next readInput returns it first.
+   * Callers must NOT inject while a permission/question prompt is pending —
+   * that would answer the prompt with the injected line.
+   */
+  inject(line: string): void;
 }
 
 export function createCliInputReader(rl: readline.Interface): CliInputReader {
@@ -75,5 +83,10 @@ export function createCliInputReader(rl: readline.Interface): CliInputReader {
     askQuestion,
     readInput,
     isClosed: () => stdinClosed,
+    inject(line: string): void {
+      if (!line) return;
+      if (waiters.length > 0) flushWaiter(line);
+      else queue.unshift(line);
+    },
   };
 }

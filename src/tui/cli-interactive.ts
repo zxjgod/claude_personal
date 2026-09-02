@@ -28,6 +28,13 @@ export interface RawInputReader {
   askQuestion(prompt: string): Promise<string | null>;
   isClosed(): boolean;
   close(): void;
+  /**
+   * Inject a line as if the user had committed it at the input box
+   * (scheduler delivery). Only call while the REPL is idle — mid-turn the
+   * reader may be servicing a permission/question prompt whose promise must
+   * not be answered with the injected line.
+   */
+  inject(line: string): void;
 }
 
 // --- Key parsing ---
@@ -245,6 +252,10 @@ export function createRawInputReader(opts: {
   const input = opts.input ?? process.stdin;
   const output = opts.output ?? process.stdout;
   let closed = false;
+  // Scheduler injection (M41): lines waiting for the next readInput, plus the
+  // active input-box's cleanup so an idle widget can be committed externally.
+  const injected: string[] = [];
+  let activeWidgetCleanup: ((committed: string | null) => void) | null = null;
 
   const renderWidget = (
     state: WidgetState,
@@ -283,7 +294,20 @@ export function createRawInputReader(opts: {
   };
 
   const readInput = async (): Promise<string | null> => {
+    if (injected.length > 0) return injected.shift() ?? null;
     return readWidget();
+  };
+
+  /** Commit the idle input box with an injected line (scheduler delivery). */
+  const inject = (line: string): void => {
+    if (!line) return;
+    if (activeWidgetCleanup) {
+      const commit = activeWidgetCleanup;
+      activeWidgetCleanup = null;
+      commit(line);
+    } else {
+      injected.unshift(line);
+    }
   };
 
   // Raw read with the full input-box widget + autocomplete.
@@ -308,6 +332,7 @@ export function createRawInputReader(opts: {
       const cleanup = (committed: string | null) => {
         if (finished) return;
         finished = true;
+        if (activeWidgetCleanup === cleanup) activeWidgetCleanup = null;
         input.off("data", onData);
         if (input.isTTY) input.setRawMode(false);
         output.write("\x1b[?2004l"); // disable bracketed paste
@@ -426,6 +451,7 @@ export function createRawInputReader(opts: {
       if (input.isTTY) input.setRawMode(true);
       output.write("\x1b[?2004h"); // enable bracketed paste
       input.on("data", onData);
+      activeWidgetCleanup = cleanup;
       repaint();
     });
   };
@@ -487,6 +513,7 @@ export function createRawInputReader(opts: {
   return {
     readInput,
     askQuestion,
+    inject,
     isClosed: () => closed,
     close: () => {
       closed = true;

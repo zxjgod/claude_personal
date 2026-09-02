@@ -70,6 +70,16 @@ export function cancelWakeup(id: string): boolean {
 }
 
 /**
+ * Cancel every pending wakeup (ends all /loop dynamic-mode loops).
+ * Returns how many were cancelled.
+ */
+export function cancelAllWakeupJobs(): number {
+  const n = WAKEUP_JOBS.size;
+  WAKEUP_JOBS.clear();
+  return n;
+}
+
+/**
  * Clear all wakeup jobs (for tests).
  */
 export function resetWakeupJobs(): void {

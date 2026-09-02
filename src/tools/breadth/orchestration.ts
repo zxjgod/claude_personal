@@ -276,10 +276,10 @@ export const SkillTool: Tool = buildTool({
 import {
   getScheduledJob,
   listScheduledJobs,
+  MAX_SCHEDULED_JOBS,
   registerScheduledJob,
   removeScheduledJob,
   resetScheduledJobs,
-  type ScheduledJob,
   validateCron,
 } from "../extended/cron-shared.js";
 
@@ -315,6 +315,12 @@ export const ScheduleCronTool: Tool = buildTool({
       recurring: input.recurring ?? true,
       durable: input.durable ?? false,
     });
+    if (!job) {
+      return {
+        content: "",
+        error: `Scheduled-job limit reached (${MAX_SCHEDULED_JOBS}). Delete some first.`,
+      };
+    }
 
     return {
       content:
@@ -356,6 +362,12 @@ export const SleepTool: Tool = buildTool({
         recurring: false,
         durable: false,
       });
+      if (!job) {
+        return {
+          content: "",
+          error: `Scheduled-job limit reached (${MAX_SCHEDULED_JOBS}). Delete some first.`,
+        };
+      }
       return {
         content: `Will enqueue prompt after ${delay}s (${input.reason}). Job ${job.id}.`,
       };

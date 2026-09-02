@@ -9,7 +9,7 @@
 // ============================================================
 
 import { render, useApp, useInput } from "ink";
-import { type RefObject, useCallback, useRef } from "react";
+import { type RefObject, useCallback, useEffect, useRef } from "react";
 import { agentLoop } from "./../agent-loop.js";
 import { formatCliError } from "./../cli-errors.js";
 import type { CommandContext } from "./../commands.js";
@@ -23,6 +23,8 @@ import {
 import type { TaskState } from "../session-memory.js";
 import { normalizeFinishReason } from "../session-memory.js";
 import { formatSpeculationLine } from "./../speculation.js";
+import { startScheduler } from "../tools/extended/scheduler.js";
+import { drainNotifications, formatNotificationLine } from "../tools/notifications.js";
 import { expandFileRefs } from "../tools/utils/file-refs.js";
 import type {
   AskUserFn,
@@ -157,6 +159,9 @@ async function runTurn(
       store.setQueuedInputs(queue.size);
       return drained;
     },
+    // M41: background completion notifications are delivered at safe turn
+    // boundaries without requiring a job_output polling call.
+    drainNotifications: () => drainNotifications(deps.sessionId),
   });
 
   let thinkingStart = Date.now();
@@ -646,8 +651,13 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
           deps.getWorkspaceRoot?.() ?? deps.workspaceRoot,
         );
         for (const note of notes) store.addNotice(note);
-        const contentText =
-          attachments.length > 0 ? `${inputText}\n\n${attachments.join("\n\n")}` : inputText;
+        // M41: completions that arrived while idle ride along with the next
+        // user prompt. They are drained exactly once and become model-visible
+        // without starting a turn by themselves.
+        const pendingNotes = drainNotifications(deps.sessionId);
+        const contentText = [pendingNotes.join("\n\n"), inputText, ...attachments]
+          .filter(Boolean)
+          .join("\n\n");
         deps.messages.push({ role: "user", content: [{ type: "text", text: contentText }] });
 
         const controller = new AbortController();
@@ -697,6 +707,26 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
     },
     [store, deps, askUser, askUserQuestion],
   );
+
+  // M41: keep the scheduler alive for the whole TUI session. A due prompt is
+  // submitted through the same path as user input, while background
+  // completions are displayed as notices and remain queued for the next model
+  // boundary. The scheduler owns its interval and returns a cleanup function.
+  useEffect(() => {
+    return startScheduler({
+      sessionId: deps.sessionId,
+      workspaceRoot: deps.getWorkspaceRoot?.() ?? deps.workspaceRoot,
+      // An open overlay (permission/question prompt from a BACKGROUND agent
+      // surfacing while the main turn is idle) counts as busy: injecting a
+      // scheduled prompt now would start a competing turn under the prompt.
+      isBusy: () => store.getSnapshot().busy || store.getSnapshot().overlay !== null,
+      deliver: (prompt) => onSubmit(prompt),
+      displayNotifications: (items) => {
+        for (const item of items) store.addNotice(`⎿ ${formatNotificationLine(item)}`);
+      },
+      displayParked: (p) => store.addNotice(`⏰ ${p.label} —— 当前回合结束后送达`),
+    });
+  }, [deps, onSubmit, store]);
 
   return (
     <>

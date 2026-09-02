@@ -40,6 +40,7 @@ import { renderPrefetchAttachment, startPrefetch } from "./prefetch.js";
 import { normalizeFinishReason } from "./session-memory.js";
 import { listSkills } from "./skills.js";
 import { buildSystemPrompt, renderSystemPrompt } from "./system-prompt.js";
+import { loadDurableJobs } from "./tools/extended/cron-shared.js";
 import { createRawInputReader } from "./tui/cli-interactive.js";
 import { detectLanguage } from "./tui/i18n.js";
 import type { Message, ModelCaller, PermissionClassifier, PermissionMode } from "./types.js";
@@ -310,6 +311,8 @@ async function main() {
   let askQuestion: (prompt: string) => Promise<string | null>;
   let readInput: () => Promise<string | null>;
   let closeInput: () => void;
+  /** Scheduler delivery: inject a synthetic user line (idle REPL only). */
+  let injectInput: (line: string) => void;
 
   if (isInteractive) {
     const reader = createRawInputReader({
@@ -318,6 +321,7 @@ async function main() {
     askQuestion = reader.askQuestion;
     readInput = reader.readInput;
     closeInput = reader.close;
+    injectInput = reader.inject;
   } else {
     rl = readline.createInterface({
       input: process.stdin,
@@ -327,10 +331,11 @@ async function main() {
     askQuestion = inputReader.askQuestion;
     readInput = inputReader.readInput;
     closeInput = () => rl?.close();
+    injectInput = inputReader.inject;
   }
 
   // Permission + structured-question prompts, sharing one serialization chain.
-  const { alwaysAllow, askUser, askUserQuestion } = createUserPrompters({
+  const { alwaysAllow, askUser, askUserQuestion, getPendingPromptCount } = createUserPrompters({
     isInteractive,
     askQuestion,
   });
@@ -372,6 +377,20 @@ async function main() {
   });
 
   // --- TUI path (9.1, 9.7) ---
+  // M41: durable cron jobs registered in a previous run (schedule_cron with
+  // durable=true). Loaded before either UI path runs; the firing loop lives
+  // in the scheduler (started by the TUI root or the line REPL below).
+  {
+    const durable = loadDurableJobs(workspaceRoot);
+    if (durable.loaded > 0) {
+      console.log(
+        chalk.gray(
+          `Restored ${durable.loaded} durable scheduled job(s)${durable.skipped > 0 ? `, skipped ${durable.skipped} invalid` : ""}`,
+        ),
+      );
+    }
+  }
+
   // On a TTY (and unless --no-tui), run the Ink-based TUI. Non-TTY / piped
   // input, or an explicit opt-out, falls through to the line-based REPL below.
   const tuiDisabled = process.argv.includes("--no-tui") || process.env.CCR_NO_TUI === "1";
@@ -437,6 +456,8 @@ async function main() {
     askUserQuestion,
     readInput,
     closeInput,
+    injectInput,
+    getPendingPromptCount,
     makeCommandContext,
     isInteractive,
     quiet,

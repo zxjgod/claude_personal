@@ -8,13 +8,13 @@
 import { z } from "zod";
 import type { Tool, ToolResult } from "../../types.js";
 import { buildTool } from "../registry.js";
-// Re-export the shared job registration from breadth/orchestration.ts
+// Re-export the shared job registration from cron-shared.js
 import {
-  getScheduledJob,
   listScheduledJobs,
+  MAX_SCHEDULED_JOBS,
+  persistDurableJobs,
   registerScheduledJob,
   removeScheduledJob,
-  type ScheduledJob,
   validateCron,
 } from "./cron-shared.js";
 
@@ -50,7 +50,7 @@ export const CronCreateTool: Tool = buildTool({
   searchHint: "cron schedule recurring timer task automation",
   aliases: ["schedule_cron", "cron_create"],
 
-  async call(input): Promise<ToolResult> {
+  async call(input, context): Promise<ToolResult> {
     const err = validateCron(input.cron);
     if (err) return { content: "", error: err };
 
@@ -60,6 +60,13 @@ export const CronCreateTool: Tool = buildTool({
       recurring: input.recurring ?? true,
       durable: input.durable ?? false,
     });
+    if (!job) {
+      return {
+        content: "",
+        error: `Scheduled-job limit reached (${MAX_SCHEDULED_JOBS}). Delete some with CronDelete first.`,
+      };
+    }
+    if (job.durable) persistDurableJobs(context.workspaceRoot);
 
     return {
       content:
@@ -91,11 +98,14 @@ export const CronDeleteTool: Tool = buildTool({
   searchHint: "cron cancel delete remove unschedule",
   aliases: ["cron_delete"],
 
-  async call(input): Promise<ToolResult> {
+  async call(input, context): Promise<ToolResult> {
     const removed = removeScheduledJob(input.id);
     if (!removed) {
       return { content: "", error: `Job ${input.id} not found` };
     }
+    // A durable job may have been removed — rewrite the persistence file so
+    // it doesn't resurrect on the next start.
+    persistDurableJobs(context.workspaceRoot);
     return { content: `Job ${input.id} cancelled and removed.` };
   },
 });

@@ -43,6 +43,14 @@ export interface UserPrompters {
   alwaysAllow: Set<string>;
   askUser: AskUserFn;
   askUserQuestion: (q: UserQuestion) => Promise<string[] | null>;
+  /**
+   * M41 race guard: number of permission/question prompts currently awaiting
+   * an answer. The scheduler must treat "prompt pending" as busy — otherwise
+   * an injected cron line would answer the prompt outright (non-TTY: shared
+   * readline queue) or start a competing turn while the permission menu still
+   * owns stdin (TTY).
+   */
+  getPendingPromptCount(): number;
 }
 
 /**
@@ -58,6 +66,9 @@ export function createUserPrompters(deps: {
   const { isInteractive, askQuestion } = deps;
   const alwaysAllow = new Set<string>();
   let promptChain: Promise<unknown> = Promise.resolve();
+  // M41: a prompt can be pending while NO turn is running — a background
+  // agent's approver forwards here (run_in_background, team members).
+  let pendingPromptCount = 0;
 
   const askUserImpl: AskUserFn = async (tool, input, riskHint) => {
     const key = permissionKey(tool.name, input);
@@ -105,9 +116,12 @@ export function createUserPrompters(deps: {
   };
 
   const askUser: AskUserFn = (tool, input, riskHint) => {
+    pendingPromptCount++;
     const run = promptChain.then(() => askUserImpl(tool, input, riskHint));
     promptChain = run.catch(() => {});
-    return run;
+    return run.finally(() => {
+      pendingPromptCount--;
+    });
   };
 
   const askUserQuestionImpl = async (q: UserQuestion): Promise<string[] | null> => {
@@ -136,10 +150,18 @@ export function createUserPrompters(deps: {
   };
 
   const askUserQuestion = (q: UserQuestion): Promise<string[] | null> => {
+    pendingPromptCount++;
     const run = promptChain.then(() => askUserQuestionImpl(q));
     promptChain = run.catch(() => {}) as Promise<unknown>;
-    return run;
+    return run.finally(() => {
+      pendingPromptCount--;
+    });
   };
 
-  return { alwaysAllow, askUser, askUserQuestion };
+  return {
+    alwaysAllow,
+    askUser,
+    askUserQuestion,
+    getPendingPromptCount: () => pendingPromptCount,
+  };
 }

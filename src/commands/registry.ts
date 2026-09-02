@@ -27,6 +27,7 @@ import { hooksCommand } from "./hooks.js";
 import { initCommand } from "./init.js";
 import { keybindingsCommand } from "./keybindings.js";
 import { getCustomCommands } from "./loadCommandsDir.js";
+import { loopCommand } from "./loop.js";
 import { mcpCommand } from "./mcp.js";
 import { memoryCommand } from "./memory.js";
 import { modeCommand } from "./mode.js";
@@ -93,6 +94,7 @@ export const COMMANDS: SlashCommand[] = [
   onboardingCommand,
   hooksCommand,
   scheduleCommand,
+  loopCommand,
   goalCommand,
   vimCommand,
   outputStyleCommand,

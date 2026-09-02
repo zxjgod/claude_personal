@@ -593,6 +593,15 @@ export interface LoopOptions {
    */
   drainQueuedInput?: () => string[];
   /**
+   * Background completion notification provider (M41). Drained at turn
+   * boundaries: each returned <task_notification> block is injected as a user
+   * message, so the model learns a background job/sub-agent/teammate message
+   * settled without polling. Notification-driven turn continuations are capped
+   * (see agent-loop) so a self-restarting background job cannot loop forever.
+   * Returns [] when nothing is pending. Injected by the CLI/TUI.
+   */
+  drainNotifications?: () => string[];
+  /**
    * Enable speculative tool prefetch (12.2). On by default (M15.2); callers
    * disable it via --no-speculation / CCR_SPECULATION=0. Only read-only +
    * concurrency-safe tools are ever speculated, so it is safe to leave on.

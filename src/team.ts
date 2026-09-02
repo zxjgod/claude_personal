@@ -23,6 +23,7 @@ import {
   getSubagentType,
   resolveSubagentTools,
 } from "./subagents.js";
+import { pushTaskNotification } from "./tools/notifications.js";
 import type { AskUserFn, Message, ModelConfig, PermissionMode, SubAgentProgress } from "./types.js";
 import { CancellationScope } from "./utils/cancellation.js";
 import { createSubAgentApprover } from "./utils/subagent-security.js";
@@ -66,6 +67,13 @@ export interface TeamRunContext {
    * behavior: only task_stop can abort it).
    */
   parentSignal?: AbortSignal;
+  /**
+   * Push the turn's result as a background completion notification (M41) so a
+   * fire-and-forget send_message (background:true) reaches the main loop
+   * without task_get polling. Synchronous callers leave this off — they
+   * already receive the return value.
+   */
+  notifyResults?: boolean;
 }
 
 // sessionId -> (agentId -> agent)
@@ -292,6 +300,19 @@ export async function runAgentTurn(
     agent.status = error && !output ? "error" : "done";
   }
   if (error) agent.error = error;
+
+  // M41: push, rather than requiring lead-side polling, when the turn was
+  // requested as a background handoff. Existing synchronous callers still
+  // receive the return value as before.
+  if (ctx.notifyResults) {
+    pushTaskNotification(ctx.sessionId, {
+      id: `team-${agent.id}`,
+      kind: "team",
+      status: error && !output ? "error" : "done",
+      summary: `team agent ${agent.id} completed`,
+      outputTail: (output || error || "").slice(-500) || undefined,
+    });
+  }
 
   return { output, toolCalls, error };
 }
