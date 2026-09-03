@@ -1036,10 +1036,9 @@ describe("agentLoop", () => {
       events.push(event);
     }
 
-    // NOTE: an `aborted` event lookup used to be asserted here; the assertion
-    // was dropped, leaving the variable unused. Kept (underscore-prefixed) in
-    // case the missing `expect(aborted).toBeDefined()` was accidental.
-    const _aborted = events.find((e) => e.type === "aborted");
+    // The loop surfaces the abort as an `aborted` event (verified: it fires).
+    const aborted = events.find((e) => e.type === "aborted");
+    expect(aborted).toBeDefined();
     // The slow tool's result should reflect the abort, not a real completion.
     const toolResults = events.find((e) => e.type === "tool_results");
     const slowResult = toolResults?.results?.find((r: any) => r.toolName === "slow");

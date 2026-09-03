@@ -5,8 +5,6 @@
 // injection attacks, path traversal, and malformed inputs.
 
 import * as net from "node:net";
-import * as path from "node:path";
-import type { ToolContext } from "../types.js";
 
 export interface ValidationResult {
   valid: boolean;
@@ -18,10 +16,12 @@ export interface ValidationResult {
  */
 export class InputValidator {
   /**
-   * Validate file path input
-   * Checks: length, illegal characters, path traversal, workspace boundary
+   * Validate file path input.
+   * Checks: length, control characters, path-traversal / dangerous patterns.
+   * NOTE: workspace-boundary enforcement is NOT done here — callers follow up
+   * with resolveInWorkspace() (src/tools/utils/path.ts), which owns that check.
    */
-  static validateFilePath(filePath: string, _context: ToolContext): ValidationResult {
+  static validateFilePath(filePath: string): ValidationResult {
     // Check path length (most filesystems have limits around 4096)
     if (filePath.length > 4096) {
       return { valid: false, error: "Path exceeds maximum length (4096 characters)" };

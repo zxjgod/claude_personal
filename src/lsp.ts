@@ -145,22 +145,27 @@ export class LspClient {
   /**
    * Open a file and fetch syntactic + semantic diagnostics for it. The
    * diagnostic shape is normalized to the shared Diagnostic interface.
+   * timeoutMs bounds each underlying tsserver request.
    */
-  async getDiagnostics(filePath: string, _timeoutMs = 20000): Promise<Diagnostic[]> {
+  async getDiagnostics(filePath: string, timeoutMs = 20000): Promise<Diagnostic[]> {
     await this.ensureInitialized();
     const abs = path.isAbsolute(filePath) ? filePath : path.resolve(this.rootPath, filePath);
     const text = fs.existsSync(abs) ? fs.readFileSync(abs, "utf-8") : "";
 
     // open is a notification (no response required) but tsserver still acks.
-    await this.request("open", {
-      file: abs,
-      fileContent: text,
-      scriptKindName: abs.endsWith(".tsx") ? "TSX" : abs.endsWith(".ts") ? "TS" : "JS",
-    }).catch(() => undefined);
+    await this.request(
+      "open",
+      {
+        file: abs,
+        fileContent: text,
+        scriptKindName: abs.endsWith(".tsx") ? "TSX" : abs.endsWith(".ts") ? "TS" : "JS",
+      },
+      timeoutMs,
+    ).catch(() => undefined);
 
     const [syntactic, semantic] = await Promise.all([
-      this.request("syntacticDiagnosticsSync", { file: abs }),
-      this.request("semanticDiagnosticsSync", { file: abs }),
+      this.request("syntacticDiagnosticsSync", { file: abs }, timeoutMs),
+      this.request("semanticDiagnosticsSync", { file: abs }, timeoutMs),
     ]);
 
     const out: Diagnostic[] = [];
@@ -179,24 +184,28 @@ export class LspClient {
     filePath: string,
     line: number,
     column: number,
-    _timeoutMs = 15000,
+    timeoutMs = 15000,
   ): Promise<CompletionItem[]> {
     await this.ensureInitialized();
     const abs = path.isAbsolute(filePath) ? filePath : path.resolve(this.rootPath, filePath);
     const text = fs.existsSync(abs) ? fs.readFileSync(abs, "utf-8") : "";
     const scriptKindName = abs.endsWith(".tsx") ? "TSX" : abs.endsWith(".ts") ? "TS" : "JS";
 
-    await this.request("open", { file: abs, fileContent: text, scriptKindName }).catch(
+    await this.request("open", { file: abs, fileContent: text, scriptKindName }, timeoutMs).catch(
       () => undefined,
     );
 
-    const body = await this.request("completionInfo", {
-      file: abs,
-      line,
-      offset: column,
-      includeExternalModuleExports: true,
-      includeInsertTextCompletions: true,
-    });
+    const body = await this.request(
+      "completionInfo",
+      {
+        file: abs,
+        line,
+        offset: column,
+        includeExternalModuleExports: true,
+        includeInsertTextCompletions: true,
+      },
+      timeoutMs,
+    );
 
     const entries = (body as { entries?: unknown[] })?.entries ?? [];
     const out: CompletionItem[] = [];
@@ -269,7 +278,7 @@ export class LspClient {
     // synchronously via the *DiagnosticsSync requests, not pushed.
   }
 
-  private request(command: string, argumentsObj: unknown): Promise<unknown> {
+  private request(command: string, argumentsObj: unknown, timeoutMs = 25000): Promise<unknown> {
     return new Promise((resolve, reject) => {
       const seq = this.nextSeq++;
       // Safety timeout so a hung request doesn't pin the caller forever.
@@ -277,7 +286,7 @@ export class LspClient {
         if (this.pending.delete(seq)) {
           reject(new Error(`tsserver "${command}" timed out`));
         }
-      }, 25000);
+      }, timeoutMs);
       this.pending.set(seq, {
         resolve: (value: unknown) => {
           clearTimeout(timer);

@@ -43,8 +43,9 @@ export const ReadTool: Tool = buildTool({
   searchHint: "file read view cat open display",
 
   async call(input, context): Promise<ToolResult> {
-    // P1: Validate file path input
-    const pathValidation = InputValidator.validateFilePath(input.filePath, context);
+    // P1: Validate file path input (boundary enforcement follows below via
+    // resolveInWorkspace — InputValidator only checks shape/patterns).
+    const pathValidation = InputValidator.validateFilePath(input.filePath);
     if (!pathValidation.valid) {
       return { content: "", error: pathValidation.error };
     }

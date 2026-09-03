@@ -7,17 +7,15 @@ import { InputValidator } from "../utils/input-validator.js";
 
 describe("InputValidator", () => {
   describe("validateFilePath", () => {
-    const mockContext = { workspaceRoot: "/workspace" } as any;
-
     it("should reject paths exceeding maximum length", () => {
       const longPath = "a".repeat(5000);
-      const result = InputValidator.validateFilePath(longPath, mockContext);
+      const result = InputValidator.validateFilePath(longPath);
       expect(result.valid).toBe(false);
       expect(result.error).toContain("exceeds maximum length");
     });
 
     it("should reject paths with null bytes", () => {
-      const result = InputValidator.validateFilePath("/path\x00/file.txt", mockContext);
+      const result = InputValidator.validateFilePath("/path\x00/file.txt");
       expect(result.valid).toBe(false);
       expect(result.error).toContain("illegal control characters");
     });
@@ -25,18 +23,18 @@ describe("InputValidator", () => {
     // Path traversal is NOT checked by InputValidator — it's correctly handled
     // by resolveInWorkspace() which resolves the path and verifies containment.
     it("should accept paths with path traversal (checked by resolveInWorkspace)", () => {
-      const result = InputValidator.validateFilePath("../../etc/passwd", mockContext);
+      const result = InputValidator.validateFilePath("../../etc/passwd");
       expect(result.valid).toBe(true);
     });
 
     it("should reject UNC paths", () => {
-      const result = InputValidator.validateFilePath("\\\\server\\share", mockContext);
+      const result = InputValidator.validateFilePath("\\\\server\\share");
       expect(result.valid).toBe(false);
       expect(result.error).toContain("dangerous pattern");
     });
 
     it("should accept valid paths", () => {
-      const result = InputValidator.validateFilePath("/workspace/file.txt", mockContext);
+      const result = InputValidator.validateFilePath("/workspace/file.txt");
       expect(result.valid).toBe(true);
       expect(result.error).toBeUndefined();
     });
