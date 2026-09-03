@@ -540,6 +540,8 @@ export interface ToolExecutionResult {
 }
 
 export interface LoopOptions {
+  /** Internal: forked agents inherit an already-enriched parent prompt verbatim. */
+  applyEffortInstruction?: boolean;
   maxTurns?: number;
   autoCompactThreshold?: number;
   /**

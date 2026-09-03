@@ -102,6 +102,26 @@ describe("openAICompatibleCaller", () => {
     expect(events[events.length - 1].type).toBe("done");
   });
 
+  it("changes request controls across effort tiers on chat models", async () => {
+    createSpy.mockResolvedValue(
+      makeStream([
+        { choices: [{ delta: {}, finish_reason: "stop" }] },
+        { choices: [], usage: { prompt_tokens: 1, completion_tokens: 1 } },
+      ]),
+    );
+
+    for (const effort of ["low", "high", "max"] as const) {
+      const cfg = { ...config, options: { effort } };
+      for await (const _event of createModelCaller(cfg)(messages, [], "sys", cfg)) {
+        // drain
+      }
+    }
+
+    const requests = createSpy.mock.calls.map((call) => call[0]);
+    expect(requests.map((request) => request.max_tokens)).toEqual([4096, 8192, 16384]);
+    expect(requests.map((request) => request.temperature)).toEqual([0.2, 0.05, 0]);
+  });
+
   it("surfaces cached_tokens as cache_read_input_tokens (16.5)", async () => {
     createSpy.mockResolvedValue(
       makeStream([

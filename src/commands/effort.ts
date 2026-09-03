@@ -4,6 +4,7 @@ import {
   EFFORT_DEFINITIONS,
   EFFORT_LEVELS,
   type EffortLevel,
+  getEffortStrategy,
   getEffort,
   parseEffort,
   renderEffortSlider,
@@ -12,9 +13,18 @@ import type { SlashCommand } from "./types.js";
 
 function printEffortDefinition(level: EffortLevel): void {
   const def = EFFORT_DEFINITIONS[level];
+  const strategy = getEffortStrategy({ effort: level });
   console.log(chalk.gray(`  Definition: ${def.definition}`));
   console.log(chalk.gray(`  Behavior:   ${def.behavior}`));
   console.log(chalk.gray(`  Mapping:    ${def.mapping}`));
+  console.log(
+    chalk.gray(
+      `  Runtime:    up to ${strategy.maxOutputTokens} output tokens; ` +
+        `temperature ${strategy.temperature}; ` +
+        `tool concurrency ${strategy.toolConcurrency}; ` +
+        `speculative reads ${strategy.speculation ? "on" : "off"}.`,
+    ),
+  );
 }
 
 function printEffortDefinitions(): void {
@@ -22,9 +32,17 @@ function printEffortDefinitions(): void {
   console.log(chalk.bold("  Effort levels:"));
   for (const level of EFFORT_LEVELS) {
     const def = EFFORT_DEFINITIONS[level];
+    const strategy = getEffortStrategy({ effort: level });
     console.log(chalk.gray(`  - ${chalk.cyan(level)}: ${def.definition}`));
     console.log(chalk.gray(`    ${def.behavior}`));
     console.log(chalk.gray(`    ${def.mapping}`));
+    console.log(
+      chalk.gray(
+        `    Runtime: ${strategy.maxOutputTokens} output tokens, ` +
+          `tool concurrency ${strategy.toolConcurrency}, ` +
+          `speculation ${strategy.speculation ? "on" : "off"}`,
+      ),
+    );
   }
 }
 

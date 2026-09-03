@@ -8,7 +8,10 @@ import {
   DEFAULT_EFFORT,
   EFFORT_GRADIENT,
   EFFORT_LEVELS,
+  effortInstruction,
+  effortStrategy,
   getEffort,
+  getEffortStrategy,
   gradientColorAt,
   hslToHex,
   modelSupportsReasoningEffort,
@@ -16,6 +19,7 @@ import {
   parseEffort,
   rainbowColors,
   renderEffortSlider,
+  resolveEffortMaxTokens,
 } from "../tui/effort.js";
 
 describe("effort tiers", () => {
@@ -38,6 +42,21 @@ describe("effort tiers", () => {
     expect(getEffort({})).toBe("high");
     expect(getEffort({ effort: "low" })).toBe("low");
     expect(getEffort({ effort: "bogus" })).toBe("high");
+  });
+
+  it("gives every tier a distinct, progressively deeper runtime strategy", () => {
+    const strategies = EFFORT_LEVELS.map((level) => effortStrategy(level));
+    expect(new Set(strategies.map((s) => s.maxOutputTokens)).size).toBe(EFFORT_LEVELS.length);
+    expect(strategies.map((s) => s.maxOutputTokens)).toEqual([
+      4096, 6144, 8192, 12288, 16384, 24576,
+    ]);
+    expect(strategies.map((s) => s.toolConcurrency)).toEqual([3, 5, 8, 10, 12, 16]);
+    expect(strategies[0]?.speculation).toBe(false);
+    expect(strategies.slice(1).every((s) => s.speculation)).toBe(true);
+    expect(effortInstruction("ultracode")).toContain("workflow tool");
+    expect(getEffortStrategy({ effort: "xhigh" }).instruction).toContain("alternative explanations");
+    expect(resolveEffortMaxTokens("max")).toBe(16384);
+    expect(resolveEffortMaxTokens("max", 4096)).toBe(4096);
   });
 
   it("anthropicEffort passes the gradient through and maps ultracode→xhigh", () => {

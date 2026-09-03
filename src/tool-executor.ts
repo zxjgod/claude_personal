@@ -410,6 +410,7 @@ export async function* executeToolCalls(
   specCache?: SpeculationCache,
   readFiles?: Set<string>,
   streamExecutor?: StreamingToolExecutor,
+  concurrency?: number,
 ): AsyncGenerator<IndexedResult> {
   const batches = partitionToolCalls(toolCalls, tools);
 
@@ -457,7 +458,10 @@ export async function* executeToolCalls(
         yield { index, result: await runOne(call) };
       })(),
     );
-    const merged = all(gens, maxToolConcurrency());
+    const merged = all(
+      gens,
+      Math.max(1, Math.min(concurrency ?? maxToolConcurrency(), maxToolConcurrency())),
+    );
 
     const emitted = new Set<number>();
     let wasAborted = false;

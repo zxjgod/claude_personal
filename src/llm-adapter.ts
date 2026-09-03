@@ -6,7 +6,13 @@ import OpenAI from "openai";
 import { anthropicCaller } from "./anthropic-adapter.js";
 import { isCloudGateway, resolveGateway } from "./cloud-gateway.js";
 import { DEFAULT_MAX_RESULT_CHARS, truncateToolResult } from "./tools/truncation.js";
-import { getEffort, modelSupportsReasoningEffort, openaiReasoningEffort } from "./tui/effort.js";
+import {
+  getEffort,
+  getEffortStrategy,
+  modelSupportsReasoningEffort,
+  openaiReasoningEffort,
+  resolveEffortMaxTokens,
+} from "./tui/effort.js";
 import type { Message, ModelCaller, ModelConfig, StreamEvent, Tool } from "./types.js";
 import { combineAbortSignals } from "./utils/cancellation.js";
 
@@ -45,12 +51,6 @@ const PROVIDER_CONFIGS: Record<string, { baseURL: string; defaultModel: string }
 
 /** Exported provider defaults for use by other modules (e.g. /provider command) */
 export const PROVIDER_DEFAULTS = PROVIDER_CONFIGS;
-
-// Default output-token ceiling when the user hasn't configured maxTokens. The
-// provider's own default (e.g. DeepSeek's 4K) is far too small for long agent
-// turns and silently truncates mid-tool-call, which the loop can't recover from
-// cleanly. A higher ceiling lets long turns complete instead of stopping.
-const DEFAULT_MAX_TOKENS = 8192;
 
 // --- Message Conversion (Internal → OpenAI) ---
 
@@ -152,6 +152,7 @@ async function* openAICompatibleCaller(
   const reasoningEffort = isReasoningModel
     ? openaiReasoningEffort(getEffort(config.options))
     : undefined;
+  const effort = getEffortStrategy(config.options);
 
   // Compose the caller's AbortSignal (Ctrl+C / turn abort) with a safety
   // timeout so a hung provider stream can't pin the loop indefinitely. The
@@ -167,8 +168,11 @@ async function* openAICompatibleCaller(
         messages: requestMessages,
         tools: tools.length > 0 ? formatToolsForOpenAI(tools) : undefined,
         tool_choice: tools.length > 0 ? "auto" : undefined,
-        max_tokens: config.maxTokens ?? DEFAULT_MAX_TOKENS,
-        temperature: isReasoningModel ? undefined : (config.temperature ?? 0.1),
+        max_tokens: resolveEffortMaxTokens(
+          getEffort(config.options),
+          config.maxTokens,
+        ),
+        temperature: isReasoningModel ? undefined : (config.temperature ?? effort.temperature),
         ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
         stream: true,
         // Ask the provider to emit a final usage chunk. Without this, streamed

@@ -1623,6 +1623,51 @@ describe("agentLoop — streaming tool execution (M36)", () => {
     // read body is produced exactly once, never twice.
     expect(reads).toBe(1);
   });
+
+  it("does not early-start streamed reads when effort is low", async () => {
+    let reads = 0;
+    let calls = 0;
+    const readTool: Tool = {
+      name: "read",
+      description: "Read",
+      promptDescription: "Read a file",
+      inputSchema: { type: "object", properties: { filePath: { type: "string" } }, required: [] },
+      isEnabled: () => true,
+      isReadOnly: () => true,
+      isConcurrencySafe: () => true,
+      call: async () => {
+        reads++;
+        return { content: "FILE BODY" };
+      },
+      formatResult: (r) => r.content,
+      checkPermissions: async () => ({ allowed: true }),
+    };
+    const caller: ModelCaller = async function* () {
+      calls++;
+      if (calls === 1) {
+        yield { type: "tool_use", id: "r-low", name: "read", input: { filePath: "a.ts" } };
+      }
+      yield {
+        type: "done",
+        usage: { input_tokens: 10, output_tokens: 5 },
+        finish_reason: calls === 1 ? "tool_calls" : "stop",
+      };
+      if (calls > 1) yield { type: "text_delta", delta: "done" };
+      yield { type: "done", usage: { input_tokens: 5, output_tokens: 2 }, finish_reason: "stop" };
+    };
+
+    for await (const event of agentLoop(
+      messages("read it"),
+      [readTool],
+      caller,
+      { ...testConfig, options: { effort: "low" } },
+      { systemPrompt: "s", maxTurns: 5, speculation: true },
+    )) {
+      if (event.type === "tool_use") expect(reads).toBe(0);
+    }
+
+    expect(reads).toBe(1);
+  });
 });
 
 // ============================================================

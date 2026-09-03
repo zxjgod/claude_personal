@@ -25,6 +25,7 @@ import {
 import { predictReads, SpeculationCache } from "./speculation.js";
 import { StreamingToolExecutor } from "./streaming-tool-executor.js";
 import { estimateTokens } from "./token-estimator.js";
+import { getEffortStrategy, withEffortInstruction } from "./tui/effort.js";
 import {
   backfillMissingToolResults,
   executeSingleTool,
@@ -120,7 +121,13 @@ export async function* agentLoop(
     turnOutputBudget = 0,
     drainQueuedInput,
     drainNotifications,
+    applyEffortInstruction = true,
   } = options;
+  const effort = getEffortStrategy(modelConfig.options);
+  const effectiveSystemPrompt = applyEffortInstruction
+    ? withEffortInstruction(systemPrompt, modelConfig.options)
+    : systemPrompt;
+  const effectiveSpeculation = speculation && effort.speculation;
 
   // Keep the caller-owned array identity stable. The CLI autosaves this array
   // while the loop runs; replacing it after compaction would leave persistence
@@ -157,7 +164,7 @@ export async function* agentLoop(
     askUser: toolContext?.askUser ?? askUser,
     abortSignal,
     getParentMessages: () => messages.slice(),
-    parentSystemPrompt: systemPrompt,
+    parentSystemPrompt: effectiveSystemPrompt,
     subagentDepth: toolContext?.subagentDepth,
   };
 
@@ -179,11 +186,11 @@ export async function* agentLoop(
   };
 
   const budgetConfig = { ...DEFAULT_TOKEN_BUDGET, maxOutputTokens: turnOutputBudget };
-  const specCache = new SpeculationCache(speculation);
+  const specCache = new SpeculationCache(effectiveSpeculation);
   const readFiles = new Set<string>();
   const collapseStore = new CollapseStore();
 
-  const streamExecutor = new StreamingToolExecutor(speculation, tools, (toolName, input) =>
+  const streamExecutor = new StreamingToolExecutor(effectiveSpeculation, tools, (toolName, input) =>
     executeSingleTool(
       {
         id: `stream-${toolName}-${Date.now()}`,
@@ -298,7 +305,7 @@ export async function* agentLoop(
       for await (const event of safeCallModel(
         messages,
         tools,
-        systemPrompt,
+        effectiveSystemPrompt,
         modelConfig,
         abortSignal,
       )) {
@@ -563,6 +570,7 @@ export async function* agentLoop(
         specCache,
         readFiles,
         streamExecutor,
+        effort.toolConcurrency,
       )) {
         toolResults[done.index] = done.result;
         yield { type: "tool_result", id: toolCalls[done.index]!.id, result: done.result };

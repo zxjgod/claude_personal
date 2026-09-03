@@ -230,6 +230,9 @@ export const TaskTool: Tool = buildTool({
 
       const loop = agentLoop(subMessages, subagentTools, subCaller, context.modelConfig, {
         systemPrompt: subSystemPrompt,
+        // Forks must preserve the parent's prompt byte-for-byte for prompt
+        // cache reuse. The parent loop already applied the effort contract.
+        applyEffortInstruction: !isFork,
         maxTurns: subagentType?.maxTurns ?? SUBAGENT_MAX_TURNS,
         autoCompactThreshold: SUBAGENT_COMPACT_THRESHOLD,
         abortSignal: scope.signal,

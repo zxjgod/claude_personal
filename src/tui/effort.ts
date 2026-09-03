@@ -31,6 +31,21 @@ export interface EffortDefinition {
   mapping: string;
 }
 
+/** Runtime knobs that make the product-level effort tiers observable even
+ * when a provider only exposes low/medium/high reasoning. */
+export interface EffortStrategy {
+  /** Maximum output tokens allowed for one provider turn. */
+  maxOutputTokens: number;
+  /** Default temperature for non-reasoning chat models. */
+  temperature: number;
+  /** Parallel read-only tool calls allowed in one batch. */
+  toolConcurrency: number;
+  /** Whether speculative reads are worthwhile at this effort level. */
+  speculation: boolean;
+  /** Instruction injected into the model context for this turn. */
+  instruction: string;
+}
+
 /** Product-level definition per tier; provider params may be less granular. */
 export const EFFORT_DEFINITIONS: Record<EffortLevel, EffortDefinition> = {
   low: {
@@ -71,6 +86,99 @@ export const EFFORT_DEFINITIONS: Record<EffortLevel, EffortDefinition> = {
     mapping: "供应商 reasoning 参数按最高可用档处理；额外语义由本应用的 agent/workflow 策略承担。",
   },
 };
+
+const EFFORT_STRATEGIES: Record<EffortLevel, Omit<EffortStrategy, "instruction">> = {
+  low: {
+    maxOutputTokens: 4096,
+    temperature: 0.2,
+    toolConcurrency: 3,
+    speculation: false,
+  },
+  medium: {
+    maxOutputTokens: 6144,
+    temperature: 0.1,
+    toolConcurrency: 5,
+    speculation: true,
+  },
+  high: {
+    maxOutputTokens: 8192,
+    temperature: 0.05,
+    toolConcurrency: 8,
+    speculation: true,
+  },
+  xhigh: {
+    maxOutputTokens: 12_288,
+    temperature: 0,
+    toolConcurrency: 10,
+    speculation: true,
+  },
+  max: {
+    maxOutputTokens: 16_384,
+    temperature: 0,
+    toolConcurrency: 12,
+    speculation: true,
+  },
+  ultracode: {
+    maxOutputTokens: 24_576,
+    temperature: 0,
+    toolConcurrency: 16,
+    speculation: true,
+  },
+};
+
+/** The concrete model-facing contract for one effort tier. */
+export function effortStrategy(level: EffortLevel): EffortStrategy {
+  return {
+    ...EFFORT_STRATEGIES[level],
+    instruction: effortInstruction(level),
+  };
+}
+
+/** Build a stable, explicit instruction so effort is not just a UI label. */
+export function effortInstruction(level: EffortLevel): string {
+  const def = EFFORT_DEFINITIONS[level];
+  const workflow =
+    level === "ultracode"
+      ? "For substantial work, prefer the workflow tool to fan out independent exploration, implementation review, and verification workers before synthesizing."
+      : level === "max" || level === "xhigh"
+        ? "For difficult work, actively check alternative explanations, hidden constraints, and regression risks before concluding."
+        : level === "high"
+          ? "Read the relevant context before acting and verify the result, including important edge cases."
+          : level === "medium"
+            ? "Inspect the necessary context, make a focused change, and run a proportionate verification."
+            : "Keep the investigation focused and make the smallest correct change; surface uncertainty quickly.";
+  return [
+    `[EFFORT MODE: ${level}]`,
+    def.definition,
+    workflow,
+    `Do not claim work is complete until the ${level} effort level's checks have been performed.`,
+  ].join("\n");
+}
+
+/** Read the active strategy from the live model config. */
+export function getEffortStrategy(options?: Record<string, unknown>): EffortStrategy {
+  return effortStrategy(getEffort(options));
+}
+
+/** Append the active effort contract to a model turn prompt. */
+export function withEffortInstruction(
+  systemPrompt: string,
+  options?: Record<string, unknown>,
+): string {
+  // Forked agents inherit the already-enriched parent prompt. Keep that
+  // prompt byte-identical so prompt-cache reuse and fork semantics survive.
+  if (/\[EFFORT MODE:\s*[^\]]+\]/.test(systemPrompt)) return systemPrompt;
+  return `${systemPrompt}\n\n${getEffortStrategy(options).instruction}`;
+}
+
+/** Respect an explicit max-token ceiling while still differentiating defaults. */
+export function resolveEffortMaxTokens(
+  level: EffortLevel,
+  configured?: number,
+): number {
+  const ceiling = configured ?? effortStrategy(level).maxOutputTokens;
+  return Math.max(1, Math.min(ceiling, effortStrategy(level).maxOutputTokens));
+}
 
 /** One-line description per tier, mirroring the Claude Code slider semantics. */
 export const EFFORT_DESCRIPTIONS: Record<EffortLevel, string> = Object.fromEntries(
