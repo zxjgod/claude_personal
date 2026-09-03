@@ -25,13 +25,13 @@ import {
 import { predictReads, SpeculationCache } from "./speculation.js";
 import { StreamingToolExecutor } from "./streaming-tool-executor.js";
 import { estimateTokens } from "./token-estimator.js";
-import { getEffortStrategy, withEffortInstruction } from "./tui/effort.js";
 import {
   backfillMissingToolResults,
   executeSingleTool,
   executeToolCalls,
 } from "./tool-executor.js";
 import { startToolSummary } from "./tools/summary.js";
+import { getEffortStrategy, withEffortInstruction } from "./tui/effort.js";
 import type {
   AskUserFn,
   AssistantMessage,

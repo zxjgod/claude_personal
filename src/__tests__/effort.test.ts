@@ -54,7 +54,9 @@ describe("effort tiers", () => {
     expect(strategies[0]?.speculation).toBe(false);
     expect(strategies.slice(1).every((s) => s.speculation)).toBe(true);
     expect(effortInstruction("ultracode")).toContain("workflow tool");
-    expect(getEffortStrategy({ effort: "xhigh" }).instruction).toContain("alternative explanations");
+    expect(getEffortStrategy({ effort: "xhigh" }).instruction).toContain(
+      "alternative explanations",
+    );
     expect(resolveEffortMaxTokens("max")).toBe(16384);
     expect(resolveEffortMaxTokens("max", 4096)).toBe(4096);
   });

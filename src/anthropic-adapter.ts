@@ -11,11 +11,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { checkResponseForCacheBreak, recordPromptState } from "./prompt-cache.js";
 import { DYNAMIC_BOUNDARY } from "./system-prompt.js";
 import { DEFAULT_MAX_RESULT_CHARS, truncateToolResult } from "./tools/truncation.js";
-import {
-  anthropicEffort,
-  getEffort,
-  resolveEffortMaxTokens,
-} from "./tui/effort.js";
+import { anthropicEffort, getEffort, resolveEffortMaxTokens } from "./tui/effort.js";
 import type {
   Message,
   ModelCaller,
@@ -304,10 +300,7 @@ export const anthropicCaller: ModelCaller = async function* (
   const stream = client.messages.stream(
     {
       model: config.model || "claude-opus-4-8",
-      max_tokens: resolveEffortMaxTokens(
-        getEffort(config.options),
-        config.maxTokens,
-      ),
+      max_tokens: resolveEffortMaxTokens(getEffort(config.options), config.maxTokens),
       system: formatSystemForAnthropic(systemPrompt),
       messages: withMessageCacheBreakpoint(
         convertMessagesToAnthropic(messages, tools),

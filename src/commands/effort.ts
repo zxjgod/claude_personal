@@ -4,8 +4,8 @@ import {
   EFFORT_DEFINITIONS,
   EFFORT_LEVELS,
   type EffortLevel,
-  getEffortStrategy,
   getEffort,
+  getEffortStrategy,
   parseEffort,
   renderEffortSlider,
 } from "../tui/effort.js";

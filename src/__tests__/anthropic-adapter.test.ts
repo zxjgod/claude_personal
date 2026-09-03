@@ -276,5 +276,4 @@ describe("createModelCaller routing", () => {
   it("returns different callers for anthropic and openai-compatible providers", () => {
     expect(createModelCaller(anthropicConfig)).not.toBe(createModelCaller(openaiConfig));
   });
-
 });

@@ -172,10 +172,7 @@ export function withEffortInstruction(
 }
 
 /** Respect an explicit max-token ceiling while still differentiating defaults. */
-export function resolveEffortMaxTokens(
-  level: EffortLevel,
-  configured?: number,
-): number {
+export function resolveEffortMaxTokens(level: EffortLevel, configured?: number): number {
   const ceiling = configured ?? effortStrategy(level).maxOutputTokens;
   return Math.max(1, Math.min(ceiling, effortStrategy(level).maxOutputTokens));
 }

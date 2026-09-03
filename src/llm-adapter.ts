@@ -168,10 +168,7 @@ async function* openAICompatibleCaller(
         messages: requestMessages,
         tools: tools.length > 0 ? formatToolsForOpenAI(tools) : undefined,
         tool_choice: tools.length > 0 ? "auto" : undefined,
-        max_tokens: resolveEffortMaxTokens(
-          getEffort(config.options),
-          config.maxTokens,
-        ),
+        max_tokens: resolveEffortMaxTokens(getEffort(config.options), config.maxTokens),
         temperature: isReasoningModel ? undefined : (config.temperature ?? effort.temperature),
         ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
         stream: true,
