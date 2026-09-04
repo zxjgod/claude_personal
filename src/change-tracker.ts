@@ -71,6 +71,17 @@ export function clearChanges(sessionId: string): void {
   changes.delete(sessionId);
 }
 
+/**
+ * Drop specific paths from a session's change set — used by checkpoint
+ * restore: a file rewound to its pre-session state is no longer "changed
+ * this session", so /diff must stop listing it.
+ */
+export function forgetChanges(sessionId: string, paths: string[]): void {
+  const m = changes.get(sessionId);
+  if (!m) return;
+  for (const p of paths) m.delete(p);
+}
+
 /** Test/util: clear everything. */
 export function resetChangeTracker(): void {
   changes.clear();

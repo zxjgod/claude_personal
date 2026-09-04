@@ -11,6 +11,13 @@
 import { render, useApp, useInput } from "ink";
 import { type RefObject, useCallback, useEffect, useRef } from "react";
 import { agentLoop } from "./../agent-loop.js";
+import {
+  beginUserTurn,
+  changedFiles,
+  listTurns,
+  restoreToTurn,
+  turnOfMessage,
+} from "./../checkpoint.js";
 import { formatCliError } from "./../cli-errors.js";
 import type { CommandContext } from "./../commands.js";
 import { handleSlashCommand } from "./../commands.js";
@@ -28,6 +35,7 @@ import { drainNotifications, formatNotificationLine } from "../tools/notificatio
 import { expandFileRefs } from "../tools/utils/file-refs.js";
 import type {
   AskUserFn,
+  ContentBlock,
   HookRunner,
   Message,
   ModelCaller,
@@ -39,14 +47,21 @@ import type {
 } from "./../types.js";
 import { App } from "./App.js";
 import { printBanner, renderBannerLines } from "./banner.js";
+import { readClipboardImageBase64 } from "./clipboard-image.js";
 import { EFFORT_DESCRIPTIONS, getEffort } from "./effort.js";
 import { completeFiles as completeFilesInRoot } from "./file-completions.js";
 import { messagesToTranscript } from "./history-replay.js";
 import type { CommandInfo } from "./InputBox.js";
+import { t } from "./i18n.js";
 import { InputQueue } from "./input-queue.js";
 import { createResolver, DEFAULT_BINDINGS, loadUserBindings } from "./keybindings/index.js";
 import { lookupContextWindow } from "./session-stats.js";
-import { type ProviderPickerItem, type SessionPickerItem, TuiStore } from "./store.js";
+import {
+  type ProviderPickerItem,
+  type RewindEntry,
+  type SessionPickerItem,
+  TuiStore,
+} from "./store.js";
 import { StreamBuffer } from "./stream-buffer.js";
 import { isToolExpandable } from "./ToolCard.js";
 import { truncateVisual } from "./terminal-width.js";
@@ -68,6 +83,13 @@ export interface TuiDeps {
   workspaceRoot: string;
   /** Live workspace-root reader (for /cd). Falls back to `workspaceRoot` when absent. */
   getWorkspaceRoot?: () => string;
+  /**
+   * Live session-id reader (P0-3 fix). /resume rewrites session.id in place;
+   * the startup-captured `sessionId` string goes stale, which would split
+   * checkpoint buckets from /rewind's (live) ctx.sessionId. Falls back to
+   * `sessionId` when absent.
+   */
+  getSessionId?: () => string;
   sessionId: string;
   permissionMode: PermissionMode;
   commands: CommandInfo[];
@@ -115,11 +137,14 @@ async function runTurn(
   const turnSystemPrompt = goal
     ? `${deps.systemPrompt}\n\n[SESSION GOAL]\nThe user set this objective for the session. Keep it in view and steer toward it:\n${goal}`
     : deps.systemPrompt;
+  // Live session id (see TuiDeps.getSessionId): reads session.id at turn
+  // start so /resume's in-place rewrite can't leave checkpoint buckets split.
+  const sid = deps.getSessionId?.() ?? deps.sessionId;
   const loop = agentLoop(deps.messages, deps.tools, deps.callModel, deps.modelConfig, {
     systemPrompt: turnSystemPrompt,
     toolContext: {
       workspaceRoot: deps.getWorkspaceRoot?.() ?? deps.workspaceRoot,
-      sessionId: deps.sessionId,
+      sessionId: sid,
       permissionMode: store.getPermissionMode(),
       getPermissionMode: () => store.getPermissionMode(),
       setPermissionMode: (mode) => store.setPermissionMode(mode),
@@ -151,17 +176,28 @@ async function runTurn(
     // M36: type-ahead. The loop drains queued input at each turn boundary and
     // continues the SAME turn with it (kernel §9), so a message typed while the
     // agent works is picked up without waiting for the turn to end. The TUI
-    // echoes the queued line at push time (see Root.onSubmit); here the loop
-    // injects it into `messages` so the model actually sees it. The drain also
-    // re-syncs the status bar's "queued N" badge.
+    // echoes the queued line at push time (see Root.onSubmit); the loop
+    // injects it into `messages` (opening its checkpoint turn boundary there)
+    // so the model actually sees it. The drain also re-syncs the status bar's
+    // "queued N" badge.
     drainQueuedInput: () => {
       const drained = queue.drain();
       store.setQueuedInputs(queue.size);
       return drained;
     },
+    // P0-4: live retry countdown — the loop reports its pending backoff before
+    // sleeping; the first event of the retried call clears it (see the loop).
+    onModelRetry: (info) => {
+      store.showRetry(
+        t(info.kind === "rate_limit" ? "ui.retry.rateLimit" : "ui.retry.transient"),
+        info.attempt,
+        info.max,
+        info.delayMs,
+      );
+    },
     // M41: background completion notifications are delivered at safe turn
     // boundaries without requiring a job_output polling call.
-    drainNotifications: () => drainNotifications(deps.sessionId),
+    drainNotifications: () => drainNotifications(sid),
   });
 
   let thinkingStart = Date.now();
@@ -172,13 +208,29 @@ async function runTurn(
   // early in the stream) would systematically under-count. For providers
   // without thinking content this still fires on the first text delta,
   // measuring time-to-first-token as before.
+  // P0-2: when thinking TEXT exists it commits as ONE collapsed line
+  // ("✻ Thought for Ns · M lines") instead of dumping the full reasoning
+  // into the transcript; the full text is visible in the Ctrl+O viewer.
   const settleThinking = () => {
+    const hasText = store.getSnapshot().streamingThinking.trim().length > 0;
     if (!thoughtReported && thinkingStart > 0) {
       const secs = Math.max(1, Math.round((Date.now() - thinkingStart) / 1000));
-      store.addThought(secs);
+      if (hasText) {
+        store.commitThinking(secs);
+      } else {
+        store.addThought(secs);
+      }
       thoughtReported = true;
+    } else {
+      // Interleaved thinking (a second burst after text already settled the
+      // first): still measure from this burst's start so the collapsed line
+      // doesn't read "Thought for 0s".
+      const secs =
+        thinkingStart > 0
+          ? Math.max(1, Math.round((Date.now() - thinkingStart) / 1000))
+          : undefined;
+      store.commitThinking(secs);
     }
-    store.commitThinking();
   };
   // Real output tokens reconciled with a live estimate: each model call ends
   // with a `usage` event carrying the true output_tokens, which we accumulate
@@ -199,6 +251,8 @@ async function runTurn(
 
   try {
     for await (const event of loop) {
+      // P0-4: any event from the (retried) call retires the countdown.
+      store.clearRetry();
       switch (event.type) {
         case "thinking":
           deps.onSave("waiting_for_model");
@@ -264,6 +318,12 @@ async function runTurn(
           deps.onSave("recovering");
           store.addNotice("Compacting context…");
           break;
+        case "compacted":
+          // Post-hoc result of a compaction (proactive, context-length
+          // recovery, or a fallback-model switch). Without this the loop's
+          // silent multi-second compaction LLM call reads as a dead spinner.
+          store.addNotice(`  ⎿ ${event.summary}`);
+          break;
         case "error":
           deps.onSave("failed");
           streamBuffer.flush();
@@ -299,6 +359,7 @@ async function runTurn(
     store.setSpinnerTokens(0);
     store.stopTurnClock();
     store.setBusy(false);
+    store.clearRetry();
     // Drain any frame-coalesced notify so the idle state (spinner cleared,
     // input re-enabled) paints immediately rather than waiting on a trailing
     // frame after the turn ends.
@@ -345,6 +406,13 @@ function estimateContextUsed(
 
 function capitalize(name: string): string {
   return name.length === 0 ? name : name[0]!.toUpperCase() + name.slice(1);
+}
+
+/** How many checkpoint first-writes landed on exactly `turn` (menu badge). */
+function countIf(firstWrites: Map<string, number>, turn: number): number {
+  let n = 0;
+  for (const t of firstWrites.values()) if (t === turn) n++;
+  return n;
 }
 
 function truncate(value: string, max: number): string {
@@ -498,6 +566,114 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
   // interrupt it. Ink keeps stdin in raw mode, so Ctrl+C never raises SIGINT —
   // the process-level handler below only covers non-TUI fallbacks.
   const turnControllerRef = useRef<AbortController | null>(null);
+  // P0-5: pasted-image registry. "[Image #N]" chips in a submitted prompt
+  // resolve against this map into image content blocks; the blocks then live
+  // in `messages` history (model-visible on every later turn, official style).
+  const imagesRef = useRef(new Map<number, string>());
+  const imageCounterRef = useRef(0);
+  // Live session id (P0-3 fix): /resume rewrites session.id in place, so the
+  // startup-captured deps.sessionId goes stale — checkpoints and /rewind would
+  // then query different buckets. Same getter pattern as getWorkspaceRoot.
+  const sessionId = useCallback(() => deps.getSessionId?.() ?? deps.sessionId, [deps]);
+
+  // Chips are SINGLE-USE: an attached image is consumed on submit, so a chip
+  // recalled from history (or typed literally) can't silently re-attach a
+  // stale image to a later message.
+  const buildUserContent = useCallback((text: string): ContentBlock[] => {
+    const blocks: ContentBlock[] = [{ type: "text", text }];
+    for (const m of text.matchAll(/\[Image #(\d+)\]/g)) {
+      const n = Number(m[1]);
+      const data = imagesRef.current.get(n);
+      if (data) {
+        blocks.push({ type: "image", source: { type: "base64", media_type: "image/png", data } });
+        imagesRef.current.delete(n);
+      }
+    }
+    return blocks;
+  }, []);
+
+  // P0-5: InputBox Ctrl/Alt+V → read the system clipboard. Registers the
+  // image and returns the chip text to insert at the cursor.
+  const onImagePaste = useCallback(async (): Promise<string | null> => {
+    const data = await readClipboardImageBase64();
+    if (!data) return null;
+    imageCounterRef.current += 1;
+    imagesRef.current.set(imageCounterRef.current, data);
+    return `[Image #${imageCounterRef.current}]`;
+  }, []);
+
+  // P0-3: Esc+Esc rewind menu. Truncates `messages` to BEFORE the chosen user
+  // turn and restores on-disk files from the checkpoint snapshots. Each entry
+  // maps to its checkpoint turn via the message tag (turnOfMessage) — no
+  // ordinal arithmetic that synthetic injections or /resume could skew.
+  const openRewindMenu = useCallback(async () => {
+    const sid = sessionId();
+    const userTurns: Array<{ index: number; text: string; cpTurn: number | null }> = [];
+    deps.messages.forEach((m, i) => {
+      if (m.role !== "user") return;
+      const text =
+        typeof m.content === "string"
+          ? m.content
+          : m.content
+              .filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text")
+              .map((b) => b.text)
+              .join(" ");
+      userTurns.push({ index: i, text, cpTurn: turnOfMessage(m) });
+    });
+    if (userTurns.length === 0) {
+      store.addNotice("  Nothing to rewind — no user turns yet.");
+      return;
+    }
+    // filesChanged per turn: paths whose first write was that turn.
+    const firstWrites = changedFiles(sid);
+    const entries: RewindEntry[] = [];
+    for (let turn = userTurns.length; turn >= 1; turn--) {
+      const t = userTurns[turn - 1]!;
+      const filesChanged = t.cpTurn === null ? 0 : countIf(firstWrites, t.cpTurn);
+      const meta = t.cpTurn === null ? null : listTurns(sid).find((x) => x.turn === t.cpTurn);
+      entries.push({
+        turnIndex: turn,
+        label: t.text.replace(/\s+/g, " ").slice(0, 80) || "(empty)",
+        timestamp: meta ? new Date(meta.timestamp).toLocaleTimeString() : "",
+        filesChanged,
+      });
+    }
+    const chosen = await store.askRewind(entries);
+    if (chosen === null) return;
+    const target = userTurns[chosen - 1]!;
+    const cutAt = target.index;
+    const before = deps.messages.length;
+    // Files: restore the tagged boundary when present; turns loaded by
+    // /resume have none — the conversation still rewinds, honestly reported.
+    const { restored, deleted } =
+      target.cpTurn !== null ? restoreToTurn(sid, target.cpTurn) : { restored: [], deleted: [] };
+    deps.messages.length = cutAt;
+    // Reset the on-screen transcript to the SURVIVING history (same replay
+    // semantics as /resume). resetTranscript bumps an epoch that remounts the
+    // <Static> region — without it Ink's write-once Static would swallow all
+    // future items (its internal index only grows, so a shrunk array leaves
+    // slice(index) empty forever).
+    store.resetTranscript();
+    store.addNotice(
+      `  ⏪ Rewound to before message #${chosen} (${before} → ${deps.messages.length} messages)`,
+    );
+    if (target.cpTurn === null) {
+      store.addNotice(
+        "  ⎿ no checkpoint boundary for this turn (loaded before startup) — files not restored",
+      );
+    } else if (restored.length > 0 || deleted.length > 0) {
+      store.addNotice(
+        `  ⎿ files restored: ${restored.length} rewritten · ${deleted.length} deleted (Bash-side edits are not checkpointed)`,
+      );
+    }
+    store.loadTranscript(messagesToTranscript(deps.messages));
+    store.setTodos([]);
+    try {
+      deps.onSave();
+    } catch {
+      /* best-effort persistence */
+    }
+  }, [store, deps, sessionId]);
 
   const askUser: AskUserFn = useCallback(
     async (tool, input, riskHint) => {
@@ -653,12 +829,20 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
         for (const note of notes) store.addNotice(note);
         // M41: completions that arrived while idle ride along with the next
         // user prompt. They are drained exactly once and become model-visible
-        // without starting a turn by themselves.
-        const pendingNotes = drainNotifications(deps.sessionId);
+        // without starting a turn by itself.
+        const pendingNotes = drainNotifications(sessionId());
         const contentText = [pendingNotes.join("\n\n"), inputText, ...attachments]
           .filter(Boolean)
           .join("\n\n");
-        deps.messages.push({ role: "user", content: [{ type: "text", text: contentText }] });
+        // P0-3: checkpoint turn boundary BEFORE the message lands, so rewind
+        // restores "the world as it was when this prompt was sent". The
+        // message itself is tagged with its turn (turnOfMessage).
+        const userMsg: Message = {
+          role: "user",
+          content: buildUserContent(contentText),
+        };
+        beginUserTurn(sessionId(), userMsg);
+        deps.messages.push(userMsg);
 
         const controller = new AbortController();
         turnControllerRef.current = controller;
@@ -679,7 +863,10 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
           while (queueRef.current.hasPending && followUps < MAX_FOLLOWUP_TURNS) {
             followUps++;
             for (const text of queueRef.current.drain()) {
-              deps.messages.push({ role: "user", content: [{ type: "text", text }] });
+              // P0-3: queued turns are rewindable too (tagged boundary).
+              const followUpMsg: Message = { role: "user", content: buildUserContent(text) };
+              beginUserTurn(sessionId(), followUpMsg);
+              deps.messages.push(followUpMsg);
             }
             store.setQueuedInputs(queueRef.current.size);
             await runTurn(store, deps, controller, askUser, askUserQuestion, queueRef.current);
@@ -705,7 +892,7 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
         store.setBusy(false);
       });
     },
-    [store, deps, askUser, askUserQuestion],
+    [store, deps, askUser, askUserQuestion, buildUserContent, sessionId],
   );
 
   // M41: keep the scheduler alive for the whole TUI session. A due prompt is
@@ -714,7 +901,7 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
   // boundary. The scheduler owns its interval and returns a cleanup function.
   useEffect(() => {
     return startScheduler({
-      sessionId: deps.sessionId,
+      sessionId: sessionId(),
       workspaceRoot: deps.getWorkspaceRoot?.() ?? deps.workspaceRoot,
       // An open overlay (permission/question prompt from a BACKGROUND agent
       // surfacing while the main turn is idle) counts as busy: injecting a
@@ -726,7 +913,7 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
       },
       displayParked: (p) => store.addNotice(`⏰ ${p.label} —— 当前回合结束后送达`),
     });
-  }, [deps, onSubmit, store]);
+  }, [deps, onSubmit, store, sessionId]);
 
   return (
     <>
@@ -743,6 +930,8 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
         editorMode={deps.makeCommandContext().editorMode}
         completeFiles={completeFiles}
         fullscreen={deps.fullscreen}
+        onRewind={openRewindMenu}
+        onImagePaste={onImagePaste}
       />
     </>
   );

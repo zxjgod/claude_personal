@@ -18,6 +18,7 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       "?": "help:toggle",
       "ctrl+c": "app:interrupt",
       "ctrl+r": "tool:expandLast",
+      "ctrl+o": "transcript:toggle",
       pageup: "transcript:review",
     },
   },

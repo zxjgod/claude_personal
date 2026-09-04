@@ -8,6 +8,7 @@
 // ============================================================
 
 import { autoCompact, latestUserText } from "./auto-compact.js";
+import { beginUserTurn } from "./checkpoint.js";
 import { CollapseStore, prepareCheapLayers } from "./context-pipeline.js";
 import {
   handleModelError,
@@ -148,6 +149,15 @@ export async function* agentLoop(
         error: error instanceof Error ? error : new Error(String(error)),
       };
     }
+  };
+
+  // P0-3: every SYNTHETIC user-turn injection below (stop-hook errors, length
+  // continuations, tool-result images, queued input, notifications) opens a
+  // checkpoint boundary and tags its message, so rewind maps message →
+  // boundary 1:1. No-op when the caller passed no sessionId (tests).
+  const openTurnBoundary = (msg: Message): void => {
+    const sid = toolContext?.sessionId;
+    if (sid) beginUserTurn(sid, msg);
   };
 
   // Build the full ToolContext from caller-provided values.
@@ -349,14 +359,30 @@ export async function* agentLoop(
           }
 
           case "error": {
-            const recovery = await handleModelError(event.error, {
-              rateLimitRetries: state.rateLimitRetries,
-              contextLengthRetries: state.contextLengthRetries,
-              transientRetries: state.transientRetries,
-              maxRateLimitRetries: MAX_RATE_LIMIT_RETRIES,
-              maxContextLengthRetries: MAX_CONTEXT_LENGTH_RETRIES,
-              maxTransientRetries: MAX_TRANSIENT_RETRIES,
-            });
+            const recovery = await handleModelError(
+              event.error,
+              {
+                rateLimitRetries: state.rateLimitRetries,
+                contextLengthRetries: state.contextLengthRetries,
+                transientRetries: state.transientRetries,
+                maxRateLimitRetries: MAX_RATE_LIMIT_RETRIES,
+                maxContextLengthRetries: MAX_CONTEXT_LENGTH_RETRIES,
+                maxTransientRetries: MAX_TRANSIENT_RETRIES,
+              },
+              (notice) => {
+                // P0-4: surface the pending backoff to the UI before sleeping.
+                options.onModelRetry?.({
+                  kind: notice.kind,
+                  delayMs: notice.delayMs,
+                  attempt:
+                    notice.kind === "rate_limit"
+                      ? state.rateLimitRetries + 1
+                      : state.transientRetries + 1,
+                  max:
+                    notice.kind === "rate_limit" ? MAX_RATE_LIMIT_RETRIES : MAX_TRANSIENT_RETRIES,
+                });
+              },
+            );
             if (recovery === "retry") {
               state = { ...state, rateLimitRetries: state.rateLimitRetries + 1 };
               nextAction = "retry";
@@ -458,7 +484,12 @@ export async function* agentLoop(
           return terminal("stop_hook_prevented");
         }
         if (stop.blockingError) {
-          messages.push({ role: "user", content: [{ type: "text", text: stop.blockingError }] });
+          const stopMsg: Message = {
+            role: "user",
+            content: [{ type: "text", text: stop.blockingError }],
+          };
+          openTurnBoundary(stopMsg);
+          messages.push(stopMsg);
           state = {
             ...state,
             stopHookActive: true,
@@ -499,10 +530,12 @@ export async function* agentLoop(
       // truncation continuations consume `turnCount` like any other turn, so the
       // loop always exits and reports `max_turns` (not "completed").
       if (modelFinishReason === "length") {
-        messages.push({
+        const nudgeMsg: Message = {
           role: "user",
           content: [{ type: "text", text: buildContinuationNudge(state.budget) }],
-        });
+        };
+        openTurnBoundary(nudgeMsg);
+        messages.push(nudgeMsg);
         state = {
           ...state,
           turnCount: turnCount + 1,
@@ -517,7 +550,13 @@ export async function* agentLoop(
       // background job that keeps restarting itself must not bounce the loop
       // indefinitely. A real queued user message resets the budget.
       if (
-        injectNotifications(messages, drainNotifications, state, MAX_NOTIFICATION_CONTINUATIONS)
+        injectNotifications(
+          messages,
+          drainNotifications,
+          state,
+          MAX_NOTIFICATION_CONTINUATIONS,
+          openTurnBoundary,
+        )
       ) {
         state = {
           ...state,
@@ -528,7 +567,7 @@ export async function* agentLoop(
         continue;
       }
 
-      if (injectQueuedInput(messages, drainQueuedInput)) {
+      if (injectQueuedInput(messages, drainQueuedInput, openTurnBoundary)) {
         state = {
           ...state,
           notificationContinuations: 0,
@@ -642,17 +681,19 @@ export async function* agentLoop(
     // Tool results may carry images.
     const images = toolResults.flatMap((r) => r.result?.images ?? []);
     if (images.length > 0) {
-      messages.push({
+      const imageMsg: Message = {
         role: "user",
         content: [
           { type: "text", text: "Attached image(s) from the tool result above:" },
           ...images,
         ],
-      });
+      };
+      openTurnBoundary(imageMsg);
+      messages.push(imageMsg);
     }
 
     yield { type: "tool_results", results: toolResults };
-    injectQueuedInput(messages, drainQueuedInput);
+    injectQueuedInput(messages, drainQueuedInput, openTurnBoundary);
     // M41: merge any background completions that landed while the tools ran
     // into history now — the next model call sees them alongside the tool
     // results (mirrors the reference: notification rides the next user-side
@@ -690,13 +731,20 @@ function estimateContextTokens(messages: Message[], baseline: LoopState["usageBa
 
 /**
  * Inject queued type-ahead input as follow-up user messages (M36, kernel §9).
+ * Each message opens a checkpoint boundary (P0-3) via the optional tag hook.
  */
-function injectQueuedInput(messages: Message[], drain?: () => string[]): boolean {
+function injectQueuedInput(
+  messages: Message[],
+  drain?: () => string[],
+  openBoundary?: (msg: Message) => void,
+): boolean {
   if (!drain) return false;
   const queued = drain();
   if (queued.length === 0) return false;
   for (const text of queued) {
-    messages.push({ role: "user", content: [{ type: "text", text }] });
+    const msg: Message = { role: "user", content: [{ type: "text", text }] };
+    openBoundary?.(msg);
+    messages.push(msg);
   }
   return true;
 }
@@ -713,14 +761,17 @@ function injectNotifications(
   drain: (() => string[]) | undefined,
   state: LoopState,
   maxContinuations: number,
+  openBoundary?: (msg: Message) => void,
 ): boolean {
   if (!drain) return false;
   if (state.notificationContinuations >= maxContinuations) return false;
   const notifications = drain();
   if (notifications.length === 0) return false;
-  messages.push({
+  const msg: Message = {
     role: "user",
     content: notifications.map((text) => ({ type: "text", text }) as const),
-  });
+  };
+  openBoundary?.(msg);
+  messages.push(msg);
   return true;
 }

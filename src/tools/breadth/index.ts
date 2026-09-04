@@ -13,6 +13,7 @@ import * as path from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
 import { recordChange } from "../../change-tracker.js";
+import { shadowBeforeWrite } from "../../checkpoint.js";
 import {
   getLspClient,
   filterByFile as lspFilterByFile,
@@ -149,6 +150,7 @@ export const NotebookEditTool: Tool = buildTool({
       }
 
       const out = JSON.stringify(nb, null, 1) + "\n";
+      shadowBeforeWrite(context.sessionId, filePath); // P0-3: shadow for rewind
       fs.writeFileSync(filePath, out, "utf-8");
       const after = statMtimeMs(filePath);
       if (after !== undefined) refreshRead(context.sessionId, filePath, after);

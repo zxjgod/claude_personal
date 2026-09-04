@@ -609,6 +609,18 @@ export interface LoopOptions {
    * concurrency-safe tools are ever speculated, so it is safe to leave on.
    */
   speculation?: boolean;
+  /**
+   * P0-4: fired just before a retryable model error (429 / transient network)
+   * enters its backoff sleep, so the UI can show a live countdown
+   * ("retrying in Ns · attempt N/M") instead of hanging silently. The loop
+   * already handles the retry itself; this is display-only.
+   */
+  onModelRetry?: (info: {
+    kind: "rate_limit" | "transient";
+    attempt: number;
+    max: number;
+    delayMs: number;
+  }) => void;
 }
 
 /** Structural type for the hook registry — see src/hooks.ts. */

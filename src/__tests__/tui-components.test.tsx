@@ -197,7 +197,8 @@ describe("App", () => {
     const frame = lastFrame()!;
     expect(frame).toContain("Transcript —");
     expect(frame).toContain("old question");
-    expect(frame).toContain("Esc 返回");
+    // P0-1: verbose viewer footer advertises search/jump/editor/close keys.
+    expect(frame).toContain("q/Esc close");
   });
 
   it("keeps the Static transcript MOUNTED while reviewing (no reprint on exit)", async () => {

@@ -409,6 +409,10 @@ async function main() {
       workspaceRoot,
       getWorkspaceRoot: () => workspaceRoot,
       sessionId: session.id,
+      // Live reader: /resume rewrites session.id in place (cli-session.ts);
+      // the captured string above would go stale and split checkpoint buckets
+      // away from /rewind's (live) ctx.sessionId.
+      getSessionId: () => session.id,
       permissionMode,
       commands: COMMANDS.map((c) => ({ name: c.name, description: c.description })),
       hooks,

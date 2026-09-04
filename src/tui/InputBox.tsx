@@ -16,6 +16,8 @@
 //   • Ctrl+K     delete from cursor to end of line (M41)
 //   • Ctrl+W     delete word before cursor (M41)
 //   • Esc        close the open dropdown ("/" palette or "@" files)
+//   • Esc Esc    rewind menu (idle + empty buffer; first Esc clears a draft) — P0-3
+//   • Ctrl/Alt+V paste a clipboard image as an "[Image #N]" chip — P0-5
 //
 // Two dropdown sources, mutually exclusive by their trigger:
 //   "/" at the start of the buffer → slash-command palette
@@ -204,6 +206,13 @@ export interface InputBoxProps {
    *  navigation index internally. */
   history?: string[];
   onHistoryChange?: (history: string[]) => void;
+  /** P0-3: double-Esc rewind trigger. Called on the second Esc within 2s while
+   *  idle with an empty buffer (first Esc clears a non-empty draft). Omit to
+   *  disable (busy turns pass undefined). */
+  onRewind?: () => void;
+  /** P0-5: read a clipboard image (Ctrl/Cmd/Alt+V). Resolves with the
+   *  "[Image #N]" chip text (already registered by the runner) or null. */
+  onImagePaste?: () => Promise<string | null>;
 }
 
 /** Pastes longer than this show the "已粘贴 N 行" note (lines, threshold). */
@@ -220,6 +229,8 @@ export function InputBox({
   completeFiles,
   history: externalHistory,
   onHistoryChange,
+  onRewind,
+  onImagePaste,
 }: InputBoxProps) {
   const vimActive = editorMode?.value === "vim";
   // Frame color: grey out when disabled UNLESS the caller asks to keep the
@@ -239,6 +250,27 @@ export function InputBox({
   const [fileSelected, setFileSelected] = useState(0);
   // One-shot note shown after a large paste; cleared by the next keypress.
   const [pasteNote, setPasteNote] = useState<string | null>(null);
+  // P0-3: double-Esc rewind arming. First Esc (idle, empty buffer, non-vim)
+  // arms; a second Esc within 2s fires onRewind. Any other key disarms.
+  const escArmedRef = useRef(false);
+  const escTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // P0-5: draft generation. Bumped whenever the buffer is wholesale replaced
+  // (submit / Esc-clear), so a slow in-flight clipboard read can detect that
+  // the draft it snapshotted is gone and drop its chip instead of splicing
+  // it into the next draft.
+  const draftGenRef = useRef(0);
+  const disarmEsc = () => {
+    escArmedRef.current = false;
+    if (escTimerRef.current !== null) {
+      clearTimeout(escTimerRef.current);
+      escTimerRef.current = null;
+    }
+  };
+  useEffect(() => {
+    return () => {
+      if (escTimerRef.current !== null) clearTimeout(escTimerRef.current);
+    };
+  }, []);
   // Vim sub-mode (only meaningful when vimActive). Starts in insert so typing
   // works immediately after /vim on; Esc drops to normal.
   const [vimMode, setVimMode] = useState<"normal" | "insert">("insert");
@@ -336,12 +368,15 @@ export function InputBox({
     setPasteNote(null);
     setHistoryIndex(-1);
     historyRestoreRef.current = null;
+    draftGenRef.current++;
   };
 
   useInput(
     (input, key) => {
       // Any keypress retires the paste note — it has done its job once seen.
       if (pasteNote !== null) setPasteNote(null);
+      // P0-3: any non-Esc key disarms the double-Esc rewind arm.
+      if (!key.escape) disarmEsc();
 
       // --- Esc: close the open dropdown ("/" palette or "@" files) ---
       // Runs BEFORE the vim branch: leaving insert mode with a dropdown open
@@ -355,6 +390,9 @@ export function InputBox({
 
       // --- Vim normal mode (M18.10): drive the VimEngine state machine ---
       if (vimActive && vimMode === "normal") {
+        // Ctrl-chords are global (Ctrl+O viewer toggle, Ctrl+C interrupt) —
+        // never also vim operators.
+        if (key.ctrl && input) return;
         if (key.return) {
           const value = buffer;
           pushHistory(value);
@@ -384,6 +422,34 @@ export function InputBox({
         // Reset the engine to NORMAL/idle so the next normal-mode key starts a
         // fresh command (text/offset are re-synced on that key).
         vimEngineRef.current?.handleKey("Escape");
+        return;
+      }
+
+      // --- P0-3: double-Esc rewind (idle, empty buffer, non-vim) ---
+      // Esc#1 with a draft clears it; Esc#1 on an empty buffer arms; Esc#2
+      // within 2s opens the rewind menu. While busy, Esc stays an interrupt
+      // (InterruptHotkey owns it) — onRewind is undefined then by contract.
+      if (key.escape && !vimActive && !busy && onRewind) {
+        const arm = () => {
+          disarmEsc();
+          escArmedRef.current = true;
+          escTimerRef.current = setTimeout(disarmEsc, 2000);
+        };
+        if (bufferRef.current.length > 0) {
+          setBuffer("");
+          setCursor(0);
+          setHistoryIndex(-1);
+          historyRestoreRef.current = null;
+          draftGenRef.current++;
+          setPasteNote(t("ui.rewind.draftCleared"));
+          arm();
+        } else if (escArmedRef.current) {
+          disarmEsc();
+          onRewind();
+        } else {
+          setPasteNote(t("ui.rewind.armHint"));
+          arm();
+        }
         return;
       }
 
@@ -571,6 +637,36 @@ export function InputBox({
         const { newBuffer, newCursor } = deleteWordBefore(bufferRef.current, cursorRef.current);
         setBuffer(newBuffer);
         setCursor(newCursor);
+        return;
+      }
+
+      // --- P0-5: image paste (Ctrl/Cmd/Alt+V) ---
+      // Reads the SYSTEM clipboard (terminals can't hand binaries through
+      // stdin). On success the runner has already registered the image and
+      // returns the "[Image #N]" chip to insert at the cursor.
+      if ((key.ctrl || key.meta) && input === "v" && onImagePaste) {
+        // Clipboard reads are slow (~1s via PowerShell on Windows). Snapshot
+        // the cursor AND the draft generation NOW: if the draft was submitted
+        // or cleared while the read was in flight, dropping the chip is the
+        // honest outcome — splicing it into whatever the user is typing next
+        // would silently attach the image to a later message.
+        const posAtPress = cursorRef.current;
+        const genAtPress = draftGenRef.current;
+        void onImagePaste().then((chip) => {
+          if (chip === null) {
+            setPasteNote(t("ui.image.none"));
+            return;
+          }
+          if (draftGenRef.current !== genAtPress) {
+            setPasteNote(t("ui.image.stale"));
+            return;
+          }
+          const pos = Math.min(posAtPress, bufferRef.current.length);
+          const ins = bufferRef.current.length > 0 ? ` ${chip}` : chip;
+          setBuffer((b) => b.slice(0, pos) + ins + b.slice(pos));
+          setCursor(pos + ins.length);
+          setPasteNote(t("ui.image.pasted", { chip }));
+        });
         return;
       }
 

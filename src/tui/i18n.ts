@@ -104,6 +104,35 @@ const translations: Record<Language, Record<string, string>> = {
 
     // Full-screen scrolled hint
     "ui.fs.scrolled": "↑ viewing history — Ctrl+End or G to jump to latest",
+
+    // Collapsed thinking (P0-2)
+    "ui.thinking.collapsed": "✻ Thought for {s}s · {n} lines (Ctrl+O to expand)",
+    // No duration recorded (e.g. /resume replayed history)
+    "ui.thinking.noSecs": "✻ Thinking · {n} lines (Ctrl+O to expand)",
+
+    // Model retry countdown (P0-4)
+    "ui.retry.status": "{reason} — retrying in {s}s (attempt {a}/{m})",
+    "ui.retry.rateLimit": "API 429 rate limit",
+    "ui.retry.transient": "connection error",
+
+    // Transcript viewer (P0-1)
+    "ui.viewer.title": "Transcript — {n} lines (verbose)",
+    "ui.viewer.titleStreaming": "Transcript — {n} lines (verbose) · still streaming",
+    "ui.viewer.hint": "/ search · n/N matches · { } prompts · v editor · q/Esc close",
+    "ui.viewer.searchPrompt": "search: {q}",
+    "ui.viewer.matches": "{n} matches",
+    "ui.viewer.editorFailed": "could not open the transcript in $VISUAL/$EDITOR",
+
+    // Rewind menu (P0-3)
+    "ui.rewind.title": "Rewind to a previous message",
+    "ui.rewind.hint": "↑↓ select · Enter rewind (restores files) · Esc cancel",
+    "ui.rewind.armHint": "Esc again to open the rewind menu",
+    "ui.rewind.draftCleared": "draft cleared — Esc again to rewind",
+
+    // Image paste (P0-5)
+    "ui.image.pasted": "attached {chip} — will be sent with your next message",
+    "ui.image.none": "no image found in the clipboard",
+    "ui.image.stale": "clipboard image arrived after the draft was sent — paste again to attach it",
   },
   "zh-CN": {
     // Permission errors
@@ -175,6 +204,35 @@ const translations: Record<Language, Record<string, string>> = {
     "ui.ctx.critical": "上下文已用 {pct}% — 即将自动压缩",
 
     "ui.fs.scrolled": "↑ 正在查看历史 — Ctrl+End 或按 G 返回最新",
+
+    // 折叠的思维块（P0-2）
+    "ui.thinking.collapsed": "✻ 已思考 {s} 秒 · 共 {n} 行（Ctrl+O 展开）",
+    // 无时长记录（如 /resume 回放的历史）
+    "ui.thinking.noSecs": "✻ 思考内容 · 共 {n} 行（Ctrl+O 展开）",
+
+    // 模型重试倒计时（P0-4）
+    "ui.retry.status": "{reason} — {s} 秒后重试（第 {a}/{m} 次）",
+    "ui.retry.rateLimit": "API 429 限流",
+    "ui.retry.transient": "连接错误",
+
+    // 会话查看器（P0-1）
+    "ui.viewer.title": "会话记录 — 共 {n} 行（完整模式）",
+    "ui.viewer.titleStreaming": "会话记录 — 共 {n} 行（完整模式）· 仍在输出",
+    "ui.viewer.hint": "/ 搜索 · n/N 匹配项 · { } 跳转提问 · v 编辑器 · q/Esc 关闭",
+    "ui.viewer.searchPrompt": "搜索：{q}",
+    "ui.viewer.matches": "{n} 处匹配",
+    "ui.viewer.editorFailed": "无法在 $VISUAL/$EDITOR 中打开会话记录",
+
+    // 回退菜单（P0-3）
+    "ui.rewind.title": "回退到之前的某条消息",
+    "ui.rewind.hint": "↑↓ 选择 · Enter 回退（会还原文件）· Esc 取消",
+    "ui.rewind.armHint": "再按一次 Esc 打开回退菜单",
+    "ui.rewind.draftCleared": "已清空输入 — 再按 Esc 回退",
+
+    // 图片粘贴（P0-5）
+    "ui.image.pasted": "已附加 {chip} — 将随下一条消息发送",
+    "ui.image.none": "剪贴板中没有图片",
+    "ui.image.stale": "剪贴板图片在草稿发送后才读取完成 — 请重新粘贴",
   },
 };
 

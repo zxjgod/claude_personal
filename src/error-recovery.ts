@@ -15,6 +15,16 @@
  */
 export type ModelErrorRecovery = "retry" | "retry_transient" | "compact_and_retry" | "abort";
 
+/**
+ * Fired right before a retry sleeps, so the UI can show a countdown
+ * ("retrying in Ns · attempt N/M") instead of hanging silently.
+ */
+export interface RetryNotice {
+  kind: "rate_limit" | "transient";
+  /** Computed backoff (with jitter) that will be slept. */
+  delayMs: number;
+}
+
 export interface RecoveryState {
   rateLimitRetries: number;
   contextLengthRetries: number;
@@ -62,6 +72,7 @@ export function isFallbackableModelError(error: unknown): boolean {
 export async function handleModelError(
   error: unknown,
   state: RecoveryState,
+  onRetry?: (notice: RetryNotice) => void,
 ): Promise<ModelErrorRecovery> {
   const err = error as Record<string, unknown> | null;
 
@@ -78,6 +89,7 @@ export async function handleModelError(
     const jitter = cappedDelay * 0.2 * (Math.random() * 2 - 1);
     const finalDelay = Math.round(cappedDelay + jitter);
 
+    onRetry?.({ kind: "rate_limit", delayMs: finalDelay });
     await sleep(finalDelay);
     return "retry";
   }
@@ -119,6 +131,7 @@ export async function handleModelError(
     if (state.transientRetries >= state.maxTransientRetries) {
       return "abort";
     }
+    onRetry?.({ kind: "transient", delayMs: 2000 });
     await sleep(2000);
     return "retry_transient";
   }

@@ -16,7 +16,12 @@ import { t } from "./i18n.js";
 export type TranscriptItem =
   | { kind: "user"; id: number; text: string }
   | { kind: "assistant"; id: number; text: string }
-  | { kind: "thinking_text"; id: number; text: string }
+  /**
+   * Committed extended-thinking content. Renders COLLAPSED (one
+   * "Thought for Ns" line); the full text is visible in the transcript
+   * viewer (Ctrl+O) — P0-2.
+   */
+  | { kind: "thinking_text"; id: number; text: string; seconds?: number }
   | {
       kind: "tool";
       id: number;
@@ -78,6 +83,29 @@ export interface CommandPickerItem {
   description: string;
 }
 
+/**
+ * One entry in the Esc+Esc rewind menu (P0-3). Pre-formatted display data;
+ * `turnIndex` (1-based user-turn number) is returned on selection.
+ */
+export interface RewindEntry {
+  turnIndex: number;
+  /** Preview of that turn's user message. */
+  label: string;
+  /** When the turn was sent (pre-formatted, local time). */
+  timestamp: string;
+  /** Files first modified in this turn (checkpoint data). */
+  filesChanged: number;
+}
+
+/** Live model-error retry countdown (P0-4): "⚠ … — retrying in Ns · a/m". */
+export interface RetryStatus {
+  /** Short reason, e.g. "429 rate limit" or "connection timeout". */
+  reason: string;
+  attempt: number;
+  max: number;
+  secondsLeft: number;
+}
+
 /** A pending interactive prompt the App should overlay. */
 export type Overlay =
   | {
@@ -114,6 +142,11 @@ export type Overlay =
       kind: "commandPicker";
       commands: CommandPickerItem[];
       resolve: (name: string | null) => void;
+    }
+  | {
+      kind: "rewind";
+      entries: RewindEntry[];
+      resolve: (turnIndex: number | null) => void;
     }
   | {
       kind: "confirm";
@@ -184,13 +217,27 @@ export interface StoreState {
   /** M41: input command history for ↑/↓ navigation. */
   inputHistory: string[];
   /**
-   * Transcript review mode (PgUp opens, Esc closes). When true the App swaps
-   * the transcript/live/input regions for the in-app scrollable pager — the
+   * Transcript review mode (PgUp/Ctrl+O opens, Esc closes). When true the App
+   * swaps the transcript/live/input regions for the in-app scrollable pager — the
    * default <Static> path has no scrollback of its own (the terminal owns it),
    * and on consoles with scroll-on-output snap the terminal fights the user
    * while content streams. The pager makes scrolling app-controlled.
    */
   reviewing: boolean;
+  /**
+   * Live retry countdown (P0-4), null when not retrying. Set by the runner from
+   * the loop's onModelRetry callback; cleared by the first event of the retried
+   * call. Owns a 1s tick that decrements secondsLeft down to 0.
+   */
+  retryStatus: RetryStatus | null;
+  /**
+   * Increments whenever the transcript is bulk-replaced (rewind / session
+   * reload). The transcript region keys its <Static> on this epoch: Ink's
+   * Static tracks a monotonically growing internal index, so a SHRUNK items
+   * array would leave slice(index) empty forever — remounting restarts the
+   * index and reprints the surviving history.
+   */
+  transcriptEpoch: number;
 }
 
 type Listener = () => void;
@@ -261,6 +308,8 @@ export class TuiStore {
       showHelp: false,
       inputHistory: [],
       reviewing: false,
+      retryStatus: null,
+      transcriptEpoch: 0,
     };
   }
 
@@ -422,10 +471,15 @@ export class TuiStore {
     this.set({ streamingThinking: this.state.streamingThinking + delta });
   }
 
-  /** Commit streamed thinking as a finished transcript item (dimmed render). */
-  commitThinking(): void {
+  /**
+   * Commit streamed thinking as a finished transcript item. P0-2: renders
+   * COLLAPSED (one dim line — "✻ Thought for Ns · M lines"); the full text
+   * stays on the item for the transcript viewer (Ctrl+O). `seconds` is the
+   * reasoning duration when known; omit it to hide the duration.
+   */
+  commitThinking(seconds?: number): void {
     const text = this.state.streamingThinking.trim();
-    if (text) this.push({ kind: "thinking_text", text } as TranscriptItem);
+    if (text) this.push({ kind: "thinking_text", text, seconds } as TranscriptItem);
     this.set({ streamingThinking: "" });
   }
 
@@ -684,6 +738,83 @@ export class TuiStore {
   /** Enter/leave transcript review mode (PgUp / Esc). */
   setReviewing(on: boolean): void {
     this.set({ reviewing: on });
+  }
+
+  /**
+   * P0-3: bulk-replace the transcript (rewind) — clears all items and bumps
+   * the epoch so the <Static> region remounts (see transcriptEpoch). Callers
+   * follow up with loadTranscript() to replay the surviving history.
+   */
+  resetTranscript(): void {
+    this.set({ transcript: [], transcriptEpoch: this.state.transcriptEpoch + 1 });
+  }
+
+  /**
+   * P0-4: show a live retry countdown ("retrying in Ns · attempt a/m"). Owns
+   * a 1s tick that decrements `secondsLeft`; auto-clears at 0. Replaced by a
+   * subsequent call (the newest backoff wins).
+   */
+  showRetry(reason: string, attempt: number, max: number, delayMs: number): void {
+    if (this._retryTimer !== null) clearInterval(this._retryTimer);
+    this.set({
+      retryStatus: {
+        reason,
+        attempt,
+        max,
+        secondsLeft: Math.max(1, Math.ceil(delayMs / 1000)),
+      },
+    });
+    this._retryTimer = setInterval(() => {
+      const s = this.state.retryStatus;
+      if (!s) {
+        if (this._retryTimer !== null) clearInterval(this._retryTimer);
+        this._retryTimer = null;
+        return;
+      }
+      if (s.secondsLeft <= 1) {
+        this.clearRetry();
+      } else {
+        this.set({ retryStatus: { ...s, secondsLeft: s.secondsLeft - 1 } });
+      }
+    }, 1000);
+  }
+
+  /** P0-4: clear the retry countdown (first event of the retried call). */
+  clearRetry(): void {
+    if (this._retryTimer !== null) {
+      clearInterval(this._retryTimer);
+      this._retryTimer = null;
+    }
+    if (this.state.retryStatus !== null) this.set({ retryStatus: null });
+  }
+
+  private _retryTimer: ReturnType<typeof setInterval> | null = null;
+
+  /**
+   * P0-3: open the Esc+Esc rewind menu; resolves with the chosen 1-based user
+   * turn index, or null if cancelled (Esc). The caller performs the actual
+   * message truncation + checkpoint file restore. Never displaces a live
+   * overlay — replacing one would hang its resolve() promise; today the
+   * InputBox (the only rewind trigger) unmounts under overlays, this guard
+   * keeps that invariant from being load-bearing.
+   */
+  askRewind(entries: RewindEntry[]): Promise<number | null> {
+    return new Promise((resolve) => {
+      if (this.state.overlay !== null) {
+        resolve(null);
+        return;
+      }
+      this.set({
+        overlay: {
+          kind: "rewind",
+          entries,
+          resolve: (turnIndex) => {
+            this.set({ overlay: null });
+            resolve(turnIndex);
+          },
+        },
+      });
+    });
   }
 
   /** Update the status-bar model label (e.g. after a /provider switch). */

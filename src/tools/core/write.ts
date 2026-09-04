@@ -6,6 +6,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { z } from "zod";
 import { recordChange } from "../../change-tracker.js";
+import { shadowBeforeWrite } from "../../checkpoint.js";
 import { checkDangerousPattern, isBlockedPath } from "../../permissions.js";
 import { checkReadBeforeEdit, refreshRead } from "../../read-tracker.js";
 import type { Tool, ToolResult } from "../../types.js";
@@ -78,6 +79,7 @@ export const WriteTool: Tool = buildTool({
       const dir = path.dirname(filePath);
       fs.mkdirSync(dir, { recursive: true });
 
+      shadowBeforeWrite(context.sessionId, filePath); // P0-3: shadow for rewind
       fs.writeFileSync(filePath, input.content, "utf-8");
 
       // Keep the read tracker current so a follow-up Edit sees fresh state.

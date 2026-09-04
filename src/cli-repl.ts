@@ -7,6 +7,7 @@
 import chalk from "chalk";
 
 import { agentLoop } from "./agent-loop.js";
+import { beginUserTurn } from "./checkpoint.js";
 import { resolveMaxTurns } from "./cli-config.js";
 import { formatCliError } from "./cli-errors.js";
 import type { SessionState } from "./cli-session.js";
@@ -252,11 +253,14 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
         .filter(Boolean)
         .join("\n\n");
 
-      // Add user message
-      messages.push({
+      // Add user message. P0-3: tagged checkpoint turn boundary so the
+      // line-based path's /rewind restores files exactly like the TUI's.
+      const userMsg: Message = {
         role: "user",
         content: [{ type: "text", text: contentText }],
-      });
+      };
+      beginUserTurn(session.id, userMsg);
+      messages.push(userMsg);
       recordTranscript({ type: "user_prompt", text: contentText });
 
       // Per-turn abort handling: first Ctrl+C aborts the current turn and

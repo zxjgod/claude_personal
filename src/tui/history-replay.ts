@@ -63,6 +63,15 @@ export function messagesToTranscript(messages: Message[]): ReplayItem[] {
         break;
       }
       case "assistant": {
+        // Extended thinking rides on the assistant message — replay it so a
+        // resumed session's reasoning is visible in the transcript viewer
+        // (no duration recorded → renders without a "Thought for Ns" claim).
+        // Redacted blocks carry no readable text and contribute nothing.
+        const thinking = (m.thinking ?? [])
+          .map((b) => (b.type === "thinking" ? b.thinking : ""))
+          .join("\n")
+          .trim();
+        if (thinking) items.push({ kind: "thinking_text", text: thinking } as ReplayItem);
         const text = (m.content ?? "").trim();
         if (text) items.push({ kind: "assistant", text } as ReplayItem);
         for (const tc of m.tool_calls ?? []) {

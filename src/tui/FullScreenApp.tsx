@@ -33,6 +33,8 @@ import { type CommandInfo, InputBox } from "./InputBox.js";
 import { t } from "./i18n.js";
 import { ConfirmPrompt, PermissionPrompt, QuestionPrompt } from "./Prompts.js";
 import { ProviderPicker } from "./ProviderPicker.js";
+import { RetryLine } from "./RetryLine.js";
+import { RewindPicker } from "./RewindPicker.js";
 import { bottomScrollTop, clampScrollTop, ScrollView } from "./ScrollView.js";
 import { SessionPicker } from "./SessionPicker.js";
 import { StatusBar } from "./StatusBar.js";
@@ -41,6 +43,7 @@ import { actionLabel } from "./spinner-core.js";
 import type { StoreState, TuiStore } from "./store.js";
 import { Toast } from "./Toast.js";
 import { TodoList } from "./TodoList.js";
+import { TranscriptReview } from "./TranscriptReview.js";
 import { transcriptToLines } from "./transcript-lines.js";
 import { useStoreField, useStoreSelector } from "./useStoreSelector.js";
 import { useTerminalSize } from "./useTerminalSize.js";
@@ -109,12 +112,16 @@ function FsInteraction({
   onSubmit,
   editorMode,
   completeFiles,
+  onRewind,
+  onImagePaste,
 }: {
   store: TuiStore;
   commands: CommandInfo[];
   onSubmit: (value: string) => void;
   editorMode?: { value: "default" | "vim" };
   completeFiles?: (query: string) => string[];
+  onRewind?: () => void;
+  onImagePaste?: () => Promise<string | null>;
 }) {
   const { overlay, busy, inputHistory } = useStoreSelector(store, selectInteraction);
   if (overlay) {
@@ -129,6 +136,8 @@ function FsInteraction({
         return <ProviderPicker overlay={overlay} />;
       case "commandPicker":
         return <CommandPicker overlay={overlay} />;
+      case "rewind":
+        return <RewindPicker overlay={overlay} />;
       case "confirm":
         return <ConfirmPrompt overlay={overlay} />;
       default:
@@ -147,8 +156,17 @@ function FsInteraction({
       hideBottomRule
       history={inputHistory}
       onHistoryChange={(history) => store.setInputHistory(history)}
+      onRewind={busy ? undefined : onRewind}
+      onImagePaste={onImagePaste}
     />
   );
+}
+
+/** P0-4: live retry countdown — shown where the status line sits. */
+function FsRetryRegion({ store }: { store: TuiStore }) {
+  const retry = useStoreField(store, "retryStatus");
+  if (!retry) return null;
+  return <RetryLine retry={retry} />;
 }
 
 /** Pinned live todo list between the scroll region and the status line (the
@@ -163,10 +181,16 @@ function FsTodoRegion({ store }: { store: TuiStore }) {
 /** Mode hotkey — self-contained so FullScreenApp works without App.tsx. */
 function FsModeHotkey({ store }: { store: TuiStore }) {
   useInput((input, key) => {
+    // Overlays own the keyboard (pickers bind their own keys).
+    if (store.getSnapshot().overlay) return;
     if (key.tab && key.shift) {
       store.cyclePermissionMode();
-    } else if (input === "?" && !store.getSnapshot().overlay) {
+    } else if (input === "?") {
       store.setShowHelp(true);
+    } else if (key.ctrl && input === "o") {
+      // P0-1/P0-2: fullscreen thinking renders collapsed — this is the only
+      // route to the verbose transcript viewer here.
+      store.setReviewing(!store.getSnapshot().reviewing);
     }
   });
   return null;
@@ -178,12 +202,16 @@ export function FullScreenApp({
   onSubmit,
   editorMode,
   completeFiles,
+  onRewind,
+  onImagePaste,
 }: {
   store: TuiStore;
   commands: CommandInfo[];
   onSubmit: (value: string) => void;
   editorMode?: { value: "default" | "vim" };
   completeFiles?: (query: string) => string[];
+  onRewind?: () => void;
+  onImagePaste?: () => Promise<string | null>;
 }) {
   const { rows } = useTerminalSize();
   const transcript = useStoreField(store, "transcript");
@@ -246,6 +274,9 @@ export function FullScreenApp({
   };
 
   useInput((input, key) => {
+    // Pickers/overlays bind PgUp/PgDn themselves; the transcript viewer owns
+    // the whole keyboard while open — don't scroll the background too.
+    if (store.getSnapshot().overlay || store.getSnapshot().reviewing) return;
     if (key.pageUp) return void scrollBy(-1, 0.5);
     if (key.pageDown) return void scrollBy(1, 0.5);
     if (key.ctrl && input === "b") return void scrollBy(-1, 0.95);
@@ -255,6 +286,19 @@ export function FullScreenApp({
     }
   });
 
+  const reviewing = useStoreField(store, "reviewing");
+  if (reviewing) {
+    // P0-1: the verbose transcript viewer replaces the scroll view and owns
+    // the keyboard (the InputBox unmounts so its history keys don't fight it).
+    return (
+      <Box flexDirection="column" height={rows}>
+        <FsModeHotkey store={store} />
+        <Toast store={store} />
+        <TranscriptReview store={store} />
+        <StatusBar store={store} idleHint={t("ui.status.idleFullscreen")} />
+      </Box>
+    );
+  }
   return (
     <Box flexDirection="column" height={rows}>
       <FsModeHotkey store={store} />
@@ -266,6 +310,7 @@ export function FullScreenApp({
         onHeight={onViewportHeight}
       />
       <FsTodoRegion store={store} />
+      <FsRetryRegion store={store} />
       {!sticky ? (
         <Text dimColor>{`  ${t("ui.fs.scrolled")}`}</Text>
       ) : (
@@ -282,6 +327,8 @@ export function FullScreenApp({
         onSubmit={onSubmit}
         editorMode={editorMode}
         completeFiles={completeFiles}
+        onRewind={onRewind}
+        onImagePaste={onImagePaste}
       />
     </Box>
   );

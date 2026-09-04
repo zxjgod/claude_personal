@@ -6,6 +6,7 @@ import * as fs from "node:fs";
 import chalk from "chalk";
 import { z } from "zod";
 import { recordChange } from "../../change-tracker.js";
+import { shadowBeforeWrite } from "../../checkpoint.js";
 import { checkDangerousPattern, isBlockedPath } from "../../permissions.js";
 import { checkReadBeforeEdit, refreshRead } from "../../read-tracker.js";
 import type { Tool, ToolResult } from "../../types.js";
@@ -125,6 +126,7 @@ export const EditTool: Tool = buildTool({
         const idx = content.indexOf(oldStr);
         newContent = content.slice(0, idx) + newStr + content.slice(idx + oldStr.length);
       }
+      shadowBeforeWrite(context.sessionId, filePath); // P0-3: shadow for rewind
       fs.writeFileSync(filePath, newContent, "utf-8");
 
       // Keep the read tracker current so chained edits don't trip the gate.
@@ -310,6 +312,7 @@ export const MultiEditTool: Tool = buildTool({
       }
 
       // All edits succeeded — commit once.
+      shadowBeforeWrite(context.sessionId, filePath); // P0-3: shadow for rewind
       fs.writeFileSync(filePath, working, "utf-8");
 
       const after = statMtimeMs(filePath);
