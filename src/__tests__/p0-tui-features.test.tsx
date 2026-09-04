@@ -162,6 +162,30 @@ describe("checkpoint restore (P0-3)", () => {
     const r = restoreToTurn(s, 1);
     expect(r.deleted).toEqual([]);
   });
+
+  it("boundary snapshots stay fresh across back-to-back same-size writes (mtime-cache trust domain)", () => {
+    // CI regression: the snapshotAt mtime cache served a stale boundary when
+    // consecutive writes landed within one mtime tick. shadowBeforeWrite and
+    // restoreToTurn now bust the cache entry around every known write. The
+    // writes here mirror the real tool flow (shadow BEFORE every write — the
+    // module's standing invariant, which original capture already relies
+    // on), and the same-size payloads ("v1"→"v2") make sure no size
+    // heuristic could mask a regression either.
+    const s = "cp-session";
+    beginUserTurn(s); // turn 1
+    shadowBeforeWrite(s, a);
+    fs.writeFileSync(a, "v1", "utf-8");
+    beginUserTurn(s); // turn 2 boundary must read "v1" (not the cached "original")
+    shadowBeforeWrite(s, a);
+    fs.writeFileSync(a, "v2", "utf-8");
+    beginUserTurn(s); // turn 3 boundary must read "v2"
+    restoreToTurn(s, 3);
+    expect(fs.readFileSync(a, "utf-8")).toBe("v2"); // boundary 3 was fresh
+    restoreToTurn(s, 2);
+    expect(fs.readFileSync(a, "utf-8")).toBe("v1"); // boundary 2 was fresh
+    restoreToTurn(s, 1);
+    expect(fs.readFileSync(a, "utf-8")).toBe("original");
+  });
 });
 
 // ============================================================

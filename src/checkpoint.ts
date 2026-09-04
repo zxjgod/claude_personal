@@ -88,9 +88,14 @@ function readOrNull(path: string): string | null {
  * Read a tracked file's current content through an mtime cache: beginUserTurn
  * runs on EVERY submit, and re-reading every tracked file each time puts fs
  * reads on the input hot path. statSync is the only syscall an untouched file
- * pays. (mtime granularity on old filesystems is ~1s; a boundary snapshot
- * could be one fast edit stale in a pathological submit-within-a-second flow
- * — acceptable for a rewind checkpoint.)
+ * pays.
+ *
+ * TRUST DOMAIN: the cache is only valid between writes we KNOW about. Every
+ * tool-mediated write is preceded by shadowBeforeWrite and every restore
+ * writes through restoreToTurn — both DELETE the path's cache entry, so the
+ * next boundary read can't hit a same-mtime stale entry (back-to-back writes
+ * within one mtime tick are exactly what CI tmpdirs produce). Writes from
+ * outside the domain (Bash) share the standing checkpoint caveat.
  */
 function snapshotAt(s: SessionCheckpoints, filePath: string): string | null {
   let mtimeMs: number | null = null;
@@ -104,6 +109,12 @@ function snapshotAt(s: SessionCheckpoints, filePath: string): string | null {
   const content = readOrNull(filePath);
   s.contentCache.set(filePath, { mtimeMs, content });
   return content;
+}
+
+/** Drop a path's cached content — called after any write we performed or
+ *  are about to perform (shadowBeforeWrite precedes a tool's write). */
+function invalidateCache(s: SessionCheckpoints, filePath: string): void {
+  s.contentCache.delete(filePath);
 }
 
 /** Upper bound on retained boundary snapshots (memory guard). Rewinds to
@@ -160,6 +171,11 @@ export function shadowBeforeWrite(sessionId: string, filePath: string): void {
     s.originals.set(filePath, snapshotAt(s, filePath));
     s.firstWriteTurn.set(filePath, Math.max(1, s.currentTurn));
   }
+  // A tool write follows IMMEDIATELY after this call — whatever the capture
+  // just cached is about to be stale, and the write can land within the same
+  // mtime tick (CI tmpdirs do exactly this). Drop the entry so the next
+  // boundary read can't hit it (see snapshotAt's trust-domain note).
+  invalidateCache(s, filePath);
 }
 
 export interface RestoreResult {
@@ -200,11 +216,13 @@ export function restoreToTurn(sessionId: string, turn: number): RestoreResult {
         // report a deletion when a file was actually removed.
         if (fs.existsSync(path)) {
           fs.rmSync(path);
+          invalidateCache(s, path); // we just changed the disk state
           deleted.push(path);
         }
       } else {
         fs.mkdirSync(dirname(path), { recursive: true });
         fs.writeFileSync(path, content, "utf-8");
+        invalidateCache(s, path); // we just changed the disk state
         restored.push(path);
         // The restored content differs on disk from what the session last
         // read/wrote — refresh the read-tracker's mtime so a follow-up Edit
