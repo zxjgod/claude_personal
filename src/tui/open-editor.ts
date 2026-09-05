@@ -12,18 +12,29 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+const IS_WIN = process.platform === "win32";
+
+// Safety fuse: an editor that never exits must not hang the TUI. Generous by
+// default (a real editing session is long); override with CCR_EDITOR_TIMEOUT
+// (ms). On fire the child is killed and the temp file is KEPT (see below).
+const DEFAULT_FUSE_MS = 10 * 60_000;
+
+function fuseMs(): number {
+  const v = Number.parseInt(process.env.CCR_EDITOR_TIMEOUT ?? "", 10);
+  return Number.isFinite(v) && v > 0 ? v : DEFAULT_FUSE_MS;
+}
+
 function pickEditor(): string {
-  return (
-    process.env.VISUAL || process.env.EDITOR || (process.platform === "win32" ? "notepad" : "vi")
-  );
+  return process.env.VISUAL || process.env.EDITOR || (IS_WIN ? "notepad" : "vi");
 }
 
 /**
  * Write `content` to a temp file and open it in $VISUAL/$EDITOR. Resolves
- * with `{ ok, filePath }`; `ok` is false when the temp file could not be
- * written or no editor could be spawned. NEVER rejects — callers
+ * with `{ ok, filePath }`; `ok` is true only when the editor ran to a
+ * successful exit — a bad $EDITOR (spawn error, "command not found") or a
+ * fuse kill reports `ok: false`, and the temp file is then KEPT at
+ * `filePath` so its content is recoverable. NEVER rejects — callers
  * fire-and-forget, and an unhandled rejection here would crash the TUI.
- * The temp file is removed after the editor exits (best-effort).
  */
 export async function openInEditor(lines: string[]): Promise<{ ok: boolean; filePath: string }> {
   const filePath = path.join(os.tmpdir(), `ccr-transcript-${Date.now()}.txt`);
@@ -49,37 +60,52 @@ export async function openInEditor(lines: string[]): Promise<{ ok: boolean; file
   }
   stdin.pause();
 
+  // ok is only true when the editor exits 0 without an error/kill. On the
+  // Windows shell path a missing command ALSO shows up as a non-zero exit —
+  // the one case where "the editor quit non-zero" and "never ran" are
+  // indistinguishable — and flagging both keeps a silent no-op impossible.
+  let ok = false;
   try {
     await new Promise<void>((resolve) => {
       let child: ReturnType<typeof spawn> | null = null;
       let settled = false;
-      const settle = () => {
+      const settle = (result: boolean) => {
         if (settled) return;
         settled = true;
+        ok = result;
         clearTimeout(fuse);
         resolve();
       };
-      // Safety fuse: an editor that never starts (bad $EDITOR) must not hang
-      // the TUI. KILL the child, then resolve — restoring stdin under a live
-      // editor would have both processes fighting over the same TTY.
+      // Safety fuse: kill the child, then resolve — restoring stdin under a
+      // live editor would have both processes fighting over the same TTY.
       const fuse = setTimeout(() => {
         try {
           child?.kill();
         } catch {
           /* already gone */
         }
-        settle();
-      }, 120_000);
+        settle(false);
+      }, fuseMs());
       try {
-        child = spawn(cmd, args, { stdio: "inherit" });
+        // Windows: many editors are .cmd/.bat shims on PATH (VS Code's
+        // `code`), which Node refuses to spawn directly (CVE-2024-27980) —
+        // route through the shell with every argument quoted so paths with
+        // spaces survive. POSIX keeps the direct spawn (its spawn "error"
+        // event cleanly reports ENOENT).
+        child = IS_WIN
+          ? spawn(`"${cmd}" ${args.map((a) => `"${a}"`).join(" ")}`, {
+              shell: true,
+              stdio: "inherit",
+            })
+          : spawn(cmd, args, { stdio: "inherit" });
       } catch {
-        settle();
+        settle(false);
         return;
       }
-      child.on("error", () => settle());
-      child.on("exit", () => settle());
+      child.on("error", () => settle(false));
+      child.on("exit", (code) => settle(code === 0));
     });
-    return { ok: true, filePath };
+    return { ok, filePath };
   } finally {
     stdin.resume();
     try {
@@ -87,12 +113,15 @@ export async function openInEditor(lines: string[]): Promise<{ ok: boolean; file
     } catch {
       /* non-TTY stdin */
     }
-    // The transcript snapshot is regenerable — clean up after the editor
-    // closes (best-effort; an editor still holding the file just keeps it).
-    try {
-      fs.rmSync(filePath, { force: true });
-    } catch {
-      /* best-effort cleanup */
+    // Clean up only after a successful run. On failure the file stays at
+    // `filePath` (reported to the user by the caller) — deleting it would
+    // destroy the only recoverable copy after a fuse kill.
+    if (ok) {
+      try {
+        fs.rmSync(filePath, { force: true });
+      } catch {
+        /* best-effort cleanup */
+      }
     }
   }
 }

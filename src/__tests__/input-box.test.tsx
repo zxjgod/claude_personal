@@ -208,6 +208,43 @@ describe("InputBox multi-line input (M25.1)", () => {
     await flush();
     expect(onSubmit).toHaveBeenCalledWith("abX\ncd");
   });
+
+  it("Ctrl+U deletes to the start of the CURRENT line, not the buffer", async () => {
+    // Line-relative like Ctrl+A/E: the draft's earlier rows must survive.
+    const onSubmit = vi.fn();
+    const { stdin } = render(<InputBox commands={commands} disabled={false} onSubmit={onSubmit} />);
+    await flush();
+    stdin.write("one");
+    await flush();
+    stdin.write(CTRL_J);
+    await flush();
+    stdin.write("two"); // row 1, cursor at its end
+    await flush();
+    stdin.write("\x15"); // Ctrl+U on row 1 → clears "two" only
+    await flush();
+    stdin.write(ENTER);
+    await flush();
+    expect(onSubmit).toHaveBeenCalledWith("one\n");
+  });
+
+  it("Ctrl+K deletes to the end of the CURRENT line, not the buffer", async () => {
+    const onSubmit = vi.fn();
+    const { stdin } = render(<InputBox commands={commands} disabled={false} onSubmit={onSubmit} />);
+    await flush();
+    stdin.write("one");
+    await flush();
+    stdin.write(CTRL_J);
+    await flush();
+    stdin.write("XXtwo"); // row 1 = "XXtwo", cursor at its end
+    await flush();
+    stdin.write("\x01"); // Ctrl+A → row-relative line start
+    await flush();
+    stdin.write("\x0b"); // Ctrl+K kills "XXtwo", keeps row 0 + the newline
+    await flush();
+    stdin.write(ENTER);
+    await flush();
+    expect(onSubmit).toHaveBeenCalledWith("one\n");
+  });
 });
 
 // M36: type-ahead — while the agent is busy the box stays active (disabled=false

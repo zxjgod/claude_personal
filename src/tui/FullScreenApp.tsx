@@ -158,6 +158,9 @@ function FsInteraction({
       onHistoryChange={(history) => store.setInputHistory(history)}
       onRewind={busy ? undefined : onRewind}
       onImagePaste={onImagePaste}
+      inputSuspended={() => store.getSnapshot().showHelp}
+      onDraftChange={(draft) => store.setDraft(draft)}
+      initialDraft={store.getSnapshot().draft}
     />
   );
 }
@@ -186,7 +189,12 @@ function FsModeHotkey({ store }: { store: TuiStore }) {
     if (key.tab && key.shift) {
       store.cyclePermissionMode();
     } else if (input === "?") {
-      store.setShowHelp(true);
+      // Same contract as App's ModeHotkey: "?" opens help only on an empty
+      // draft (the InputBox mirrors it into the store) and never toggles
+      // closed — the panel closes via Esc/Enter, which the input-suspended
+      // InputBox must not also consume.
+      const s = store.getSnapshot();
+      if (s.draft.text.length === 0 && !s.showHelp) store.setShowHelp(true);
     } else if (key.ctrl && input === "o") {
       // P0-1/P0-2: fullscreen thinking renders collapsed — this is the only
       // route to the verbose transcript viewer here.

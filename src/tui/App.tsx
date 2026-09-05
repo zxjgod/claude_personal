@@ -375,6 +375,9 @@ function InteractionRegion({
       onHistoryChange={(history) => store.setInputHistory(history)}
       onRewind={busy ? undefined : onRewind}
       onImagePaste={onImagePaste}
+      inputSuspended={() => store.getSnapshot().showHelp}
+      onDraftChange={(draft) => store.setDraft(draft)}
+      initialDraft={store.getSnapshot().draft}
     />
   );
 }
@@ -430,8 +433,13 @@ function ModeHotkey({ store }: { store: TuiStore }) {
     if (result.action === "chat:cycleMode") {
       store.cyclePermissionMode();
     } else if (result.action === "help:toggle" && !store.getSnapshot().overlay) {
-      // Show help panel only when not in an overlay (overlays have their own input).
-      store.setShowHelp(true);
+      // "?" opens help only on an EMPTY draft — typing "what is X?" must
+      // insert the character, not pop the panel. The InputBox mirrors its
+      // draft into the store; while the panel is open the box is
+      // input-suspended, so "?" stays swallowed and the panel closes via
+      // Esc/Enter (which the box must NOT also see — see inputSuspended).
+      const s = store.getSnapshot();
+      if (s.draft.text.length === 0 && !s.showHelp) store.setShowHelp(true);
     }
   });
   return null;

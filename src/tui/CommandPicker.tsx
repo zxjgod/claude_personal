@@ -13,7 +13,7 @@
 // ============================================================
 
 import { Box, Text, useInput } from "ink";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { nextOffset } from "./SessionPicker.js";
 import type { Overlay } from "./store.js";
 import { palette } from "./theme.js";
@@ -33,11 +33,17 @@ export function CommandPicker({
   const { commands } = overlay;
   const [cursor, setCursor] = useState(0);
   const [offset, setOffset] = useState(0);
+  // Synced cursor ref (see RewindPicker): two arrow keys arriving in ONE
+  // stdin chunk run the same handler closure without a re-render between
+  // them — the second must see the first's cursor, and Enter in the same
+  // burst must resolve the row actually highlighted.
+  const cursorRef = useRef(0);
 
   const windowSize = Math.min(VISIBLE, commands.length);
 
   const move = (delta: number) => {
-    const next = clamp(cursor + delta, 0, commands.length - 1);
+    const next = clamp(cursorRef.current + delta, 0, commands.length - 1);
+    cursorRef.current = next;
     setCursor(next);
     setOffset((off) => nextOffset(next, off, windowSize));
   };
@@ -47,7 +53,7 @@ export function CommandPicker({
     else if (key.downArrow) move(1);
     else if (key.pageUp) move(-windowSize);
     else if (key.pageDown) move(windowSize);
-    else if (key.return) overlay.resolve(commands[cursor]?.name ?? null);
+    else if (key.return) overlay.resolve(commands[cursorRef.current]?.name ?? null);
     else if (key.escape) overlay.resolve(null);
   });
 

@@ -13,7 +13,7 @@
 // ============================================================
 
 import { Box, Text, useInput } from "ink";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { Overlay } from "./store.js";
 
 const CYAN = "cyan";
@@ -50,11 +50,17 @@ export function SessionPicker({
   // Index of the first visible row. Kept in state and nudged on each move so
   // the window follows the cursor with minimal scrolling (no jumpy centering).
   const [offset, setOffset] = useState(0);
+  // Synced cursor ref (see RewindPicker): two arrow keys arriving in ONE
+  // stdin chunk run the same handler closure without a re-render between
+  // them — the second must see the first's cursor, and Enter in the same
+  // burst must resolve the row actually highlighted.
+  const cursorRef = useRef(0);
 
   const windowSize = Math.min(VISIBLE, sessions.length);
 
   const move = (delta: number) => {
-    const next = clamp(cursor + delta, 0, sessions.length - 1);
+    const next = clamp(cursorRef.current + delta, 0, sessions.length - 1);
+    cursorRef.current = next;
     setCursor(next);
     setOffset((off) => nextOffset(next, off, windowSize));
   };
@@ -64,7 +70,7 @@ export function SessionPicker({
     else if (key.downArrow) move(1);
     else if (key.pageUp) move(-windowSize);
     else if (key.pageDown) move(windowSize);
-    else if (key.return) overlay.resolve(sessions[cursor]?.sessionId ?? null);
+    else if (key.return) overlay.resolve(sessions[cursorRef.current]?.sessionId ?? null);
     else if (key.escape) overlay.resolve(null);
     else if (/^[1-9]$/.test(input)) {
       // Jump to the Nth *visible* row (1-based within the current window).

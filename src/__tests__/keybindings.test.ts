@@ -10,6 +10,7 @@ import {
   getKeyName,
   type InkKey,
   parseBindings,
+  parseBindingsFile,
   parseChord,
   parseKeystroke,
   resolveKey,
@@ -117,5 +118,38 @@ describe("match / resolver", () => {
       type: "match",
       action: "tool:expandLast",
     });
+  });
+});
+
+describe("parseBindingsFile (shape validation)", () => {
+  it("returns null for a bindings array of nulls instead of throwing", () => {
+    // `{"bindings":[null]}` used to reach parseBindings and throw a
+    // TypeError at App MODULE SCOPE (resolver created at import) — a typo'd
+    // keybindings.json took the whole TUI down at startup.
+    expect(parseBindingsFile('{"bindings":[null]}')).toBeNull();
+    expect(parseBindingsFile('{"bindings":["nope", 42, false]}')).toBeNull();
+  });
+
+  it("keeps well-formed blocks and drops malformed siblings", () => {
+    const blocks = parseBindingsFile(
+      JSON.stringify({
+        bindings: [
+          { context: "Global", bindings: { g: "app:globalSearch" } },
+          null,
+          { context: "Global", bindings: { x: 123 } }, // non-string action
+          { bindings: { y: "help:toggle" } }, // missing context
+        ],
+      }),
+    );
+    expect(blocks).toEqual([{ context: "Global", bindings: { g: "app:globalSearch" } }]);
+  });
+
+  it("accepts null action values (explicit unbind) and bad JSON returns null", () => {
+    const blocks = parseBindingsFile(
+      '{"bindings":[{"context":"Global","bindings":{"ctrl+r":null}}]}',
+    );
+    expect(blocks).toEqual([{ context: "Global", bindings: { "ctrl+r": null } }]);
+    expect(parseBindingsFile("{not json")).toBeNull();
+    expect(parseBindingsFile('{"bindings":"not-an-array"}')).toBeNull();
   });
 });

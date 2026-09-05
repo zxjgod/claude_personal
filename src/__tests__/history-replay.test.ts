@@ -4,6 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 import { firstUserPreview, messagesToTranscript } from "../tui/history-replay.js";
+import { visualWidth } from "../tui/terminal-width.js";
 import type { Message } from "../types.js";
 
 const sample: Message[] = [
@@ -95,6 +96,24 @@ describe("firstUserPreview", () => {
     const preview = firstUserPreview(msgs, 20);
     expect(preview.length).toBe(20);
     expect(preview.endsWith("…")).toBe(true);
+  });
+
+  it("truncates CJK previews by VISUAL columns, not code units", () => {
+    // 40 Han chars occupy 80 columns — a `.length` cut let all 40 through,
+    // overflowing the picker row.
+    const msgs: Message[] = [{ role: "user", content: [{ type: "text", text: "汉".repeat(40) }] }];
+    const preview = firstUserPreview(msgs, 72);
+    expect(visualWidth(preview)).toBeLessThanOrEqual(72);
+    expect(preview.endsWith("…")).toBe(true);
+  });
+
+  it("never splits a surrogate pair when truncating", () => {
+    const msgs: Message[] = [{ role: "user", content: [{ type: "text", text: "😀".repeat(40) }] }];
+    const preview = firstUserPreview(msgs, 25);
+    expect(preview).not.toContain("\uFFFD");
+    // Every remaining char is a whole emoji (or the ellipsis at the end).
+    const chars = [...preview.slice(0, -1)];
+    expect(chars.every((ch) => ch === "😀")).toBe(true);
   });
 
   it("returns empty string when there is no user text", () => {

@@ -469,6 +469,27 @@ describe("CommandPicker (/help palette)", () => {
     expect(chosen).toBe("cmd00");
   });
 
+  it("two arrow keys in ONE stdin chunk move the cursor two steps", async () => {
+    // Same-chunk bursts run the same handler closure without a re-render
+    // between keypresses — without the synced cursorRef both keys read the
+    // same render-time cursor and the selection moved one step total.
+    let chosen: string | null = "unset";
+    const { stdin } = render(
+      <CommandPicker
+        overlay={{
+          kind: "commandPicker",
+          commands: many,
+          resolve: (name) => {
+            chosen = name;
+          },
+        }}
+      />,
+    );
+    stdin.write("\x1b[B\x1b[B\r"); // ↓ ↓ Enter — all in one chunk
+    await new Promise((r) => setTimeout(r, 20));
+    expect(chosen).toBe("cmd02"); // not cmd00 (stale) and not cmd01 (one step)
+  });
+
   it("scrolls the window as the cursor moves down, then selects", async () => {
     let chosen: string | null = "unset";
     const { stdin, lastFrame } = render(

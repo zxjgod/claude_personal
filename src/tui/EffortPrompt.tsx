@@ -24,6 +24,10 @@ export function EffortPrompt({ overlay }: { overlay: Extract<Overlay, { kind: "e
   // Frame counter since the active tier last changed (drives fade-in).
   const [sinceSwitch, setSinceSwitch] = useState(0);
   const prevIdx = useRef(idx);
+  // Synced selection ref (see RewindPicker): arrows and Enter can arrive in
+  // ONE stdin chunk without a re-render between them — Enter must resolve
+  // the tier the arrows actually moved to, not the render-time selection.
+  const idxRef = useRef(idx);
 
   const active = ORDER[idx]!;
   const animated = active === "max" || active === "ultracode";
@@ -45,14 +49,19 @@ export function EffortPrompt({ overlay }: { overlay: Extract<Overlay, { kind: "e
     return () => clearInterval(t);
   }, [animated, active, stepMs]);
 
+  const select = (n: number) => {
+    idxRef.current = n;
+    setIdx(n);
+  };
+
   useInput((input, key) => {
-    if (key.leftArrow) setIdx((i) => Math.max(0, i - 1));
-    else if (key.rightArrow) setIdx((i) => Math.min(ORDER.length - 1, i + 1));
-    else if (key.return) overlay.resolve(active);
+    if (key.leftArrow) select(Math.max(0, idxRef.current - 1));
+    else if (key.rightArrow) select(Math.min(ORDER.length - 1, idxRef.current + 1));
+    else if (key.return) overlay.resolve(ORDER[idxRef.current] ?? null);
     else if (key.escape) overlay.resolve(null);
     else if (/^[1-6]$/.test(input)) {
       const n = parseInt(input, 10) - 1;
-      if (n < ORDER.length) setIdx(n);
+      if (n < ORDER.length) select(n);
     }
   });
 

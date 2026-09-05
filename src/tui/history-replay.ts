@@ -17,6 +17,7 @@
 
 import type { Message, ToolExecutionResult } from "./../types.js";
 import type { TranscriptItem } from "./store.js";
+import { truncateVisual } from "./terminal-width.js";
 
 /** Transcript item without the store-assigned numeric id. */
 export type ReplayItem = Omit<TranscriptItem, "id">;
@@ -109,7 +110,10 @@ export function firstUserPreview(messages: Message[], maxLen = 72): string {
       .replace(/\s+/g, " ")
       .trim();
     if (!text) continue;
-    return text.length <= maxLen ? text : text.slice(0, maxLen - 1) + "…";
+    // Visual-columns truncation (CJK-safe, grapheme-safe): a `.length` cut
+    // doubled the width of all-CJK previews — overflowing the picker row —
+    // and could split surrogate pairs into mojibake.
+    return truncateVisual(text, maxLen);
   }
   return "";
 }

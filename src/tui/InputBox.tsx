@@ -213,6 +213,22 @@ export interface InputBoxProps {
   /** P0-5: read a clipboard image (Ctrl/Cmd/Alt+V). Resolves with the
    *  "[Image #N]" chip text (already registered by the runner) or null. */
   onImagePaste?: () => Promise<string | null>;
+  /** Suspend ALL keyboard/paste editing while another surface (the help
+   *  panel) owns the keyboard. Deliberately a SIGNAL read at EVENT time, not
+   *  an isActive flag: the keypress that OPENS the panel is dispatched to
+   *  every useInput listener in the same stdin burst, and a re-subscribe
+   *  would only take effect after React re-renders — the opening "?" would
+   *  still leak into the buffer. */
+  inputSuspended?: () => boolean;
+  /** Live draft mirror (text + cursor), written synchronously on every edit.
+   *  Two consumers: the global "?" help hotkey's empty-draft guard (read at
+   *  event time — see store.draft) and draft preservation across unmounts,
+   *  because overlays and the review pager REPLACE this component and its
+   *  state would die with it. */
+  onDraftChange?: (draft: { text: string; cursor: number }) => void;
+  /** Draft to seed the buffer with on mount: the mirror saved by the
+   *  previous InputBox instance (see onDraftChange). Absent = start empty. */
+  initialDraft?: { text: string; cursor: number };
 }
 
 /** Pastes longer than this show the "已粘贴 N 行" note (lines, threshold). */
@@ -231,13 +247,20 @@ export function InputBox({
   onHistoryChange,
   onRewind,
   onImagePaste,
+  inputSuspended,
+  onDraftChange,
+  initialDraft,
 }: InputBoxProps) {
   const vimActive = editorMode?.value === "vim";
   // Frame color: grey out when disabled UNLESS the caller asks to keep the
   // accent (full-screen path). The input remains inactive either way.
   const frameColor = disabled && !keepColorWhenDisabled ? "gray" : ORANGE;
-  const [buffer, setBufferState] = useState("");
-  const [cursor, setCursorState] = useState(0);
+  // Seed from the saved draft (restores across overlay / review unmounts);
+  // clamp the cursor defensively — the seed may predate a different buffer.
+  const [buffer, setBufferState] = useState(initialDraft?.text ?? "");
+  const [cursor, setCursorState] = useState(() =>
+    clamp(initialDraft?.cursor ?? 0, 0, (initialDraft?.text ?? "").length),
+  );
   const [selected, setSelected] = useState(0);
   // First-visible index of the dropdown scroll window; nudged as `selected`
   // moves so the highlighted command stays on screen (see MAX_SUGGESTIONS).
@@ -276,14 +299,19 @@ export function InputBox({
   const [vimMode, setVimMode] = useState<"normal" | "insert">("insert");
 
   // Refs for synchronous access (React state is async, refs are sync)
-  const bufferRef = useRef("");
+  const bufferRef = useRef(initialDraft?.text ?? "");
   bufferRef.current = buffer;
-  const cursorRef = useRef(0);
+  const cursorRef = useRef(clamp(initialDraft?.cursor ?? 0, 0, (initialDraft?.text ?? "").length));
   cursorRef.current = cursor;
   // Vim engine (only used when vimActive): persists across normal-mode keys so
   // multi-key operators (d/w, dd, 3w, …) keep their state machine between
   // keystrokes. Lazily created; text/offset re-synced from buffer on each key.
   const vimEngineRef = useRef<VimEngine | null>(null);
+
+  // Latest draft-mirror callback (kept in a ref so it is read at event time
+  // and so the mount effect below always calls the freshest instance).
+  const draftCbRef = useRef(onDraftChange);
+  draftCbRef.current = onDraftChange;
 
   // Wrappers that keep the refs in sync SYNCHRONOUSLY (computed from the ref,
   // not inside React's updater). A single stdin chunk can carry several
@@ -295,14 +323,28 @@ export function InputBox({
   const setCursor = (updater: number | ((prev: number) => number)) => {
     const next = typeof updater === "function" ? updater(cursorRef.current) : updater;
     cursorRef.current = next;
+    draftCbRef.current?.({ text: bufferRef.current, cursor: next });
     setCursorState(next);
   };
 
   const setBuffer = (updater: string | ((prev: string) => string)) => {
     const next = typeof updater === "function" ? updater(bufferRef.current) : updater;
     bufferRef.current = next;
+    // Draft mirror travels with the ref write (same synchronous rationale as
+    // above): two keypresses in one stdin chunk must not report a stale draft.
+    draftCbRef.current?.({ text: next, cursor: cursorRef.current });
     setBufferState(next);
   };
+
+  // Mirror the seeded draft on mount so the store matches even when the box
+  // mounted WITHOUT a seed. Deliberately NO unmount reset: the mirror is the
+  // draft's survival mechanism across unmounts (overlays, the review pager)
+  // — the next InputBox instance seeds itself from it.
+  useEffect(() => {
+    draftCbRef.current?.({ text: bufferRef.current, cursor: cursorRef.current });
+    // Mount only: re-running per callback identity is pointless — the
+    // callback is read through the ref above, not captured here.
+  }, []);
 
   // M41: input history state. Managed internally but synced to external array
   // so the parent can persist it across turns. The history array stores items
@@ -373,6 +415,9 @@ export function InputBox({
 
   useInput(
     (input, key) => {
+      // Another surface (help panel) owns the keyboard: swallow the keypress
+      // entirely. Checked FIRST and at event time — see the prop's note.
+      if (inputSuspended?.()) return;
       // Any keypress retires the paste note — it has done its job once seen.
       if (pasteNote !== null) setPasteNote(null);
       // P0-3: any non-Esc key disarms the double-Esc rewind arm.
@@ -454,10 +499,13 @@ export function InputBox({
       }
 
       // --- Newline insertion (multi-line input, M25.1) ---
-      // Ctrl+J inserts a newline. So does "\" immediately before Enter: if the
-      // char left of the cursor is a backslash, Enter replaces it with a
-      // newline instead of submitting (matches the reference editor).
-      if (key.ctrl && input === "j") {
+      // Legacy terminals send the SAME \r for Enter and Shift+Enter, so a
+      // distinct Shift+Enter binding is impossible there; multi-line entry is
+      // Ctrl+J (plus "\" + Enter below). Ctrl+J arrives as a bare 0x0A, which
+      // Ink parses as input "\n" with key.return UNSET — match the byte
+      // explicitly so the behavior no longer depends on falling through to
+      // the printable-insertion branch.
+      if ((key.ctrl && input === "j") || (input === "\n" && !key.return)) {
         setBuffer((b) => b.slice(0, cursorRef.current) + "\n" + b.slice(cursorRef.current));
         setCursor(cursorRef.current + 1);
         return;
@@ -621,15 +669,32 @@ export function InputBox({
       }
 
       // --- Line editing shortcuts (M41: Emacs-style) ---
-      // Ctrl+U: delete from cursor to beginning of line (keeps chars after cursor).
+      // Ctrl+U: delete from cursor to the beginning of the CURRENT logical
+      // line — line-relative like Ctrl+A/E above, so a multi-line draft keeps
+      // the rows above the cursor (buffer-level slicing used to eat them all).
       if (key.ctrl && input === "u") {
-        setBuffer(bufferRef.current.slice(cursorRef.current));
-        setCursor(0);
+        const { row } = offsetToRowCol(bufferRef.current, cursorRef.current);
+        const lineStart = rowColToOffset(bufferRef.current, row, 0);
+        setBuffer(
+          bufferRef.current.slice(0, lineStart) + bufferRef.current.slice(cursorRef.current),
+        );
+        setCursor(lineStart);
         return;
       }
-      // Ctrl+K: delete from cursor to end of line (keeps chars before cursor).
+      // Ctrl+K: delete from cursor to the end of the current logical line
+      // (the newline stays; at end-of-line it is a no-op rather than joining).
       if (key.ctrl && input === "k") {
-        setBuffer(bufferRef.current.slice(0, cursorRef.current));
+        const { row } = offsetToRowCol(bufferRef.current, cursorRef.current);
+        const lineEnd = rowColToOffset(
+          bufferRef.current,
+          row,
+          splitLines(bufferRef.current)[row]!.length,
+        );
+        if (lineEnd > cursorRef.current) {
+          setBuffer(
+            bufferRef.current.slice(0, cursorRef.current) + bufferRef.current.slice(lineEnd),
+          );
+        }
         return;
       }
       // Ctrl+W: delete word before cursor.
@@ -711,6 +776,8 @@ export function InputBox({
   // paste surfaces a note so the user notices before Enter sends it.
   usePaste(
     (text) => {
+      // Suspend signal gates paste for the same reason as keypresses.
+      if (inputSuspended?.()) return;
       const sanitized = text.replace(/\r\n?/g, "\n");
       if (sanitized.length === 0) return;
       const pos = cursorRef.current;

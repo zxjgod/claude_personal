@@ -65,9 +65,22 @@ export function collapsedThinkingLine(seconds: number | undefined, lineCount: nu
 /** One transcript item → its display rows. */
 function itemLines(item: TranscriptItem, verbose: boolean): TranscriptLine[] {
   switch (item.kind) {
-    case "user":
+    case "user": {
       // Role coloring: the user's turn is blue, matching the <Static> path.
-      return [{ text: `> ${item.text}`, color: palette.user, role: "user" }];
+      // A multi-line draft (Ctrl+J / paste) flattens to ONE row per physical
+      // line: the pagers window over this array 1:1 (ScrollView counts lines,
+      // not wrapped rows), so an embedded "\n" inside a single row desyncs
+      // the viewport math (sticky-bottom drift, clipped tail). "> " marks the
+      // first row; "  " aligns continuations under it, mirroring the
+      // InputBox's own prompt rows. Only the first row carries the role
+      // marker — { / } prompt jumps target the turn head, not its tail.
+      const rows = item.text.split("\n");
+      return rows.map((l, i) =>
+        i === 0
+          ? { text: `> ${l}`, color: palette.user, role: "user" as const }
+          : { text: `  ${l}`, color: palette.user },
+      );
+    }
     case "assistant": {
       const md = renderMarkdown(item.text).split("\n");
       // "● " on the first row, two-space indent on continuations (mirrors the

@@ -14,12 +14,20 @@ import { palette } from "./theme.js";
 export function RetryLine({ retry }: { retry: RetryStatus }) {
   return (
     <Text color={palette.error} bold>
-      {`⚠ ${t("ui.retry.status", {
-        reason: retry.reason,
-        s: retry.secondsLeft,
-        a: retry.attempt,
-        m: retry.max,
-      })}`}
+      {`⚠ ${
+        retry.secondsLeft > 0
+          ? t("ui.retry.status", {
+              reason: retry.reason,
+              s: retry.secondsLeft,
+              a: retry.attempt,
+              m: retry.max,
+            })
+          : t("ui.retry.now", {
+              reason: retry.reason,
+              a: retry.attempt,
+              m: retry.max,
+            })
+      }`}
     </Text>
   );
 }

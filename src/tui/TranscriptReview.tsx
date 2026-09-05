@@ -24,6 +24,7 @@ import { t } from "./i18n.js";
 import { openInEditor } from "./open-editor.js";
 import { bottomScrollTop, clampScrollTop, ScrollView } from "./ScrollView.js";
 import type { TuiStore } from "./store.js";
+import { stripAnsi } from "./terminal-width.js";
 import { type TranscriptLine, transcriptToLines } from "./transcript-lines.js";
 import { useStoreSelector } from "./useStoreSelector.js";
 import { useTerminalSize } from "./useTerminalSize.js";
@@ -84,13 +85,17 @@ export function TranscriptReview({ store }: { store: TuiStore }) {
 
   /** Indices of lines matching the current query (case-insensitive).
    *  Memoized: the render pass (highlight + count) and the jump keys all
-   *  share ONE scan per (lines, query) instead of three. */
+   *  share ONE scan per (lines, query) instead of three.
+   *  Matching runs on stripAnsi(text) — the VISIBLE text: rows carry raw
+   *  chalk SGR escapes, and matching those (a) hits the SGR parameter digits
+   *  on every colored row ("36" matched any cyan row), (b) can never match
+   *  a word spanning a color boundary. */
   const matches = useMemo((): number[] => {
     const q = query.toLowerCase();
     if (!q) return [];
     const out: number[] = [];
     for (let i = 0; i < lines.length; i++) {
-      if (lines[i]!.text.toLowerCase().includes(q)) out.push(i);
+      if (stripAnsi(lines[i]!.text).toLowerCase().includes(q)) out.push(i);
     }
     return out;
   }, [lines, query]);
@@ -181,14 +186,16 @@ export function TranscriptReview({ store }: { store: TuiStore }) {
     }
     if (input === "v") {
       setEditorOpen(true);
+      // Export the VISIBLE text — rows carry raw chalk SGR escapes, and
+      // writing those to the file would fill $EDITOR with \x1b[...m garbage.
       // openInEditor never rejects, but the .catch keeps that contract from
       // being load-bearing — a future refactor that lets it throw must not
       // turn a bad $EDITOR into a process-crashing unhandled rejection.
-      void openInEditor(lines.map((l) => l.text))
+      void openInEditor(lines.map((l) => stripAnsi(l.text)))
         .then((r) => {
-          if (!r.ok) store.showToast(t("ui.viewer.editorFailed"));
+          if (!r.ok) store.showToast(t("ui.viewer.editorFailed", { path: r.filePath }));
         })
-        .catch(() => store.showToast(t("ui.viewer.editorFailed")))
+        .catch(() => store.showToast(t("ui.viewer.editorFailed", { path: "(unknown)" })))
         .finally(() => setEditorOpen(false));
       return;
     }

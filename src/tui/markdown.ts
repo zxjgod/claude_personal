@@ -33,6 +33,14 @@ const LANGUAGE_ALIASES: Record<string, string> = {
   cs: "csharp",
 };
 
+/** Decode one numeric character reference, keeping the raw text when the code
+ *  point is outside Unicode's range: models DO emit junk like "&#1114112;",
+ *  and String.fromCodePoint would throw a RangeError straight through the
+ *  render path (no caller catches), killing the whole Ink app mid-stream. */
+function fromCodePointSafe(orig: string, cp: number): string {
+  return Number.isInteger(cp) && cp >= 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : orig;
+}
+
 /** Decode common HTML entities so terminal output shows actual characters. */
 function decodeHtmlEntities(text: string): string {
   return text
@@ -41,8 +49,8 @@ function decodeHtmlEntities(text: string): string {
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
     .replace(/&apos;/g, "'")
-    .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(Number(dec)))
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)));
+    .replace(/&#(\d+);/g, (orig, dec) => fromCodePointSafe(orig, Number(dec)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (orig, hex) => fromCodePointSafe(orig, parseInt(hex, 16)));
 }
 
 /** Escape HTML entities for plain text fallback */

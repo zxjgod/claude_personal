@@ -112,6 +112,7 @@ const translations: Record<Language, Record<string, string>> = {
 
     // Model retry countdown (P0-4)
     "ui.retry.status": "{reason} — retrying in {s}s (attempt {a}/{m})",
+    "ui.retry.now": "{reason} — retrying now… (attempt {a}/{m})",
     "ui.retry.rateLimit": "API 429 rate limit",
     "ui.retry.transient": "connection error",
 
@@ -121,7 +122,7 @@ const translations: Record<Language, Record<string, string>> = {
     "ui.viewer.hint": "/ search · n/N matches · { } prompts · v editor · q/Esc close",
     "ui.viewer.searchPrompt": "search: {q}",
     "ui.viewer.matches": "{n} matches",
-    "ui.viewer.editorFailed": "could not open the transcript in $VISUAL/$EDITOR",
+    "ui.viewer.editorFailed": "could not open the transcript in $VISUAL/$EDITOR — kept at {path}",
 
     // Rewind menu (P0-3)
     "ui.rewind.title": "Rewind to a previous message",
@@ -212,6 +213,7 @@ const translations: Record<Language, Record<string, string>> = {
 
     // 模型重试倒计时（P0-4）
     "ui.retry.status": "{reason} — {s} 秒后重试（第 {a}/{m} 次）",
+    "ui.retry.now": "{reason} — 正在重试…（第 {a}/{m} 次）",
     "ui.retry.rateLimit": "API 429 限流",
     "ui.retry.transient": "连接错误",
 
@@ -221,7 +223,7 @@ const translations: Record<Language, Record<string, string>> = {
     "ui.viewer.hint": "/ 搜索 · n/N 匹配项 · { } 跳转提问 · v 编辑器 · q/Esc 关闭",
     "ui.viewer.searchPrompt": "搜索：{q}",
     "ui.viewer.matches": "{n} 处匹配",
-    "ui.viewer.editorFailed": "无法在 $VISUAL/$EDITOR 中打开会话记录",
+    "ui.viewer.editorFailed": "无法在 $VISUAL/$EDITOR 中打开会话记录 — 已保留在 {path}",
 
     // 回退菜单（P0-3）
     "ui.rewind.title": "回退到之前的某条消息",

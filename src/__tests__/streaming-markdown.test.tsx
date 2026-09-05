@@ -76,3 +76,19 @@ describe("renderMarkdown plain-text fast path", () => {
     expect(out).toContain("bold");
   });
 });
+
+describe("renderMarkdown numeric entities (out-of-range guard)", () => {
+  it("decodes in-range decimal and hex character references", () => {
+    expect(renderMarkdown("&#65;&#x42;")).toContain("AB");
+  });
+
+  it("keeps raw text for out-of-range references instead of throwing", () => {
+    // 1114112 is one past Unicode's last code point: String.fromCodePoint
+    // throws a RangeError, and no caller catches — one junk entity used to
+    // kill the whole render mid-stream.
+    expect(() => renderMarkdown("bad &#1114112; ref")).not.toThrow();
+    expect(renderMarkdown("bad &#1114112; ref")).toContain("&#1114112;");
+    expect(() => renderMarkdown("bad &#x110000; ref")).not.toThrow();
+    expect(renderMarkdown("bad &#x110000; ref")).toContain("&#x110000;");
+  });
+});

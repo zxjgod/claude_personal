@@ -20,6 +20,7 @@ import { App } from "../tui/App.js";
 import { messagesToTranscript } from "../tui/history-replay.js";
 import { InputBox } from "../tui/InputBox.js";
 import { setLanguage } from "../tui/i18n.js";
+import { RetryLine } from "../tui/RetryLine.js";
 import { TuiStore } from "../tui/store.js";
 import { TranscriptReview } from "../tui/TranscriptReview.js";
 import { transcriptToLines } from "../tui/transcript-lines.js";
@@ -253,7 +254,7 @@ describe("TuiStore P0 additions", () => {
     expect(store.getSnapshot().streamingThinking).toBe("");
   });
 
-  it("showRetry counts down per second and clearRetry stops it", () => {
+  it("showRetry counts down, HOLDS at 0 until cleared (retry in flight)", () => {
     vi.useFakeTimers();
     try {
       const store = new TuiStore("p/m");
@@ -265,6 +266,13 @@ describe("TuiStore P0 additions", () => {
       });
       vi.advanceTimersByTime(2000);
       expect(store.getSnapshot().retryStatus?.secondsLeft).toBe(3);
+      // Past the backoff sleep the line stays up at 0 ("retrying now") — the
+      // retry REQUEST is still in flight; only its first event clears this.
+      vi.advanceTimersByTime(3000);
+      expect(store.getSnapshot().retryStatus?.secondsLeft).toBe(0);
+      expect(store.getSnapshot().retryStatus).not.toBeNull();
+      vi.advanceTimersByTime(5000); // still holding, no further ticks matter
+      expect(store.getSnapshot().retryStatus?.secondsLeft).toBe(0);
       store.clearRetry();
       expect(store.getSnapshot().retryStatus).toBeNull();
       vi.advanceTimersByTime(10_000); // no further ticks after clear
@@ -408,6 +416,22 @@ describe("transcriptToLines verbose mode (P0-1/P0-2)", () => {
     const lines = transcriptToLines(store.getSnapshot().transcript, "");
     expect(lines[0]!.role).toBe("user");
   });
+
+  it("multi-line user drafts flatten to one row per line (pager windowing)", () => {
+    // The pagers window over this array 1:1, so an embedded "\n" inside a
+    // single row desynced the viewport math (sticky-bottom drift, clipped
+    // tail) until this flattening existed.
+    const store = new TuiStore("p/m");
+    store.addUserMessage("line one\nline two\nline three");
+    const lines = transcriptToLines(store.getSnapshot().transcript, "");
+    expect(lines.map((l) => l.text)).toEqual(["> line one", "  line two", "  line three"]);
+    // The { / } jump marker rides the head row only — jumps target the turn
+    // head, not its tail.
+    expect(lines[0]!.role).toBe("user");
+    expect(lines[1]!.role).toBeUndefined();
+    // Every row keeps the user color so the turn reads as one block.
+    expect(lines[1]!.color).toBe(lines[0]!.color);
+  });
 });
 
 // ============================================================
@@ -550,5 +574,185 @@ describe("InputBox P0 keys", () => {
     expect(lastFrame()).not.toContain("[Image #1]");
     expect(lastFrame()).toContain("paste again"); // stale-paste note
     expect(onSubmit).toHaveBeenCalledTimes(1);
+  });
+
+  it("inputSuspended swallows keypresses AND the mirror stays empty", async () => {
+    const onDraftChange = vi.fn();
+    const onSubmit = vi.fn();
+    const { stdin, lastFrame } = render(
+      <InputBox
+        commands={[]}
+        disabled={false}
+        onSubmit={onSubmit}
+        inputSuspended={() => true}
+        onDraftChange={onDraftChange}
+      />,
+    );
+    await flush();
+    stdin.write("abc");
+    await flush();
+    expect(lastFrame()).not.toContain("abc"); // nothing reached the buffer
+    expect(onSubmit).not.toHaveBeenCalled();
+    // Mount reported the empty seed; the swallowed keys must not have re-reported.
+    expect(onDraftChange).toHaveBeenCalledTimes(1);
+    expect(onDraftChange).toHaveBeenCalledWith({ text: "", cursor: 0 });
+  });
+
+  it("onDraftChange mirrors typing; the saved seed restores on remount", async () => {
+    // The mirror is the draft's survival mechanism across unmounts (overlays,
+    // the review pager REPLACE the box) — the next instance seeds from it.
+    const onDraftChange = vi.fn();
+    const { stdin, unmount } = render(
+      <InputBox commands={[]} disabled={false} onSubmit={() => {}} onDraftChange={onDraftChange} />,
+    );
+    await flush();
+    stdin.write("abc");
+    await flush();
+    expect(onDraftChange).toHaveBeenLastCalledWith({ text: "abc", cursor: 3 });
+    const seed = onDraftChange.mock.calls.at(-1)![0];
+    unmount();
+    const second = render(
+      <InputBox
+        commands={[]}
+        disabled={false}
+        onSubmit={() => {}}
+        onDraftChange={onDraftChange}
+        initialDraft={seed}
+      />,
+    );
+    await flush();
+    expect(second.lastFrame()).toContain("abc");
+  });
+});
+
+describe("RetryLine", () => {
+  it("shows the countdown, then 'retrying now' once it hits 0", () => {
+    const counting = render(
+      <RetryLine retry={{ reason: "API 429 rate limit", attempt: 2, max: 10, secondsLeft: 8 }} />,
+    );
+    expect(counting.lastFrame()).toContain("retrying in 8s");
+    expect(counting.lastFrame()).toContain("2/10");
+    const now = render(
+      <RetryLine retry={{ reason: "API 429 rate limit", attempt: 2, max: 10, secondsLeft: 0 }} />,
+    );
+    expect(now.lastFrame()).toContain("retrying now");
+    expect(now.lastFrame()).not.toContain("retrying in");
+  });
+});
+
+// ============================================================
+// Help hotkey arbitration — "?" opens help, panel owns the
+// keyboard, InputBox suspended while it is on screen (P0)
+// ============================================================
+describe("help hotkey arbitration (App-level)", () => {
+  function renderApp() {
+    const store = new TuiStore("p/m");
+    const onSubmit = vi.fn();
+    const inst = render(<App store={store} commands={[]} onSubmit={onSubmit} />);
+    return { store, onSubmit, ...inst };
+  }
+
+  it("'?' on an empty draft opens help WITHOUT inserting the character", async () => {
+    const { store, stdin } = renderApp();
+    await flush();
+    stdin.write("?");
+    await flush();
+    expect(store.getSnapshot().showHelp).toBe(true);
+    // The opening keypress arrives at every useInput listener in one stdin
+    // dispatch — a leaked "?" would sit in the buffer for the next submit.
+    expect(store.getSnapshot().draft.text).toBe("");
+  });
+
+  it("'?' with a live draft inserts the character and does NOT open help", async () => {
+    const { store, stdin, lastFrame } = renderApp();
+    await flush();
+    stdin.write("what is X");
+    await flush();
+    stdin.write("?");
+    await flush();
+    expect(store.getSnapshot().showHelp).toBe(false);
+    expect(lastFrame()).toContain("what is X?");
+    expect(store.getSnapshot().draft.text.length).toBe(10); // "what is X" (9) + "?"
+  });
+
+  it("keys typed while help is open are swallowed (draft stays empty)", async () => {
+    const { store, stdin } = renderApp();
+    await flush();
+    stdin.write("?");
+    await flush();
+    expect(store.getSnapshot().showHelp).toBe(true);
+    stdin.write("draft");
+    await flush();
+    expect(store.getSnapshot().showHelp).toBe(true); // still open, keys ignored
+    expect(store.getSnapshot().draft.text).toBe("");
+  });
+
+  it("Esc closes help WITHOUT clearing the live draft", async () => {
+    // Regression: Ink broadcasts the closing Esc to the InputBox too — it
+    // used to wipe the draft (and arm double-Esc rewind) in the same
+    // keypress that closed the panel.
+    const { store, stdin, lastFrame } = renderApp();
+    await flush();
+    stdin.write("keep me");
+    await flush();
+    // /help-style open: the panel can be on screen while a draft exists
+    // (opened from the command path), and must own Esc while it is.
+    store.setShowHelp(true);
+    await flush();
+    stdin.write(ESC);
+    await escFlush();
+    expect(store.getSnapshot().showHelp).toBe(false);
+    expect(lastFrame()).toContain("keep me");
+    expect(store.getSnapshot().draft.text.length).toBe(7);
+  });
+
+  it("Enter closes help WITHOUT submitting the draft", async () => {
+    const { store, onSubmit, stdin, lastFrame } = renderApp();
+    await flush();
+    stdin.write("keep me");
+    await flush();
+    store.setShowHelp(true);
+    await flush();
+    stdin.write("\r");
+    await flush();
+    expect(store.getSnapshot().showHelp).toBe(false);
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(lastFrame()).toContain("keep me");
+  });
+
+  it("the draft survives a review-mode round trip (the pager unmounts the box)", async () => {
+    const { store, stdin, lastFrame } = renderApp();
+    await flush();
+    stdin.write("keep me");
+    await flush();
+    store.setReviewing(true);
+    await flush();
+    // The pager replaced the input region — the draft lives on in the store.
+    expect(store.getSnapshot().draft.text).toBe("keep me");
+    store.setReviewing(false);
+    await flush();
+    expect(lastFrame()).toContain("keep me"); // restored into the fresh box
+  });
+
+  it("a permission overlay preserves the draft AND exits review mode (no agent hang)", async () => {
+    const { store, stdin, lastFrame } = renderApp();
+    await flush();
+    stdin.write("keep me");
+    await flush();
+    store.setReviewing(true);
+    await flush();
+    // A tool permission arrives while the user reads the transcript: the
+    // overlay cannot render inside the review layout — leaving `reviewing`
+    // on would hang its resolve() promise (and the agent loop) until the
+    // user happened to leave the viewer.
+    const answer = store.askPermission("Allow Bash?");
+    await flush();
+    expect(store.getSnapshot().reviewing).toBe(false);
+    expect(lastFrame()).toContain("Allow Bash?");
+    const ov = store.getSnapshot().overlay;
+    if (ov?.kind === "permission") ov.resolve("no");
+    await answer;
+    await flush();
+    expect(lastFrame()).toContain("keep me"); // draft restored after the overlay
   });
 });

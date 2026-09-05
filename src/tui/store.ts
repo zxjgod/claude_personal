@@ -214,6 +214,18 @@ export interface StoreState {
   toast: string | null;
   /** Help panel visibility (triggered by "?" key). */
   showHelp: boolean;
+  /**
+   * The InputBox's live draft (text + cursor), mirrored synchronously on
+   * every edit. Two consumers:
+   *  1. the "?" help hotkey's empty-draft guard — read AT EVENT TIME from
+   *     getSnapshot() (a render-derived flag would be stale within the same
+   *     stdin dispatch);
+   *  2. draft preservation across unmounts — overlays and the review pager
+   *     REPLACE the InputBox (component state would die with it); the next
+   *     mount seeds itself from this mirror.
+   * Nothing subscribes to this field, so the mirror costs no re-renders.
+   */
+  draft: { text: string; cursor: number };
   /** M41: input command history for ↑/↓ navigation. */
   inputHistory: string[];
   /**
@@ -306,6 +318,7 @@ export class TuiStore {
       modelId: opts?.modelId ?? "",
       toast: null,
       showHelp: false,
+      draft: { text: "", cursor: 0 },
       inputHistory: [],
       reviewing: false,
       retryStatus: null,
@@ -602,16 +615,14 @@ export class TuiStore {
     riskHint?: string,
   ): Promise<"yes" | "always" | "no"> {
     return new Promise((resolve) => {
-      this.set({
-        overlay: {
-          kind: "permission",
-          header,
-          detail,
-          riskHint,
-          resolve: (choice) => {
-            this.set({ overlay: null });
-            resolve(choice);
-          },
+      this.openOverlay({
+        kind: "permission",
+        header,
+        detail,
+        riskHint,
+        resolve: (choice) => {
+          this.set({ overlay: null });
+          resolve(choice);
         },
       });
     });
@@ -624,17 +635,15 @@ export class TuiStore {
     multiSelect: boolean,
   ): Promise<string[] | null> {
     return new Promise((resolve) => {
-      this.set({
-        overlay: {
-          kind: "question",
-          header,
-          question,
-          options,
-          multiSelect,
-          resolve: (labels) => {
-            this.set({ overlay: null });
-            resolve(labels);
-          },
+      this.openOverlay({
+        kind: "question",
+        header,
+        question,
+        options,
+        multiSelect,
+        resolve: (labels) => {
+          this.set({ overlay: null });
+          resolve(labels);
         },
       });
     });
@@ -643,14 +652,12 @@ export class TuiStore {
   /** Open the interactive /effort slider; resolves with the chosen tier or null. */
   askEffort(current: EffortLevel): Promise<EffortLevel | null> {
     return new Promise((resolve) => {
-      this.set({
-        overlay: {
-          kind: "effort",
-          current,
-          resolve: (level) => {
-            this.set({ overlay: null });
-            resolve(level);
-          },
+      this.openOverlay({
+        kind: "effort",
+        current,
+        resolve: (level) => {
+          this.set({ overlay: null });
+          resolve(level);
         },
       });
     });
@@ -663,14 +670,12 @@ export class TuiStore {
    */
   pickSession(sessions: SessionPickerItem[]): Promise<string | null> {
     return new Promise((resolve) => {
-      this.set({
-        overlay: {
-          kind: "sessionPicker",
-          sessions,
-          resolve: (sessionId) => {
-            this.set({ overlay: null });
-            resolve(sessionId);
-          },
+      this.openOverlay({
+        kind: "sessionPicker",
+        sessions,
+        resolve: (sessionId) => {
+          this.set({ overlay: null });
+          resolve(sessionId);
         },
       });
     });
@@ -683,14 +688,12 @@ export class TuiStore {
    */
   pickProvider(profiles: ProviderPickerItem[]): Promise<string | null> {
     return new Promise((resolve) => {
-      this.set({
-        overlay: {
-          kind: "providerPicker",
-          profiles,
-          resolve: (name) => {
-            this.set({ overlay: null });
-            resolve(name);
-          },
+      this.openOverlay({
+        kind: "providerPicker",
+        profiles,
+        resolve: (name) => {
+          this.set({ overlay: null });
+          resolve(name);
         },
       });
     });
@@ -728,6 +731,24 @@ export class TuiStore {
 
   setShowHelp(show: boolean): void {
     this.set({ showHelp: show });
+  }
+
+  /** Mirror the InputBox's draft (see StoreState.draft). */
+  setDraft(draft: { text: string; cursor: number }): void {
+    const cur = this.state.draft;
+    if (cur.text === draft.text && cur.cursor === draft.cursor) return;
+    this.set({ draft });
+  }
+
+  /**
+   * Open an overlay. Overlays own the whole screen and keyboard: the review
+   * pager (PgUp) does NOT render the interaction region, so an overlay
+   * arriving while reviewing would never mount and its resolve() promise
+   * would hang — the agent loop stalls until the user happens to leave the
+   * viewer. Any overlay therefore exits review mode first.
+   */
+  private openOverlay(overlay: Overlay): void {
+    this.set({ overlay, reviewing: false });
   }
 
   /** Set the input history (e.g. after loading from a session). */
@@ -771,9 +792,11 @@ export class TuiStore {
         this._retryTimer = null;
         return;
       }
-      if (s.secondsLeft <= 1) {
-        this.clearRetry();
-      } else {
+      // Hold at 0 rather than auto-clearing: the countdown ends when the
+      // backoff SLEEP ends, but the retry request is still in flight — the
+      // line should say "retrying now" until the retried call's first event
+      // (or the turn's end) clears it, both in run.tsx.
+      if (s.secondsLeft > 0) {
         this.set({ retryStatus: { ...s, secondsLeft: s.secondsLeft - 1 } });
       }
     }, 1000);
@@ -804,14 +827,12 @@ export class TuiStore {
         resolve(null);
         return;
       }
-      this.set({
-        overlay: {
-          kind: "rewind",
-          entries,
-          resolve: (turnIndex) => {
-            this.set({ overlay: null });
-            resolve(turnIndex);
-          },
+      this.openOverlay({
+        kind: "rewind",
+        entries,
+        resolve: (turnIndex) => {
+          this.set({ overlay: null });
+          resolve(turnIndex);
         },
       });
     });
@@ -838,14 +859,12 @@ export class TuiStore {
    */
   pickCommand(commands: CommandPickerItem[]): Promise<string | null> {
     return new Promise((resolve) => {
-      this.set({
-        overlay: {
-          kind: "commandPicker",
-          commands,
-          resolve: (name) => {
-            this.set({ overlay: null });
-            resolve(name);
-          },
+      this.openOverlay({
+        kind: "commandPicker",
+        commands,
+        resolve: (name) => {
+          this.set({ overlay: null });
+          resolve(name);
         },
       });
     });
@@ -857,14 +876,12 @@ export class TuiStore {
    */
   askConfirmation(header: string): Promise<boolean> {
     return new Promise((resolve) => {
-      this.set({
-        overlay: {
-          kind: "confirm",
-          header,
-          resolve: (confirmed) => {
-            this.set({ overlay: null });
-            resolve(confirmed);
-          },
+      this.openOverlay({
+        kind: "confirm",
+        header,
+        resolve: (confirmed) => {
+          this.set({ overlay: null });
+          resolve(confirmed);
         },
       });
     });
