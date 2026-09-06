@@ -14,7 +14,15 @@ import type { EffortLevel } from "./effort.js";
 import { t } from "./i18n.js";
 
 export type TranscriptItem =
-  | { kind: "user"; id: number; text: string }
+  | {
+      kind: "user";
+      id: number;
+      text: string;
+      /** Batch B1: echoed `!command` line — renders with the bash "! " marker. */
+      bash?: boolean;
+      /** Batch B2: echoed `#memory` line — renders with the remember-blue "#". */
+      memory?: boolean;
+    }
   | { kind: "assistant"; id: number; text: string }
   /**
    * Committed extended-thinking content. Renders COLLAPSED (one
@@ -156,6 +164,13 @@ export type Overlay =
       kind: "confirm";
       header: string;
       resolve: (confirmed: boolean) => void;
+    }
+  | {
+      /** Batch B8 (alt+p): quick model switcher. Items are provider/model
+       *  pairs (from provider profiles); resolving picks the model id. */
+      kind: "modelPicker";
+      items: Array<{ name: string; label: string; current: boolean }>;
+      resolve: (model: string | null) => void;
     };
 
 export interface StoreState {
@@ -258,7 +273,27 @@ export interface StoreState {
    * index and reprints the surviving history.
    */
   transcriptEpoch: number;
+  /**
+   * Batch B4/B5: a one-shot command aimed at the InputBox (stash, external
+   * editor, clear, history-search). Global hotkeys dispatch through the store
+   * because the InputBox owns the buffer; `seq` increments per dispatch so a
+   * repeat of the SAME kind still re-fires the consumer effect.
+   */
+  inputAction: { kind: InputActionKind; seq: number } | null;
+  /** Batch B4 (ctrl+t): the pinned todo list collapses to the "Next:" line. */
+  todosCollapsed: boolean;
+  /** Batch B5: "Press ctrl+c again to exit" is armed (auto-clears after 3s). */
+  showExitHint: boolean;
+  /**
+   * Batch B6: the type-ahead queue's CONTENT mirror (newest last). Rendered
+   * as dim user messages above the input box; `queuedInputs` stays as the
+   * numeric projection for the footer badge.
+   */
+  queuedMessages: string[];
 }
+
+/** Batch B4/B5: actions the InputBox executes on the store's behalf. */
+export type InputActionKind = "stash" | "editor" | "clear" | "historySearch";
 
 type Listener = () => void;
 
@@ -332,6 +367,10 @@ export class TuiStore {
       reviewing: false,
       retryStatus: null,
       transcriptEpoch: 0,
+      inputAction: null,
+      todosCollapsed: false,
+      showExitHint: false,
+      queuedMessages: [],
     };
   }
 
@@ -416,8 +455,8 @@ export class TuiStore {
 
   // --- mutators used by the REPL orchestration ---
 
-  addUserMessage(text: string): void {
-    this.push({ kind: "user", text } as TranscriptItem);
+  addUserMessage(text: string, opts?: { bash?: boolean; memory?: boolean }): void {
+    this.push({ kind: "user", text, ...opts } as TranscriptItem);
   }
 
   addNotice(text: string): void {
@@ -444,6 +483,55 @@ export class TuiStore {
   /** Mirror the type-ahead queue's length (status-bar "queued N" badge). */
   setQueuedInputs(n: number): void {
     this.set({ queuedInputs: Math.max(0, n) });
+  }
+
+  /** Batch B6: mirror the queue's CONTENT for the dim message list. */
+  setQueuedMessages(items: string[]): void {
+    // Only copy when the array actually changed — this fires per queue push.
+    if (
+      items.length === this.state.queuedMessages.length &&
+      items.every((v, i) => v === this.state.queuedMessages[i])
+    )
+      return;
+    this.set({ queuedMessages: [...items] });
+  }
+
+  /** Batch B4/B5: dispatch a one-shot action the InputBox executes. */
+  dispatchInputAction(kind: InputActionKind): void {
+    this.set({ inputAction: { kind, seq: (this.state.inputAction?.seq ?? 0) + 1 } });
+  }
+
+  /** Batch B4 (ctrl+t). */
+  toggleTodosCollapsed(): void {
+    this.set({ todosCollapsed: !this.state.todosCollapsed });
+  }
+
+  /**
+   * Batch B5: arm "Press ctrl+c again to exit" — true for 3s, then auto-clears
+   * (same timer pattern as the toast). A second ctrl+c while armed exits.
+   */
+  armExitHint(): void {
+    this.set({ showExitHint: true });
+    setTimeout(() => {
+      // Only clear when still armed — a re-arm inside the window must win.
+      if (this.state.showExitHint) this.set({ showExitHint: false });
+    }, 3000);
+  }
+
+  /** Batch B8 (alt+p): provider/model picker overlay. */
+  askModelPicker(
+    items: Array<{ name: string; label: string; current: boolean }>,
+  ): Promise<string | null> {
+    return new Promise((resolve) => {
+      this.openOverlay({
+        kind: "modelPicker",
+        items,
+        resolve: (model) => {
+          this.set({ overlay: null });
+          resolve(model);
+        },
+      } as Overlay);
+    });
   }
 
   setSpinner(mode: SpinnerMode): void {

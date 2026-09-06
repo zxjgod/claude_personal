@@ -37,6 +37,19 @@ export class InputQueue {
     return out;
   }
 
+  /** B6: a copy of the pending items (newest last) for the store's mirror. */
+  snapshot(): string[] {
+    return [...this.items];
+  }
+
+  /**
+   * B6: remove and return the NEWEST queued item (Up-recall takes back what
+   * was typed last, official semantics). Null when empty.
+   */
+  popLast(): string | null {
+    return this.items.length > 0 ? this.items.pop()! : null;
+  }
+
   /** Discard everything without returning it. */
   clear(): void {
     this.items = [];

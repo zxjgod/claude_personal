@@ -48,6 +48,7 @@ import { Box, Text, useInput, usePaste } from "ink";
 import { useEffect, useRef, useState } from "react";
 import { POINTER } from "./figures.js";
 import { t } from "./i18n.js";
+import { editInEditor } from "./open-editor.js";
 import { nextOffset } from "./SessionPicker.js";
 import { terminalColumns } from "./terminal-width.js";
 import { palette } from "./theme.js";
@@ -217,13 +218,21 @@ export interface InputBoxProps {
    *  navigation index internally. */
   history?: string[];
   onHistoryChange?: (history: string[]) => void;
-  /** P0-3: double-Esc rewind trigger. Called on the second Esc within 2s while
-   *  idle with an empty buffer (first Esc clears a non-empty draft). Omit to
-   *  disable (busy turns pass undefined). */
+  /** P0-3: double-Esc rewind trigger. Called on the second Esc within 800ms
+   *  while idle with an empty buffer (first Esc clears a non-empty draft).
+   *  Omit to disable (busy turns pass undefined). */
   onRewind?: () => void;
   /** P0-5: read a clipboard image (Ctrl/Cmd/Alt+V). Resolves with the
    *  "[Image #N]" chip text (already registered by the runner) or null. */
   onImagePaste?: () => Promise<string | null>;
+  /** B6: recall the LAST queued message back into the buffer (Up from an
+   *  empty first row). Returns the recalled text or null when the queue is
+   *  empty; the caller removes it from the queue. */
+  onQueuePop?: () => string | null;
+  /** B4/B5: one-shot command dispatched by global hotkeys through the store
+   *  (stash / editor / clear / historySearch). The InputBox owns the buffer,
+   *  so the hotkey layer signals rather than reaching in. */
+  pendingAction?: { kind: "stash" | "editor" | "clear" | "historySearch"; seq: number } | null;
   /** Suspend ALL keyboard/paste editing while another surface (the help
    *  panel) owns the keyboard. Deliberately a SIGNAL read at EVENT time, not
    *  an isActive flag: the keypress that OPENS the panel is dispatched to
@@ -242,6 +251,10 @@ export interface InputBoxProps {
   initialDraft?: { text: string; cursor: number };
 }
 
+/** Official double-press window (useDoublePress.ts): two Escs / two Ctrl+Cs
+ *  within this span count as a double press. */
+const DOUBLE_PRESS_ESC_MS = 800;
+
 /** Pastes longer than this show the "已粘贴 N 行" note (lines, threshold). */
 const PASTE_NOTE_LINES = 5;
 
@@ -258,21 +271,32 @@ export function InputBox({
   onHistoryChange,
   onRewind,
   onImagePaste,
+  onQueuePop,
+  pendingAction,
   inputSuspended,
   onDraftChange,
   initialDraft,
 }: InputBoxProps) {
   const vimActive = editorMode?.value === "vim";
-  // Official chrome: the border stays the prompt gray (dimmed when the box is
-  // disabled); the accent is no longer used for the frame. `keepColorWhenDisabled`
-  // (full-screen path) keeps the border at full strength.
-  const frameColor = disabled && !keepColorWhenDisabled ? "#666666" : PROMPT_BORDER;
   // Seed from the saved draft (restores across overlay / review unmounts);
   // clamp the cursor defensively — the seed may predate a different buffer.
   const [buffer, setBufferState] = useState(initialDraft?.text ?? "");
   const [cursor, setCursorState] = useState(() =>
     clamp(initialDraft?.cursor ?? 0, 0, (initialDraft?.text ?? "").length),
   );
+  // B1/B2: `!` bash mode tints the whole frame pink; `#` memory mode uses the
+  // official remember blue for the marker only.
+  const bashMode = buffer.startsWith("!");
+  const memoryMode = buffer.startsWith("#");
+  // Official chrome: the border stays the prompt gray (dimmed when the box is
+  // disabled); the accent is no longer used for the frame. `keepColorWhenDisabled`
+  // (full-screen path) keeps the border at full strength.
+  const frameColor =
+    bashMode && !disabled
+      ? palette.bashBorder
+      : disabled && !keepColorWhenDisabled
+        ? "#666666"
+        : PROMPT_BORDER;
   const [selected, setSelected] = useState(0);
   // First-visible index of the dropdown scroll window; nudged as `selected`
   // moves so the highlighted command stays on screen (see MAX_SUGGESTIONS).
@@ -285,8 +309,22 @@ export function InputBox({
   const [fileSelected, setFileSelected] = useState(0);
   // One-shot note shown after a large paste; cleared by the next keypress.
   const [pasteNote, setPasteNote] = useState<string | null>(null);
+  // B3 (ctrl+r): inline reverse-i-search state. While active it intercepts
+  // ALL editing keys; `preSearch` restores the draft on cancel.
+  const [historySearch, setHistorySearch] = useState<{
+    query: string;
+    idx: number;
+    preSearch: string;
+  } | null>(null);
+  // B4 (ctrl+g): the external editor owns the TTY — replace the box with the
+  // official waiting line until it exits.
+  const [editorActive, setEditorActive] = useState(false);
+  // B4 (ctrl+s): the stashed draft (text + cursor). Undefined = nothing
+  // stashed; ctrl+s with an empty buffer restores it.
+  const stashRef = useRef<{ text: string; cursor: number } | null>(null);
   // P0-3: double-Esc rewind arming. First Esc (idle, empty buffer, non-vim)
-  // arms; a second Esc within 2s fires onRewind. Any other key disarms.
+  // arms; a second Esc within the official 800ms window fires onRewind. Any
+  // other key disarms.
   const escArmedRef = useRef(false);
   const escTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // P0-5: draft generation. Bumped whenever the buffer is wholesale replaced
@@ -422,18 +460,154 @@ export function InputBox({
     setPasteNote(null);
     setHistoryIndex(-1);
     historyRestoreRef.current = null;
+    setHistorySearch(null);
     draftGenRef.current++;
   };
+
+  // B3: history entries matching the search query, newest first. Empty query
+  // matches everything (plain history walk).
+  const searchMatches = (() => {
+    if (!historySearch) return [] as string[];
+    const q = historySearch.query.toLowerCase();
+    return [...history].reverse().filter((h) => h.toLowerCase().includes(q));
+  })();
+
+  // B4/B5: execute one-shot actions dispatched by the global hotkeys. The
+  // handler closes over per-render state helpers (reset/setBuffer/...), so it
+  // lives in a latest-ref: the effect then depends on `pendingAction` ALONE —
+  // every dispatch creates a fresh {kind, seq} object, which both re-fires
+  // repeated same-kind dispatches and satisfies the dependency lint without
+  // re-running the action on unrelated renders.
+  const actionHandlerRef = useRef<(kind: "stash" | "editor" | "clear" | "historySearch") => void>(
+    () => {},
+  );
+  actionHandlerRef.current = (kind) => {
+    switch (kind) {
+      case "clear":
+        reset();
+        return;
+      case "stash": {
+        // Official ctrl+s: with a draft, stash it (text + cursor) and clear;
+        // with an EMPTY draft, restore the stash. Nothing stashed yet = noop.
+        if (bufferRef.current.length > 0) {
+          stashRef.current = { text: bufferRef.current, cursor: cursorRef.current };
+          reset();
+          setPasteNote(t("ui.input.stashed"));
+        } else if (stashRef.current) {
+          const stash = stashRef.current;
+          stashRef.current = null;
+          setBuffer(stash.text);
+          setCursor(stash.cursor);
+          setPasteNote(t("ui.input.restored"));
+        }
+        return;
+      }
+      case "editor": {
+        // Official ctrl+g: hand the draft to $VISUAL/$EDITOR; the edited file
+        // replaces the buffer on a clean exit. The child owns the TTY for the
+        // duration — `editorActive` swaps the box for the waiting line.
+        if (editorActive) return;
+        setEditorActive(true);
+        void editInEditor(bufferRef.current).then(({ ok, text }) => {
+          setEditorActive(false);
+          if (ok) {
+            setBuffer(text);
+            setCursor(text.length);
+          } else {
+            setPasteNote(t("ui.input.editorFailed"));
+          }
+        });
+        return;
+      }
+      case "historySearch": {
+        if (historyRef.current.length === 0) {
+          setPasteNote(t("ui.input.noHistory"));
+          return;
+        }
+        setHistorySearch({ query: "", idx: 0, preSearch: bufferRef.current });
+        return;
+      }
+    }
+  };
+  useEffect(() => {
+    if (pendingAction) actionHandlerRef.current(pendingAction.kind);
+  }, [pendingAction]);
 
   useInput(
     (input, key) => {
       // Another surface (help panel) owns the keyboard: swallow the keypress
       // entirely. Checked FIRST and at event time — see the prop's note.
       if (inputSuspended?.()) return;
+      // The external editor owns the TTY (B4): nothing arrives until it exits.
+      if (editorActive) return;
       // Any keypress retires the paste note — it has done its job once seen.
       if (pasteNote !== null) setPasteNote(null);
       // P0-3: any non-Esc key disarms the double-Esc rewind arm.
       if (!key.escape) disarmEsc();
+
+      // --- B3: inline reverse-i-search owns ALL keys while active ---
+      if (historySearch) {
+        const matches = searchMatches;
+        if (key.escape) {
+          // Esc accepts the match into the buffer without submitting.
+          const match = matches[historySearch.idx];
+          setHistorySearch(null);
+          if (match !== undefined) {
+            setBuffer(match);
+            setCursor(match.length);
+          }
+          return;
+        }
+        if (key.tab && !key.shift && matches.length > 0) {
+          // Tab accepts like Esc (official: accept without running).
+          const match = matches[historySearch.idx]!;
+          setHistorySearch(null);
+          setBuffer(match);
+          setCursor(match.length);
+          return;
+        }
+        if ((key.ctrl && input === "r") || key.upArrow) {
+          // ctrl+r / ↑ cycle to the next older match (wrap).
+          if (matches.length > 0) {
+            setHistorySearch({ ...historySearch, idx: (historySearch.idx + 1) % matches.length });
+          }
+          return;
+        }
+        if (key.downArrow) {
+          if (matches.length > 0) {
+            setHistorySearch({
+              ...historySearch,
+              idx: (historySearch.idx - 1 + matches.length) % matches.length,
+            });
+          }
+          return;
+        }
+        if (key.return) {
+          // Enter accepts AND runs the match (official behavior).
+          const match = matches[historySearch.idx];
+          setHistorySearch(null);
+          if (match === undefined) {
+            setBuffer(historySearch.preSearch);
+            setCursor(historySearch.preSearch.length);
+            return;
+          }
+          pushHistory(match);
+          reset();
+          onSubmit(match);
+          return;
+        }
+        if (key.backspace) {
+          const q = historySearch.query.slice(0, -1);
+          setHistorySearch({ ...historySearch, query: q, idx: 0 });
+          return;
+        }
+        if (input && !key.ctrl && !key.meta) {
+          const q = historySearch.query + input;
+          setHistorySearch({ ...historySearch, query: q, idx: 0 });
+          return;
+        }
+        return;
+      }
 
       // --- Esc: close the open dropdown ("/" palette or "@" files) ---
       // Runs BEFORE the vim branch: leaving insert mode with a dropdown open
@@ -442,6 +616,12 @@ export function InputBox({
         if (fileSuggestions.length > 0 && atToken) setAtDismissed(atToken.query);
         if (suggestions.length > 0 && slashQuery !== null) setSlashDismissed(slashQuery);
         setFileSelected(0);
+        return;
+      }
+
+      // --- B1: Esc exits `!` bash mode when the buffer is just the marker ---
+      if (key.escape && !busy && bufferRef.current === "!") {
+        reset();
         return;
       }
 
@@ -484,13 +664,14 @@ export function InputBox({
 
       // --- P0-3: double-Esc rewind (idle, empty buffer, non-vim) ---
       // Esc#1 with a draft clears it; Esc#1 on an empty buffer arms; Esc#2
-      // within 2s opens the rewind menu. While busy, Esc stays an interrupt
-      // (InterruptHotkey owns it) — onRewind is undefined then by contract.
+      // within the OFFICIAL 800ms window opens the rewind menu. While busy,
+      // Esc stays an interrupt (InterruptHotkey owns it) — onRewind is
+      // undefined then by contract.
       if (key.escape && !vimActive && !busy && onRewind) {
         const arm = () => {
           disarmEsc();
           escArmedRef.current = true;
-          escTimerRef.current = setTimeout(disarmEsc, 2000);
+          escTimerRef.current = setTimeout(disarmEsc, DOUBLE_PRESS_ESC_MS);
         };
         if (bufferRef.current.length > 0) {
           setBuffer("");
@@ -592,6 +773,27 @@ export function InputBox({
         setSelected(next);
         setSuggestOffset((off) => nextOffset(next, off, windowSize));
         return;
+      }
+
+      // --- B6: queue recall (Up from an empty first row) ---
+      // Official: "Up from first line takes back queued messages". Only when
+      // the buffer is empty (nothing to protect) and the cursor sits on the
+      // first row — otherwise ↑ keeps its multi-line/history duties.
+      if (
+        key.upArrow &&
+        suggestions.length === 0 &&
+        fileSuggestions.length === 0 &&
+        bufferRef.current.length === 0 &&
+        onQueuePop
+      ) {
+        const recalled = onQueuePop();
+        if (recalled !== null && recalled !== undefined) {
+          setBuffer(recalled);
+          setCursor(recalled.length);
+          setPasteNote(t("ui.queue.recalled"));
+          return;
+        }
+        // Queue empty: fall through to history navigation below.
       }
 
       // --- History navigation (palette closed, M41) ---
@@ -896,8 +1098,15 @@ export function InputBox({
   // no side/bottom borders, no bottom rule. The prompt pointer is "❯"
   // (figures.POINTER); continuation rows indent two spaces under it. When the
   // buffer outgrows maxVisible the window keeps the cursor row on screen.
+  // B1/B2: in bash/memory mode the buffer's leading "!" / "#" is rendered AS
+  // the prompt marker (official PromptInputModeIndicator: "! " pink, "#" blue)
+  // — row 0's payload drops the raw mode char so it isn't shown twice, and
+  // the cursor column shifts accordingly.
+  const marker = bashMode ? "! " : memoryMode ? "# " : `${POINTER} `;
+  const markerColor = bashMode ? palette.bashBorder : memoryMode ? "#7aa2f7" : frameColor;
   const promptRows = visibleLines.map((line, i) => {
     const realRow = windowStart + i;
+    const rowText = realRow === 0 && (bashMode || memoryMode) ? line.slice(1) : line;
     return (
       <Box key={realRow}>
         {realRow === 0 && vimActive ? (
@@ -905,12 +1114,18 @@ export function InputBox({
             {vimMode === "normal" ? "[N] " : "[I] "}
           </Text>
         ) : null}
-        <Text color={frameColor}>{realRow === 0 ? `${POINTER} ` : "  "}</Text>
+        <Text color={markerColor}>{realRow === 0 ? marker : "  "}</Text>
         <CursorLine
-          line={line}
+          line={rowText}
           // The cursor is only drawn on the row it sits on; other rows render
           // their text plainly.
-          cursorCol={!disabled && realRow === curRow ? curCol : -1}
+          cursorCol={
+            !disabled && realRow === curRow
+              ? realRow === 0 && (bashMode || memoryMode)
+                ? Math.max(0, curCol - 1)
+                : curCol
+              : -1
+          }
         />
       </Box>
     );
@@ -938,6 +1153,22 @@ export function InputBox({
   const ruleRepeat = Math.max(3, boxWidth - 2);
   const topRule = <Text color={frameColor}>{`╭${"─".repeat(ruleRepeat)}╮`}</Text>;
   const bottomRule = <Text color={frameColor}>{`╰${"─".repeat(ruleRepeat)}╯`}</Text>;
+
+  // B4 (ctrl+g): the external editor owns the TTY — the official client
+  // replaces the whole input box with a dim italic waiting line.
+  if (editorActive) {
+    return (
+      <Box flexDirection="column">
+        {topRule}
+        <Text dimColor italic>
+          {" "}
+          {t("ui.input.editorWaiting")}
+        </Text>
+        {!hideBottomRule ? bottomRule : null}
+      </Box>
+    );
+  }
+
   const promptBox = (
     <Box flexDirection="column">
       {topRule}
@@ -947,6 +1178,16 @@ export function InputBox({
     </Box>
   );
 
+  // B3: the reverse-i-search line — label + query + the current match, shown
+  // under the box while the search owns the keyboard.
+  const searchLine = historySearch ? (
+    <Text dimColor>
+      {`  (${t("ui.input.searchLabel")}) [${historySearch.query}] ${
+        searchMatches[historySearch.idx] ?? t("ui.input.searchEmpty")
+      }`}
+    </Text>
+  ) : null;
+
   // Full-screen: suggestions go ABOVE the box.
   if (hideBottomRule) {
     return (
@@ -954,6 +1195,7 @@ export function InputBox({
         {dropdown}
         {typeAheadHint}
         {promptBox}
+        {searchLine}
       </Box>
     );
   }
@@ -965,6 +1207,7 @@ export function InputBox({
       {promptBox}
       {typeAheadHint}
       {pasteNoteLine}
+      {searchLine}
       {dropdown}
     </Box>
   );

@@ -36,6 +36,7 @@ function selectFooter(s: StoreState) {
     contextUsed: s.contextUsed,
     contextLimit: s.contextLimit,
     queuedInputs: s.queuedInputs,
+    showExitHint: s.showExitHint,
   };
 }
 
@@ -62,7 +63,13 @@ export function PromptFooter({ store }: { store: TuiStore }) {
   // --- Left column: first match in the priority chain wins ---
   let leftNode: ReactNode;
   let leftWidth: number;
-  if (s.busy) {
+  if (s.showExitHint) {
+    // B5: armed by the first idle Ctrl+C/Ctrl+D — the official exit message
+    // outranks every other hint while it's live.
+    const hint = t("ui.footer.exitHint");
+    leftNode = <Text dimColor>{hint}</Text>;
+    leftWidth = visualWidth(hint);
+  } else if (s.busy) {
     const hint = t("ui.footer.interrupt");
     leftNode = <Text dimColor>{hint}</Text>;
     leftWidth = visualWidth(hint);

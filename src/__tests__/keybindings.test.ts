@@ -103,20 +103,48 @@ describe("match / resolver", () => {
     expect(resolve("?", {}, ["Global"])).toEqual({ type: "match", action: "app:globalSearch" });
   });
 
-  it("default bindings map ctrl+r to tool:expandLast (remappable expand)", () => {
+  it("default bindings map ctrl+r to history:search (official, batch B)", () => {
     const resolve = createResolver(DEFAULT_BINDINGS, null);
     expect(resolve("r", { ctrl: true }, ["Global"])).toEqual({
       type: "match",
-      action: "tool:expandLast",
+      action: "history:search",
     });
-    // A user override can move expand off ctrl+r entirely.
+    // A user override can move the search off ctrl+r entirely.
     const remapped = createResolver(DEFAULT_BINDINGS, [
-      { context: "Global", bindings: { "ctrl+r": null, "ctrl+e": "tool:expandLast" } },
+      { context: "Global", bindings: { "ctrl+r": null, "ctrl+f": "history:search" } },
     ]);
     expect(remapped("r", { ctrl: true }, ["Global"])).toEqual({ type: "unbound" });
-    expect(remapped("e", { ctrl: true }, ["Global"])).toEqual({
+    expect(remapped("f", { ctrl: true }, ["Global"])).toEqual({
       type: "match",
-      action: "tool:expandLast",
+      action: "history:search",
+    });
+  });
+
+  it("batch B defaults: stash/editor/todos/redraw on ctrl+s/g/t/l, pickers on meta+p/t", () => {
+    const resolve = createResolver(DEFAULT_BINDINGS, null);
+    expect(resolve("s", { ctrl: true }, ["Global"])).toEqual({
+      type: "match",
+      action: "chat:stash",
+    });
+    expect(resolve("g", { ctrl: true }, ["Global"])).toEqual({
+      type: "match",
+      action: "chat:externalEditor",
+    });
+    expect(resolve("t", { ctrl: true }, ["Global"])).toEqual({
+      type: "match",
+      action: "app:toggleTodos",
+    });
+    expect(resolve("l", { ctrl: true }, ["Global"])).toEqual({
+      type: "match",
+      action: "app:redraw",
+    });
+    expect(resolve("p", { meta: true }, ["Global"])).toEqual({
+      type: "match",
+      action: "chat:modelPicker",
+    });
+    expect(resolve("t", { meta: true }, ["Global"])).toEqual({
+      type: "match",
+      action: "chat:thinkingToggle",
     });
   });
 });

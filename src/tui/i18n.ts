@@ -155,6 +155,24 @@ const translations: Record<Language, Record<string, string>> = {
     "ui.image.none": "no image found in the clipboard",
     "ui.image.stale": "clipboard image arrived after the draft was sent — paste again to attach it",
 
+    // Batch B — input behaviors
+    "ui.input.stashed": "stashed — ctrl+s again to restore",
+    "ui.input.restored": "draft restored",
+    "ui.input.editorWaiting": "Save and close the editor to continue…",
+    "ui.input.editorFailed": "editor failed — draft kept (saved at {path})",
+    "ui.input.searchLabel": "reverse-i-search",
+    "ui.input.searchEmpty": "no history yet",
+    "ui.input.noHistory": "nothing to search — history is empty",
+    "ui.footer.exitHint": "Press ctrl+c again to exit",
+    "ui.picker.models": "↑↓ move · Enter switch · Esc cancel",
+    "ui.memory.added": "⎿ added to CLAUDE.md",
+    "ui.bash.running": "⎿ running…",
+    "ui.todos.next": "Next: {task}",
+    "ui.thinking.on": "Extended thinking on",
+    "ui.thinking.off": "Extended thinking off",
+    "ui.queue.recalled": "queued message recalled for editing",
+    "ui.queue.moreQueued": "queued",
+
     // Pickers
     "ui.picker.commands": "↑↓ move · Enter run · Esc cancel · Shift+Tab mode",
     "ui.picker.sessions": "↑↓ move · Enter resume · Esc cancel · Shift+Tab mode",
@@ -246,6 +264,24 @@ const translations: Record<Language, Record<string, string>> = {
     "ui.tool.expandHint": "（ctrl+o 展开）",
     "ui.tool.expandMore": "… +{n} 行（ctrl+o 展开）",
     "ui.tools.moreRunning": "… 还有 {n} 个工具运行中",
+
+    // 批次 B —— 输入行为
+    "ui.input.stashed": "已暂存 — 再按 ctrl+s 恢复",
+    "ui.input.restored": "草稿已恢复",
+    "ui.input.editorWaiting": "保存并关闭编辑器后继续…",
+    "ui.input.editorFailed": "编辑器启动失败 — 草稿保留（存于 {path}）",
+    "ui.input.searchLabel": "历史搜索",
+    "ui.input.searchEmpty": "暂无历史",
+    "ui.input.noHistory": "历史为空，无法搜索",
+    "ui.footer.exitHint": "再按一次 ctrl+c 退出",
+    "ui.picker.models": "↑↓ 移动 · Enter 切换 · Esc 取消",
+    "ui.memory.added": "⎿ 已写入 CLAUDE.md",
+    "ui.bash.running": "⎿ 运行中…",
+    "ui.todos.next": "下一个：{task}",
+    "ui.thinking.on": "深度思考已开启",
+    "ui.thinking.off": "深度思考已关闭",
+    "ui.queue.recalled": "已取回排队消息进行编辑",
+    "ui.queue.moreQueued": "条排队中",
 
     // 选择器
     "ui.picker.commands": "↑↓ 移动 · Enter 运行 · Esc 取消 · Shift+Tab 切换模式",

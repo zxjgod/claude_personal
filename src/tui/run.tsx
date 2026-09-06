@@ -8,6 +8,8 @@
 // so it doesn't corrupt the Ink frame.
 // ============================================================
 
+import * as fs from "node:fs";
+import * as nodePath from "node:path";
 import { render, useApp, useInput } from "ink";
 import { type RefObject, useCallback, useEffect, useRef } from "react";
 import { agentLoop } from "./../agent-loop.js";
@@ -55,7 +57,6 @@ import { messagesToTranscript } from "./history-replay.js";
 import type { CommandInfo } from "./InputBox.js";
 import { t } from "./i18n.js";
 import { InputQueue } from "./input-queue.js";
-import { createResolver, DEFAULT_BINDINGS, loadUserBindings } from "./keybindings/index.js";
 import { lookupContextWindow } from "./session-stats.js";
 import {
   type ProviderPickerItem,
@@ -64,16 +65,10 @@ import {
   TuiStore,
 } from "./store.js";
 import { StreamBuffer } from "./stream-buffer.js";
-import { isToolExpandable } from "./ToolCard.js";
 import { truncateVisual } from "./terminal-width.js";
 
 // Debug monitoring - enabled via DEBUG_STREAM env var
 const DEBUG_STREAM = process.env.DEBUG_STREAM;
-
-// Global-hotkey resolver for the runner-owned hotkeys (tool:expandLast):
-// defaults + user overrides from ~/.claude/keybindings.json. App.tsx keeps
-// its own instance for its hotkeys; both read the same sources.
-const globalResolver = createResolver(DEFAULT_BINDINGS, loadUserBindings());
 
 export interface TuiDeps {
   messages: Message[];
@@ -184,6 +179,7 @@ async function runTurn(
     drainQueuedInput: () => {
       const drained = queue.drain();
       store.setQueuedInputs(queue.size);
+      store.setQueuedMessages(queue.snapshot());
       return drained;
     },
     // P0-4: live retry countdown — the loop reports its pending backoff before
@@ -561,6 +557,91 @@ async function runCommandPicker(store: TuiStore, deps: TuiDeps): Promise<string 
 }
 
 /**
+ * B1: `!command` bash mode. Runs the shell DIRECTLY (the user invoked it, so
+ * no permission gate), echoes input + output into the transcript, injects the
+ * output into context, and runs a normal agent turn so Claude responds to it
+ * (official respondToBashCommands behavior). Busy turns queue instead — the
+ * onSubmit dispatcher only routes here while idle.
+ */
+async function runBashMode(
+  store: TuiStore,
+  deps: TuiDeps,
+  sessionId: () => string,
+  command: string,
+): Promise<void> {
+  store.addUserMessage(command, { bash: true });
+  const shellName = process.platform === "win32" ? "powershell" : "bash";
+  const shell =
+    deps.tools.find((x) => x.name === shellName) ?? deps.tools.find((x) => x.name === "bash");
+  if (!shell) {
+    store.addNotice("  ⎿ no shell tool available");
+    return;
+  }
+  store.setBusy(true);
+  store.setSpinner("tool");
+  store.startTurnClock();
+  try {
+    store.addNotice(`  ${t("ui.bash.running")}`);
+    // Minimal tool context: bash mode is user-invoked, so no permission hook
+    // is threaded — checkPermission stays absent and the tool runs ungated.
+    const r = await shell.call(
+      { command, description: "bash mode" } as never,
+      {
+        workspaceRoot: deps.getWorkspaceRoot?.() ?? deps.workspaceRoot,
+        sessionId: sessionId(),
+        permissionMode: deps.permissionMode,
+      } as never,
+    );
+    const output = r.error ? `error: ${r.error}` : (r.content ?? "").trim() || "(no output)";
+    // Echo the output as dim lines (official UserBashOutputMessage block).
+    for (const line of output.split("\n").slice(0, 20)) store.addNotice(`  ${line}`);
+    // Context injection + Claude auto-response: a normal user turn whose text
+    // wraps the shell exchange in the official bash-stdout tags.
+    const userMsg: Message = {
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text: `<bash-input>${command}</bash-input>\n<bash-stdout>\n${output.slice(0, 4000)}\n</bash-stdout>`,
+        },
+      ],
+    };
+    beginUserTurn(sessionId(), userMsg);
+    deps.messages.push(userMsg);
+    const controller = new AbortController();
+    await runTurn(
+      store,
+      deps,
+      controller,
+      async () => true,
+      async () => [],
+      new InputQueue(),
+    );
+  } catch (err) {
+    store.addNotice(`⎿ ${formatCliError(err)}`);
+    store.setBusy(false);
+  }
+}
+
+/**
+ * B2: `#note` memory mode. Appends to CLAUDE.md with the same formatting as
+ * /memory add, echoes the line with the blue "#" marker, and confirms. No
+ * model turn — the memory enters context through CLAUDE.md on later builds.
+ */
+function runMemoryMode(store: TuiStore, deps: TuiDeps, note: string): void {
+  store.addUserMessage(note, { memory: true });
+  try {
+    const claudeMd = nodePath.join(deps.getWorkspaceRoot?.() ?? deps.workspaceRoot, "CLAUDE.md");
+    const exists = fs.existsSync(claudeMd);
+    const prefix = exists && !fs.readFileSync(claudeMd, "utf-8").endsWith("\n") ? "\n" : "";
+    fs.appendFileSync(claudeMd, `${prefix}- ${note}\n`, "utf-8");
+    store.addNotice(`  ${t("ui.memory.added")}`);
+  } catch (err) {
+    store.addNotice(`  ⎿ ${formatCliError(err)}`);
+  }
+}
+
+/**
  * Root that wires the InputBox submit handler to slash-command dispatch and
  * the agent loop, and installs a process-level SIGINT handler that aborts the
  * current turn (9.6) without tearing down the session.
@@ -608,6 +689,67 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
     imagesRef.current.set(imageCounterRef.current, data);
     return `[Image #${imageCounterRef.current}]`;
   }, []);
+
+  // B6: Up from an empty buffer recalls the newest queued message for
+  // editing (official PromptInput behavior). Mirrors shrink alongside.
+  const onQueuePop = useCallback((): string | null => {
+    const recalled = queueRef.current.popLast();
+    store.setQueuedInputs(queueRef.current.size);
+    store.setQueuedMessages(queueRef.current.snapshot());
+    return recalled;
+  }, [store]);
+
+  // B8 (alt+p): model picker built from the saved provider profiles + the
+  // current model. Switching mutates the live ModelConfig (no LLM call) and
+  // resizes the context gauge to the new model's window.
+  const onModelPicker = useCallback(() => {
+    if (store.getSnapshot().overlay) return;
+    void (async () => {
+      const profiles = loadProviderProfiles(deps.getWorkspaceRoot?.() ?? deps.workspaceRoot);
+      const cfg = deps.modelConfig;
+      const currentLabel = `${cfg.provider}/${cfg.model}`;
+      const seen = new Set<string>([currentLabel]);
+      const items: Array<{ name: string; label: string; current: boolean }> = [
+        { name: cfg.model, label: currentLabel, current: true },
+      ];
+      for (const p of profiles) {
+        const label = `${p.provider ?? "openai"}/${p.model ?? "default"}`;
+        const id = p.model ?? "default";
+        if (seen.has(label)) continue;
+        seen.add(label);
+        items.push({ name: id, label, current: false });
+      }
+      if (items.length === 1) {
+        store.addNotice("  No saved models — add .claude/providers.json or use /model <id>.");
+        return;
+      }
+      const chosen = await store.askModelPicker(items);
+      if (!chosen || chosen === cfg.model) return;
+      const prev = cfg.model;
+      cfg.model = chosen;
+      store.setModel(chosen, `${cfg.provider}/${chosen}`);
+      store.setContextLimit(lookupContextWindow(chosen) ?? 0);
+      store.addNotice(`  Model: ${prev} → ${chosen}`);
+    })();
+  }, [store, deps]);
+
+  // B8 (alt+t): flip extended thinking on/off by toggling the adapter's
+  // thinking option (options.thinking = {type:"disabled"} suppresses it;
+  // removing the key restores the default adaptive behavior).
+  const onThinkingToggle = useCallback(() => {
+    const cfg = deps.modelConfig;
+    cfg.options = cfg.options ?? {};
+    const disabled =
+      typeof cfg.options.thinking === "object" &&
+      (cfg.options.thinking as { type?: string }).type === "disabled";
+    if (disabled) {
+      delete cfg.options.thinking;
+      store.addNotice(`  ${t("ui.thinking.on")}`);
+    } else {
+      cfg.options.thinking = { type: "disabled" };
+      store.addNotice(`  ${t("ui.thinking.off")}`);
+    }
+  }, [store, deps]);
 
   // P0-3: Esc+Esc rewind menu. Truncates `messages` to BEFORE the chosen user
   // turn and restores on-disk files from the checkpoint snapshots. Each entry
@@ -757,6 +899,24 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
         store.addNotice(`  ${t("ui.queue.queued")}`);
         queueRef.current.push(value);
         store.setQueuedInputs(queueRef.current.size);
+        store.setQueuedMessages(queueRef.current.snapshot());
+        return;
+      }
+
+      // B1: `!command` — bash mode. Runs the shell directly (no permission
+      // gate: the USER invoked it), echoes the input/output into the
+      // transcript, injects the output into context, and lets Claude respond
+      // to it in a normal turn (official `respondToBashCommands` behavior).
+      if (value.startsWith("!") && value.length > 1) {
+        void runBashMode(store, deps, sessionId, value.slice(1).trim());
+        return;
+      }
+
+      // B2: `#note` — memory mode. Appends to CLAUDE.md (same format as
+      // /memory add) and echoes the line; no model turn (the memory rides
+      // into context via CLAUDE.md on the next session/prompt build).
+      if (value.startsWith("#") && value.trim().length > 1) {
+        runMemoryMode(store, deps, value.slice(1).trim());
         return;
       }
 
@@ -888,11 +1048,13 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
               deps.messages.push(followUpMsg);
             }
             store.setQueuedInputs(queueRef.current.size);
+            store.setQueuedMessages(queueRef.current.snapshot());
             await runTurn(store, deps, controller, askUser, askUserQuestion, queueRef.current);
           }
           if (queueRef.current.hasPending) {
             const dropped = queueRef.current.drain();
             store.setQueuedInputs(0);
+            store.setQueuedMessages([]);
             store.addNotice(
               `  ${t("ui.queue.limitDropped", { max: MAX_FOLLOWUP_TURNS, n: dropped.length })}`,
             );
@@ -941,7 +1103,6 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
         controllerRef={turnControllerRef}
         editorMode={deps.makeCommandContext().editorMode}
       />
-      <ExpandHotkey store={store} />
       <App
         store={store}
         commands={deps.commands}
@@ -951,37 +1112,12 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
         fullscreen={deps.fullscreen}
         onRewind={openRewindMenu}
         onImagePaste={onImagePaste}
+        onQueuePop={onQueuePop}
+        onModelPicker={onModelPicker}
+        onThinkingToggle={onThinkingToggle}
       />
     </>
   );
-}
-
-/**
- * Ctrl+R (remappable via keybindings.json → "tool:expandLast"): expand the
- * latest collapsed tool card. Ink's <Static> is write-once, so the collapsed
- * card in scrollback can't be re-rendered in place — store.expandTool appends
- * a full-output copy below it (idempotent per card). UNDOCUMENTED EXTRA: the
- * cards' "(ctrl+o to expand)" hint refers to the verbose transcript viewer
- * (official semantics); this handler stays bound to ctrl+r until batch B
- * repurposes that key for history search.
- */
-function ExpandHotkey({ store }: { store: TuiStore }) {
-  useInput((input, key) => {
-    const result = globalResolver(input, key, ["Global"]);
-    if (result.type !== "match" || result.action !== "tool:expandLast") return;
-    // Overlays and the transcript pager own the keyboard while active.
-    const s = store.getSnapshot();
-    if (s.overlay || s.reviewing) return;
-    const items = s.transcript;
-    for (let i = items.length - 1; i >= 0; i--) {
-      const item = items[i]!;
-      if (item.kind === "tool" && item.result && !item.expanded && isToolExpandable(item.result)) {
-        store.expandTool(item.id);
-        return;
-      }
-    }
-  });
-  return null;
 }
 
 /**
@@ -1006,19 +1142,43 @@ export function InterruptHotkey({
   editorMode?: { value: "default" | "vim" };
 }) {
   const { exit } = useApp();
+  // B5: the official double-press window for the idle Ctrl+C / Ctrl+D exit —
+  // the first press clears the draft and arms "Press ctrl+c again to exit"
+  // (the footer shows it via store.showExitHint); a second press within
+  // 800ms exits. Reading the draft from the snapshot at event time matches
+  // the "?" hotkey's guard pattern.
+  const exitPressRef = useRef(0);
   useInput((input, key) => {
     const isCtrlC = key.ctrl && input === "c";
+    const isCtrlD = key.ctrl && input === "d";
     const isEsc = key.escape === true;
-    if (!isCtrlC && !isEsc) return;
+    if (!isCtrlC && !isCtrlD && !isEsc) return;
     if (store.getSnapshot().overlay || store.getSnapshot().reviewing) return;
     if (isEsc && editorMode?.value === "vim") return;
     const controller = controllerRef.current;
     if (controller && store.getSnapshot().busy) {
-      controller.abort(t("ui.abort.user"));
-    } else if (isCtrlC) {
-      exit();
+      // Busy: both Ctrl+C and Esc interrupt the turn (Ctrl+D does not — its
+      // official busy behavior is char-delete, which the InputBox owns).
+      if (!isCtrlD) controller.abort(t("ui.abort.user"));
+      return;
     }
-    // Esc while idle: intentionally nothing — too easy to lose the session.
+    if (isEsc) return; // idle Esc belongs to the InputBox chain
+    // Idle Ctrl+C: first press clears a non-empty draft (input editing
+    // continues), then arms the exit hint; second press within the window
+    // exits. Ctrl+D: straight double-press exit, no draft clearing.
+    const now = Date.now();
+    if (isCtrlC && store.getSnapshot().draft.text.length > 0) {
+      store.dispatchInputAction("clear");
+      store.armExitHint();
+      exitPressRef.current = now;
+      return;
+    }
+    if (now - exitPressRef.current <= 800 && store.getSnapshot().showExitHint) {
+      exit();
+      return;
+    }
+    store.armExitHint();
+    exitPressRef.current = now;
   });
   return null;
 }

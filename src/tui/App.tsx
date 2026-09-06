@@ -25,10 +25,12 @@ import { type CommandInfo, InputBox } from "./InputBox.js";
 import { t } from "./i18n.js";
 import { createResolver, DEFAULT_BINDINGS, loadUserBindings } from "./keybindings/index.js";
 import { tailVisualLines } from "./live-window.js";
+import { ModelPicker } from "./ModelPicker.js";
 import { renderMarkdown } from "./markdown.js";
 import { PromptFooter } from "./PromptFooter.js";
 import { ConfirmPrompt, PermissionPrompt, QuestionPrompt } from "./Prompts.js";
 import { ProviderPicker } from "./ProviderPicker.js";
+import { QueuedMessages } from "./QueuedMessages.js";
 import { RetryLine } from "./RetryLine.js";
 import { RewindPicker } from "./RewindPicker.js";
 import { SessionPicker } from "./SessionPicker.js";
@@ -79,7 +81,25 @@ function TranscriptRow({ item, expanded }: { item: TranscriptItem; expanded: boo
     case "user":
       // Official rendering: the user's turn is dim gray with a "> " marker —
       // quiet against the assistant's plain text, so the eye tracks the
-      // answers, not the prompts.
+      // answers, not the prompts. B1/B2: `!command` lines keep the pink "!"
+      // marker (UserBashInputMessage) and `#memory` lines the blue "#"
+      // (UserMemoryInputMessage).
+      if (item.bash) {
+        return (
+          <Box>
+            <Text color="#ff0087">{"! "}</Text>
+            <Text dimColor>{item.text}</Text>
+          </Box>
+        );
+      }
+      if (item.memory) {
+        return (
+          <Box>
+            <Text color="#7aa2f7">{"# "}</Text>
+            <Text dimColor>{item.text}</Text>
+          </Box>
+        );
+      }
       return (
         <Box>
           <Text dimColor>{"> "}</Text>
@@ -273,8 +293,21 @@ function ActiveToolsRegion({ store }: { store: TuiStore }) {
  *  (incl. the active-item-centered window for long lists) lives in TodoList. */
 function TodoRegion({ store }: { store: TuiStore }) {
   const todos = useStoreField(store, "todos");
-  if (todos.length === 0) return null;
+  const collapsed = useStoreField(store, "todosCollapsed");
+  if (todos.length === 0 || collapsed) return null;
   return <TodoList todos={todos} />;
+}
+
+/** B4 (ctrl+t): while the todo list is collapsed, the next pending task rides
+ *  under the spinner as the official "Next: <task>" line — collapsing keeps
+ *  the signal without the rows. */
+function NextTodoRegion({ store }: { store: TuiStore }) {
+  const todos = useStoreField(store, "todos");
+  const collapsed = useStoreField(store, "todosCollapsed");
+  const next =
+    todos.find((x) => x.status === "in_progress") ?? todos.find((x) => x.status === "pending");
+  if (!collapsed || !next) return null;
+  return <Text dimColor>{`  ${t("ui.todos.next", { task: next.content })}`}</Text>;
 }
 
 /**
@@ -288,13 +321,16 @@ function StatusLineRegion({ store }: { store: TuiStore }) {
     useStoreSelector(store, selectStatusLine);
   if (!(busy && toolCount === 0 && spinner !== "idle")) return null;
   return (
-    <StatusLine
-      label={label}
-      startedAt={turnStartedAt}
-      tokens={spinnerTokens}
-      activityAt={activityAt}
-      cycleVerbs={spinner === "thinking"}
-    />
+    <Box flexDirection="column">
+      <StatusLine
+        label={label}
+        startedAt={turnStartedAt}
+        tokens={spinnerTokens}
+        activityAt={activityAt}
+        cycleVerbs={spinner === "thinking"}
+      />
+      <NextTodoRegion store={store} />
+    </Box>
   );
 }
 
@@ -327,6 +363,7 @@ function InteractionRegion({
   completeFiles,
   onRewind,
   onImagePaste,
+  onQueuePop,
 }: {
   store: TuiStore;
   commands: CommandInfo[];
@@ -338,8 +375,13 @@ function InteractionRegion({
   /** P0-5: Ctrl+V clipboard-image paste; resolves with the "[Image #N]" chip
    *  (registered by the runner) or null when no image was read. */
   onImagePaste?: () => Promise<string | null>;
+  /** B6: recall the last queued message (Up from an empty buffer). */
+  onQueuePop?: () => string | null;
 }) {
-  const { overlay, busy, inputHistory } = useStoreSelector(store, selectInteraction);
+  const { overlay, busy, inputHistory, queuedMessages, inputAction } = useStoreSelector(
+    store,
+    selectInteraction,
+  );
   if (overlay) {
     switch (overlay.kind) {
       case "permission":
@@ -350,6 +392,8 @@ function InteractionRegion({
         return <SessionPicker overlay={overlay} />;
       case "providerPicker":
         return <ProviderPicker overlay={overlay} />;
+      case "modelPicker":
+        return <ModelPicker overlay={overlay} />;
       case "commandPicker":
         return <CommandPicker overlay={overlay} />;
       case "rewind":
@@ -361,26 +405,37 @@ function InteractionRegion({
     }
   }
   return (
-    <InputBox
-      commands={commands}
-      disabled={false}
-      busy={busy}
-      onSubmit={onSubmit}
-      editorMode={editorMode}
-      completeFiles={completeFiles}
-      history={inputHistory}
-      onHistoryChange={(history) => store.setInputHistory(history)}
-      onRewind={busy ? undefined : onRewind}
-      onImagePaste={onImagePaste}
-      inputSuspended={() => store.getSnapshot().showHelp}
-      onDraftChange={(draft) => store.setDraft(draft)}
-      initialDraft={store.getSnapshot().draft}
-    />
+    <>
+      {busy ? <QueuedMessages messages={queuedMessages} /> : null}
+      <InputBox
+        commands={commands}
+        disabled={false}
+        busy={busy}
+        onSubmit={onSubmit}
+        editorMode={editorMode}
+        completeFiles={completeFiles}
+        history={inputHistory}
+        onHistoryChange={(history) => store.setInputHistory(history)}
+        onRewind={busy ? undefined : onRewind}
+        onImagePaste={onImagePaste}
+        onQueuePop={busy ? onQueuePop : undefined}
+        pendingAction={inputAction}
+        inputSuspended={() => store.getSnapshot().showHelp}
+        onDraftChange={(draft) => store.setDraft(draft)}
+        initialDraft={store.getSnapshot().draft}
+      />
+    </>
   );
 }
 
 function selectInteraction(s: StoreState) {
-  return { overlay: s.overlay, busy: s.busy, inputHistory: s.inputHistory };
+  return {
+    overlay: s.overlay,
+    busy: s.busy,
+    inputHistory: s.inputHistory,
+    queuedMessages: s.queuedMessages,
+    inputAction: s.inputAction,
+  };
 }
 
 function selectHelp(s: StoreState) {
@@ -404,7 +459,17 @@ function HelpRegion({ store }: { store: TuiStore }) {
 // ~/.claude/keybindings.json. Loaded once at startup (not hot-reloaded).
 const globalResolver = createResolver(DEFAULT_BINDINGS, loadUserBindings());
 
-function ModeHotkey({ store }: { store: TuiStore }) {
+function ModeHotkey({
+  store,
+  onModelPicker,
+  onThinkingToggle,
+}: {
+  store: TuiStore;
+  /** B8 (alt+p): open the model picker overlay. */
+  onModelPicker?: () => void;
+  /** B8 (alt+t): flip extended thinking on/off. */
+  onThinkingToggle?: () => void;
+}) {
   useInput((input, key) => {
     const result = globalResolver(input, key, ["Global"]);
     if (result.type !== "match") return;
@@ -426,6 +491,25 @@ function ModeHotkey({ store }: { store: TuiStore }) {
     if (store.getSnapshot().reviewing) return;
     if (result.action === "chat:cycleMode") {
       store.cyclePermissionMode();
+    } else if (result.action === "chat:stash") {
+      // B4: the InputBox owns the buffer — signal it through the store.
+      store.dispatchInputAction("stash");
+    } else if (result.action === "chat:externalEditor") {
+      store.dispatchInputAction("editor");
+    } else if (result.action === "history:search") {
+      store.dispatchInputAction("historySearch");
+    } else if (result.action === "app:toggleTodos") {
+      store.toggleTodosCollapsed();
+    } else if (result.action === "app:redraw") {
+      // B5 (ctrl+l): clear the viewport (scrollback stays) and force a store
+      // emit so Ink repaints the live frame immediately — Ink 7's useApp has
+      // no clear(), so this is the manual equivalent.
+      process.stdout.write("[2J[H");
+      store.setQueuedInputs(store.getSnapshot().queuedInputs);
+    } else if (result.action === "chat:modelPicker") {
+      onModelPicker?.();
+    } else if (result.action === "chat:thinkingToggle") {
+      onThinkingToggle?.();
     } else if (result.action === "help:toggle" && !store.getSnapshot().overlay) {
       // "?" opens help only on an EMPTY draft — typing "what is X?" must
       // insert the character, not pop the panel. The InputBox mirrors its
@@ -458,6 +542,7 @@ function ReviewableBody({
   completeFiles,
   onRewind,
   onImagePaste,
+  onQueuePop,
 }: {
   store: TuiStore;
   commands: CommandInfo[];
@@ -467,6 +552,8 @@ function ReviewableBody({
   completeFiles?: (query: string) => string[];
   onRewind?: () => void;
   onImagePaste?: () => Promise<string | null>;
+  /** B6: recall the last queued message (Up from an empty buffer). */
+  onQueuePop?: () => string | null;
 }) {
   const reviewing = useStoreField(store, "reviewing");
   if (reviewing) {
@@ -495,6 +582,7 @@ function ReviewableBody({
         completeFiles={completeFiles}
         onRewind={onRewind}
         onImagePaste={onImagePaste}
+        onQueuePop={onQueuePop}
       />
     </>
   );
@@ -510,6 +598,9 @@ export function App({
   fullscreen,
   onRewind,
   onImagePaste,
+  onQueuePop,
+  onModelPicker,
+  onThinkingToggle,
 }: {
   store: TuiStore;
   commands: CommandInfo[];
@@ -528,6 +619,12 @@ export function App({
   onRewind?: () => void;
   /** P0-5: clipboard-image paste (Ctrl+V). */
   onImagePaste?: () => Promise<string | null>;
+  /** B6: recall the last queued message (Up from an empty buffer). */
+  onQueuePop?: () => string | null;
+  /** B8 (alt+p): open the model picker overlay. */
+  onModelPicker?: () => void;
+  /** B8 (alt+t): flip extended thinking on/off. */
+  onThinkingToggle?: () => void;
 }) {
   if (fullscreen) {
     // FullScreenApp contains its own FsModeHotkey — no need for ModeHotkey wrapper.
@@ -540,6 +637,9 @@ export function App({
         completeFiles={completeFiles}
         onRewind={onRewind}
         onImagePaste={onImagePaste}
+        onQueuePop={onQueuePop}
+        onModelPicker={onModelPicker}
+        onThinkingToggle={onThinkingToggle}
       />
     );
   }
@@ -550,7 +650,7 @@ export function App({
   // InputBox keeps a predictable position (M24.5).
   return (
     <Box flexDirection="column">
-      <ModeHotkey store={store} />
+      <ModeHotkey store={store} onModelPicker={onModelPicker} onThinkingToggle={onThinkingToggle} />
       <Toast store={store} />
       <ReviewableBody
         store={store}
@@ -561,6 +661,7 @@ export function App({
         completeFiles={completeFiles}
         onRewind={onRewind}
         onImagePaste={onImagePaste}
+        onQueuePop={onQueuePop}
       />
       <PromptFooter store={store} />
     </Box>

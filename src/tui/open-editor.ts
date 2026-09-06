@@ -125,3 +125,24 @@ export async function openInEditor(lines: string[]): Promise<{ ok: boolean; file
     }
   }
 }
+
+/**
+ * Batch B4 (ctrl+g): edit a DRAFT in $VISUAL/$EDITOR and read it back.
+ * Same TTY-suspension and fuse rules as openInEditor; on a clean editor exit
+ * the (possibly edited) file content resolves as `text` — the whole file is
+ * the draft, so no sentinel parsing. On failure the ORIGINAL draft resolves
+ * unchanged (a failed editor must never eat the user's text) and the temp
+ * file is kept for recovery.
+ */
+export async function editInEditor(draft: string): Promise<{ ok: boolean; text: string }> {
+  const { ok, filePath } = await openInEditor(draft.split("\n"));
+  if (!ok) return { ok: false, text: draft };
+  try {
+    const edited = fs.readFileSync(filePath, "utf-8");
+    // openInEditor deletes the temp file on ok — read raced nothing; strip
+    // the single trailing newline it appended on write.
+    return { ok: true, text: edited.replace(/\r\n/g, "\n").replace(/\n$/, "") };
+  } catch {
+    return { ok: true, text: draft };
+  }
+}

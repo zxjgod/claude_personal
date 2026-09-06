@@ -31,9 +31,11 @@ import { EffortPrompt } from "./EffortPrompt.js";
 import { HelpPanel } from "./HelpPanel.js";
 import { type CommandInfo, InputBox } from "./InputBox.js";
 import { t } from "./i18n.js";
+import { ModelPicker } from "./ModelPicker.js";
 import { PromptFooter } from "./PromptFooter.js";
 import { ConfirmPrompt, PermissionPrompt, QuestionPrompt } from "./Prompts.js";
 import { ProviderPicker } from "./ProviderPicker.js";
+import { QueuedMessages } from "./QueuedMessages.js";
 import { RetryLine } from "./RetryLine.js";
 import { RewindPicker } from "./RewindPicker.js";
 import { bottomScrollTop, clampScrollTop, ScrollView } from "./ScrollView.js";
@@ -91,7 +93,13 @@ function FsStatusLine({ store }: { store: TuiStore }) {
 }
 
 function selectInteraction(s: StoreState) {
-  return { overlay: s.overlay, busy: s.busy, inputHistory: s.inputHistory };
+  return {
+    overlay: s.overlay,
+    busy: s.busy,
+    inputHistory: s.inputHistory,
+    queuedMessages: s.queuedMessages,
+    inputAction: s.inputAction,
+  };
 }
 
 function selectHelp(s: StoreState) {
@@ -114,6 +122,7 @@ function FsInteraction({
   completeFiles,
   onRewind,
   onImagePaste,
+  onQueuePop,
 }: {
   store: TuiStore;
   commands: CommandInfo[];
@@ -122,8 +131,12 @@ function FsInteraction({
   completeFiles?: (query: string) => string[];
   onRewind?: () => void;
   onImagePaste?: () => Promise<string | null>;
+  onQueuePop?: () => string | null;
 }) {
-  const { overlay, busy, inputHistory } = useStoreSelector(store, selectInteraction);
+  const { overlay, busy, inputHistory, queuedMessages, inputAction } = useStoreSelector(
+    store,
+    selectInteraction,
+  );
   if (overlay) {
     switch (overlay.kind) {
       case "permission":
@@ -134,6 +147,8 @@ function FsInteraction({
         return <SessionPicker overlay={overlay} />;
       case "providerPicker":
         return <ProviderPicker overlay={overlay} />;
+      case "modelPicker":
+        return <ModelPicker overlay={overlay} />;
       case "commandPicker":
         return <CommandPicker overlay={overlay} />;
       case "rewind":
@@ -145,23 +160,28 @@ function FsInteraction({
     }
   }
   return (
-    <InputBox
-      commands={commands}
-      disabled={false}
-      busy={busy}
-      onSubmit={onSubmit}
-      editorMode={editorMode}
-      completeFiles={completeFiles}
-      keepColorWhenDisabled
-      hideBottomRule
-      history={inputHistory}
-      onHistoryChange={(history) => store.setInputHistory(history)}
-      onRewind={busy ? undefined : onRewind}
-      onImagePaste={onImagePaste}
-      inputSuspended={() => store.getSnapshot().showHelp}
-      onDraftChange={(draft) => store.setDraft(draft)}
-      initialDraft={store.getSnapshot().draft}
-    />
+    <>
+      {busy ? <QueuedMessages messages={queuedMessages} /> : null}
+      <InputBox
+        commands={commands}
+        disabled={false}
+        busy={busy}
+        onSubmit={onSubmit}
+        editorMode={editorMode}
+        completeFiles={completeFiles}
+        keepColorWhenDisabled
+        hideBottomRule
+        history={inputHistory}
+        onHistoryChange={(history) => store.setInputHistory(history)}
+        onRewind={busy ? undefined : onRewind}
+        onImagePaste={onImagePaste}
+        onQueuePop={busy ? onQueuePop : undefined}
+        pendingAction={inputAction}
+        inputSuspended={() => store.getSnapshot().showHelp}
+        onDraftChange={(draft) => store.setDraft(draft)}
+        initialDraft={store.getSnapshot().draft}
+      />
+    </>
   );
 }
 
@@ -182,11 +202,34 @@ function FsTodoRegion({ store }: { store: TuiStore }) {
 }
 
 /** Mode hotkey — self-contained so FullScreenApp works without App.tsx. */
-function FsModeHotkey({ store }: { store: TuiStore }) {
+function FsModeHotkey({
+  store,
+  onModelPicker,
+  onThinkingToggle,
+}: {
+  store: TuiStore;
+  onModelPicker?: () => void;
+  onThinkingToggle?: () => void;
+}) {
   useInput((input, key) => {
     // Overlays own the keyboard (pickers bind their own keys).
     if (store.getSnapshot().overlay) return;
-    if (key.tab && key.shift) {
+    if (key.ctrl && input === "s") {
+      store.dispatchInputAction("stash");
+    } else if (key.ctrl && input === "g") {
+      store.dispatchInputAction("editor");
+    } else if (key.ctrl && input === "r") {
+      store.dispatchInputAction("historySearch");
+    } else if (key.ctrl && input === "t") {
+      store.toggleTodosCollapsed();
+    } else if (key.ctrl && input === "l") {
+      process.stdout.write("[2J[H");
+      store.setQueuedInputs(store.getSnapshot().queuedInputs);
+    } else if (key.meta && input === "p") {
+      onModelPicker?.();
+    } else if (key.meta && input === "t") {
+      onThinkingToggle?.();
+    } else if (key.tab && key.shift) {
       store.cyclePermissionMode();
     } else if (input === "?") {
       // Same contract as App's ModeHotkey: "?" opens help only on an empty
@@ -212,6 +255,9 @@ export function FullScreenApp({
   completeFiles,
   onRewind,
   onImagePaste,
+  onQueuePop,
+  onModelPicker,
+  onThinkingToggle,
 }: {
   store: TuiStore;
   commands: CommandInfo[];
@@ -220,6 +266,12 @@ export function FullScreenApp({
   completeFiles?: (query: string) => string[];
   onRewind?: () => void;
   onImagePaste?: () => Promise<string | null>;
+  /** B6: recall the last queued message (Up from an empty buffer). */
+  onQueuePop?: () => string | null;
+  /** B8 (alt+p): open the model picker overlay. */
+  onModelPicker?: () => void;
+  /** B8 (alt+t): flip extended thinking on/off. */
+  onThinkingToggle?: () => void;
 }) {
   const { rows } = useTerminalSize();
   const transcript = useStoreField(store, "transcript");
@@ -300,7 +352,11 @@ export function FullScreenApp({
     // the keyboard (the InputBox unmounts so its history keys don't fight it).
     return (
       <Box flexDirection="column" height={rows}>
-        <FsModeHotkey store={store} />
+        <FsModeHotkey
+          store={store}
+          onModelPicker={onModelPicker}
+          onThinkingToggle={onThinkingToggle}
+        />
         <Toast store={store} />
         <TranscriptReview store={store} />
         <PromptFooter store={store} />
@@ -309,7 +365,11 @@ export function FullScreenApp({
   }
   return (
     <Box flexDirection="column" height={rows}>
-      <FsModeHotkey store={store} />
+      <FsModeHotkey
+        store={store}
+        onModelPicker={onModelPicker}
+        onThinkingToggle={onThinkingToggle}
+      />
       <Toast store={store} />
       <ScrollView
         lines={lines}
@@ -330,6 +390,7 @@ export function FullScreenApp({
           at the end of the final rendered row, so the prompt has to be that row
           (InputBox renders with no bottom rule in this path). */}
       <FsInteraction
+        onQueuePop={onQueuePop}
         store={store}
         commands={commands}
         onSubmit={onSubmit}
