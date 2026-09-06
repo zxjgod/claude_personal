@@ -43,6 +43,16 @@ export type TranscriptItem =
     }
   | { kind: "thought"; id: number; seconds: number }
   | { kind: "notice"; id: number; text: string }
+  | {
+      /** Batch C4: a compaction boundary rendered in the official
+       *  "⏺ Summarized conversation / ⎿ Summarized N messages / ⎿ Context:
+       *  \"…\"" style. */
+      kind: "compact";
+      id: number;
+      summary: string;
+      /** Messages folded by the compaction (unknown = omitted line). */
+      messages?: number;
+    }
   | { kind: "log"; id: number; lines: string[] };
 
 export type SpinnerMode = "idle" | "thinking" | "tool" | "responding";
@@ -158,7 +168,10 @@ export type Overlay =
   | {
       kind: "rewind";
       entries: RewindEntry[];
-      resolve: (turnIndex: number | null) => void;
+      /** Batch C3: the second-stage action — what to restore. */
+      resolve: (
+        choice: { turnIndex: number; action: "both" | "conversation" | "code" } | null,
+      ) => void;
     }
   | {
       kind: "confirm";
@@ -171,6 +184,13 @@ export type Overlay =
       kind: "modelPicker";
       items: Array<{ name: string; label: string; current: boolean }>;
       resolve: (model: string | null) => void;
+    }
+  | {
+      /** Batch C2 (ExitPlanMode): the official plan-approval panel. Resolves
+       *  with the verdict and the (possibly editor-revised) plan text. */
+      kind: "planApproval";
+      plan: string;
+      resolve: (verdict: { choice: "approve" | "reject"; plan: string }) => void;
     };
 
 export interface StoreState {
@@ -313,8 +333,8 @@ export const CTX_CRITICAL_PCT = 0.9;
 export const PERMISSION_MODE_CYCLE: PermissionMode[] = [
   "default",
   "acceptEdits",
-  "bypassPermissions",
   "plan",
+  "bypassPermissions",
 ];
 
 export function nextPermissionMode(current: PermissionMode): PermissionMode {
@@ -459,6 +479,11 @@ export class TuiStore {
     this.push({ kind: "user", text, ...opts } as TranscriptItem);
   }
 
+  /** Batch C4: commit a compaction boundary with the official styling. */
+  addCompactSummary(summary: string, messages?: number): void {
+    this.push({ kind: "compact", summary, messages } as TranscriptItem);
+  }
+
   addNotice(text: string): void {
     this.push({ kind: "notice", text } as TranscriptItem);
   }
@@ -516,6 +541,20 @@ export class TuiStore {
       // Only clear when still armed — a re-arm inside the window must win.
       if (this.state.showExitHint) this.set({ showExitHint: false });
     }, 3000);
+  }
+
+  /** Batch C2: plan-approval overlay (ExitPlanMode → "Ready to code?"). */
+  askPlanApproval(plan: string): Promise<{ choice: "approve" | "reject"; plan: string }> {
+    return new Promise((resolve) => {
+      this.openOverlay({
+        kind: "planApproval",
+        plan,
+        resolve: (verdict) => {
+          this.set({ overlay: null });
+          resolve(verdict);
+        },
+      } as Overlay);
+    });
   }
 
   /** Batch B8 (alt+p): provider/model picker overlay. */
@@ -657,21 +696,15 @@ export class TuiStore {
   ): void {
     const read = cache?.read ?? 0;
     const used = contextUsed ?? inTok + outTok + read + (cache?.creation ?? 0);
-    const prevPct =
-      this.state.contextLimit > 0 ? this.state.contextUsed / this.state.contextLimit : 0;
-    const nextPct = this.state.contextLimit > 0 ? used / this.state.contextLimit : 0;
     this.set({
       tokensIn: this.state.tokensIn + inTok,
       tokensOut: this.state.tokensOut + outTok,
       cacheReadTokens: this.state.cacheReadTokens + read,
       contextUsed: used,
     });
-    if (this.state.contextLimit <= 0) return;
-    if (nextPct >= CTX_CRITICAL_PCT && prevPct < CTX_CRITICAL_PCT) {
-      this.showToast(t("ui.ctx.critical", { pct: Math.floor(nextPct * 100) }), 3000);
-    } else if (nextPct >= CTX_WARN_PCT && prevPct < CTX_WARN_PCT) {
-      this.showToast(t("ui.ctx.warn", { pct: Math.floor(nextPct * 100) }), 3000);
-    }
+    // Batch C4: the crossing TOASTS are gone — the persistent Context-low
+    // line (App's TokenWarning region) signals the same threshold without
+    // the popup's transience.
   }
 
   /** Set the context-window size for the gauge (0 = unknown → gauge hidden). */
@@ -921,7 +954,9 @@ export class TuiStore {
    * InputBox (the only rewind trigger) unmounts under overlays, this guard
    * keeps that invariant from being load-bearing.
    */
-  askRewind(entries: RewindEntry[]): Promise<number | null> {
+  askRewind(
+    entries: RewindEntry[],
+  ): Promise<{ turnIndex: number; action: "both" | "conversation" | "code" } | null> {
     return new Promise((resolve) => {
       if (this.state.overlay !== null) {
         resolve(null);
@@ -930,9 +965,9 @@ export class TuiStore {
       this.openOverlay({
         kind: "rewind",
         entries,
-        resolve: (turnIndex) => {
+        resolve: (choice) => {
           this.set({ overlay: null });
-          resolve(turnIndex);
+          resolve(choice);
         },
       });
     });

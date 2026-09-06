@@ -98,16 +98,14 @@ describe("TuiStore", () => {
     expect(store.getSnapshot().contextUsed).toBe(1050); // in+out+read+creation
   });
 
-  it("toasts once when the context gauge crosses the warn threshold", () => {
+  it("context threshold crossings stay silent (C4: the persistent line replaced the toast)", () => {
     const store = new TuiStore("p/m");
     store.setContextLimit(1000);
     store.addUsage(500, 0, undefined, 600); // 60% — below warn, silent
     expect(store.getSnapshot().toast).toBeNull();
-    store.addUsage(100, 0, undefined, 800); // crosses 75% — announce
-    expect(store.getSnapshot().toast).toContain("nearing auto-compact"); // i18n (en)
-    store.addUsage(100, 0, undefined, 850); // still above — no re-toast
-    const afterSecond = store.getSnapshot().toast;
-    expect(afterSecond).toContain("nearing auto-compact");
+    store.addUsage(100, 0, undefined, 800); // crosses 75% — the App's
+    store.addUsage(100, 0, undefined, 850); // Context-low line takes over;
+    expect(store.getSnapshot().toast).toBeNull(); // no popup anymore
   });
 
   it("expandTool appends one expanded copy and is idempotent", () => {
@@ -279,9 +277,10 @@ describe("TuiStore", () => {
   it("cycles permission modes in the Shift+Tab order", () => {
     const store = new TuiStore("p/m", { permissionMode: "default" });
     expect(store.getPermissionMode()).toBe("default");
+    // Official order (batch C): default → acceptEdits → plan → bypass.
     expect(store.cyclePermissionMode()).toBe("acceptEdits");
-    expect(store.cyclePermissionMode()).toBe("bypassPermissions");
     expect(store.cyclePermissionMode()).toBe("plan");
+    expect(store.cyclePermissionMode()).toBe("bypassPermissions");
     expect(store.cyclePermissionMode()).toBe("default");
   });
 

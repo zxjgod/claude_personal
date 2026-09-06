@@ -254,13 +254,19 @@ export async function* agentLoop(
     if (prepared.needsAutoCompact) {
       yield { type: "compacting" };
       try {
+        const messagesBefore = messages.length;
         replaceMessages(await autoCompact(messages, safeCallModel, modelConfig, abortSignal));
+        yield {
+          type: "compacted",
+          summary: "Context compressed",
+          messages: Math.max(0, messagesBefore - messages.length),
+        };
+        // (fallthrough keeps the original state/baseline logic below)
         const newPromptTokens = estimateTokens(messages);
         state = {
           ...state,
           usageBaseline: { promptTokens: newPromptTokens, messageCount: messages.length },
         };
-        yield { type: "compacted", summary: "Context compressed" };
       } catch (e) {
         // Compaction failure must NOT kill the session or proceed with a
         // half-destroyed history. Keep the original messages and continue: the
@@ -398,12 +404,14 @@ export async function* agentLoop(
             if (recovery === "compact_and_retry") {
               state = { ...state, contextLengthRetries: state.contextLengthRetries + 1 };
               try {
+                const messagesBefore = messages.length;
                 replaceMessages(
                   await autoCompact(messages, safeCallModel, modelConfig, abortSignal),
                 );
                 yield {
                   type: "compacted",
                   summary: "Context compressed after context_length error",
+                  messages: Math.max(0, messagesBefore - messages.length),
                 };
                 nextAction = "retry";
                 streamEnded = true;

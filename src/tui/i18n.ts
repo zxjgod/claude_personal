@@ -144,11 +144,16 @@ const translations: Record<Language, Record<string, string>> = {
     "ui.viewer.matches": "{n} matches",
     "ui.viewer.editorFailed": "could not open the transcript in $VISUAL/$EDITOR — kept at {path}",
 
-    // Rewind menu (P0-3)
+    // Rewind menu (P0-3 · C3 second-stage actions)
     "ui.rewind.title": "Rewind to a previous message",
     "ui.rewind.hint": "↑↓ select · Enter rewind (restores files) · Esc cancel",
     "ui.rewind.armHint": "Esc again to open the rewind menu",
     "ui.rewind.draftCleared": "draft cleared — Esc again to rewind",
+    "ui.rewind.both": "Restore code and conversation",
+    "ui.rewind.conversation": "Restore conversation",
+    "ui.rewind.code": "Restore code",
+    "ui.rewind.nevermind": "Never mind",
+    "ui.rewind.actionHint": "↑↓ choose · Enter restore · Esc back to the turn list",
 
     // Image paste (P0-5)
     "ui.image.pasted": "attached {chip} — will be sent with your next message",
@@ -172,6 +177,21 @@ const translations: Record<Language, Record<string, string>> = {
     "ui.thinking.off": "Extended thinking off",
     "ui.queue.recalled": "queued message recalled for editing",
     "ui.queue.moreQueued": "queued",
+
+    // Plan approval (C2)
+    "ui.plan.title": "Ready to code?",
+    "ui.plan.proceed":
+      "Claude has written up a plan and is ready to execute. Would you like to proceed?",
+    "ui.plan.yes": "Yes, and switch to accept-edits mode",
+    "ui.plan.edit": "Edit the plan in $VISUAL/$EDITOR (ctrl+g)",
+    "ui.plan.no": "No — stay in plan mode",
+    "ui.plan.hint": "↑↓ choose · Enter confirm · Esc stay in plan mode",
+
+    // Compact summary (C4)
+    "ui.compact.title": "Summarized conversation",
+    "ui.compact.messages": "Summarized {n} messages",
+    "ui.compact.context": 'Context: "{snippet}"',
+    "ui.compact.low": "Context low ({pct}% remaining) · Run /compact to compact & continue",
 
     // Pickers
     "ui.picker.commands": "↑↓ move · Enter run · Esc cancel · Shift+Tab mode",
@@ -283,6 +303,20 @@ const translations: Record<Language, Record<string, string>> = {
     "ui.queue.recalled": "已取回排队消息进行编辑",
     "ui.queue.moreQueued": "条排队中",
 
+    // 计划审批（C2）
+    "ui.plan.title": "可以开始写代码了吗？",
+    "ui.plan.proceed": "Claude 已写好计划并准备执行。是否继续？",
+    "ui.plan.yes": "是，并切换到自动接受编辑模式",
+    "ui.plan.edit": "在 $VISUAL/$EDITOR 中编辑计划（ctrl+g）",
+    "ui.plan.no": "否 —— 留在计划模式",
+    "ui.plan.hint": "↑↓ 选择 · Enter 确认 · Esc 留在计划模式",
+
+    // 压缩摘要（C4）
+    "ui.compact.title": "会话已摘要",
+    "ui.compact.messages": "已摘要 {n} 条消息",
+    "ui.compact.context": '上下文："{snippet}"',
+    "ui.compact.low": "上下文不足（剩余 {pct}%）· 运行 /compact 压缩后继续",
+
     // 选择器
     "ui.picker.commands": "↑↓ 移动 · Enter 运行 · Esc 取消 · Shift+Tab 切换模式",
     "ui.picker.sessions": "↑↓ 移动 · Enter 恢复 · Esc 取消 · Shift+Tab 切换模式",
@@ -329,6 +363,11 @@ const translations: Record<Language, Record<string, string>> = {
     "ui.rewind.hint": "↑↓ 选择 · Enter 回退（会还原文件）· Esc 取消",
     "ui.rewind.armHint": "再按一次 Esc 打开回退菜单",
     "ui.rewind.draftCleared": "已清空输入 — 再按 Esc 回退",
+    "ui.rewind.both": "还原代码和对话",
+    "ui.rewind.conversation": "仅还原对话",
+    "ui.rewind.code": "仅还原代码",
+    "ui.rewind.nevermind": "算了",
+    "ui.rewind.actionHint": "↑↓ 选择 · Enter 还原 · Esc 返回消息列表",
 
     // 图片粘贴（P0-5）
     "ui.image.pasted": "已附加 {chip} — 将随下一条消息发送",

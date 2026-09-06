@@ -56,6 +56,7 @@ import { completeFiles as completeFilesInRoot } from "./file-completions.js";
 import { messagesToTranscript } from "./history-replay.js";
 import type { CommandInfo } from "./InputBox.js";
 import { t } from "./i18n.js";
+import { appendHistory, loadHistory } from "./input-history.js";
 import { InputQueue } from "./input-queue.js";
 import { lookupContextWindow } from "./session-stats.js";
 import {
@@ -152,6 +153,10 @@ async function runTurn(
       // Stream nested sub-agent (Task) activity into the transcript live, so
       // its Reads/Greps appear as they happen rather than dumping in a block
       // when the Task finishes.
+      // Batch C2: ExitPlanMode surfaces the agent's plan as the official
+      // "Ready to code?" overlay; the verdict (plus any editor-revised plan)
+      // flows straight back into the tool's result.
+      requestPlanApproval: (plan) => store.askPlanApproval(plan),
       onSubAgentProgress: (ev) => {
         if (ev.phase === "tool_use") {
           const d = toolDetail(ev.input);
@@ -319,7 +324,7 @@ async function runTurn(
           // Post-hoc result of a compaction (proactive, context-length
           // recovery, or a fallback-model switch). Without this the loop's
           // silent multi-second compaction LLM call reads as a dead spinner.
-          store.addNotice(`  ⎿ ${event.summary}`);
+          store.addCompactSummary(event.summary, event.messages);
           break;
         case "error":
           deps.onSave("failed");
@@ -787,26 +792,39 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
         filesChanged,
       });
     }
+    // Batch C3: the picker resolves with the second-stage action — WHAT to
+    // restore (official MessageSelector semantics).
     const chosen = await store.askRewind(entries);
     if (chosen === null) return;
-    const target = userTurns[chosen - 1]!;
+    const { turnIndex, action } = chosen;
+    const target = userTurns[turnIndex - 1]!;
     const cutAt = target.index;
     const before = deps.messages.length;
+
     // Files: restore the tagged boundary when present; turns loaded by
     // /resume have none — the conversation still rewinds, honestly reported.
+    // "conversation" skips this entirely; "code" does ONLY this.
+    const restoreFiles = action !== "conversation";
     const { restored, deleted } =
-      target.cpTurn !== null ? restoreToTurn(sid, target.cpTurn) : { restored: [], deleted: [] };
-    deps.messages.length = cutAt;
-    // Reset the on-screen transcript to the SURVIVING history (same replay
-    // semantics as /resume). resetTranscript bumps an epoch that remounts the
-    // <Static> region — without it Ink's write-once Static would swallow all
-    // future items (its internal index only grows, so a shrunk array leaves
-    // slice(index) empty forever).
-    store.resetTranscript();
-    store.addNotice(
-      `  ⏪ Rewound to before message #${chosen} (${before} → ${deps.messages.length} messages)`,
-    );
-    if (target.cpTurn === null) {
+      restoreFiles && target.cpTurn !== null
+        ? restoreToTurn(sid, target.cpTurn)
+        : { restored: [], deleted: [] };
+
+    if (action !== "code") {
+      deps.messages.length = cutAt;
+      // Reset the on-screen transcript to the SURVIVING history (same replay
+      // semantics as /resume). resetTranscript bumps an epoch that remounts
+      // the <Static> region — without it Ink's write-once Static would
+      // swallow all future items (its internal index only grows, so a
+      // shrunk array leaves slice(index) empty forever).
+      store.resetTranscript();
+      store.addNotice(
+        `  ⏪ Rewound to before message #${turnIndex} (${before} → ${deps.messages.length} messages)`,
+      );
+    } else {
+      store.addNotice(`  ⏪ Code restored to before message #${turnIndex} (conversation kept)`);
+    }
+    if (restoreFiles && target.cpTurn === null) {
       store.addNotice(
         "  ⎿ no checkpoint boundary for this turn (loaded before startup) — files not restored",
       );
@@ -815,8 +833,10 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
         `  ⎿ files restored: ${restored.length} rewritten · ${deleted.length} deleted (Bash-side edits are not checkpointed)`,
       );
     }
-    store.loadTranscript(messagesToTranscript(deps.messages));
-    store.setTodos([]);
+    if (action !== "code") {
+      store.loadTranscript(messagesToTranscript(deps.messages));
+      store.setTodos([]);
+    }
     try {
       deps.onSave();
     } catch {
@@ -872,6 +892,8 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
     (raw: string) => {
       const value = raw.trim();
       if (!value) return;
+      // Batch C5: persist every submitted line (consecutive dups collapse).
+      appendHistory(deps.getWorkspaceRoot?.() ?? deps.workspaceRoot, value);
       if (value.toLowerCase() === "exit" || value.toLowerCase() === "/exit") {
         // Tear down resources before exiting. Previously this was a bare
         // process.exit(0) that skipped onSave (session lost), MCP disconnect,
@@ -1218,6 +1240,8 @@ export function runTui(deps: TuiDeps): Promise<void> {
       modelId: deps.modelConfig.model,
     });
     store.setContextLimit(lookupContextWindow(deps.modelConfig.model) ?? 0);
+    // Batch C5: seed ↑-history from this project's persisted log.
+    store.setInputHistory(loadHistory(deps.workspaceRoot));
     store.loadTranscript(
       renderBannerLines({
         version: APP_VERSION,
@@ -1255,6 +1279,8 @@ export function runTui(deps: TuiDeps): Promise<void> {
   });
   // Context gauge: unknown models get 0 → gauge hidden rather than mis-sized.
   store.setContextLimit(lookupContextWindow(deps.modelConfig.model) ?? 0);
+  // Batch C5: seed ↑-history from this project's persisted log.
+  store.setInputHistory(loadHistory(deps.workspaceRoot));
   const { waitUntilExit } = render(<Root store={store} deps={deps} />, {
     // See the fullscreen render above: Ctrl+C belongs to InterruptHotkey.
     exitOnCtrlC: false,

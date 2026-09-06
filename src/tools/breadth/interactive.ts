@@ -39,25 +39,79 @@ export const EnterPlanModeTool: Tool = buildTool({
 });
 
 // --- 8.2 ExitPlanMode --------------------------------------------------------
+// Batch C2: the official approval flow. The agent presents its plan; the tool
+// surfaces it via context.requestPlanApproval (the TUI's "Ready to code?"
+// panel). Approve → acceptEdits and implementation continues; reject → the
+// agent stays in plan mode with the feedback. Without an approval surface
+// (sub-agents, tests, non-interactive runs) the call degrades to the legacy
+// direct switch so those contexts keep working.
 
 const ExitPlanModeSchema = z.strictObject({
+  plan: z
+    .string()
+    .min(1)
+    .describe(
+      "The full implementation plan in markdown — approach, files you intend " +
+        "to touch, and verification steps. This is what the user reviews.",
+    ),
   to: z.enum(["default", "acceptEdits"]).optional().describe("Mode to return to (default)"),
 });
 
 export const ExitPlanModeTool: Tool = buildTool({
   name: "exit_plan_mode",
-  description: "Leave plan mode and resume normal (or accept-edits) operation",
+  description:
+    "Present your implementation plan for user approval and exit plan mode. " +
+    "Call ONLY in plan mode once exploration is done; approval switches the " +
+    "session to accept-edits mode so you can implement. Ask clarifying " +
+    "questions in plain text instead of calling this prematurely.",
   promptDescription:
-    "Exit plan mode once the user has approved the plan. Optionally pass to=" +
-    "acceptEdits to auto-approve file edits afterward; otherwise returns to default.",
+    "Exit plan mode by presenting the implementation plan (markdown) for user " +
+    "approval: { plan: '...' }. On approval the session switches to " +
+    "accept-edits mode and you implement the plan; on rejection you stay in " +
+    "plan mode and revise.",
   schema: ExitPlanModeSchema,
   isReadOnly: true,
   isConcurrencySafe: false,
   async call(input, context): Promise<ToolResult> {
-    const target: PermissionMode = input.to === "acceptEdits" ? "acceptEdits" : "default";
-    context.setPermissionMode?.(target);
-    (context as { permissionMode: PermissionMode }).permissionMode = target;
-    return { content: `Exited plan mode. Now in "${target}" mode.` };
+    if (!context.requestPlanApproval) {
+      // Legacy/non-interactive fallback: direct switch, no approval gate.
+      const target: PermissionMode = input.to === "acceptEdits" ? "acceptEdits" : "default";
+      context.setPermissionMode?.(target);
+      (context as { permissionMode: PermissionMode }).permissionMode = target;
+      return { content: `Exited plan mode. Now in "${target}" mode.` };
+    }
+    const verdict = await context.requestPlanApproval(input.plan);
+    if (verdict.choice === "approve") {
+      context.setPermissionMode?.("acceptEdits");
+      (context as { permissionMode: PermissionMode }).permissionMode = "acceptEdits";
+      return {
+        content:
+          "Plan approved by the user. The session is now in accept-edits mode — " +
+          "proceed with implementation exactly as approved." +
+          (verdict.plan !== input.plan
+            ? `
+
+The user revised the plan in the editor; implement THIS version:
+
+${verdict.plan}`
+            : ""),
+        metadata: { summary: "Plan approved — accept edits mode on" },
+      };
+    }
+    return {
+      content:
+        `The user rejected the plan${verdict.plan !== input.plan ? " (with an edited version attached)" : ""}. ` +
+        "You remain in plan mode. Read the feedback, revise, and call " +
+        "exit_plan_mode again — or ask clarifying questions in plain text." +
+        (verdict.plan !== input.plan
+          ? `
+
+User's edited plan:
+
+${verdict.plan}`
+          : ""),
+      error: "plan rejected by user",
+    };
   },
 });
 

@@ -27,6 +27,7 @@ import { createResolver, DEFAULT_BINDINGS, loadUserBindings } from "./keybinding
 import { tailVisualLines } from "./live-window.js";
 import { ModelPicker } from "./ModelPicker.js";
 import { renderMarkdown } from "./markdown.js";
+import { PlanApproval } from "./PlanApproval.js";
 import { PromptFooter } from "./PromptFooter.js";
 import { ConfirmPrompt, PermissionPrompt, QuestionPrompt } from "./Prompts.js";
 import { ProviderPicker } from "./ProviderPicker.js";
@@ -38,10 +39,12 @@ import { StatusLine } from "./StatusLine.js";
 import { StreamingMarkdown } from "./StreamingMarkdown.js";
 import { actionLabel } from "./spinner-core.js";
 import type { StoreState, TranscriptItem, TuiStore } from "./store.js";
+import { CTX_CRITICAL_PCT, CTX_WARN_PCT } from "./store.js";
 import { Toast } from "./Toast.js";
 import { TODO_MAX_ROWS, TodoList } from "./TodoList.js";
 import { ActiveToolCard, CompletedToolCard } from "./ToolCard.js";
 import { TranscriptReview } from "./TranscriptReview.js";
+import { truncateVisual } from "./terminal-width.js";
 import { collapsedThinkingLine } from "./transcript-lines.js";
 import { useStoreField, useStoreSelector } from "./useStoreSelector.js";
 import { useTerminalSize } from "./useTerminalSize.js";
@@ -136,6 +139,26 @@ function TranscriptRow({ item, expanded }: { item: TranscriptItem; expanded: boo
       return <Text dimColor>{`  Thought for ${item.seconds}s`}</Text>;
     case "notice":
       return <Text dimColor>{item.text}</Text>;
+    case "compact":
+      // Official CompactSummary: bold ⏺ header, dim ⎿ detail lines, and the
+      // ctrl+o hint pointing at the verbose viewer.
+      return (
+        <Box flexDirection="column">
+          <Text>
+            <Text bold>⏺ </Text>
+            <Text bold>{t("ui.compact.title")}</Text>
+          </Text>
+          <Box flexDirection="column" paddingLeft={2}>
+            {item.messages !== undefined ? (
+              <Text dimColor>{`⎿  ${t("ui.compact.messages", { n: item.messages })}`}</Text>
+            ) : null}
+            <Text
+              dimColor
+            >{`⎿  ${t("ui.compact.context", { snippet: truncateVisual(item.summary, 120) })}`}</Text>
+            <Text dimColor>{`   ${t("ui.tool.expandHint")}`}</Text>
+          </Box>
+        </Box>
+      );
     case "log":
       return (
         <Box flexDirection="column">
@@ -346,6 +369,25 @@ function selectStatusLine(s: StoreState) {
   };
 }
 
+/**
+ * Batch C4: the persistent Context-low line (official TokenWarning). Shows
+ * once the window is ≥75% used — amber, then red at ≥90% — with the official
+ * "Run /compact" phrasing. The footer's right column keeps the quiet
+ * "X% until auto-compact" number; THIS line is the loud warning.
+ */
+function TokenWarningRegion({ store }: { store: TuiStore }) {
+  const { contextUsed, contextLimit } = useStoreSelector(store, (s: StoreState) => ({
+    contextUsed: s.contextUsed,
+    contextLimit: s.contextLimit,
+  }));
+  if (contextLimit <= 0 || contextUsed <= 0) return null;
+  const fraction = Math.min(1, contextUsed / contextLimit);
+  if (fraction < CTX_WARN_PCT) return null;
+  const remaining = 100 - Math.floor(fraction * 100);
+  const line = t("ui.compact.low", { pct: remaining });
+  return <Text color={fraction >= CTX_CRITICAL_PCT ? "#f7768e" : "#e0af68"}>{line}</Text>;
+}
+
 /** P0-4: live model-error retry countdown ("⚠ 429 — retrying in 8s · 2/10").
  *  Subscribes to `retryStatus` alone; the store owns the 1s countdown tick. */
 function RetryRegion({ store }: { store: TuiStore }) {
@@ -394,6 +436,8 @@ function InteractionRegion({
         return <ProviderPicker overlay={overlay} />;
       case "modelPicker":
         return <ModelPicker overlay={overlay} />;
+      case "planApproval":
+        return <PlanApproval overlay={overlay} />;
       case "commandPicker":
         return <CommandPicker overlay={overlay} />;
       case "rewind":
@@ -571,6 +615,7 @@ function ReviewableBody({
       <StreamingRegion store={store} />
       <ActiveToolsRegion store={store} />
       <RetryRegion store={store} />
+      <TokenWarningRegion store={store} />
       <StatusLineRegion store={store} />
       <TodoRegion store={store} />
       <HelpRegion store={store} />

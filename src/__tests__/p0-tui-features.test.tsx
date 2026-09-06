@@ -290,8 +290,8 @@ describe("TuiStore P0 additions", () => {
     ]);
     const overlay = store.getSnapshot().overlay;
     expect(overlay?.kind).toBe("rewind");
-    if (overlay?.kind === "rewind") overlay.resolve(2);
-    await expect(p).resolves.toBe(2);
+    if (overlay?.kind === "rewind") overlay.resolve({ turnIndex: 2, action: "both" });
+    await expect(p).resolves.toEqual({ turnIndex: 2, action: "both" });
     expect(store.getSnapshot().overlay).toBeNull();
   });
 

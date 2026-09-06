@@ -21,6 +21,7 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
     context: "Global",
     bindings: {
       "shift+tab": "chat:cycleMode",
+      "meta+m": "chat:cycleMode",
       "?": "help:toggle",
       "ctrl+c": "app:interrupt",
       "ctrl+r": "history:search",

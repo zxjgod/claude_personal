@@ -32,6 +32,7 @@ import { HelpPanel } from "./HelpPanel.js";
 import { type CommandInfo, InputBox } from "./InputBox.js";
 import { t } from "./i18n.js";
 import { ModelPicker } from "./ModelPicker.js";
+import { PlanApproval } from "./PlanApproval.js";
 import { PromptFooter } from "./PromptFooter.js";
 import { ConfirmPrompt, PermissionPrompt, QuestionPrompt } from "./Prompts.js";
 import { ProviderPicker } from "./ProviderPicker.js";
@@ -149,6 +150,8 @@ function FsInteraction({
         return <ProviderPicker overlay={overlay} />;
       case "modelPicker":
         return <ModelPicker overlay={overlay} />;
+      case "planApproval":
+        return <PlanApproval overlay={overlay} />;
       case "commandPicker":
         return <CommandPicker overlay={overlay} />;
       case "rewind":

@@ -100,6 +100,20 @@ function itemLines(item: TranscriptItem, verbose: boolean): TranscriptLine[] {
     }
     case "notice":
       return [{ text: item.text, dim: true }];
+    case "compact": {
+      // Official CompactSummary rows for the flat-line pagers.
+      const rows: TranscriptLine[] = [{ text: `${BLACK_CIRCLE} ${t("ui.compact.title")}` }];
+      if (item.messages !== undefined)
+        rows.push({
+          text: `  ${TOOL_RESULT} ${t("ui.compact.messages", { n: item.messages })}`,
+          dim: true,
+        });
+      rows.push({
+        text: `  ${TOOL_RESULT} ${t("ui.compact.context", { snippet: truncate(item.summary, 120) })}`,
+        dim: true,
+      });
+      return rows;
+    }
     case "log":
       return item.lines.map((l) => ({ text: l }));
     case "tool": {

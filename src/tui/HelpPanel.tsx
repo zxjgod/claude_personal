@@ -32,7 +32,7 @@ const MODES: Array<{ name: string; description: string }> = [
 // handler — this panel is the source users trust, so documented-but-unimplemented
 // keys ("← agents", mouse-wheel scroll) must not reappear.
 const SHORTCUTS: Array<[string, string]> = [
-  ["Shift+Tab", "Cycle permission mode (default → acceptEdits → bypassPermissions → plan)"],
+  ["Shift+Tab / Alt+M", "Cycle permission mode (default → acceptEdits → plan → bypassPermissions)"],
   ["Esc / Ctrl+C", "Interrupt the running turn · idle: Ctrl+C clears input, twice exits"],
   ["Ctrl+D", "Exit (double press within 800ms)"],
   ["Esc Esc", "Rewind to an earlier message and restore files (idle, empty input)"],

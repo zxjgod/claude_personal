@@ -433,8 +433,10 @@ export async function checkPermission(
     return result;
   }
 
-  // Step 2: Plan mode — never execute destructive tools.
-  if (context.permissionMode === "plan") {
+  // Step 2: Plan mode — never execute destructive tools. ExitPlanMode is the
+  // mode's own exit valve (batch C2): it presents the plan for approval and
+  // must stay callable, exactly like the official client.
+  if (context.permissionMode === "plan" && tool.name !== "exit_plan_mode") {
     const result = {
       allowed: false as const,
       reason: `Plan mode: ${tool.name} is a destructive tool. Not executing.`,

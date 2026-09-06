@@ -170,6 +170,10 @@ export interface ToolContext {
   modelConfig?: ModelConfig;
   /** Optional sink for nested sub-agent activity (Task tool). */
   onSubAgentProgress?: (event: SubAgentProgress) => void;
+  /** Batch C2 (ExitPlanMode): surface the agent's plan for user approval.
+   *  Resolves with the verdict and the (possibly editor-revised) plan text;
+   *  absent = non-interactive contexts where approval is impossible. */
+  requestPlanApproval?: (plan: string) => Promise<{ choice: "approve" | "reject"; plan: string }>;
   /**
    * The parent loop's interactive approver, threaded into sub-agent loops so a
    * sub-agent's destructive tool calls (bash/write/edit) still surface to the
@@ -445,7 +449,13 @@ export type LoopEvent =
    * per token. */
   | { type: "thinking_delta"; delta: string }
   | { type: "compacting" }
-  | { type: "compacted"; summary: string }
+  | {
+      type: "compacted";
+      summary: string;
+      /** Batch C4: messages folded by this compaction (official "Summarized N
+       *  messages" line). Absent when unknown. */
+      messages?: number;
+    }
   | {
       type: "usage";
       usage: {
