@@ -58,7 +58,15 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  fs.rmSync(repo, { recursive: true, force: true });
+  // Best-effort with Windows retries: the powershell/git child can still hold
+  // a handle on the temp dir for a moment after the test ends (EBUSY/EPERM),
+  // which alone would fail an otherwise-green run — and a leftover tmpdir
+  // never is. Node's maxRetries/retryDelay handles the transient lock.
+  try {
+    fs.rmSync(repo, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  } catch {
+    /* CI runners: the OS reclaims tmpdir contents; don't fail on cleanup */
+  }
 });
 
 // --- 14.1 Worktree ---------------------------------------------------------
@@ -228,7 +236,10 @@ describe("Sleep", () => {
 // tools.test.ts. The execution path itself is exercised only on Windows.
 
 describe("PowerShellTool execution (Windows only)", () => {
-  const itWin = process.platform === "win32" ? it : it.skip;
+  // powershell.exe cold-start on CI runners can exceed vitest's 5s default;
+  // these two spawn it for real, so they get an explicit generous budget.
+  const itWin = (name: string, fn: () => Promise<void>) =>
+    process.platform === "win32" ? it(name, fn, 30_000) : it.skip(name, fn);
 
   itWin("decodes CJK output as UTF-8 (no mojibake from the console codepage)", async () => {
     // Regression: powershell.exe writes pipes in the console codepage (GBK on
