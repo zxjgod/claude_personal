@@ -31,13 +31,13 @@ import { EffortPrompt } from "./EffortPrompt.js";
 import { HelpPanel } from "./HelpPanel.js";
 import { type CommandInfo, InputBox } from "./InputBox.js";
 import { t } from "./i18n.js";
+import { PromptFooter } from "./PromptFooter.js";
 import { ConfirmPrompt, PermissionPrompt, QuestionPrompt } from "./Prompts.js";
 import { ProviderPicker } from "./ProviderPicker.js";
 import { RetryLine } from "./RetryLine.js";
 import { RewindPicker } from "./RewindPicker.js";
 import { bottomScrollTop, clampScrollTop, ScrollView } from "./ScrollView.js";
 import { SessionPicker } from "./SessionPicker.js";
-import { StatusBar } from "./StatusBar.js";
 import { StatusLine } from "./StatusLine.js";
 import { actionLabel } from "./spinner-core.js";
 import type { StoreState, TuiStore } from "./store.js";
@@ -54,12 +54,12 @@ function statusLabel(
   spinner: StoreState["spinner"],
 ): string {
   if (activeTools.length === 1) {
-    const t = activeTools[0]!;
-    return actionLabel(t.name, t.detail);
+    const tool = activeTools[0]!;
+    return actionLabel(tool.name, tool.detail);
   }
-  if (activeTools.length > 1) return `Running ${activeTools.length} tools`;
-  if (spinner === "responding") return "Responding";
-  return "Thinking";
+  if (activeTools.length > 1) return t("ui.phase.runningTools", { n: activeTools.length });
+  if (spinner === "responding") return t("ui.phase.responding");
+  return t("ui.phase.thinking");
 }
 
 function selectStatusLine(s: StoreState) {
@@ -68,6 +68,7 @@ function selectStatusLine(s: StoreState) {
     spinner: s.spinner,
     turnStartedAt: s.turnStartedAt,
     spinnerTokens: s.spinnerTokens,
+    activityAt: s.spinnerActivityAt,
     toolCount: s.activeTools.length,
     label: statusLabel(s.activeTools, s.spinner),
   };
@@ -75,16 +76,15 @@ function selectStatusLine(s: StoreState) {
 
 /** Animated status line while thinking / responding (no active tool). */
 function FsStatusLine({ store }: { store: TuiStore }) {
-  const { busy, spinner, turnStartedAt, spinnerTokens, toolCount, label } = useStoreSelector(
-    store,
-    selectStatusLine,
-  );
+  const { busy, spinner, turnStartedAt, spinnerTokens, activityAt, toolCount, label } =
+    useStoreSelector(store, selectStatusLine);
   if (!(busy && toolCount === 0 && spinner !== "idle")) return null;
   return (
     <StatusLine
       label={label}
       startedAt={turnStartedAt}
       tokens={spinnerTokens}
+      activityAt={activityAt}
       cycleVerbs={spinner === "thinking"}
     />
   );
@@ -127,7 +127,7 @@ function FsInteraction({
   if (overlay) {
     switch (overlay.kind) {
       case "permission":
-        return <PermissionPrompt overlay={overlay} />;
+        return <PermissionPrompt overlay={overlay} store={store} />;
       case "question":
         return <QuestionPrompt overlay={overlay} />;
       case "sessionPicker":
@@ -303,7 +303,7 @@ export function FullScreenApp({
         <FsModeHotkey store={store} />
         <Toast store={store} />
         <TranscriptReview store={store} />
-        <StatusBar store={store} idleHint={t("ui.status.idleFullscreen")} />
+        <PromptFooter store={store} />
       </Box>
     );
   }
@@ -324,7 +324,7 @@ export function FullScreenApp({
       ) : (
         <FsStatusLine store={store} />
       )}
-      <StatusBar store={store} idleHint={t("ui.status.idleFullscreen")} />
+      <PromptFooter store={store} />
       <FsHelpRegion store={store} />
       {/* InputBox MUST be the last element: the terminal parks the real cursor
           at the end of the final rendered row, so the prompt has to be that row

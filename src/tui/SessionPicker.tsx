@@ -14,6 +14,7 @@
 
 import { Box, Text, useInput } from "ink";
 import { useRef, useState } from "react";
+import { t } from "./i18n.js";
 import type { Overlay } from "./store.js";
 
 const CYAN = "cyan";
@@ -113,7 +114,7 @@ export function SessionPicker({
         <Text dimColor>{hiddenBelow > 0 ? `  ↓ ${hiddenBelow} more` : " "}</Text>
       </Box>
 
-      <Text dimColor>↑↓ 移动 · Enter 恢复 · Esc 取消 · Shift+Tab 切换模式</Text>
+      <Text dimColor>{t("ui.picker.sessions")}</Text>
     </Box>
   );
 }

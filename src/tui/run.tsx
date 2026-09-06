@@ -45,6 +45,7 @@ import type {
   Tool,
   UserQuestion,
 } from "./../types.js";
+import { APP_VERSION } from "../version.js";
 import { App } from "./App.js";
 import { printBanner, renderBannerLines } from "./banner.js";
 import { readClipboardImageBase64 } from "./clipboard-image.js";
@@ -316,7 +317,7 @@ async function runTurn(
           break;
         case "compacting":
           deps.onSave("recovering");
-          store.addNotice("Compacting context…");
+          store.addNotice(t("ui.compact.started"));
           break;
         case "compacted":
           // Post-hoc result of a compaction (proactive, context-length
@@ -336,7 +337,13 @@ async function runTurn(
           streamBuffer.flush();
           settleThinking();
           store.commitStreaming();
-          store.addNotice(`⎿ Aborted: ${event.reason}`);
+          // The hint already says "interrupted"; the parenthetical reason only
+          // adds signal when it's NOT the standard user-interrupt label.
+          store.addNotice(
+            event.reason === t("ui.abort.user")
+              ? `  ⎿ ${t("ui.interrupted.hint")}`
+              : `  ⎿ ${t("ui.interrupted.hint")} (${event.reason})`,
+          );
           break;
         case "done":
           streamBuffer.flush();
@@ -679,11 +686,23 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
     async (tool, input, riskHint) => {
       const key = deps.permissionKey(tool.name, input);
       if (deps.alwaysAllow.has(key)) return true;
+      // Official tool-aware "always" wording: bash offers "…for commands in
+      // <cwd>", the edit family offers "…allow all edits this session",
+      // everything else falls back to the session-generic label.
+      const cwd = deps.getWorkspaceRoot?.() ?? deps.workspaceRoot;
+      const name = tool.name.toLowerCase();
+      const alwaysLabel =
+        name === "bash" || name === "shell"
+          ? t("ui.permission.alwaysBash", { dir: cwd })
+          : name === "write" || name === "edit" || name === "multiedit" || name === "notebookedit"
+            ? t("ui.permission.alwaysEdits")
+            : undefined;
       const detail = toolDetail(input);
       const choice = await store.askPermission(
         `${tool.name[0]!.toUpperCase()}${tool.name.slice(1)} request`,
         detail || undefined,
         riskHint,
+        alwaysLabel,
       );
       if (choice === "always") {
         deps.alwaysAllow.add(key);
@@ -735,7 +754,7 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
       // follow-up text (run them when idle for local handling).
       if (store.getSnapshot().busy) {
         store.addUserMessage(value);
-        store.addNotice("  ⏎ queued — will run after the current turn");
+        store.addNotice(`  ${t("ui.queue.queued")}`);
         queueRef.current.push(value);
         store.setQueuedInputs(queueRef.current.size);
         return;
@@ -846,7 +865,7 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
 
         const controller = new AbortController();
         turnControllerRef.current = controller;
-        const onSigint = () => controller.abort("用户中断");
+        const onSigint = () => controller.abort(t("ui.abort.user"));
         process.on("SIGINT", onSigint);
         try {
           await runTurn(store, deps, controller, askUser, askUserQuestion, queueRef.current);
@@ -875,7 +894,7 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
             const dropped = queueRef.current.drain();
             store.setQueuedInputs(0);
             store.addNotice(
-              `  ⎿ 连续排队回合已达上限（${MAX_FOLLOWUP_TURNS}），丢弃 ${dropped.length} 条排队输入`,
+              `  ${t("ui.queue.limitDropped", { max: MAX_FOLLOWUP_TURNS, n: dropped.length })}`,
             );
           }
         } catch (err) {
@@ -911,7 +930,7 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
       displayNotifications: (items) => {
         for (const item of items) store.addNotice(`⎿ ${formatNotificationLine(item)}`);
       },
-      displayParked: (p) => store.addNotice(`⏰ ${p.label} —— 当前回合结束后送达`),
+      displayParked: (p) => store.addNotice(t("ui.schedule.parked", { label: p.label })),
     });
   }, [deps, onSubmit, store, sessionId]);
 
@@ -941,8 +960,10 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
  * Ctrl+R (remappable via keybindings.json → "tool:expandLast"): expand the
  * latest collapsed tool card. Ink's <Static> is write-once, so the collapsed
  * card in scrollback can't be re-rendered in place — store.expandTool appends
- * a full-output copy below it (idempotent per card). The "(ctrl+r to expand)"
- * hint on collapsed cards refers to THIS handler.
+ * a full-output copy below it (idempotent per card). UNDOCUMENTED EXTRA: the
+ * cards' "(ctrl+o to expand)" hint refers to the verbose transcript viewer
+ * (official semantics); this handler stays bound to ctrl+r until batch B
+ * repurposes that key for history search.
  */
 function ExpandHotkey({ store }: { store: TuiStore }) {
   useInput((input, key) => {
@@ -993,7 +1014,7 @@ export function InterruptHotkey({
     if (isEsc && editorMode?.value === "vim") return;
     const controller = controllerRef.current;
     if (controller && store.getSnapshot().busy) {
-      controller.abort("用户中断");
+      controller.abort(t("ui.abort.user"));
     } else if (isCtrlC) {
       exit();
     }
@@ -1039,7 +1060,7 @@ export function runTui(deps: TuiDeps): Promise<void> {
     store.setContextLimit(lookupContextWindow(deps.modelConfig.model) ?? 0);
     store.loadTranscript(
       renderBannerLines({
-        version: "1.0.0",
+        version: APP_VERSION,
         model: deps.modelConfig.model,
         provider: deps.modelConfig.provider,
         workspaceRoot: deps.workspaceRoot,
@@ -1059,7 +1080,7 @@ export function runTui(deps: TuiDeps): Promise<void> {
 
   // Print the startup banner once into scrollback (above Ink's live region).
   printBanner({
-    version: "1.0.0",
+    version: APP_VERSION,
     model: deps.modelConfig.model,
     provider: deps.modelConfig.provider,
     workspaceRoot: deps.workspaceRoot,

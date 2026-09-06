@@ -27,8 +27,14 @@ describe("i18n", () => {
       expect(detectLanguage()).toBe("en");
     });
 
-    it("should detect Chinese from locale", () => {
+    it("ignores ambient LANG (official-alignment: English is the default)", () => {
       process.env.LANG = "zh_CN.UTF-8";
+      expect(detectLanguage()).toBe("en");
+    });
+
+    it("opts into Chinese only via CCR_LANGUAGE", () => {
+      process.env.LANG = "zh_CN.UTF-8";
+      process.env.CCR_LANGUAGE = "zh-CN";
       expect(detectLanguage()).toBe("zh-CN");
     });
 
@@ -60,8 +66,8 @@ describe("i18n", () => {
     it("serves the UI chrome keys in both languages (P3-13)", () => {
       setLanguage("en");
       expect(t("ui.permission.yes")).toBe("Yes");
-      expect(t("ui.permission.always")).toBe("Yes, and always allow this");
-      expect(t("ui.status.busy")).toContain("Esc/Ctrl+C");
+      expect(t("ui.permission.always")).toBe("Yes, and don't ask again this session");
+      expect(t("ui.footer.interrupt")).toBe("esc to interrupt");
       expect(t("ui.elide.above", { n: 12 })).toContain("12");
       expect(t("ui.paste.note", { n: 7 })).toContain("7");
       expect(t("ui.tool.write")).toBe("Write file");
@@ -69,7 +75,7 @@ describe("i18n", () => {
 
       setLanguage("zh-CN");
       expect(t("ui.permission.yes")).toBe("允许");
-      expect(t("ui.permission.always")).toBe("始终允许");
+      expect(t("ui.permission.always")).toBe("允许，本会话内不再询问");
       expect(t("ui.elide.above", { n: 12 })).toContain("12");
       expect(t("ui.paste.note", { n: 7 })).toContain("7");
       expect(t("ui.tool.write")).toBe("写入文件");

@@ -5,23 +5,28 @@
 import { describe, expect, it } from "vitest";
 import {
   actionLabel,
+  ERROR_RED_HEX,
   formatDuration,
   formatTokens,
   GLYPH_FRAME_MS,
   glyphAt,
+  ORANGE_HEX,
   pickVerb,
   SPINNER_FRAMES,
   SPINNER_VERBS,
-  VERB_CYCLE_MS,
-  verbAt,
+  STALL_AFTER_MS,
+  STALL_RAMP_MS,
+  stalledGlyphColor,
+  verbForTurn,
 } from "../tui/spinner-core.js";
 
 describe("SPINNER_VERBS / pickVerb", () => {
-  it("are all gerunds and include the canonical ones", () => {
+  it("are all gerunds (or -in' variants) and include the canonical ones", () => {
     expect(SPINNER_VERBS).toContain("Whisking");
     expect(SPINNER_VERBS).toContain("Pondering");
-    expect(SPINNER_VERBS.length).toBeGreaterThan(20);
-    for (const v of SPINNER_VERBS) expect(v).toMatch(/ing$/);
+    expect(SPINNER_VERBS).toContain("Clauding"); // official 188-verb list marker
+    expect(SPINNER_VERBS.length).toBeGreaterThan(150);
+    for (const v of SPINNER_VERBS) expect(v).toMatch(/(ing|in')$/);
   });
 
   it("pickVerb returns a member of the list", () => {
@@ -31,32 +36,43 @@ describe("SPINNER_VERBS / pickVerb", () => {
   });
 });
 
-describe("verbAt (cycling thinking verb)", () => {
+describe("verbForTurn (official mount-once sampling)", () => {
   it("always returns a member of the list", () => {
-    for (let ms = 0; ms < 60_000; ms += 137) {
-      expect(SPINNER_VERBS).toContain(verbAt(ms, 12345));
+    for (let seed = 0; seed < 200; seed += 7) {
+      expect(SPINNER_VERBS).toContain(verbForTurn(seed * 1_000_003));
     }
   });
 
-  it("is stable within a cycle window", () => {
+  it("is stable for the whole turn (elapsed time no longer re-rolls it)", () => {
     const seed = 1_700_000_000_000;
-    // Two reads inside the same window (frame re-renders ~12×/s) must match, so
-    // the verb doesn't flicker between frames.
-    expect(verbAt(10, seed)).toBe(verbAt(VERB_CYCLE_MS - 1, seed));
-    expect(verbAt(VERB_CYCLE_MS + 5, seed)).toBe(verbAt(2 * VERB_CYCLE_MS - 1, seed));
+    expect(verbForTurn(seed)).toBe(verbForTurn(seed));
   });
 
-  it("cycles through more than one verb over time", () => {
-    const seed = 1_700_000_000_000;
+  it("different turns usually land on different verbs", () => {
     const seen = new Set<string>();
-    for (let step = 0; step < 40; step++) {
-      seen.add(verbAt(step * VERB_CYCLE_MS + 1, seed));
+    for (let turn = 0; turn < 40; turn++) {
+      seen.add(verbForTurn(turn * 60_000 + 1_700_000_000_000));
     }
     expect(seen.size).toBeGreaterThan(1);
   });
+});
 
-  it("clamps negative elapsed to the first window", () => {
-    expect(verbAt(-500, 42)).toBe(verbAt(0, 42));
+describe("stalledGlyphColor (official stall warning)", () => {
+  it("stays orange before the stall threshold", () => {
+    expect(stalledGlyphColor(0)).toBe(ORANGE_HEX);
+    expect(stalledGlyphColor(STALL_AFTER_MS - 1)).toBe(ORANGE_HEX);
+  });
+
+  it("reaches error red after the full ramp", () => {
+    expect(stalledGlyphColor(STALL_AFTER_MS + STALL_RAMP_MS)).toBe(ERROR_RED_HEX);
+    expect(stalledGlyphColor(STALL_AFTER_MS + 10 * STALL_RAMP_MS)).toBe(ERROR_RED_HEX);
+  });
+
+  it("blends between the thresholds", () => {
+    const mid = stalledGlyphColor(STALL_AFTER_MS + STALL_RAMP_MS / 2);
+    expect(mid).not.toBe(ORANGE_HEX);
+    expect(mid).not.toBe(ERROR_RED_HEX);
+    expect(mid).toMatch(/^#[0-9a-f]{6}$/);
   });
 });
 
@@ -65,6 +81,19 @@ describe("glyphAt", () => {
     expect(glyphAt(0)).toBe(SPINNER_FRAMES[0]);
     expect(glyphAt(GLYPH_FRAME_MS)).toBe(SPINNER_FRAMES[1]);
     expect(glyphAt(GLYPH_FRAME_MS * 2)).toBe(SPINNER_FRAMES[2]);
+  });
+
+  it("plays the official platform-forked charset forwards then backwards", () => {
+    // 6 glyphs + 6 reversed = 12 frames; the reverse half is NOT a repeat.
+    // Official getDefaultCharacters(): darwin plays ✳, other platforms
+    // substitute `*` (it renders poorly off macOS); Ghostty also swaps ✽→*.
+    expect(SPINNER_FRAMES.length).toBe(12);
+    if (process.platform === "darwin") {
+      expect(SPINNER_FRAMES).toContain("✳");
+    } else {
+      expect(SPINNER_FRAMES).toContain("*");
+      expect(SPINNER_FRAMES).not.toContain("✳");
+    }
   });
 
   it("wraps around the frame ring and never throws on negatives", () => {

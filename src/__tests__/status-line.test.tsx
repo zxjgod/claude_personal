@@ -18,7 +18,12 @@ describe("StatusLine", () => {
   it("renders the label, an elapsed clock, and a token count", () => {
     const startedAt = Date.now() - 16_000; // ~16s ago
     const { lastFrame } = render(
-      <StatusLine label="Reading App.tsx" startedAt={startedAt} tokens={1234} />,
+      <StatusLine
+        label="Reading App.tsx"
+        startedAt={startedAt}
+        tokens={1234}
+        activityAt={Date.now()}
+      />,
     );
     const frame = lastFrame()!;
     expect(frame).toContain("Reading App.tsx");
@@ -27,9 +32,28 @@ describe("StatusLine", () => {
   });
 
   it("omits the token suffix when tokens is zero", () => {
-    const { lastFrame } = render(<StatusLine label="Thinking" startedAt={Date.now()} tokens={0} />);
+    const { lastFrame } = render(
+      <StatusLine label="Thinking" startedAt={Date.now()} tokens={0} activityAt={Date.now()} />,
+    );
     const frame = lastFrame()!;
     expect(frame).toContain("Thinking");
     expect(frame).not.toContain("tokens");
+  });
+
+  it("thinking phase shows the turn's sampled verb (official, mount-once)", () => {
+    const { lastFrame } = render(
+      <StatusLine
+        label="Thinking"
+        startedAt={1_700_000_000_000}
+        tokens={0}
+        activityAt={Date.now()}
+        cycleVerbs
+      />,
+    );
+    const frame = lastFrame()!;
+    // The verb is deterministic for the seed; whatever it is, it ends with the
+    // official ellipsis and is NOT the static label.
+    expect(frame).toContain("…");
+    expect(frame).not.toContain("Thinking");
   });
 });

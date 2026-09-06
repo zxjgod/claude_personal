@@ -11,6 +11,7 @@
 
 import { Box, Text } from "ink";
 import type { TodoDisplayItem } from "../types.js";
+import { t } from "./i18n.js";
 import { palette } from "./theme.js";
 
 /** Max rows the region may occupy, indicator rows included. */
@@ -88,14 +89,18 @@ export function TodoList({ todos }: { todos: TodoDisplayItem[] }) {
   };
   return (
     <Box flexDirection="column">
-      {hiddenAbove > 0 ? <Text dimColor>{`${takePrefix()}↑ 还有 ${hiddenAbove} 项`}</Text> : null}
+      {hiddenAbove > 0 ? (
+        <Text dimColor>{`${takePrefix()}${t("ui.todo.moreAbove", { n: hiddenAbove })}`}</Text>
+      ) : null}
       {items.map((t, i) => (
         // Rows are stateless Text, but key by identity (position in the full
         // list + content), not the window index, so reordering a todo doesn't
         // make React recycle the wrong row instance.
         <TodoRow key={`${offset + i}:${t.status}:${t.content}`} item={t} prefix={takePrefix()} />
       ))}
-      {hiddenBelow > 0 ? <Text dimColor>{`${takePrefix()}↓ 还有 ${hiddenBelow} 项`}</Text> : null}
+      {hiddenBelow > 0 ? (
+        <Text dimColor>{`${takePrefix()}${t("ui.todo.moreBelow", { n: hiddenBelow })}`}</Text>
+      ) : null}
     </Box>
   );
 }

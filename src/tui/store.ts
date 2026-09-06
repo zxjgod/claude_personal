@@ -28,9 +28,9 @@ export type TranscriptItem =
       name: string;
       detail: string;
       result?: ToolExecutionResult;
-      /** True on an appended full-output copy (ctrl+r) — renders expanded. */
+      /** True on an appended full-output copy (ctrl+r handler) — renders expanded. */
       expanded?: boolean;
-      /** On an expanded copy: the source item's id (dedupe for ctrl+r). */
+      /** On an expanded copy: the source item's id (dedupe for re-expansion). */
       expandedOf?: number;
     }
   | { kind: "thought"; id: number; seconds: number }
@@ -113,6 +113,10 @@ export type Overlay =
       header: string;
       detail?: string;
       riskHint?: string;
+      /** Official-style "always" option label, e.g. "Yes, and don't ask
+       *  again for commands in <dir>" — built by the caller (run.tsx) from
+       *  the tool + cwd. Falls back to the generic session label. */
+      alwaysLabel?: string;
       resolve: (choice: "yes" | "always" | "no") => void;
     }
   | {
@@ -176,6 +180,10 @@ export interface StoreState {
   spinner: SpinnerMode;
   /** Rough output-token counter shown next to the spinner. */
   spinnerTokens: number;
+  /** Epoch ms of the last spinner-relevant activity (token delta, phase
+   *  change, tool activity). Drives the official stall warning: 3s of silence
+   *  blends the spinner glyph toward error red (spinner-core.stalledGlyphColor). */
+  spinnerActivityAt: number;
   /** Epoch ms when the current turn began (0 = no turn running). Drives the
    *  status-line elapsed clock so it survives the thinking→tool→responding
    *  phase changes within one turn. */
@@ -262,8 +270,8 @@ const FRAME_MS = 16;
 
 // Context-gauge thresholds, as a fraction of contextLimit. The warn level
 // mirrors agent-loop's defaults (auto-compact fires at 150k on a 200k window
-// = 75%): by the time the gauge goes yellow, compaction is imminent. Shared
-// by the StatusBar colors and the crossing toasts below.
+// = 75%): by the time the percent turns amber, compaction is imminent. Shared
+// by the PromptFooter colors and the crossing toasts below.
 export const CTX_WARN_PCT = 0.75;
 export const CTX_CRITICAL_PCT = 0.9;
 
@@ -304,6 +312,7 @@ export class TuiStore {
       activeTools: [],
       spinner: "idle",
       spinnerTokens: 0,
+      spinnerActivityAt: 0,
       turnStartedAt: 0,
       tokensIn: 0,
       tokensOut: 0,
@@ -438,16 +447,16 @@ export class TuiStore {
   }
 
   setSpinner(mode: SpinnerMode): void {
-    this.set({ spinner: mode });
+    this.set({ spinner: mode, spinnerActivityAt: Date.now() });
   }
 
   setSpinnerTokens(n: number): void {
-    this.set({ spinnerTokens: n });
+    this.set({ spinnerTokens: n, spinnerActivityAt: Date.now() });
   }
 
-  /** Mark the start of a turn (resets the elapsed clock). */
+  /** Mark the start of a turn (resets the elapsed clock + stall baseline). */
   startTurnClock(): void {
-    this.set({ turnStartedAt: Date.now() });
+    this.set({ turnStartedAt: Date.now(), spinnerActivityAt: Date.now() });
   }
 
   /** Stop the elapsed clock (turn finished/aborted). */
@@ -469,6 +478,7 @@ export class TuiStore {
     this.set({
       streamingText: this.state.streamingText + delta,
       spinnerTokens: Math.max(this.state.spinnerTokens, tokens),
+      spinnerActivityAt: Date.now(),
     });
   }
 
@@ -582,7 +592,7 @@ export class TuiStore {
   }
 
   /**
-   * Append a full-output copy of a completed tool card (ctrl+r). Ink's
+   * Append a full-output copy of a completed tool card (ctrl+r handler). Ink's
    * <Static> is write-once: an already-printed collapsed card can't be
    * re-rendered in place, so "expanding" appends a sibling card with the same
    * result rendered expanded. Idempotent — if this source item already has a
@@ -613,6 +623,7 @@ export class TuiStore {
     header: string,
     detail?: string,
     riskHint?: string,
+    alwaysLabel?: string,
   ): Promise<"yes" | "always" | "no"> {
     return new Promise((resolve) => {
       this.openOverlay({
@@ -620,6 +631,7 @@ export class TuiStore {
         header,
         detail,
         riskHint,
+        alwaysLabel,
         resolve: (choice) => {
           this.set({ overlay: null });
           resolve(choice);

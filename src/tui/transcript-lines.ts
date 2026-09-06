@@ -17,11 +17,11 @@
 // `role: "user"` marker so the viewer can jump between prompts with { / }.
 // ============================================================
 
+import { BLACK_CIRCLE, TOOL_RESULT } from "./figures.js";
 import { t } from "./i18n.js";
 import { renderMarkdown } from "./markdown.js";
 import type { TranscriptItem } from "./store.js";
 import { truncateVisual } from "./terminal-width.js";
-import { palette } from "./theme.js";
 
 const PREVIEW_LINES = 12;
 
@@ -66,26 +66,26 @@ export function collapsedThinkingLine(seconds: number | undefined, lineCount: nu
 function itemLines(item: TranscriptItem, verbose: boolean): TranscriptLine[] {
   switch (item.kind) {
     case "user": {
-      // Role coloring: the user's turn is blue, matching the <Static> path.
-      // A multi-line draft (Ctrl+J / paste) flattens to ONE row per physical
-      // line: the pagers window over this array 1:1 (ScrollView counts lines,
-      // not wrapped rows), so an embedded "\n" inside a single row desyncs
-      // the viewport math (sticky-bottom drift, clipped tail). "> " marks the
-      // first row; "  " aligns continuations under it, mirroring the
-      // InputBox's own prompt rows. Only the first row carries the role
-      // marker — { / } prompt jumps target the turn head, not its tail.
+      // Official: dim user turns with a "> " marker. A multi-line draft
+      // (Ctrl+J / paste) flattens to ONE row per physical line: the pagers
+      // window over this array 1:1 (ScrollView counts lines, not wrapped
+      // rows), so an embedded "\n" inside a single row desyncs the viewport
+      // math (sticky-bottom drift, clipped tail). "> " marks the first row;
+      // "  " aligns continuations under it, mirroring the InputBox's own
+      // prompt rows. Only the first row carries the role marker — { / }
+      // prompt jumps target the turn head, not its tail.
       const rows = item.text.split("\n");
       return rows.map((l, i) =>
         i === 0
-          ? { text: `> ${l}`, color: palette.user, role: "user" as const }
-          : { text: `  ${l}`, color: palette.user },
+          ? { text: `> ${l}`, dim: true, role: "user" as const }
+          : { text: `  ${l}`, dim: true },
       );
     }
     case "assistant": {
+      // Official: plain assistant text carries NO bullet (⏺ belongs to tool
+      // calls); rows render unindented at full width.
       const md = renderMarkdown(item.text).split("\n");
-      // "● " on the first row, two-space indent on continuations (mirrors the
-      // AssistantMessage bullet+column layout). Body stays default-colored.
-      return md.map((l, i) => ({ text: i === 0 ? `● ${l}` : `  ${l}` }));
+      return md.map((l) => ({ text: l }));
     }
     case "thought":
       return [{ text: `  Thought for ${item.seconds}s`, dim: true }];
@@ -105,14 +105,11 @@ function itemLines(item: TranscriptItem, verbose: boolean): TranscriptLine[] {
     case "tool": {
       const r = item.result;
       if (!r) return [];
-      // Head row carries the orange ● accent; the ⎿ body rows go dim so the
-      // block reads like the colored default path at a glance.
-      const head = `● ${capitalize(r.toolName)}${item.detail ? `(${truncate(item.detail, 100)})` : ""}`;
+      // Official head: `⏺ Name(detail)` — the head carries no accent tint
+      // (the glyph's own success/error color is the signal); body rows dim.
+      const head = `${BLACK_CIRCLE} ${capitalize(r.toolName)}${item.detail ? `(${truncate(item.detail, 100)})` : ""}`;
       if (r.error)
-        return [
-          { text: head, color: palette.accent },
-          { text: `  ⎿ ${r.error}`, color: palette.error },
-        ];
+        return [{ text: head }, { text: `  ${TOOL_RESULT} ${r.error}`, color: "#f7768e" }];
       const all = (r.formatted ?? "").split("\n");
       // P0-1: verbose mode (transcript viewer) shows everything; the compact
       // mode keeps the preview window.
@@ -120,11 +117,11 @@ function itemLines(item: TranscriptItem, verbose: boolean): TranscriptLine[] {
       const isLong = all.length > limit;
       const shown = isLong ? all.slice(0, limit) : all;
       const body: TranscriptLine[] = shown.map((l, i) => ({
-        text: i === 0 ? `  ⎿ ${l}` : `    ${l}`,
+        text: i === 0 ? `  ${TOOL_RESULT} ${l}` : `   ${l}`,
         dim: true,
       }));
-      if (isLong) body.push({ text: `    … +${all.length - limit} lines`, dim: true });
-      return [{ text: head, color: palette.accent }, ...body];
+      if (isLong) body.push({ text: `   … +${all.length - limit} lines`, dim: true });
+      return [{ text: head }, ...body];
     }
   }
 }
@@ -150,8 +147,9 @@ export function transcriptToLines(
     out.push(...streamingThinking.split("\n").map((l) => ({ text: `  ${l}`, dim: true })));
   }
   if (streamingText.trim()) {
+    // Plain assistant text — no bullet (official rendering).
     const md = renderMarkdown(streamingText).split("\n");
-    out.push(...md.map((l, i) => ({ text: i === 0 ? `● ${l}` : `  ${l}` })));
+    out.push(...md.map((l) => ({ text: l })));
   }
   return out;
 }

@@ -11,18 +11,13 @@ export interface I18nOptions {
   language: Language;
 }
 
-// Detect language from environment or CLI flag
+// Detect language from environment or CLI flag.
+// Official-alignment decision (2026-09-06): English is the DEFAULT — the
+// official client ships English chrome, and an ambient LANG=zh no longer
+// silently flips the UI. Chinese is opt-in via CCR_LANGUAGE=zh-CN only.
 export function detectLanguage(): Language {
-  // Check environment variable
   const envLang = process.env.CCR_LANGUAGE;
   if (envLang === "zh-CN" || envLang === "zh") return "zh-CN";
-  if (envLang === "en") return "en";
-
-  // Check locale
-  const locale = process.env.LANG || process.env.LC_ALL || "";
-  if (locale.startsWith("zh")) return "zh-CN";
-
-  // Default to English
   return "en";
 }
 
@@ -62,17 +57,20 @@ const translations: Record<Language, Record<string, string>> = {
     "error.cancelled": "Operation cancelled",
 
     // --- UI chrome (P3-13: one source for the mixed-language TUI strings) ---
-    // Permission menus (Ink Prompts.tsx + raw-mode cli-interactive.ts)
+    // Permission menus (Ink Prompts.tsx + raw-mode cli-interactive.ts) —
+    // official option wording.
     "ui.permission.yes": "Yes",
-    "ui.permission.always": "Yes, and always allow this",
-    "ui.permission.no": "No",
+    "ui.permission.always": "Yes, and don't ask again this session",
+    "ui.permission.no": "No, and tell Claude what to do differently (esc)",
+    "ui.permission.alwaysBash": "Yes, and don't ask again for commands in {dir}",
+    "ui.permission.alwaysEdits": "Yes, and allow all edits this session",
     "ui.permission.yes.desc": "Allow once",
     "ui.permission.always.desc": "Don't ask again this session",
     "ui.permission.no.desc": "Cancel the operation",
     "ui.permission.proceed": "Do you want to proceed?",
     "ui.permission.chooseAction": "Choose an action:",
     "ui.permission.hint": "↑↓ choose · Enter confirm · Esc cancel",
-    "ui.permission.title": "⚠️ Permission request",
+    "ui.permission.title": "Permission request",
     "ui.permission.textHint": "type y allow / a always / n deny (Esc cancels)",
 
     // Permission prompt tool labels (line-CLI text fallback)
@@ -85,10 +83,16 @@ const translations: Record<Language, Record<string, string>> = {
     "ui.tool.task": "Sub-agent task",
     "ui.tool.fallback": "{name} operation",
 
-    // Status bar
-    "ui.status.busy": "working… (Esc/Ctrl+C interrupt)",
-    "ui.status.idle": "? shortcuts · / commands",
-    "ui.status.idleFullscreen": "? shortcuts · / commands · @path attach · PgUp/PgDn scroll",
+    // Prompt footer (official PromptInputFooterLeftSide hints)
+    "ui.footer.shortcuts": "? for shortcuts",
+    "ui.footer.interrupt": "esc to interrupt",
+    "ui.footer.modeCycle": "(shift+tab to cycle)",
+    "ui.footer.untilAutoCompact": "{pct}% until auto-compact",
+
+    // Status line phases (statusLabel)
+    "ui.phase.thinking": "Thinking",
+    "ui.phase.responding": "Responding",
+    "ui.phase.runningTools": "Running {n} tools",
 
     // Live-region elision hints
     "ui.elide.above": "… {n} lines above elided",
@@ -97,6 +101,22 @@ const translations: Record<Language, Record<string, string>> = {
     // Input box
     "ui.paste.note": "Pasted {n} lines — review, then Enter to send",
     "ui.file.hint": "Tab insert · Esc close",
+    "ui.suggest.moreAbove": "↑ {n} more",
+    "ui.suggest.moreBelow": "↓ {n} more",
+    "ui.input.queuedHint": "⏎ queues your next message (runs after the current turn)",
+
+    // Tool cards
+    "ui.tool.expandHint": "(ctrl+o to expand)",
+    "ui.tool.expandMore": "… +{n} lines (ctrl+o to expand)",
+    "ui.tools.moreRunning": "… +{n} more running",
+
+    // Turn events
+    "ui.abort.user": "user interrupt",
+    "ui.queue.queued": "⏎ queued — will run after the current turn",
+    "ui.queue.limitDropped": "⎿ Queued-turn limit reached ({max}); dropped {n} queued messages",
+    "ui.schedule.parked": "⏰ {label} — will be delivered after the current turn",
+    "ui.compact.started": "Compacting context…",
+    "ui.interrupted.hint": "Interrupted · What should Claude do instead?",
 
     // Context-gauge toasts
     "ui.ctx.warn": "Context at {pct}% — nearing auto-compact",
@@ -134,6 +154,15 @@ const translations: Record<Language, Record<string, string>> = {
     "ui.image.pasted": "attached {chip} — will be sent with your next message",
     "ui.image.none": "no image found in the clipboard",
     "ui.image.stale": "clipboard image arrived after the draft was sent — paste again to attach it",
+
+    // Pickers
+    "ui.picker.commands": "↑↓ move · Enter run · Esc cancel · Shift+Tab mode",
+    "ui.picker.sessions": "↑↓ move · Enter resume · Esc cancel · Shift+Tab mode",
+    "ui.picker.providers": "↑↓ move · Enter switch · Esc cancel · Shift+Tab mode",
+
+    // Todos
+    "ui.todo.moreAbove": "↑ {n} more",
+    "ui.todo.moreBelow": "↓ {n} more",
   },
   "zh-CN": {
     // Permission errors
@@ -168,17 +197,19 @@ const translations: Record<Language, Record<string, string>> = {
     "error.aborted": "操作已中止",
     "error.cancelled": "操作已取消",
 
-    // --- UI chrome（P3-13：TUI 混杂文案的单一来源） ---
+    // --- UI chrome（P3-13：TUI 混杂文案的单一来源；英文对齐官方措辞） ---
     "ui.permission.yes": "允许",
-    "ui.permission.always": "始终允许",
-    "ui.permission.no": "拒绝",
+    "ui.permission.always": "允许，本会话内不再询问",
+    "ui.permission.no": "拒绝，并告诉 Claude 换个做法 (esc)",
+    "ui.permission.alwaysBash": "允许，且此目录下的命令不再询问：{dir}",
+    "ui.permission.alwaysEdits": "允许，本会话内的全部编辑不再询问",
     "ui.permission.yes.desc": "仅本次允许",
     "ui.permission.always.desc": "本会话内不再询问",
     "ui.permission.no.desc": "取消操作",
     "ui.permission.proceed": "是否执行此操作？",
     "ui.permission.chooseAction": "选择操作：",
     "ui.permission.hint": "↑↓ 选择 · Enter 确认 · Esc 取消",
-    "ui.permission.title": "⚠️ 权限请求",
+    "ui.permission.title": "权限请求",
     "ui.permission.textHint": "输入 y 允许 / a 始终允许 / n 拒绝 (Esc 取消)",
 
     // 权限提示工具标签（行式文本回退路径）
@@ -191,15 +222,47 @@ const translations: Record<Language, Record<string, string>> = {
     "ui.tool.task": "子代理任务",
     "ui.tool.fallback": "{name} 操作",
 
-    "ui.status.busy": "处理中…（Esc/Ctrl+C 中断）",
-    "ui.status.idle": "? 快捷键 · / 命令",
-    "ui.status.idleFullscreen": "? 快捷键 · / 命令 · @path 附件 · PgUp/PgDn 滚动",
+    // 输入框底部提示行（对齐官方 PromptInputFooterLeftSide）
+    "ui.footer.shortcuts": "? 查看快捷键",
+    "ui.footer.interrupt": "esc 中断",
+    "ui.footer.modeCycle": "（shift+tab 切换）",
+    "ui.footer.untilAutoCompact": "距自动压缩还有 {pct}%",
+
+    // 状态行动作词（statusLabel）
+    "ui.phase.thinking": "思考中",
+    "ui.phase.responding": "回复中",
+    "ui.phase.runningTools": "正在运行 {n} 个工具",
 
     "ui.elide.above": "… 上文约 {n} 行已省略",
     "ui.elide.thinking": "… 思考前文约 {n} 行已省略",
 
     "ui.paste.note": "已粘贴 {n} 行 — 检查后 Enter 发送",
     "ui.file.hint": "Tab 插入 · Esc 关闭",
+    "ui.suggest.moreAbove": "↑ 还有 {n} 条",
+    "ui.suggest.moreBelow": "↓ 还有 {n} 条",
+    "ui.input.queuedHint": "⏎ 排队下一条消息（当前回合结束后执行）",
+
+    // 工具卡
+    "ui.tool.expandHint": "（ctrl+o 展开）",
+    "ui.tool.expandMore": "… +{n} 行（ctrl+o 展开）",
+    "ui.tools.moreRunning": "… 还有 {n} 个工具运行中",
+
+    // 选择器
+    "ui.picker.commands": "↑↓ 移动 · Enter 运行 · Esc 取消 · Shift+Tab 切换模式",
+    "ui.picker.sessions": "↑↓ 移动 · Enter 恢复 · Esc 取消 · Shift+Tab 切换模式",
+    "ui.picker.providers": "↑↓ 移动 · Enter 切换 · Esc 取消 · Shift+Tab 切换模式",
+
+    // 待办
+    "ui.todo.moreAbove": "↑ 还有 {n} 项",
+    "ui.todo.moreBelow": "↓ 还有 {n} 项",
+
+    // 回合事件
+    "ui.abort.user": "用户中断",
+    "ui.queue.queued": "⏎ 已排队 — 当前回合结束后执行",
+    "ui.queue.limitDropped": "⎿ 连续排队回合已达上限（{max}），丢弃 {n} 条排队输入",
+    "ui.schedule.parked": "⏰ {label} —— 当前回合结束后送达",
+    "ui.compact.started": "正在压缩上下文…",
+    "ui.interrupted.hint": "已中断 · 接下来让 Claude 做什么？",
 
     "ui.ctx.warn": "上下文已用 {pct}% — 接近自动压缩阈值",
     "ui.ctx.critical": "上下文已用 {pct}% — 即将自动压缩",

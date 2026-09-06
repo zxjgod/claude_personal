@@ -32,7 +32,7 @@ import {
   SPINNER_VERBS,
   TEARDROP_ASTERISK,
   UP_ARROW,
-  verbAt,
+  verbForTurn,
 } from "./spinner-core.js";
 import { terminalColumns, visualWidth } from "./terminal-width.js";
 
@@ -73,9 +73,9 @@ export class Spinner {
     return this.active;
   }
 
-  /** Begin animating. The verb rotates deterministically from the turn's start
-   *  time (verbAt) — the same cycle the Ink StatusLine shows, so both UI paths
-   *  play the same gerunds instead of the line CLI freezing on one word. */
+  /** Begin animating. The verb is sampled ONCE per start (seeded by the turn's
+   *  start time via verbForTurn) and held for the whole operation — the same
+   *  official mount-once semantics the Ink StatusLine shows. */
   start(): void {
     if (this.active) return;
     // No-op on non-TTY: the caller prints plain status instead.
@@ -133,9 +133,9 @@ export class Spinner {
     const glyphChar = this.reducedMotion ? TEARDROP_ASTERISK : SPINNER_FRAMES[frame]!;
     const glyph = chalk.rgb(CLAUDE_ORANGE.r, CLAUDE_ORANGE.g, CLAUDE_ORANGE.b)(glyphChar);
 
-    // P3-15: rotate the verb with elapsed time (seeded by the turn start) —
-    // deterministic like the Ink StatusLine, not a one-time random pick.
-    const message = `${verbAt(elapsedMs, this.startedAt)}…`;
+    // Official semantics: ONE verb sampled per spinner mount (seeded by the
+    // turn start — deterministic, not re-rolled per frame).
+    const message = `${verbForTurn(this.startedAt)}…`;
     const verbText = this.reducedMotion
       ? chalk.rgb(CLAUDE_ORANGE.r, CLAUDE_ORANGE.g, CLAUDE_ORANGE.b)(message)
       : this.renderShimmer(message, elapsedMs);

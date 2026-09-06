@@ -1,9 +1,10 @@
 // ============================================================
 // ToolCard — live + completed tool rendering with collapse (9.3 / 9.4)
 // ============================================================
-// A completed tool is shown as "● Name(detail)" followed by a "⎿ result"
-// branch. Long results (read/grep) collapse to a preview with a hint; the
-// active row (ctrl+r) can toggle expansion via the App's expanded set.
+// A completed tool is shown as "⏺ Name(detail)" followed by a "⎿ result"
+// branch. Long results (read/grep) collapse to a preview whose hint points at
+// the verbose transcript viewer (ctrl+o); the ctrl+r handler can still append
+// a full-output copy via the App's expanded set.
 //
 // M26: Tool status indicator:
 // - Active tool (executing): gray blinking dot
@@ -13,8 +14,10 @@
 import { Box, Text } from "ink";
 import type React from "react";
 import { useEffect, useState } from "react";
-import { parseError } from "../tui/markdown.js";
 import type { ToolExecutionResult } from "./../types.js";
+import { BLACK_CIRCLE, TOOL_RESULT } from "./figures.js";
+import { t } from "./i18n.js";
+import { parseError } from "./markdown.js";
 import {
   actionLabel,
   formatDuration,
@@ -31,10 +34,10 @@ const PREVIEW_LINES = 12;
 
 /**
  * True when a completed card renders collapsed with an expand hint — i.e.
- * ctrl+r would reveal more content. Mirrors the collapse logic inside
- * CompletedToolCard (summary-collapse OR clipped preview); exported so the
- * ctrl+r hotkey can find the latest expandable card without duplicating the
- * rule.
+ * ctrl+o (the verbose transcript viewer) would reveal more content. Mirrors
+ * the collapse logic inside CompletedToolCard (summary-collapse OR clipped
+ * preview); exported so tests can assert expandability without duplicating
+ * the rule.
  */
 export function isToolExpandable(result: ToolExecutionResult): boolean {
   if (result.error) return false;
@@ -64,9 +67,9 @@ function ToolStatusGlyph({ isActive }: { isActive: boolean }) {
   }, [isActive, reduced]);
 
   if (isActive) {
-    return <Text color={flash ? STATUS_GRAY_BRIGHT : STATUS_GRAY}>●</Text>;
+    return <Text color={flash ? STATUS_GRAY_BRIGHT : STATUS_GRAY}>{BLACK_CIRCLE}</Text>;
   } else {
-    return <Text color={STATUS_GREEN}>●</Text>;
+    return <Text color={STATUS_GREEN}>{BLACK_CIRCLE}</Text>;
   }
 }
 
@@ -102,7 +105,7 @@ export function ActiveToolCard({
   const elapsed = startedAt ? ` (${formatDuration(Date.now() - startedAt)})` : "";
   return (
     <Box>
-      <Text color={reduced || !flash ? STATUS_GRAY : STATUS_GRAY_BRIGHT}>●</Text>
+      <Text color={reduced || !flash ? STATUS_GRAY : STATUS_GRAY_BRIGHT}>{BLACK_CIRCLE}</Text>
       <Text>
         {` ${actionLabel(name, detail)}`}
         {elapsed ? <Text dimColor>{elapsed}</Text> : null}
@@ -120,6 +123,8 @@ export function CompletedToolCard({
   detail: string;
   expanded: boolean;
 }) {
+  // Official head: `⏺ Name(detail)` — colored glyph + BOLD plain-color name
+  // (the head itself carries no accent tint).
   const title = (
     <Box>
       <ToolStatusGlyph isActive={false} />
@@ -153,17 +158,21 @@ export function CompletedToolCard({
   return (
     <Box flexDirection="column">
       {title}
+      {/* Official branch geometry: two spaces + ⎿ + two spaces on the first
+          line, continuation lines indented to the same content column. */}
       <Box flexDirection="column" paddingLeft={2}>
         {shown.map((line, i) => (
           <Box key={i}>
-            <Text dimColor>{i === 0 ? "⎿ " : "  "}</Text>
+            <Text dimColor>{i === 0 ? `${TOOL_RESULT}  ` : "   "}</Text>
             {colorizeLine(line)}
           </Box>
         ))}
         {collapsedToSummary && allLines.length > 0 ? (
-          <Text dimColor>{`  (ctrl+r to expand)`}</Text>
+          <Text dimColor>{`  ${t("ui.tool.expandHint")}`}</Text>
         ) : isLong && !expanded ? (
-          <Text dimColor>{`  … +${allLines.length - PREVIEW_LINES} lines (ctrl+r to expand)`}</Text>
+          <Text
+            dimColor
+          >{`  ${t("ui.tool.expandMore", { n: allLines.length - PREVIEW_LINES })}`}</Text>
         ) : null}
       </Box>
     </Box>
@@ -199,7 +208,7 @@ function StructuredError({ error }: { error: string }) {
   return (
     <Box flexDirection="column" paddingLeft={2}>
       <Box>
-        <Text dimColor>{"  ⎿ "}</Text>
+        <Text dimColor>{`  ${TOOL_RESULT} `}</Text>
         <Text color={errorColor} bold>
           {parsed.type}
         </Text>

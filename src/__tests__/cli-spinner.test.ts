@@ -13,12 +13,12 @@ import {
 } from "../tui/cli-spinner.js";
 
 describe("SPINNER_VERBS", () => {
-  it("includes the canonical gerunds and ends in -ing", () => {
+  it("includes the canonical gerunds and ends in -ing (or -in')", () => {
     expect(SPINNER_VERBS).toContain("Whisking");
     expect(SPINNER_VERBS).toContain("Pondering");
     expect(SPINNER_VERBS.length).toBeGreaterThan(20);
     for (const v of SPINNER_VERBS) {
-      expect(v).toMatch(/ing$/);
+      expect(v).toMatch(/(ing|in')$/);
     }
   });
 });

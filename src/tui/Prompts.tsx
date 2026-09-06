@@ -3,14 +3,23 @@
 // ============================================================
 // Arrow-key selectable menus rendered as Ink overlays. They call the
 // overlay's resolve() with the choice; the store clears the overlay.
+//
+// Official alignment (2026-09): dialogs use the official permission blue
+// (rgb(87,105,247)) with a ▔ divider row above, the permission menu carries
+// the official option wording (tool-aware "always" label built by run.tsx),
+// single-key y/a/n shortcuts, and Shift+Tab cycles the permission mode
+// IN-dialog — the official confirmation-context key.
 // ============================================================
 
 import { Box, Text, useInput } from "ink";
 import { useState } from "react";
+import { HORIZONTAL_BAR } from "./figures.js";
 import { t } from "./i18n.js";
-import type { Overlay } from "./store.js";
+import type { Overlay, TuiStore } from "./store.js";
+import { terminalColumns } from "./terminal-width.js";
+import { palette } from "./theme.js";
 
-const CYAN = "cyan";
+const ACCENT = palette.permission;
 
 /** Risk level visual indicators */
 const RISK_LEVELS = {
@@ -46,61 +55,79 @@ function getRiskLevel(riskHint?: string): keyof typeof RISK_LEVELS | null {
 
 export function PermissionPrompt({
   overlay,
+  store,
 }: {
   overlay: Extract<Overlay, { kind: "permission" }>;
+  /** Shift+Tab cycles the permission mode in-dialog (official behavior). */
+  store?: TuiStore;
 }) {
-  // P3-13: option labels come from i18n so the Ink prompt and the raw-mode
-  // line-CLI menu (cli-interactive.ts) render the SAME language — previously
-  // one showed English while the other showed Chinese.
+  // Official option wording; the "always" line is tool-aware when the caller
+  // (run.tsx) provided one — "…for commands in <dir>" / "…all edits this
+  // session" — falling back to the session-generic label.
   const options: Array<{ label: string; value: "yes" | "always" | "no" }> = [
     { label: t("ui.permission.yes"), value: "yes" },
-    { label: t("ui.permission.always"), value: "always" },
+    { label: overlay.alwaysLabel ?? t("ui.permission.always"), value: "always" },
     { label: t("ui.permission.no"), value: "no" },
   ];
   const [selected, setSelected] = useState(0);
 
   useInput((input, key) => {
+    // Official confirmation-context key: cycle the permission mode without
+    // leaving the dialog (the dialog stays; the footer mode line updates).
+    if (key.tab && key.shift) {
+      store?.cyclePermissionMode();
+      return;
+    }
     if (key.upArrow) setSelected((s) => (s - 1 + options.length) % options.length);
     else if (key.downArrow) setSelected((s) => (s + 1) % options.length);
     else if (key.return) overlay.resolve(options[selected]!.value);
     else if (key.escape) overlay.resolve("no");
     else if (/^[1-3]$/.test(input)) overlay.resolve(options[parseInt(input, 10) - 1]!.value);
+    // Single-letter shortcuts (official muscle memory): y = allow once,
+    // a = always, n = deny.
+    else if (input === "y") overlay.resolve("yes");
+    else if (input === "a") overlay.resolve("always");
+    else if (input === "n") overlay.resolve("no");
   });
 
   const riskLevel = getRiskLevel(overlay.riskHint);
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={CYAN} paddingX={1}>
-      <Box>
-        <Text bold color={CYAN}>
-          {overlay.header}
-        </Text>
-        {riskLevel && (
-          <Text color={RISK_LEVELS[riskLevel].color} bold>
-            {" "}
-            {RISK_LEVELS[riskLevel].icon}
-          </Text>
-        )}
-      </Box>
-      {overlay.detail ? <Text>{overlay.detail}</Text> : null}
-      {riskLevel ? (
+    <Box flexDirection="column">
+      {/* Official modal divider: a ▔ rule in permission blue above the dialog. */}
+      <Text color={ACCENT}>{HORIZONTAL_BAR.repeat(Math.max(20, terminalColumns() - 1))}</Text>
+      <Box flexDirection="column" borderStyle="round" borderColor={ACCENT} paddingX={1}>
         <Box>
-          <Text color={RISK_LEVELS[riskLevel].color}>{RISK_LEVELS[riskLevel].label}</Text>
-          <Text dimColor>: {overlay.riskHint}</Text>
-        </Box>
-      ) : overlay.riskHint ? (
-        <Text color="yellow">{overlay.riskHint}</Text>
-      ) : null}
-      <Box marginTop={1} flexDirection="column">
-        <Text>{t("ui.permission.proceed")}</Text>
-        {options.map((opt, i) => (
-          <Text key={opt.value} color={i === selected ? CYAN : undefined}>
-            {i === selected ? "❯ " : "  "}
-            {i + 1}. {opt.label}
+          <Text bold color={ACCENT}>
+            {overlay.header}
           </Text>
-        ))}
+          {riskLevel && (
+            <Text color={RISK_LEVELS[riskLevel].color} bold>
+              {" "}
+              {RISK_LEVELS[riskLevel].icon}
+            </Text>
+          )}
+        </Box>
+        {overlay.detail ? <Text>{overlay.detail}</Text> : null}
+        {riskLevel ? (
+          <Box>
+            <Text color={RISK_LEVELS[riskLevel].color}>{RISK_LEVELS[riskLevel].label}</Text>
+            <Text dimColor>: {overlay.riskHint}</Text>
+          </Box>
+        ) : overlay.riskHint ? (
+          <Text color="#e0af68">{overlay.riskHint}</Text>
+        ) : null}
+        <Box marginTop={1} flexDirection="column">
+          <Text>{t("ui.permission.proceed")}</Text>
+          {options.map((opt, i) => (
+            <Text key={opt.value} color={i === selected ? ACCENT : undefined}>
+              {i === selected ? "❯ " : "  "}
+              {i + 1}. {opt.label}
+            </Text>
+          ))}
+        </Box>
+        <Text dimColor>{`${t("ui.permission.hint")} · Shift+Tab mode`}</Text>
       </Box>
-      <Text dimColor>{`${t("ui.permission.hint")} · Shift+Tab mode`}</Text>
     </Box>
   );
 }
@@ -145,15 +172,15 @@ export function QuestionPrompt({ overlay }: { overlay: Extract<Overlay, { kind: 
   });
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={CYAN} paddingX={1}>
-      <Text bold color={CYAN}>
+    <Box flexDirection="column" borderStyle="round" borderColor={ACCENT} paddingX={1}>
+      <Text bold color={ACCENT}>
         {overlay.header}
       </Text>
       <Text>{overlay.question}</Text>
       <Box marginTop={1} flexDirection="column">
         {options.map((opt, i) => (
           <Box key={i} flexDirection="column">
-            <Text color={i === cursor ? CYAN : undefined}>
+            <Text color={i === cursor ? ACCENT : undefined}>
               {i === cursor ? "❯ " : "  "}
               {multiSelect ? (checked.has(i) ? "[x] " : "[ ] ") : ""}
               {opt.label}
@@ -166,7 +193,6 @@ export function QuestionPrompt({ overlay }: { overlay: Extract<Overlay, { kind: 
         {multiSelect
           ? "↑↓ move · Space toggle · Enter confirm · Esc cancel"
           : "↑↓ move · Enter select · Esc cancel"}
-        {" · Shift+Tab mode"}
       </Text>
     </Box>
   );
@@ -192,13 +218,13 @@ export function ConfirmPrompt({ overlay }: { overlay: Extract<Overlay, { kind: "
   });
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={CYAN} paddingX={1}>
-      <Text bold color={CYAN}>
+    <Box flexDirection="column" borderStyle="round" borderColor={ACCENT} paddingX={1}>
+      <Text bold color={ACCENT}>
         {overlay.header}
       </Text>
       <Box marginTop={1}>
         {options.map((opt, i) => (
-          <Text key={opt.label} color={i === selected ? CYAN : undefined}>
+          <Text key={opt.label} color={i === selected ? ACCENT : undefined}>
             {i === selected ? "❯ " : "  "}
             {opt.label}
             {"  "}

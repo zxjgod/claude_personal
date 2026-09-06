@@ -26,14 +26,25 @@ const noopSubmit = () => {};
 const commands = [{ name: "help", description: "Show help" }];
 
 describe("App", () => {
-  it("renders the status bar and input hint when idle", () => {
+  it("renders the official prompt footer fallback hint when idle (default mode)", () => {
     const store = new TuiStore("deepseek/chat");
     const { lastFrame } = render(
       <App store={store} commands={commands} onSubmit={noopSubmit} expandedId={null} />,
     );
-    // Check for status bar elements (format changed, now shows "default" without "mode:" prefix)
-    expect(lastFrame()).toContain("default");
-    expect(lastFrame()).toMatch(/\/ commands/);
+    // Official footer: default mode shows no mode badge — the fallback hint
+    // "? for shortcuts" owns the left column; model sits on the right.
+    expect(lastFrame()).toContain("? for shortcuts");
+    expect(lastFrame()).toContain("deepseek/chat");
+  });
+
+  it("shows the official mode indicator in the footer for non-default modes", () => {
+    const store = new TuiStore("p/m");
+    store.setPermissionMode("plan");
+    const { lastFrame } = render(
+      <App store={store} commands={commands} onSubmit={noopSubmit} expandedId={null} />,
+    );
+    expect(lastFrame()).toContain("⏸ plan mode on");
+    expect(lastFrame()).toContain("(shift+tab to cycle)");
   });
 
   it("renders committed transcript items", () => {
@@ -56,7 +67,8 @@ describe("App", () => {
     const { lastFrame } = render(
       <App store={store} commands={commands} onSubmit={noopSubmit} expandedId={null} />,
     );
-    expect(lastFrame()).toMatch(/Thinking|working/);
+    // Official footer hint while loading, plus the thinking-phase verb line.
+    expect(lastFrame()).toContain("esc to interrupt");
   });
 
   it("pins the live todo list under the status line (⎿ connector)", () => {
@@ -149,7 +161,7 @@ describe("App", () => {
     expect(frame).toContain("task 5"); // the active task is always visible
     expect(frame).toContain("■ task 5");
     expect(frame).not.toContain("task 0"); // windowed off
-    expect(frame).toContain("↑ 还有"); // overflow indicator above
+    expect(frame).toContain("↑ "); // overflow indicator above
   });
 
   it("shows the head of an all-pending todo list with a below-overflow row", () => {
@@ -167,7 +179,7 @@ describe("App", () => {
     expect(frame).toContain("task 0");
     expect(frame).toContain("task 3");
     expect(frame).not.toContain("task 4"); // beyond the window
-    expect(frame).toContain("↓ 还有 3 项");
+    expect(frame).toMatch(/↓.*3 more/);
   });
 
   it("caps concurrent active tool cards with an overflow line", () => {
@@ -180,7 +192,7 @@ describe("App", () => {
     expect(frame).toContain("file-0.ts");
     expect(frame).toContain("file-2.ts");
     expect(frame).not.toContain("file-3.ts"); // beyond the 3-card window
-    expect(frame).toContain("+2 个工具运行中");
+    expect(frame).toContain("+2 more running");
   });
 
   it("PgUp opens the transcript review pager (and swaps out the input box)", async () => {
@@ -240,7 +252,7 @@ describe("CompletedToolCard collapse (9.4)", () => {
       <CompletedToolCard result={longResult} detail="foo" expanded={false} />,
     );
     const frame = lastFrame()!;
-    expect(frame).toContain("ctrl+r to expand");
+    expect(frame).toContain("ctrl+o to expand");
     expect(frame).not.toContain("line 20"); // beyond preview window
   });
 
@@ -263,7 +275,7 @@ describe("CompletedToolCard collapse (9.4)", () => {
     expect(lastFrame()).toContain("old_string not found");
   });
 
-  it("isToolExpandable mirrors the collapse rule (ctrl+r target finding)", () => {
+  it("isToolExpandable mirrors the collapse rule (expandable-target finding)", () => {
     const shortResult: ToolExecutionResult = { toolName: "bash", formatted: "ok", durationMs: 1 };
     const summaryResult: ToolExecutionResult = {
       toolName: "read",
@@ -282,7 +294,7 @@ describe("CompletedToolCard collapse (9.4)", () => {
     expect(isToolExpandable(errResult)).toBe(false); // errors have no content
   });
 
-  it("renders a transcript tool item's own expanded flag (ctrl+r copy)", () => {
+  it("renders a transcript tool item's own expanded flag (expanded flag copy)", () => {
     // store.expandTool appends an expanded COPY of the collapsed card; the
     // App renders it fully expanded with no expandedId prop involved.
     const store = new TuiStore("p/m");
@@ -293,7 +305,7 @@ describe("CompletedToolCard collapse (9.4)", () => {
     const { lastFrame } = render(<App store={store} commands={commands} onSubmit={noopSubmit} />);
     const frame = lastFrame()!;
     // Collapsed original (clipped at 12 lines) and the expanded copy (full).
-    expect(frame).toContain("ctrl+r to expand");
+    expect(frame).toContain("ctrl+o to expand");
     expect(frame).toContain("line 29"); // only the expanded copy shows this
   });
 });

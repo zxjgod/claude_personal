@@ -16,63 +16,214 @@ import { graphemes, truncateVisual, visualWidth } from "./terminal-width.js";
 
 // --- Verbs -------------------------------------------------------------------
 
-/** A curated subset of the ~190 gerunds in the reference's spinnerVerbs.ts. */
+/**
+ * The full official verb list (spinnerVerbs.ts, 188 gerunds — extracted from
+ * the official 2.1.202 bundle, per user decision 2026-09-06 to carry it over
+ * verbatim). The official client SAMPLES ONE verb per spinner mount — no
+ * rotation — so a turn shows e.g. "✻ Prestidigitating…" for its whole length.
+ */
 export const SPINNER_VERBS = [
   "Accomplishing",
+  "Actioning",
+  "Actualizing",
   "Architecting",
   "Baking",
+  "Beaming",
+  "Beboppin'",
+  "Befuddling",
+  "Billowing",
+  "Blanching",
+  "Bloviating",
+  "Boogieing",
+  "Boondoggling",
+  "Booping",
+  "Bootstrapping",
   "Brewing",
+  "Bunning",
+  "Burrowing",
   "Calculating",
+  "Canoodling",
+  "Caramelizing",
+  "Cascading",
+  "Catapulting",
   "Cerebrating",
+  "Channeling",
+  "Channelling",
+  "Choreographing",
   "Churning",
   "Clauding",
+  "Coalescing",
   "Cogitating",
+  "Combobulating",
+  "Composing",
   "Computing",
   "Concocting",
   "Considering",
   "Contemplating",
   "Cooking",
   "Crafting",
+  "Creating",
   "Crunching",
+  "Crystallizing",
+  "Cultivating",
   "Deciphering",
   "Deliberating",
   "Determining",
-  "Distilling",
+  "Dilly-dallying",
+  "Discombobulating",
+  "Doing",
+  "Doodling",
+  "Drizzling",
+  "Ebbing",
+  "Effecting",
+  "Elucidating",
+  "Embellishing",
+  "Enchanting",
+  "Envisioning",
+  "Fermenting",
+  "Fiddle-faddling",
+  "Finagling",
+  "Flambéing",
+  "Flibbertigibbeting",
+  "Flowing",
+  "Flummoxing",
+  "Fluttering",
   "Forging",
+  "Forming",
+  "Frolicking",
+  "Frosting",
+  "Gallivanting",
+  "Galloping",
+  "Garnishing",
   "Generating",
+  "Gesticulating",
+  "Germinating",
+  "Gitifying",
+  "Grooving",
+  "Gusting",
+  "Harmonizing",
+  "Hashing",
+  "Hatching",
   "Herding",
+  "Honking",
+  "Hullaballooing",
+  "Hyperspacing",
   "Ideating",
   "Imagining",
+  "Improvising",
   "Incubating",
   "Inferring",
+  "Infusing",
+  "Ionizing",
+  "Jitterbugging",
+  "Julienning",
+  "Kneading",
+  "Leavening",
+  "Levitating",
+  "Lollygagging",
   "Manifesting",
   "Marinating",
+  "Meandering",
+  "Metamorphosing",
+  "Misting",
+  "Moonwalking",
+  "Moseying",
   "Mulling",
+  "Mustering",
   "Musing",
+  "Nebulizing",
+  "Nesting",
+  "Newspapering",
   "Noodling",
+  "Nucleating",
+  "Orbiting",
+  "Orchestrating",
+  "Osmosing",
+  "Perambulating",
   "Percolating",
+  "Perusing",
+  "Philosophising",
+  "Photosynthesizing",
+  "Pollinating",
   "Pondering",
+  "Pontificating",
+  "Pouncing",
+  "Precipitating",
+  "Prestidigitating",
   "Processing",
+  "Proofing",
+  "Propagating",
+  "Puttering",
   "Puzzling",
+  "Quantumizing",
+  "Razzle-dazzling",
+  "Razzmatazzing",
+  "Recombobulating",
   "Reticulating",
+  "Roosting",
   "Ruminating",
+  "Sautéing",
+  "Scampering",
   "Schlepping",
+  "Scurrying",
+  "Seasoning",
+  "Shenaniganing",
+  "Shimmying",
   "Simmering",
+  "Skedaddling",
   "Sketching",
+  "Slithering",
+  "Smooshing",
+  "Sock-hopping",
   "Spelunking",
   "Spinning",
+  "Sprouting",
   "Stewing",
+  "Sublimating",
   "Swirling",
+  "Swooping",
+  "Symbioting",
   "Synthesizing",
+  "Tempering",
   "Thinking",
+  "Thundering",
   "Tinkering",
+  "Tomfoolering",
+  "Topsy-turvying",
+  "Transfiguring",
+  "Transmuting",
+  "Twisting",
+  "Undulating",
+  "Unfurling",
+  "Unravelling",
+  "Vibing",
+  "Waddling",
+  "Wandering",
+  "Warping",
+  "Whatchamacalliting",
+  "Whirlpooling",
+  "Whirring",
   "Whisking",
+  "Wibbling",
   "Working",
   "Wrangling",
+  "Zesting",
+  "Zigzagging",
 ];
 
 export function pickVerb(): string {
   return SPINNER_VERBS[Math.floor(Math.random() * SPINNER_VERBS.length)]!;
+}
+
+/**
+ * The turn's verb — official semantics: sample ONCE per spinner mount and keep
+ * it for the whole turn (no cycling). Deterministic from the turn-start seed
+ * so re-renders never re-roll it and tests can pin it; different turns still
+ * land on different words via the hash.
+ */
+export function verbForTurn(seed = 0): string {
+  const mixed = Math.abs(Math.floor(Math.floor(seed / 1000) * 2654435761) ^ 0x9e3779b9);
+  return SPINNER_VERBS[mixed % SPINNER_VERBS.length]!;
 }
 
 /**
@@ -86,34 +237,22 @@ export function isReducedMotion(): boolean {
   return process.env.CCR_REDUCED_MOTION === "1";
 }
 
-/** How long each thinking verb stays on screen before the next one (ms). */
-export const VERB_CYCLE_MS = 3500;
-
-/**
- * Deterministic cycling verb for the thinking status line. Instead of a fixed
- * "Thinking", the label rotates through SPINNER_VERBS every VERB_CYCLE_MS — the
- * playful gerunds ("Cogitating", "Pondering"…) the reference shows while the
- * model works.
- *
- * It's a pure function of elapsed time + a per-turn `seed` (pass the turn start
- * time) rather than random-per-render: the status line re-renders ~12×/s for
- * its clock/shimmer, and re-rolling the verb each of those frames would make it
- * flicker illegibly. Deriving the index from `floor(elapsed / cycle)` keeps the
- * verb stable within its window and advances exactly once per window; the seed
- * mixes in so different turns don't all start on the same word.
- */
-export function verbAt(elapsedMs: number, seed = 0): string {
-  const step = Math.floor(Math.max(0, elapsedMs) / VERB_CYCLE_MS);
-  // Cheap integer hash of (seed, step) → spreads consecutive steps across the
-  // list instead of walking it in order (which would look like a slow scroll).
-  const mixed = Math.abs(Math.floor(seed / 1000) * 2654435761 + step * 40503);
-  return SPINNER_VERBS[mixed % SPINNER_VERBS.length]!;
-}
-
 // --- Glyph frames ------------------------------------------------------------
 
-/** Official particle charset (✳ omitted by preference), played forwards then backwards. */
-export const BASE_FRAMES = ["·", "✢", "✶", "✻", "✽"];
+/**
+ * The official particle charset, platform-forked exactly like the official
+ * getDefaultCharacters(): darwin plays ✳, every other platform (Windows
+ * included) substitutes `*` — ✳ renders poorly off macOS. Ghostty swaps ✽
+ * for `*` too (its ✽ glyph sits slightly offset).
+ */
+export function defaultFrames(): string[] {
+  if (process.env.TERM === "xterm-ghostty") return ["·", "✢", "✳", "✶", "✻", "*"];
+  return process.platform === "darwin"
+    ? ["·", "✢", "✳", "✶", "✻", "✽"]
+    : ["·", "✢", "*", "✶", "✻", "✽"];
+}
+
+export const BASE_FRAMES = defaultFrames();
 export const SPINNER_FRAMES = [...BASE_FRAMES, ...[...BASE_FRAMES].reverse()];
 
 export const TEARDROP_ASTERISK = "✻";
@@ -147,6 +286,36 @@ export const CLAUDE_SHIMMER: RGB = { r: 245, g: 149, b: 117 };
 /** Hex forms for Ink's `color` prop. */
 export const ORANGE_HEX = "#d77757";
 export const SHIMMER_HEX = "#f59575";
+
+/** Stall-warning red the official glyph interpolates toward (rgb(171,43,63)). */
+export const ERROR_RED: RGB = { r: 171, g: 43, b: 63 };
+export const ERROR_RED_HEX = "#ab2b3f";
+
+/** No token for this long ⇒ the glyph starts blending toward ERROR_RED. */
+export const STALL_AFTER_MS = 3000;
+/** Blend duration from pure orange to pure red once the stall kicks in. */
+export const STALL_RAMP_MS = 2000;
+
+function lerp(a: number, b: number, t: number): number {
+  return Math.round(a + (b - a) * t);
+}
+
+/**
+ * The glyph color for a spinner that last saw activity `idleMs` ago — official
+ * useStalledAnimation: stays claude orange for STALL_AFTER_MS, then ramps to
+ * ERROR_RED over STALL_RAMP_MS. Pure so the Ink component stays a thin renderer
+ * and the curve is unit-testable.
+ */
+export function stalledGlyphColor(idleMs: number): string {
+  const t = Math.max(0, Math.min(1, (idleMs - STALL_AFTER_MS) / STALL_RAMP_MS));
+  if (t === 0) return ORANGE_HEX;
+  if (t === 1) return ERROR_RED_HEX;
+  const toHex = (n: number) => n.toString(16).padStart(2, "0");
+  const r = toHex(lerp(CLAUDE_ORANGE.r, ERROR_RED.r, t));
+  const g = toHex(lerp(CLAUDE_ORANGE.g, ERROR_RED.g, t));
+  const b = toHex(lerp(CLAUDE_ORANGE.b, ERROR_RED.b, t));
+  return `#${r}${g}${b}`;
+}
 
 /** Status dot colors */
 export const STATUS_GREEN = "#4EBA65"; // completed tool - Claude Code dark success green (rgb 78,186,101)

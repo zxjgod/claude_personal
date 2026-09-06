@@ -27,9 +27,10 @@ import {
   ORANGE_HEX,
   SHIMMER_HEX,
   SHIMMER_INTERVAL_MS,
+  stalledGlyphColor,
   TEARDROP_ASTERISK,
   UP_ARROW,
-  verbAt,
+  verbForTurn,
 } from "./spinner-core.js";
 import { visualWidth } from "./terminal-width.js";
 
@@ -49,6 +50,7 @@ export function StatusLine({
   label,
   startedAt,
   tokens,
+  activityAt,
   cycleVerbs,
 }: {
   /** Present-continuous status, e.g. "Thinking" or "Reading App.tsx". */
@@ -57,9 +59,12 @@ export function StatusLine({
   startedAt: number;
   /** Live output-token estimate / count. */
   tokens: number;
-  /** When true (pure thinking phase, no tool running), rotate through the
-   *  playful gerunds instead of showing the static `label`. The verb advances
-   *  every VERB_CYCLE_MS, seeded by `startedAt` so turns don't all start alike. */
+  /** Epoch ms of the last spinner-relevant activity (0 = unknown). Drives the
+   *  official stall warning: 3s of silence blends the glyph toward red. */
+  activityAt: number;
+  /** When true (pure thinking phase, no tool running), show the turn's
+   *  sampled gerund + "…" (official samples ONE verb per spinner mount — no
+   *  rotation) instead of the static `label`. */
   cycleVerbs?: boolean;
 }) {
   // Reduced motion (CCR_REDUCED_MOTION=1): freeze the decorative parts (glyph
@@ -76,11 +81,16 @@ export function StatusLine({
     return () => clearInterval(t);
   }, [reduced]);
 
-  const elapsedMs = startedAt > 0 ? Date.now() - startedAt : 0;
+  const now = Date.now();
+  const elapsedMs = startedAt > 0 ? now - startedAt : 0;
   const glyph = reduced ? TEARDROP_ASTERISK : glyphAt(elapsedMs);
-  // The thinking phase cycles verbs; every other phase keeps its concrete label
-  // ("Reading App.tsx", "Responding") unchanged.
-  const shown = cycleVerbs ? verbAt(elapsedMs, startedAt) : label;
+  // Official stall warning: no activity for 3s ⇒ the glyph blends from the
+  // normal claude orange toward error red over the next 2s. Unknown activity
+  // (0) falls back to plain orange — the glyph must never render unstyled.
+  const glyphColor = activityAt > 0 ? stalledGlyphColor(now - activityAt) : ORANGE_HEX;
+  // The thinking phase shows the turn's sampled verb; every other phase keeps
+  // its concrete label ("Reading App.tsx", "Responding") unchanged.
+  const shown = cycleVerbs ? `${verbForTurn(startedAt)}…` : label;
   const { before, shimmer, after } = reduced
     ? { before: shown, shimmer: "", after: "" }
     : shimmerParts(shown, elapsedMs);
@@ -91,7 +101,7 @@ export function StatusLine({
 
   return (
     <Box>
-      <Text color={ORANGE_HEX}>{glyph}</Text>
+      <Text color={glyphColor}>{glyph}</Text>
       <Text> </Text>
       <Text color={ORANGE_HEX}>{before}</Text>
       <Text color={SHIMMER_HEX}>{shimmer}</Text>

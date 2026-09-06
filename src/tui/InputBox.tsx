@@ -46,10 +46,12 @@
 
 import { Box, Text, useInput, usePaste } from "ink";
 import { useEffect, useRef, useState } from "react";
+import { POINTER } from "./figures.js";
 import { t } from "./i18n.js";
 import { nextOffset } from "./SessionPicker.js";
 import { terminalColumns } from "./terminal-width.js";
 import { palette } from "./theme.js";
+import { useTerminalSize } from "./useTerminalSize.js";
 import { VimEngine } from "./vim/index.js";
 
 export interface CommandInfo {
@@ -61,6 +63,8 @@ export interface CommandInfo {
 const MAX_HISTORY_SIZE = 100;
 
 const ORANGE = palette.accent;
+/** Official prompt-frame gray — the rounded top border + disabled chrome. */
+const PROMPT_BORDER = palette.promptBorder;
 /** How many command rows the inline "/" dropdown shows at once before it
  *  scrolls. The full filtered list is kept and windowed around the selection
  *  (see the render below) so every command is reachable, not just the first 8. */
@@ -70,9 +74,9 @@ function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n));
 }
 
-// Width of the input box's horizontal rules. We leave ONE column of slack
-// (`cols - 1`) rather than going flush to the terminal edge: a rule exactly as
-// wide as the terminal trips DECAWM (auto-wrap), so the terminal emits a
+// Width of the input box (border + content). We leave ONE column of slack
+// (`cols - 1`) rather than going flush to the terminal edge: a border exactly
+// as wide as the terminal trips DECAWM (auto-wrap), so the terminal emits a
 // phantom wrapped row that Ink's line model doesn't account for. On every
 // InputBox re-render Ink then clears/repaints the dynamic region off by a row,
 // which is what made the input box "jump" on each ASCII keystroke/backspace
@@ -82,6 +86,13 @@ function clamp(n: number, lo: number, hi: number): number {
 // flush-width outlier. Computed per-render so it tracks terminal resize.
 function ruleWidth(): number {
   return Math.max(20, terminalColumns() - 1);
+}
+
+/** The official input-area height cap: max(3, floor(rows/2) - footer rows).
+ *  A pasted wall of text scrolls INSIDE the box instead of pushing the live
+ *  frame off-screen. */
+function maxVisiblePromptRows(termRows: number): number {
+  return Math.max(3, Math.floor(termRows / 2) - 2);
 }
 
 // --- Multi-line cursor helpers (M25.1) ---
@@ -252,9 +263,10 @@ export function InputBox({
   initialDraft,
 }: InputBoxProps) {
   const vimActive = editorMode?.value === "vim";
-  // Frame color: grey out when disabled UNLESS the caller asks to keep the
-  // accent (full-screen path). The input remains inactive either way.
-  const frameColor = disabled && !keepColorWhenDisabled ? "gray" : ORANGE;
+  // Official chrome: the border stays the prompt gray (dimmed when the box is
+  // disabled); the accent is no longer used for the frame. `keepColorWhenDisabled`
+  // (full-screen path) keeps the border at full strength.
+  const frameColor = disabled && !keepColorWhenDisabled ? "#666666" : PROMPT_BORDER;
   // Seed from the saved draft (restores across overlay / review unmounts);
   // clamp the cursor defensively — the seed may predate a different buffer.
   const [buffer, setBufferState] = useState(initialDraft?.text ?? "");
@@ -791,15 +803,33 @@ export function InputBox({
     { isActive: !disabled },
   );
 
-  // Read terminal width at render time so the rule tracks resize. (See
+  // Read terminal size at render time so the box tracks resize. (See
   // ruleWidth's note on why we leave one column of slack.)
-  const rule = "─".repeat(ruleWidth());
+  const { rows: termRows } = useTerminalSize();
+  const boxWidth = ruleWidth();
 
   // M25.1: render each logical line on its own row so a multi-line buffer
-  // displays as multiple rows. The "> " prompt sits on the first line; wrapped
+  // displays as multiple rows. The "❯" prompt sits on the first line; wrapped
   // continuation rows get a matching two-space indent so text aligns under it.
   const lines = splitLines(buffer);
   const { row: curRow, col: curCol } = offsetToRowCol(buffer, cursor);
+
+  // Official input-area cap: past maxVisiblePromptRows the buffer scrolls
+  // INSIDE the box, windowed around the cursor row (anchored to the tail when
+  // the cursor is at the end — the common case while writing).
+  const maxVisible = maxVisiblePromptRows(termRows);
+  const clippedRows = Math.max(0, lines.length - maxVisible);
+  let windowStart = 0;
+  if (clippedRows > 0) {
+    windowStart = clamp(curRow >= maxVisible ? curRow - maxVisible + 1 : 0, 0, clippedRows);
+  }
+  const visibleLines = clippedRows > 0 ? lines.slice(windowStart, windowStart + maxVisible) : lines;
+  // Hidden-row indicators must reflect WHERE the window sits, not the total:
+  // rows hidden ABOVE the window (↑) and BELOW it (↓) are independent — with
+  // the cursor scrolled back up, the hidden mass is below and the arrow must
+  // say so.
+  const hiddenAbove = clippedRows > 0 ? windowStart : 0;
+  const hiddenBelow = clippedRows > 0 ? clippedRows - windowStart : 0;
 
   const suggestionList =
     suggestions.length > 0
@@ -812,7 +842,9 @@ export function InputBox({
           const hiddenBelow = suggestions.length - (start + windowSize);
           return (
             <Box flexDirection="column">
-              {hiddenAbove > 0 ? <Text dimColor>{`  ↑ ${hiddenAbove} more`}</Text> : null}
+              {hiddenAbove > 0 ? (
+                <Text dimColor>{`  ${t("ui.suggest.moreAbove", { n: hiddenAbove })}`}</Text>
+              ) : null}
               {visible.map((s, i) => {
                 const realIdx = start + i;
                 const sel = realIdx === safeSelected;
@@ -823,7 +855,9 @@ export function InputBox({
                   </Text>
                 );
               })}
-              {hiddenBelow > 0 ? <Text dimColor>{`  ↓ ${hiddenBelow} more`}</Text> : null}
+              {hiddenBelow > 0 ? (
+                <Text dimColor>{`  ${t("ui.suggest.moreBelow", { n: hiddenBelow })}`}</Text>
+              ) : null}
             </Box>
           );
         })()
@@ -833,9 +867,7 @@ export function InputBox({
   // Tells the user their next line is queued (runs after the current turn),
   // rather than starting a competing turn.
   const typeAheadHint =
-    busy && !disabled ? (
-      <Text dimColor>{"  ⏎ queues your next message (runs after the current turn)"}</Text>
-    ) : null;
+    busy && !disabled ? <Text dimColor>{`  ${t("ui.input.queuedHint")}`}</Text> : null;
 
   // One-shot note after a large paste (cleared by the next keypress).
   const pasteNoteLine = pasteNote ? <Text color="#e0af68">{`  ${pasteNote}`}</Text> : null;
@@ -860,45 +892,77 @@ export function InputBox({
   // Whichever dropdown is open (they're mutually exclusive by trigger).
   const dropdown = suggestionList ?? fileList;
 
-  const promptRows = lines.map((line, i) => (
-    <Box key={i}>
-      {i === 0 && vimActive ? (
-        <Text color={vimMode === "normal" ? "yellow" : "green"}>
-          {vimMode === "normal" ? "[N] " : "[I] "}
-        </Text>
-      ) : null}
-      <Text color={frameColor}>{i === 0 ? "> " : "  "}</Text>
-      <CursorLine
-        line={line}
-        // The cursor is only drawn on the row it sits on; other rows render
-        // their text plainly.
-        cursorCol={!disabled && i === curRow ? curCol : -1}
-      />
-    </Box>
-  ));
+  // Official input chrome: ONE rounded top border (╭…╮) above the prompt —
+  // no side/bottom borders, no bottom rule. The prompt pointer is "❯"
+  // (figures.POINTER); continuation rows indent two spaces under it. When the
+  // buffer outgrows maxVisible the window keeps the cursor row on screen.
+  const promptRows = visibleLines.map((line, i) => {
+    const realRow = windowStart + i;
+    return (
+      <Box key={realRow}>
+        {realRow === 0 && vimActive ? (
+          <Text color={vimMode === "normal" ? "yellow" : "green"}>
+            {vimMode === "normal" ? "[N] " : "[I] "}
+          </Text>
+        ) : null}
+        <Text color={frameColor}>{realRow === 0 ? `${POINTER} ` : "  "}</Text>
+        <CursorLine
+          line={line}
+          // The cursor is only drawn on the row it sits on; other rows render
+          // their text plainly.
+          cursorCol={!disabled && realRow === curRow ? curCol : -1}
+        />
+      </Box>
+    );
+  });
 
-  // Full-screen (hideBottomRule): suggestions go ABOVE the box and the bottom
-  // rule is dropped, so the prompt row is the very last rendered line — the
-  // terminal then parks its real cursor exactly on the prompt. Default path:
-  // symmetric box with the suggestion dropdown below.
+  const clippedHint =
+    clippedRows > 0 ? (
+      <>
+        {hiddenAbove > 0 ? (
+          <Text dimColor>{`  ${t("ui.suggest.moreAbove", { n: hiddenAbove })}`}</Text>
+        ) : null}
+        {hiddenBelow > 0 ? (
+          <Text dimColor>{`  ${t("ui.suggest.moreBelow", { n: hiddenBelow })}`}</Text>
+        ) : null}
+      </>
+    ) : null;
+
+  // Classic full-round box (╭…╮ prompt ╰…╯). Drawn as manual rule lines, not a
+  // bordered Box: Ink only renders corner glyphs when the adjacent side
+  // borders exist, so borderStyle="round" with borderLeft/Right=false comes
+  // out as bare ─── rules. Hand-drawing the ╭╮/╰╯ rows reproduces the official
+  // input chrome exactly (sides stay invisible). The full-screen path drops
+  // the bottom rule (hideBottomRule) so the prompt row stays the very last
+  // rendered line and the terminal parks its real cursor on it.
+  const ruleRepeat = Math.max(3, boxWidth - 2);
+  const topRule = <Text color={frameColor}>{`╭${"─".repeat(ruleRepeat)}╮`}</Text>;
+  const bottomRule = <Text color={frameColor}>{`╰${"─".repeat(ruleRepeat)}╯`}</Text>;
+  const promptBox = (
+    <Box flexDirection="column">
+      {topRule}
+      {clippedHint}
+      {promptRows}
+      {!hideBottomRule ? bottomRule : null}
+    </Box>
+  );
+
+  // Full-screen: suggestions go ABOVE the box.
   if (hideBottomRule) {
     return (
       <Box flexDirection="column">
         {dropdown}
         {typeAheadHint}
-        <Text color={frameColor}>{rule}</Text>
-        {promptRows}
+        {promptBox}
       </Box>
     );
   }
 
+  // Default path: bordered box with the suggestion dropdown below (official
+  // renders suggestions under the input, over the footer slot).
   return (
     <Box flexDirection="column">
-      {/* Input box: a top + bottom horizontal rule with the prompt between,
-          matching the reference layout (not a rounded border). */}
-      <Text color={frameColor}>{rule}</Text>
-      {promptRows}
-      <Text color={frameColor}>{rule}</Text>
+      {promptBox}
       {typeAheadHint}
       {pasteNoteLine}
       {dropdown}

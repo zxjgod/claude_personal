@@ -35,3 +35,6 @@ reference/
 
 claude-code-参考标准/
 tsc-output.txt
+
+# review-process temp artifacts (diffs, notes) — never commit
+.review-tmp/

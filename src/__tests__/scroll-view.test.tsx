@@ -5,6 +5,7 @@
 import { render } from "ink-testing-library";
 import { beforeAll, describe, expect, it } from "vitest";
 import { App } from "../tui/App.js";
+import { BLACK_CIRCLE } from "../tui/figures.js";
 import { setLanguage, t } from "../tui/i18n.js";
 import { bottomScrollTop, clampScrollTop, ScrollView, visibleWindow } from "../tui/ScrollView.js";
 import type { TranscriptItem } from "../tui/store.js";
@@ -88,7 +89,7 @@ describe("transcriptToLines", () => {
     expect(lines.some((l) => l.text.includes("streaming now"))).toBe(true);
   });
 
-  it("colors rows by role (P3-16): user blue, tool head accent, body dim", () => {
+  it("styles rows by role (official): user dim, tool head plain + ⏺, body dim", () => {
     const items: TranscriptItem[] = [
       { kind: "user", id: 1, text: "hello" },
       {
@@ -102,9 +103,9 @@ describe("transcriptToLines", () => {
     ];
     const lines = transcriptToLines(items, "thinking…", "reasoning line");
     const user = lines.find((l) => l.text === "> hello")!;
-    expect(user.color).toBe("#7aa2f7"); // palette.user
-    const head = lines.find((l) => l.text.startsWith("● Read"))!;
-    expect(head.color).toBe("#d77757"); // palette.accent
+    expect(user.dim).toBe(true); // official: quiet gray user turns
+    const head = lines.find((l) => l.text.startsWith(`${BLACK_CIRCLE} Read`))!;
+    expect(head.color).toBeUndefined(); // official: no accent tint on the head
     const body = lines.find((l) => l.text.includes("file body"))!;
     expect(body.dim).toBe(true);
     const notice = lines.find((l) => l.text === "system note")!;
@@ -170,10 +171,10 @@ describe("full-screen App scrolling (M25.2 fix)", () => {
     await flush();
     const rows = lastFrame()!.split("\n");
     // The terminal parks the real cursor at the end of the final rendered row,
-    // so the prompt ("> …") must be that row — otherwise the cursor blinks one
-    // line too low (the original bug). The status bar / rules render above it.
+    // so the prompt ("❯ …" under the rounded top border) must be that row —
+    // otherwise the cursor blinks one line too low (the original bug).
     const last = rows[rows.length - 1]!;
-    expect(last.trimStart().startsWith(">")).toBe(true);
+    expect(last.trimStart().startsWith("❯")).toBe(true);
   });
 
   it("PgUp scrolls up to reveal earlier lines; PgDn returns toward bottom", async () => {

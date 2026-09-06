@@ -26,12 +26,12 @@ import { t } from "./i18n.js";
 import { createResolver, DEFAULT_BINDINGS, loadUserBindings } from "./keybindings/index.js";
 import { tailVisualLines } from "./live-window.js";
 import { renderMarkdown } from "./markdown.js";
+import { PromptFooter } from "./PromptFooter.js";
 import { ConfirmPrompt, PermissionPrompt, QuestionPrompt } from "./Prompts.js";
 import { ProviderPicker } from "./ProviderPicker.js";
 import { RetryLine } from "./RetryLine.js";
 import { RewindPicker } from "./RewindPicker.js";
 import { SessionPicker } from "./SessionPicker.js";
-import { StatusBar } from "./StatusBar.js";
 import { StatusLine } from "./StatusLine.js";
 import { StreamingMarkdown } from "./StreamingMarkdown.js";
 import { actionLabel } from "./spinner-core.js";
@@ -40,21 +40,18 @@ import { Toast } from "./Toast.js";
 import { TODO_MAX_ROWS, TodoList } from "./TodoList.js";
 import { ActiveToolCard, CompletedToolCard } from "./ToolCard.js";
 import { TranscriptReview } from "./TranscriptReview.js";
-import { palette } from "./theme.js";
 import { collapsedThinkingLine } from "./transcript-lines.js";
 import { useStoreField, useStoreSelector } from "./useStoreSelector.js";
 import { useTerminalSize } from "./useTerminalSize.js";
 
-/** The orange ● bullet + a markdown body column. Shared by the committed
- *  assistant row and the live streaming region so the handoff at commit time
- *  has no layout shift — the body just stops re-parsing its tail. */
+/**
+ * The assistant text body column. Official rendering has NO bullet on plain
+ * assistant text — ⏺ belongs to tool calls only — so this is now a plain
+ * column wrapper; it exists so the committed row and the live streaming
+ * region share one layout (the body just stops re-parsing its tail at commit).
+ */
 function AssistantMessage({ children }: { children: ReactNode }) {
-  return (
-    <Box>
-      <Text color={palette.accent}>{"● "}</Text>
-      <Box flexDirection="column">{children}</Box>
-    </Box>
-  );
+  return <Box flexDirection="column">{children}</Box>;
 }
 
 /**
@@ -67,26 +64,26 @@ function statusLabel(
   spinner: StoreState["spinner"],
 ): string {
   if (activeTools.length === 1) {
-    const t = activeTools[0]!;
-    return actionLabel(t.name, t.detail);
+    const tool = activeTools[0]!;
+    return actionLabel(tool.name, tool.detail);
   }
   if (activeTools.length > 1) {
-    return `Running ${activeTools.length} tools`;
+    return t("ui.phase.runningTools", { n: activeTools.length });
   }
-  if (spinner === "responding") return "Responding";
-  return "Thinking";
+  if (spinner === "responding") return t("ui.phase.responding");
+  return t("ui.phase.thinking");
 }
 
 function TranscriptRow({ item, expanded }: { item: TranscriptItem; expanded: boolean }) {
   switch (item.kind) {
     case "user":
-      // Role coloring: the user's turn is drawn in a calm blue (marker + text)
-      // so it's instantly distinguishable from the assistant's orange-bulleted
-      // reply as you scroll back through the transcript.
+      // Official rendering: the user's turn is dim gray with a "> " marker —
+      // quiet against the assistant's plain text, so the eye tracks the
+      // answers, not the prompts.
       return (
         <Box>
-          <Text color={palette.user}>{"> "}</Text>
-          <Text color={palette.user}>{item.text}</Text>
+          <Text dimColor>{"> "}</Text>
+          <Text dimColor>{item.text}</Text>
         </Box>
       );
     case "assistant":
@@ -264,7 +261,7 @@ function ActiveToolsRegion({ store }: { store: TuiStore }) {
       {visible.map((t) => (
         <ActiveToolCard key={t.id} name={t.name} detail={t.detail} startedAt={t.startedAt} />
       ))}
-      {hidden > 0 ? <Text dimColor>{`  … +${hidden} 个工具运行中`}</Text> : null}
+      {hidden > 0 ? <Text dimColor>{`  ${t("ui.tools.moreRunning", { n: hidden })}`}</Text> : null}
     </>
   );
 }
@@ -287,16 +284,15 @@ function TodoRegion({ store }: { store: TuiStore }) {
  * never touches this subscription.
  */
 function StatusLineRegion({ store }: { store: TuiStore }) {
-  const { busy, spinner, turnStartedAt, spinnerTokens, toolCount, label } = useStoreSelector(
-    store,
-    selectStatusLine,
-  );
+  const { busy, spinner, turnStartedAt, spinnerTokens, activityAt, toolCount, label } =
+    useStoreSelector(store, selectStatusLine);
   if (!(busy && toolCount === 0 && spinner !== "idle")) return null;
   return (
     <StatusLine
       label={label}
       startedAt={turnStartedAt}
       tokens={spinnerTokens}
+      activityAt={activityAt}
       cycleVerbs={spinner === "thinking"}
     />
   );
@@ -308,6 +304,7 @@ function selectStatusLine(s: StoreState) {
     spinner: s.spinner,
     turnStartedAt: s.turnStartedAt,
     spinnerTokens: s.spinnerTokens,
+    activityAt: s.spinnerActivityAt,
     toolCount: s.activeTools.length,
     label: statusLabel(s.activeTools, s.spinner),
   };
@@ -346,7 +343,7 @@ function InteractionRegion({
   if (overlay) {
     switch (overlay.kind) {
       case "permission":
-        return <PermissionPrompt overlay={overlay} />;
+        return <PermissionPrompt overlay={overlay} store={store} />;
       case "question":
         return <QuestionPrompt overlay={overlay} />;
       case "sessionPicker":
@@ -403,9 +400,6 @@ function HelpRegion({ store }: { store: TuiStore }) {
   );
 }
 
-/** Bottom status bar (model · mode · tokens · ctx gauge · cost). See
- *  StatusBar.tsx — one shared implementation for both app layouts. */
-
 // Global-hotkey resolver: defaults + any user overrides from
 // ~/.claude/keybindings.json. Loaded once at startup (not hot-reloaded).
 const globalResolver = createResolver(DEFAULT_BINDINGS, loadUserBindings());
@@ -446,7 +440,7 @@ function ModeHotkey({ store }: { store: TuiStore }) {
 }
 
 /**
- * The regions between Toast and StatusBar. Subscribes to `reviewing` only.
+ * The regions between Toast and PromptFooter. Subscribes to `reviewing` only.
  * When the transcript pager is open it REPLACES the live/input regions (the
  * InputBox must unmount so its ↑/↓ history keys don't fight the pager) — but
  * TranscriptRegion stays MOUNTED either way: Ink's <Static> restarts its
@@ -568,7 +562,7 @@ export function App({
         onRewind={onRewind}
         onImagePaste={onImagePaste}
       />
-      <StatusBar store={store} />
+      <PromptFooter store={store} />
     </Box>
   );
 }
