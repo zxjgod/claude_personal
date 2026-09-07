@@ -17,7 +17,7 @@ import { terminalColumns, truncateVisual, visualWidth } from "./terminal-width.j
 import { toolResultSummary } from "./tool-result-summary.js";
 
 // Windows-safe glyphs (see constants/figures.ts in the reference source).
-const BLACK_CIRCLE = "●"; // assistant message / tool-start bullet
+const BLACK_CIRCLE = "●"; // tool-start bullet (plain assistant text has none)
 const BRANCH = "⎿"; // tool-result continuation
 const CLAUDE_ORANGE = chalk.rgb(215, 119, 87);
 
@@ -84,17 +84,11 @@ export class StreamingRenderer {
       if (this.wroteAnything) process.stdout.write("\n");
       return;
     }
-    const rendered = renderMarkdown(trimmed);
-    const prefixed = prefixFirstLine(rendered, CLAUDE_ORANGE(BLACK_CIRCLE) + " ", "  ");
-    process.stdout.write(prefixed + "\n");
+    // Official: plain assistant text carries NO ● bullet (that glyph belongs
+    // to tool calls) — matches the Ink path (transcript-lines.ts).
+    process.stdout.write(renderMarkdown(trimmed) + "\n");
     this.wroteAnything = true;
   }
-}
-
-/** Prefix the first line of `text` with `head` and subsequent lines with `cont`. */
-function prefixFirstLine(text: string, head: string, cont: string): string {
-  const lines = text.split("\n");
-  return lines.map((line, i) => (i === 0 ? head + line : cont + line)).join("\n");
 }
 
 // --- Welcome screen ---

@@ -87,16 +87,18 @@ describe("Batch B — inline reverse-i-search (ctrl+r)", () => {
     const submitted: string[] = [];
     const history = ["npm test", "npm run build", "git status"];
     // Ctrl+R arrives as a hotkey → store.dispatchInputAction; drive the same
-    // entry point the hotkey uses (pendingAction prop) directly.
-    const two = render(
-      <InputBox
-        commands={[]}
-        disabled={false}
-        onSubmit={(v) => submitted.push(v)}
-        history={history}
-        pendingAction={{ kind: "historySearch", seq: 1 }}
-      />,
-    );
+    // entry point the hotkey uses (pendingAction prop) directly. The action
+    // must arrive AFTER mount — a mount-time pendingAction is deliberately
+    // ignored (remounts must not replay the store's last consumed action).
+    const baseProps = {
+      commands: [] as never[],
+      disabled: false,
+      onSubmit: (v: string) => submitted.push(v),
+      history,
+    };
+    const two = render(<InputBox {...baseProps} />);
+    await flush();
+    two.rerender(<InputBox {...baseProps} pendingAction={{ kind: "historySearch", seq: 1 }} />);
     await flush();
     expect(two.lastFrame()).toContain("reverse-i-search");
     two.stdin.write("npm");
@@ -111,15 +113,15 @@ describe("Batch B — inline reverse-i-search (ctrl+r)", () => {
 
   it("Esc accepts the match into the buffer without submitting", async () => {
     const submitted: string[] = [];
-    const { lastFrame, stdin, unmount } = render(
-      <InputBox
-        commands={[]}
-        disabled={false}
-        onSubmit={(v) => submitted.push(v)}
-        history={["alpha", "beta gamma"]}
-        pendingAction={{ kind: "historySearch", seq: 1 }}
-      />,
-    );
+    const baseProps = {
+      commands: [] as never[],
+      disabled: false,
+      onSubmit: (v: string) => submitted.push(v),
+      history: ["alpha", "beta gamma"],
+    };
+    const { lastFrame, stdin, rerender, unmount } = render(<InputBox {...baseProps} />);
+    await flush();
+    rerender(<InputBox {...baseProps} pendingAction={{ kind: "historySearch", seq: 1 }} />);
     await flush();
     stdin.write("beta");
     await flush();
@@ -131,17 +133,97 @@ describe("Batch B — inline reverse-i-search (ctrl+r)", () => {
   });
 
   it("reports empty history without opening", async () => {
-    const { lastFrame, unmount } = render(
+    const baseProps = {
+      commands: [] as never[],
+      disabled: false,
+      onSubmit: () => {},
+      history: [] as string[],
+    };
+    const { lastFrame, rerender, unmount } = render(<InputBox {...baseProps} />);
+    await flush();
+    rerender(<InputBox {...baseProps} pendingAction={{ kind: "historySearch", seq: 1 }} />);
+    await flush();
+    expect(lastFrame()).toContain("nothing to search");
+    unmount();
+  });
+});
+
+describe("Review fixes — ghost actions & ↑↓ priority (2026-09-07)", () => {
+  beforeEach(() => setLanguage("en"));
+
+  it("a mount-time pendingAction is NOT replayed (ghost-action regression)", async () => {
+    // Production: the store's inputAction survives across overlay open/close,
+    // which unmounts/remounts InputBox. A mount-time pendingAction is residue,
+    // not a fresh dispatch — the component must ignore it.
+    const props = {
+      commands: [] as never[],
+      disabled: false,
+      onSubmit: () => {},
+      initialDraft: { text: "keep this draft", cursor: 15 },
+    };
+    const first = render(<InputBox {...props} />);
+    await flush();
+    // Dispatch the clear action post-mount (as the hotkey would): fires once.
+    first.rerender(<InputBox {...props} pendingAction={{ kind: "clear", seq: 1 }} />);
+    await flush();
+    expect(first.lastFrame()!).not.toContain("keep this draft");
+    first.unmount();
+    // Re-edit, then remount with the SAME residue still sitting in the prop —
+    // the old bug re-ran `clear` here and wiped the new draft.
+    const second = render(
+      <InputBox
+        {...props}
+        initialDraft={{ text: "second draft", cursor: 12 }}
+        pendingAction={{ kind: "clear", seq: 1 }}
+      />,
+    );
+    await flush();
+    expect(second.lastFrame()).toContain("second draft");
+    second.unmount();
+  });
+
+  it("↑ moves within a multi-line draft before touching history", async () => {
+    const { lastFrame, stdin, unmount } = render(
       <InputBox
         commands={[]}
         disabled={false}
         onSubmit={() => {}}
-        history={[]}
-        pendingAction={{ kind: "historySearch", seq: 1 }}
+        history={["old-command"]}
+        initialDraft={{ text: "first line\nsecond line", cursor: 22 }}
       />,
     );
     await flush();
-    expect(lastFrame()).toContain("nothing to search");
+    stdin.write("\x1b[A"); // ↑ — cursor is on row 1, must stay in the draft
+    await flush();
+    expect(lastFrame()).toContain("second line");
+    expect(lastFrame()).not.toContain("old-command");
+    // Cursor is now on row 0: a second ↑ can't move → history takes over.
+    stdin.write("\x1b[A");
+    await flush();
+    expect(lastFrame()).toContain("old-command");
+    unmount();
+  });
+
+  it("mid-search ctrl+r cycles instead of resetting the query", async () => {
+    const baseProps = {
+      commands: [] as never[],
+      disabled: false,
+      onSubmit: () => {},
+      history: ["npm test", "npm run build", "npm run lint"],
+    };
+    const { lastFrame, stdin, rerender, unmount } = render(<InputBox {...baseProps} />);
+    await flush();
+    rerender(<InputBox {...baseProps} pendingAction={{ kind: "historySearch", seq: 1 }} />);
+    await flush();
+    stdin.write("npm run");
+    await flush();
+    expect(lastFrame()).toContain("npm run lint"); // newest match first
+    // The hotkey re-dispatch (seq 2) arrives as the in-search ctrl+r cycles.
+    stdin.write("\x12"); // ctrl+r inside the search box
+    rerender(<InputBox {...baseProps} pendingAction={{ kind: "historySearch", seq: 2 }} />);
+    await flush();
+    // Query must survive the re-dispatch; idx advanced to the older match.
+    expect(lastFrame()).toContain("npm run build");
     unmount();
   });
 });

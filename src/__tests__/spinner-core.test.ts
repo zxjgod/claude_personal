@@ -84,10 +84,16 @@ describe("glyphAt", () => {
   });
 
   it("plays the official platform-forked charset forwards then backwards", () => {
-    // 6 glyphs + 6 reversed = 12 frames; the reverse half is NOT a repeat.
-    // Official getDefaultCharacters(): darwin plays ✳, other platforms
-    // substitute `*` (it renders poorly off macOS); Ghostty also swaps ✽→*.
-    expect(SPINNER_FRAMES.length).toBe(12);
+    // Official cadence: 6 forward + 5 reversed (first element dropped) = 11
+    // frames; the peak ✽ plays ONCE per cycle — the naive full reverse
+    // duplicated both endpoints and visibly stalled the animation. Platform
+    // fork per official getDefaultCharacters(): darwin plays ✳, other
+    // platforms substitute `*` (it renders poorly off macOS); Ghostty also
+    // swaps ✽→*.
+    expect(SPINNER_FRAMES.length).toBe(11);
+    if (process.env.TERM !== "xterm-ghostty") {
+      expect(SPINNER_FRAMES.filter((f) => f === "✽").length).toBe(1);
+    }
     if (process.platform === "darwin") {
       expect(SPINNER_FRAMES).toContain("✳");
     } else {

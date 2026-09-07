@@ -68,6 +68,7 @@ import {
 } from "./store.js";
 import { StreamBuffer } from "./stream-buffer.js";
 import { truncateVisual } from "./terminal-width.js";
+import { applyTheme } from "./theme.js";
 
 // Debug monitoring - enabled via DEBUG_STREAM env var
 const DEBUG_STREAM = process.env.DEBUG_STREAM;
@@ -114,6 +115,7 @@ async function runTurn(
   askUser: AskUserFn,
   askUserQuestion: (q: UserQuestion) => Promise<string[] | null>,
   queue: InputQueue,
+  prepareQueuedLine: (text: string) => Promise<ContentBlock[] | null>,
 ): Promise<void> {
   // Initialize debug monitoring if enabled via DEBUG_STREAM env var
   if (DEBUG_STREAM && DEBUG_STREAM !== "off") {
@@ -177,16 +179,20 @@ async function runTurn(
     summarizeToolBatch: deps.summarizeToolBatch,
     // M36: type-ahead. The loop drains queued input at each turn boundary and
     // continues the SAME turn with it (kernel §9), so a message typed while the
-    // agent works is picked up without waiting for the turn to end. The TUI
-    // echoes the queued line at push time (see Root.onSubmit); the loop
-    // injects it into `messages` (opening its checkpoint turn boundary there)
-    // so the model actually sees it. The drain also re-syncs the status bar's
-    // "queued N" badge.
-    drainQueuedInput: () => {
+    // agent works is picked up without waiting for the turn to end. Each line
+    // goes through prepareQueuedLine (echo at INJECTION time, `!`/`#` prefix
+    // dispatch, chip expansion — see dispatchQueuedLine); null = handled
+    // locally, nothing to inject. The drain also re-syncs the "queued N" badge.
+    drainQueuedInput: async () => {
       const drained = queue.drain();
+      const out: ContentBlock[][] = [];
+      for (const text of drained) {
+        const blocks = await prepareQueuedLine(text);
+        if (blocks !== null) out.push(blocks);
+      }
       store.setQueuedInputs(queue.size);
       store.setQueuedMessages(queue.snapshot());
-      return drained;
+      return out;
     },
     // P0-4: live retry countdown — the loop reports its pending backoff before
     // sleeping; the first event of the retried call clears it (see the loop).
@@ -551,6 +557,55 @@ async function runProviderPicker(store: TuiStore, deps: TuiDeps): Promise<void> 
 }
 
 /**
+ * M36 follow-up drain, shared by the normal submit path and bash mode. The
+ * agent loop already drains the queue at ITS turn boundaries; this catches
+ * messages queued after the loop's final drain but before busy flipped off,
+ * running each batch as a follow-up turn. Defensive bound: every queued line
+ * costs a full LLM turn, so an unbounded drain lets type-ahead stack
+ * unlimited back-to-back turns — 10 is already pathological; beyond that,
+ * drop with a notice rather than spin.
+ */
+const MAX_FOLLOWUP_TURNS = 10;
+
+async function drainFollowUpTurns(
+  store: TuiStore,
+  deps: TuiDeps,
+  sessionId: () => string,
+  controller: AbortController,
+  askUser: AskUserFn,
+  askUserQuestion: (q: UserQuestion) => Promise<string[] | null>,
+  queue: InputQueue,
+  buildUserContent: (text: string) => ContentBlock[],
+): Promise<void> {
+  const prepare = queuedLinePreparer(store, deps, sessionId, buildUserContent);
+  let followUps = 0;
+  while (queue.hasPending && followUps < MAX_FOLLOWUP_TURNS) {
+    followUps++;
+    for (const text of queue.drain()) {
+      // Echo + prefix dispatch happen at INJECTION time (dispatchQueuedLine);
+      // `#note` lines return null (handled locally, no model turn).
+      const blocks = await prepare(text);
+      if (blocks === null) continue;
+      // P0-3: queued turns are rewindable too (tagged boundary).
+      const followUpMsg: Message = { role: "user", content: blocks };
+      beginUserTurn(sessionId(), followUpMsg);
+      deps.messages.push(followUpMsg);
+    }
+    store.setQueuedInputs(queue.size);
+    store.setQueuedMessages(queue.snapshot());
+    await runTurn(store, deps, controller, askUser, askUserQuestion, queue, prepare);
+  }
+  if (queue.hasPending) {
+    const dropped = queue.drain();
+    store.setQueuedInputs(0);
+    store.setQueuedMessages([]);
+    store.addNotice(
+      `  ${t("ui.queue.limitDropped", { max: MAX_FOLLOWUP_TURNS, n: dropped.length })}`,
+    );
+  }
+}
+
+/**
  * Drive the interactive /help command palette: list every registered slash
  * command in a scrollable, arrow-navigable overlay. Resolves with the chosen
  * command name (without the slash) or null on cancel. The caller dispatches the
@@ -566,44 +621,71 @@ async function runCommandPicker(store: TuiStore, deps: TuiDeps): Promise<string 
 }
 
 /**
+ * Execute a user-invoked shell command for `!` bash mode (ungated — the USER
+ * typed it), echo the output as dim lines (official UserBashOutputMessage
+ * block), and return the captured output for context injection. Shared by the
+ * idle path (runBashMode) and queued-line dispatch (dispatchQueuedLine).
+ */
+async function runShellForBashMode(
+  store: TuiStore,
+  deps: TuiDeps,
+  sessionId: () => string,
+  command: string,
+): Promise<string> {
+  const shellName = process.platform === "win32" ? "powershell" : "bash";
+  const shell =
+    deps.tools.find((x) => x.name === shellName) ?? deps.tools.find((x) => x.name === "bash");
+  if (!shell) {
+    store.addNotice("  ⎿ no shell tool available");
+    return "(no shell tool available)";
+  }
+  store.addNotice(`  ${t("ui.bash.running")}`);
+  // Minimal tool context: bash mode is user-invoked, so no permission hook
+  // is threaded — checkPermission stays absent and the tool runs ungated.
+  const r = await shell.call(
+    { command, description: "bash mode" } as never,
+    {
+      workspaceRoot: deps.getWorkspaceRoot?.() ?? deps.workspaceRoot,
+      sessionId: sessionId(),
+      permissionMode: store.getPermissionMode(),
+    } as never,
+  );
+  const output = r.error ? `error: ${r.error}` : (r.content ?? "").trim() || "(no output)";
+  for (const line of output.split("\n").slice(0, 20)) store.addNotice(`  ${line}`);
+  return output;
+}
+
+/**
  * B1: `!command` bash mode. Runs the shell DIRECTLY (the user invoked it, so
  * no permission gate), echoes input + output into the transcript, injects the
  * output into context, and runs a normal agent turn so Claude responds to it
  * (official respondToBashCommands behavior). Busy turns queue instead — the
  * onSubmit dispatcher only routes here while idle.
+ *
+ * The response turn is wired EXACTLY like a normal turn: the controller lives
+ * in turnControllerRef (so Ctrl+C/Esc interrupt it instead of falling through
+ * to the idle exit path), SIGINT aborts it, the MAIN input queue is drained
+ * at turn boundaries and via follow-ups (messages typed during a bash turn
+ * used to vanish into a throwaway queue), and permission prompts go through
+ * the real askUser — only the shell call itself is ungated.
  */
 async function runBashMode(
   store: TuiStore,
   deps: TuiDeps,
   sessionId: () => string,
   command: string,
+  turnControllerRef: RefObject<AbortController | null>,
+  queue: InputQueue,
+  askUser: AskUserFn,
+  askUserQuestion: (q: UserQuestion) => Promise<string[] | null>,
+  buildUserContent: (text: string) => ContentBlock[],
 ): Promise<void> {
   store.addUserMessage(command, { bash: true });
-  const shellName = process.platform === "win32" ? "powershell" : "bash";
-  const shell =
-    deps.tools.find((x) => x.name === shellName) ?? deps.tools.find((x) => x.name === "bash");
-  if (!shell) {
-    store.addNotice("  ⎿ no shell tool available");
-    return;
-  }
   store.setBusy(true);
   store.setSpinner("tool");
   store.startTurnClock();
   try {
-    store.addNotice(`  ${t("ui.bash.running")}`);
-    // Minimal tool context: bash mode is user-invoked, so no permission hook
-    // is threaded — checkPermission stays absent and the tool runs ungated.
-    const r = await shell.call(
-      { command, description: "bash mode" } as never,
-      {
-        workspaceRoot: deps.getWorkspaceRoot?.() ?? deps.workspaceRoot,
-        sessionId: sessionId(),
-        permissionMode: deps.permissionMode,
-      } as never,
-    );
-    const output = r.error ? `error: ${r.error}` : (r.content ?? "").trim() || "(no output)";
-    // Echo the output as dim lines (official UserBashOutputMessage block).
-    for (const line of output.split("\n").slice(0, 20)) store.addNotice(`  ${line}`);
+    const output = await runShellForBashMode(store, deps, sessionId, command);
     // Context injection + Claude auto-response: a normal user turn whose text
     // wraps the shell exchange in the official bash-stdout tags.
     const userMsg: Message = {
@@ -618,14 +700,26 @@ async function runBashMode(
     beginUserTurn(sessionId(), userMsg);
     deps.messages.push(userMsg);
     const controller = new AbortController();
-    await runTurn(
-      store,
-      deps,
-      controller,
-      async () => true,
-      async () => [],
-      new InputQueue(),
-    );
+    turnControllerRef.current = controller;
+    const onSigint = () => controller.abort(t("ui.abort.user"));
+    process.on("SIGINT", onSigint);
+    const prepare = queuedLinePreparer(store, deps, sessionId, buildUserContent);
+    try {
+      await runTurn(store, deps, controller, askUser, askUserQuestion, queue, prepare);
+      await drainFollowUpTurns(
+        store,
+        deps,
+        sessionId,
+        controller,
+        askUser,
+        askUserQuestion,
+        queue,
+        buildUserContent,
+      );
+    } finally {
+      turnControllerRef.current = null;
+      process.removeListener("SIGINT", onSigint);
+    }
   } catch (err) {
     store.addNotice(`⎿ ${formatCliError(err)}`);
     store.setBusy(false);
@@ -648,6 +742,59 @@ function runMemoryMode(store: TuiStore, deps: TuiDeps, note: string): void {
   } catch (err) {
     store.addNotice(`  ⎿ ${formatCliError(err)}`);
   }
+}
+
+/**
+ * Dispatch ONE queued line at injection time (review 2026-09-07). Two
+ * invariants live here:
+ *
+ * 1. ECHO AT INJECTION, not at queue time. A queued line recalled (↑) or
+ *    dropped (follow-up cap) must leave no ghost user message the model never
+ *    saw — and the transcript stays in lockstep with `messages` (rewind's
+ *    data source). Until injection the line exists only in the dim
+ *    QueuedMessages area above the input box (official behavior).
+ * 2. PREFIXES SURVIVE QUEUEING. A queued `!cmd` executes the shell at the
+ *    drain point and injects the official <bash-input>/<bash-stdout> wrap; a
+ *    queued `#note` appends to CLAUDE.md and never reaches the model.
+ *    (Previously every queued line went to the model as literal text —
+ *    "!ls" was never executed.)
+ *
+ * Returns the text to inject into `messages`, or null when the line was
+ * handled locally with no model turn (`#note`).
+ *
+ * Exported for tests (queued-dispatch.test.ts).
+ */
+export async function dispatchQueuedLine(
+  store: TuiStore,
+  deps: TuiDeps,
+  sessionId: () => string,
+  text: string,
+): Promise<string | null> {
+  if (text.startsWith("!") && text.length > 1) {
+    const command = text.slice(1).trim();
+    store.addUserMessage(command, { bash: true });
+    const output = await runShellForBashMode(store, deps, sessionId, command);
+    return `<bash-input>${command}</bash-input>\n<bash-stdout>\n${output.slice(0, 4000)}\n</bash-stdout>`;
+  }
+  if (text.startsWith("#") && text.trim().length > 1) {
+    runMemoryMode(store, deps, text.slice(1).trim()); // echoes with the # marker itself
+    return null;
+  }
+  store.addUserMessage(text);
+  return text;
+}
+
+/** Compose dispatchQueuedLine + chip expansion into runTurn's queue preparer. */
+function queuedLinePreparer(
+  store: TuiStore,
+  deps: TuiDeps,
+  sessionId: () => string,
+  buildUserContent: (text: string) => ContentBlock[],
+): (text: string) => Promise<ContentBlock[] | null> {
+  return async (text) => {
+    const injected = await dispatchQueuedLine(store, deps, sessionId, text);
+    return injected === null ? null : buildUserContent(injected);
+  };
 }
 
 /**
@@ -933,12 +1080,14 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
 
       // M36 type-ahead: if the agent is busy, queue this message instead of
       // starting a competing turn. The running loop drains the queue at its
-      // next turn boundary and continues with it (kernel §9). We echo the line
-      // now so the user sees it captured; the loop injects it into `messages`
-      // when it drains. Slash commands typed while busy are queued as plain
+      // next turn boundary and continues with it (kernel §9). NO transcript
+      // echo here — the line shows only in the dim QueuedMessages area until
+      // the drain injects it (dispatchQueuedLine echoes at THAT moment), so a
+      // recalled (↑) or capped/dropped line leaves no ghost message the model
+      // never saw, and the transcript never diverges from `messages` (rewind's
+      // data source). Slash commands typed while busy are queued as plain
       // follow-up text (run them when idle for local handling).
       if (store.getSnapshot().busy) {
-        store.addUserMessage(value);
         store.addNotice(`  ${t("ui.queue.queued")}`);
         queueRef.current.push(value);
         store.setQueuedInputs(queueRef.current.size);
@@ -951,7 +1100,17 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
       // transcript, injects the output into context, and lets Claude respond
       // to it in a normal turn (official `respondToBashCommands` behavior).
       if (value.startsWith("!") && value.length > 1) {
-        void runBashMode(store, deps, sessionId, value.slice(1).trim());
+        void runBashMode(
+          store,
+          deps,
+          sessionId,
+          value.slice(1).trim(),
+          turnControllerRef,
+          queueRef.current,
+          askUser,
+          askUserQuestion,
+          buildUserContent,
+        );
         return;
       }
 
@@ -1074,37 +1233,29 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
         const onSigint = () => controller.abort(t("ui.abort.user"));
         process.on("SIGINT", onSigint);
         try {
-          await runTurn(store, deps, controller, askUser, askUserQuestion, queueRef.current);
+          const prepare = queuedLinePreparer(store, deps, sessionId, buildUserContent);
+          await runTurn(
+            store,
+            deps,
+            controller,
+            askUser,
+            askUserQuestion,
+            queueRef.current,
+            prepare,
+          );
           // M36 race window: a message queued AFTER the loop's final drain (but
           // before busy flipped off) is still pending here. The loop already
-          // ended, so drain it ourselves and run it as a follow-up turn. The
-          // line was already echoed at queue time; just feed it to the model.
-          // Defensive bound: every queued line costs a full LLM turn, so an
-          // unbounded drain lets type-ahead (or scripted stdin) stack unlimited
-          // back-to-back turns. 10 consecutive follow-ups is already
-          // pathological; beyond that, drop with a notice rather than spin.
-          const MAX_FOLLOWUP_TURNS = 10;
-          let followUps = 0;
-          while (queueRef.current.hasPending && followUps < MAX_FOLLOWUP_TURNS) {
-            followUps++;
-            for (const text of queueRef.current.drain()) {
-              // P0-3: queued turns are rewindable too (tagged boundary).
-              const followUpMsg: Message = { role: "user", content: buildUserContent(text) };
-              beginUserTurn(sessionId(), followUpMsg);
-              deps.messages.push(followUpMsg);
-            }
-            store.setQueuedInputs(queueRef.current.size);
-            store.setQueuedMessages(queueRef.current.snapshot());
-            await runTurn(store, deps, controller, askUser, askUserQuestion, queueRef.current);
-          }
-          if (queueRef.current.hasPending) {
-            const dropped = queueRef.current.drain();
-            store.setQueuedInputs(0);
-            store.setQueuedMessages([]);
-            store.addNotice(
-              `  ${t("ui.queue.limitDropped", { max: MAX_FOLLOWUP_TURNS, n: dropped.length })}`,
-            );
-          }
+          // ended, so drain it ourselves and run it as a follow-up turn.
+          await drainFollowUpTurns(
+            store,
+            deps,
+            sessionId,
+            controller,
+            askUser,
+            askUserQuestion,
+            queueRef.current,
+            buildUserContent,
+          );
         } catch (err) {
           store.addNotice(`⎿ ${formatCliError(err)}`);
           store.setBusy(false);
@@ -1232,6 +1383,10 @@ export function InterruptHotkey({
 
 /** Launch the Ink TUI. Resolves when the user exits. */
 export function runTui(deps: TuiDeps): Promise<void> {
+  // /theme persists via modelConfig.options (config file) — apply the saved
+  // choice before the first frame so the palette is right from the start.
+  const savedTheme = deps.modelConfig.options?.theme;
+  if (typeof savedTheme === "string") applyTheme(savedTheme);
   // M25.2: in full-screen mode we switch to the alternate screen buffer (DEC
   // 1049) so the layout owns the whole viewport and the main-screen scrollback
   // is left untouched on exit. CRITICAL: every exit path must restore the main
@@ -1250,9 +1405,14 @@ export function runTui(deps: TuiDeps): Promise<void> {
   if (deps.fullscreen) {
     process.stdout.write(ENTER_ALT);
     // Belt-and-suspenders: restore on any abrupt exit so the terminal isn't
-    // left on the alternate screen.
+    // left on the alternate screen. SIGTERM needs the default termination
+    // RE-INSTATED after restoring — with a listener attached Node cancels the
+    // default, so a bare restore would make `kill <pid>` a no-op.
     process.once("exit", restoreScreen);
-    process.once("SIGTERM", restoreScreen);
+    process.once("SIGTERM", () => {
+      restoreScreen();
+      process.exit(143); // 128 + SIGTERM
+    });
   }
 
   // In full-screen mode the layout is the whole viewport (the banner becomes the

@@ -575,7 +575,7 @@ export async function* agentLoop(
         continue;
       }
 
-      if (injectQueuedInput(messages, drainQueuedInput, openTurnBoundary)) {
+      if (await injectQueuedInput(messages, drainQueuedInput, openTurnBoundary)) {
         state = {
           ...state,
           notificationContinuations: 0,
@@ -701,7 +701,7 @@ export async function* agentLoop(
     }
 
     yield { type: "tool_results", results: toolResults };
-    injectQueuedInput(messages, drainQueuedInput, openTurnBoundary);
+    await injectQueuedInput(messages, drainQueuedInput, openTurnBoundary);
     // M41: merge any background completions that landed while the tools ran
     // into history now — the next model call sees them alongside the tool
     // results (mirrors the reference: notification rides the next user-side
@@ -740,17 +740,22 @@ function estimateContextTokens(messages: Message[], baseline: LoopState["usageBa
 /**
  * Inject queued type-ahead input as follow-up user messages (M36, kernel §9).
  * Each message opens a checkpoint boundary (P0-3) via the optional tag hook.
+ * Async because the TUI's drain executes queued `!cmd` shell lines at the
+ * injection point; items may be pre-built ContentBlock[] (expanded chips).
  */
-function injectQueuedInput(
+async function injectQueuedInput(
   messages: Message[],
-  drain?: () => string[],
+  drain?: LoopOptions["drainQueuedInput"],
   openBoundary?: (msg: Message) => void,
-): boolean {
+): Promise<boolean> {
   if (!drain) return false;
-  const queued = drain();
+  const queued = await drain();
   if (queued.length === 0) return false;
-  for (const text of queued) {
-    const msg: Message = { role: "user", content: [{ type: "text", text }] };
+  for (const item of queued) {
+    const msg: Message = {
+      role: "user",
+      content: typeof item === "string" ? [{ type: "text", text: item }] : item,
+    };
     openBoundary?.(msg);
     messages.push(msg);
   }

@@ -52,10 +52,11 @@ function colorizeLine(line: string): React.ReactNode {
   return <Text>{line}</Text>;
 }
 
-/** Tool status glyph: gray blinking while executing, green static when done.
+/** Tool status glyph: gray blinking while executing, green static when done,
+ *  RED when the tool failed (official three-state dot: dim→green/red).
  *  The blink is decorative — under reduced motion (CCR_REDUCED_MOTION=1) the
  *  dot stays a static gray instead. */
-function ToolStatusGlyph({ isActive }: { isActive: boolean }) {
+function ToolStatusGlyph({ isActive, isError }: { isActive: boolean; isError?: boolean }) {
   const [flash, setFlash] = useState(false);
   const reduced = isReducedMotion();
 
@@ -69,7 +70,7 @@ function ToolStatusGlyph({ isActive }: { isActive: boolean }) {
   if (isActive) {
     return <Text color={flash ? STATUS_GRAY_BRIGHT : STATUS_GRAY}>{BLACK_CIRCLE}</Text>;
   } else {
-    return <Text color={STATUS_GREEN}>{BLACK_CIRCLE}</Text>;
+    return <Text color={isError ? palette.error : STATUS_GREEN}>{BLACK_CIRCLE}</Text>;
   }
 }
 
@@ -124,10 +125,10 @@ export function CompletedToolCard({
   expanded: boolean;
 }) {
   // Official head: `⏺ Name(detail)` — colored glyph + BOLD plain-color name
-  // (the head itself carries no accent tint).
+  // (the head itself carries no accent tint). Failed tools get the red dot.
   const title = (
     <Box>
-      <ToolStatusGlyph isActive={false} />
+      <ToolStatusGlyph isActive={false} isError={!!result.error} />
       <Text bold> {capitalize(result.toolName)}</Text>
       {detail ? <Text dimColor>({truncate(detail, 100)})</Text> : null}
     </Box>
@@ -208,16 +209,18 @@ function StructuredError({ error }: { error: string }) {
   return (
     <Box flexDirection="column" paddingLeft={2}>
       <Box>
-        <Text dimColor>{`  ${TOOL_RESULT} `}</Text>
+        {/* Official branch geometry: ⎿ + two spaces, content at column 5 —
+            matches the normal result body above (was 2+⎿+1, off by two). */}
+        <Text dimColor>{`${TOOL_RESULT}  `}</Text>
         <Text color={errorColor} bold>
           {parsed.type}
         </Text>
       </Box>
-      <Box paddingLeft={4}>
+      <Box paddingLeft={3}>
         <Text>{parsed.message}</Text>
       </Box>
       {stack && (
-        <Box flexDirection="column" paddingLeft={4}>
+        <Box flexDirection="column" paddingLeft={3}>
           {stack.map((line, i) => (
             <Text key={i} dimColor>
               {line.trim()}

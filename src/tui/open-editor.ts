@@ -35,8 +35,14 @@ function pickEditor(): string {
  * fuse kill reports `ok: false`, and the temp file is then KEPT at
  * `filePath` so its content is recoverable. NEVER rejects — callers
  * fire-and-forget, and an unhandled rejection here would crash the TUI.
+ *
+ * `opts.keepFile`: skip the post-success cleanup — for callers (editInEditor)
+ * that must read the edited content back before the temp file is deleted.
  */
-export async function openInEditor(lines: string[]): Promise<{ ok: boolean; filePath: string }> {
+export async function openInEditor(
+  lines: string[],
+  opts?: { keepFile?: boolean },
+): Promise<{ ok: boolean; filePath: string }> {
   const filePath = path.join(os.tmpdir(), `ccr-transcript-${Date.now()}.txt`);
   try {
     fs.writeFileSync(filePath, `${lines.join("\n")}\n`, "utf-8");
@@ -115,8 +121,9 @@ export async function openInEditor(lines: string[]): Promise<{ ok: boolean; file
     }
     // Clean up only after a successful run. On failure the file stays at
     // `filePath` (reported to the user by the caller) — deleting it would
-    // destroy the only recoverable copy after a fuse kill.
-    if (ok) {
+    // destroy the only recoverable copy after a fuse kill. `keepFile` callers
+    // (editInEditor) own the file's lifetime: they read it back, then delete.
+    if (ok && !opts?.keepFile) {
       try {
         fs.rmSync(filePath, { force: true });
       } catch {
@@ -135,14 +142,21 @@ export async function openInEditor(lines: string[]): Promise<{ ok: boolean; file
  * file is kept for recovery.
  */
 export async function editInEditor(draft: string): Promise<{ ok: boolean; text: string }> {
-  const { ok, filePath } = await openInEditor(draft.split("\n"));
+  // keepFile: openInEditor's success cleanup would delete the temp file
+  // BEFORE we read it back — that ordering bug silently discarded every edit.
+  const { ok, filePath } = await openInEditor(draft.split("\n"), { keepFile: true });
   if (!ok) return { ok: false, text: draft };
   try {
     const edited = fs.readFileSync(filePath, "utf-8");
-    // openInEditor deletes the temp file on ok — read raced nothing; strip
-    // the single trailing newline it appended on write.
+    // Strip the single trailing newline openInEditor appended on write.
     return { ok: true, text: edited.replace(/\r\n/g, "\n").replace(/\n$/, "") };
   } catch {
     return { ok: true, text: draft };
+  } finally {
+    try {
+      fs.rmSync(filePath, { force: true });
+    } catch {
+      /* best-effort cleanup */
+    }
   }
 }

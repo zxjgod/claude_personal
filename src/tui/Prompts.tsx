@@ -19,7 +19,10 @@ import type { Overlay, TuiStore } from "./store.js";
 import { terminalColumns } from "./terminal-width.js";
 import { palette } from "./theme.js";
 
-const ACCENT = palette.permission;
+// Read at render time (see theme.ts header): module-scope snapshots freeze the dark palette.
+function accent(): string {
+  return palette.permission;
+}
 
 /** Risk level visual indicators */
 const RISK_LEVELS = {
@@ -95,10 +98,10 @@ export function PermissionPrompt({
   return (
     <Box flexDirection="column">
       {/* Official modal divider: a ▔ rule in permission blue above the dialog. */}
-      <Text color={ACCENT}>{HORIZONTAL_BAR.repeat(Math.max(20, terminalColumns() - 1))}</Text>
-      <Box flexDirection="column" borderStyle="round" borderColor={ACCENT} paddingX={1}>
+      <Text color={accent()}>{HORIZONTAL_BAR.repeat(Math.max(20, terminalColumns() - 1))}</Text>
+      <Box flexDirection="column" borderStyle="round" borderColor={accent()} paddingX={1}>
         <Box>
-          <Text bold color={ACCENT}>
+          <Text bold color={accent()}>
             {overlay.header}
           </Text>
           {riskLevel && (
@@ -120,7 +123,7 @@ export function PermissionPrompt({
         <Box marginTop={1} flexDirection="column">
           <Text>{t("ui.permission.proceed")}</Text>
           {options.map((opt, i) => (
-            <Text key={opt.value} color={i === selected ? ACCENT : undefined}>
+            <Text key={opt.value} color={i === selected ? accent() : undefined}>
               {i === selected ? "❯ " : "  "}
               {i + 1}. {opt.label}
             </Text>
@@ -172,15 +175,15 @@ export function QuestionPrompt({ overlay }: { overlay: Extract<Overlay, { kind: 
   });
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={ACCENT} paddingX={1}>
-      <Text bold color={ACCENT}>
+    <Box flexDirection="column" borderStyle="round" borderColor={accent()} paddingX={1}>
+      <Text bold color={accent()}>
         {overlay.header}
       </Text>
       <Text>{overlay.question}</Text>
       <Box marginTop={1} flexDirection="column">
         {options.map((opt, i) => (
           <Box key={i} flexDirection="column">
-            <Text color={i === cursor ? ACCENT : undefined}>
+            <Text color={i === cursor ? accent() : undefined}>
               {i === cursor ? "❯ " : "  "}
               {multiSelect ? (checked.has(i) ? "[x] " : "[ ] ") : ""}
               {opt.label}
@@ -218,13 +221,13 @@ export function ConfirmPrompt({ overlay }: { overlay: Extract<Overlay, { kind: "
   });
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={ACCENT} paddingX={1}>
-      <Text bold color={ACCENT}>
+    <Box flexDirection="column" borderStyle="round" borderColor={accent()} paddingX={1}>
+      <Text bold color={accent()}>
         {overlay.header}
       </Text>
       <Box marginTop={1}>
         {options.map((opt, i) => (
-          <Text key={opt.label} color={i === selected ? ACCENT : undefined}>
+          <Text key={opt.label} color={i === selected ? accent() : undefined}>
             {i === selected ? "❯ " : "  "}
             {opt.label}
             {"  "}

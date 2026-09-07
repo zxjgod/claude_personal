@@ -64,9 +64,8 @@ export interface CommandInfo {
 /** Maximum number of history entries to keep. */
 const MAX_HISTORY_SIZE = 100;
 
-const ORANGE = palette.accent;
-/** Official prompt-frame gray — the rounded top border + disabled chrome. */
-const PROMPT_BORDER = palette.promptBorder;
+// NOTE: no module-scope palette snapshots here (const ORANGE = palette.accent
+// freezes the dark value) — read palette.* at render time so /theme applies.
 /** How many command rows the inline "/" dropdown shows at once before it
  *  scrolls. The full filtered list is kept and windowed around the selection
  *  (see the render below) so every command is reachable, not just the first 8. */
@@ -302,7 +301,7 @@ export function InputBox({
       ? palette.bashBorder
       : disabled && !keepColorWhenDisabled
         ? "#666666"
-        : PROMPT_BORDER;
+        : palette.promptBorder;
   const [selected, setSelected] = useState(0);
   // First-visible index of the dropdown scroll window; nudged as `selected`
   // moves so the highlighted command stays on screen (see MAX_SUGGESTIONS).
@@ -361,8 +360,17 @@ export function InputBox({
   cursorRef.current = cursor;
   // Vim engine (only used when vimActive): persists across normal-mode keys so
   // multi-key operators (d/w, dd, 3w, …) keep their state machine between
-  // keystrokes. Lazily created; text/offset re-synced from buffer on each key.
+  // keystrokes. Text/offset are re-synced from buffer on each key.
   const vimEngineRef = useRef<VimEngine | null>(null);
+  // Create the engine as soon as vim activates (not lazily on the first
+  // normal-mode key): the engine boots in INSERT mode, and creating it here
+  // lets the Esc branch below sync the buffer into it BEFORE the mode switch —
+  // which is what closes the insert session for vim undo (`u`) and
+  // dot-repeat (`.`) recording. A lazily-created engine would see its first
+  // keystroke while still in INSERT and corrupt the buffer.
+  useEffect(() => {
+    if (vimActive && !vimEngineRef.current) vimEngineRef.current = new VimEngine(bufferRef.current);
+  }, [vimActive]);
 
   // Latest draft-mirror callback (kept in a ref so it is read at event time
   // and so the mount effect below always calls the freshest instance).
@@ -484,6 +492,13 @@ export function InputBox({
   // every dispatch creates a fresh {kind, seq} object, which both re-fires
   // repeated same-kind dispatches and satisfies the dependency lint without
   // re-running the action on unrelated renders.
+  //
+  // The store never clears inputAction, so a REMOUNT (overlay open/close
+  // unmounts this component) would replay the last dispatched action — after
+  // one ctrl+g, every permission prompt closing re-opened the editor. The
+  // consumed-seq cursor is initialized from the CURRENT store value at mount,
+  // so only actions dispatched after this mount fire.
+  const consumedActionSeqRef = useRef(pendingAction?.seq ?? 0);
   const actionHandlerRef = useRef<(kind: "stash" | "editor" | "clear" | "historySearch") => void>(
     () => {},
   );
@@ -526,6 +541,12 @@ export function InputBox({
         return;
       }
       case "historySearch": {
+        // Mid-search ctrl+r is ALREADY handled by the in-search useInput
+        // branch below (it cycles to an older match) — but Ink broadcasts the
+        // key to every useInput listener, so the global hotkey re-dispatches
+        // the action too. Without this guard the dispatch RESET the search
+        // (query wiped) on every ctrl+r, breaking reverse-i-search cycling.
+        if (historySearch) return;
         if (historyRef.current.length === 0) {
           setPasteNote(t("ui.input.noHistory"));
           return;
@@ -536,7 +557,10 @@ export function InputBox({
     }
   };
   useEffect(() => {
-    if (pendingAction) actionHandlerRef.current(pendingAction.kind);
+    if (pendingAction && pendingAction.seq > consumedActionSeqRef.current) {
+      consumedActionSeqRef.current = pendingAction.seq;
+      actionHandlerRef.current(pendingAction.kind);
+    }
   }, [pendingAction]);
 
   useInput(
@@ -648,7 +672,14 @@ export function InputBox({
         // mode back into React state. The engine owns motions, operators,
         // counts, and text objects — a strict superset of the old inline
         // handlers (i/a/A/0/$/h/l/x/D and much more).
-        if (!vimEngineRef.current) vimEngineRef.current = new VimEngine("");
+        if (!vimEngineRef.current) {
+          // Defensive: the vimActive effect and the Esc branch create the
+          // engine earlier, but if one is born HERE (already in normal mode)
+          // it must not see its first key while still in its boot INSERT
+          // state — that would insert the keystroke as text.
+          vimEngineRef.current = new VimEngine(bufferRef.current);
+          vimEngineRef.current.handleKey("Escape");
+        }
         const engine = vimEngineRef.current;
         engine.setText(bufferRef.current, cursorRef.current);
         engine.handleKey(inkKeyToVim(input, key));
@@ -662,9 +693,14 @@ export function InputBox({
       if (key.escape && vimActive) {
         setVimMode("normal");
         setCursor((c) => Math.max(0, c - 1));
-        // Reset the engine to NORMAL/idle so the next normal-mode key starts a
-        // fresh command (text/offset are re-synced on that key).
-        vimEngineRef.current?.handleKey("Escape");
+        // Sync the post-insert buffer into the engine BEFORE its Escape
+        // handler: closing the insert session there is what records the
+        // undo snapshot (`u`) and the typed text for dot-repeat (`.`).
+        // (Defensive creation: the vimActive effect normally beats us to it.
+        // Born empty so this first typing session still counts as a change.)
+        if (!vimEngineRef.current) vimEngineRef.current = new VimEngine("");
+        vimEngineRef.current.setText(bufferRef.current, cursorRef.current);
+        vimEngineRef.current.handleKey("Escape");
         return;
       }
 
@@ -802,24 +838,39 @@ export function InputBox({
         // Queue empty: fall through to history navigation below.
       }
 
-      // --- History navigation (palette closed, M41) ---
-      // ↑/↓ navigate the command history when the "/" palette is closed.
-      // If the user was viewing a history item and types, restore the buffer.
-      if (key.upArrow && suggestions.length === 0 && history.length > 0) {
-        // If user was editing (not browsing history), save current buffer.
-        if (historyIndex === -1 && bufferRef.current.length > 0) {
-          historyRestoreRef.current = bufferRef.current;
+      // --- ↑/↓: multi-line cursor movement FIRST, history only at the edge ---
+      // Official priority: with a multi-line draft the cursor moves between
+      // logical lines; history navigation kicks in only when the cursor can't
+      // move further (first line ↑ / last line ↓) or the draft is single-line.
+      // While BROWSING history (historyIndex !== -1) ↑/↓ keep walking entries.
+      if (key.upArrow && suggestions.length === 0) {
+        if (historyIndex === -1) {
+          const { row, col } = offsetToRowCol(bufferRef.current, cursorRef.current);
+          if (row > 0) {
+            setCursor(rowColToOffset(bufferRef.current, row - 1, col));
+            return;
+          }
         }
-        const next = Math.min(historyIndex + 1, history.length - 1);
-        const newHistoryItem = history[history.length - 1 - next]!;
-        setHistoryIndex(next);
-        setBuffer(newHistoryItem);
-        setCursor(newHistoryItem.length);
+        if (history.length > 0) {
+          // If user was editing (not browsing history), save current buffer.
+          if (historyIndex === -1 && bufferRef.current.length > 0) {
+            historyRestoreRef.current = bufferRef.current;
+          }
+          const next = Math.min(historyIndex + 1, history.length - 1);
+          const newHistoryItem = history[history.length - 1 - next]!;
+          setHistoryIndex(next);
+          setBuffer(newHistoryItem);
+          setCursor(newHistoryItem.length);
+        }
         return;
       }
       if (key.downArrow && suggestions.length === 0) {
         if (historyIndex === -1) {
-          // Already at current buffer, do nothing.
+          const { row, col } = offsetToRowCol(bufferRef.current, cursorRef.current);
+          if (row < splitLines(bufferRef.current).length - 1) {
+            setCursor(rowColToOffset(bufferRef.current, row + 1, col));
+          }
+          // At the last line of the current draft: nothing below.
           return;
         }
         const next = historyIndex - 1;
@@ -835,21 +886,6 @@ export function InputBox({
           setBuffer(newHistoryItem);
           setCursor(newHistoryItem.length);
         }
-        return;
-      }
-
-      // --- Multi-line cursor movement (palette open but no suggestions, M25.1) ---
-      // With the palette closed and no history to navigate, ↑/↓ move the cursor
-      // to the same column on the adjacent logical line.
-      if (key.upArrow) {
-        const { row, col } = offsetToRowCol(bufferRef.current, cursorRef.current);
-        if (row > 0) setCursor(rowColToOffset(bufferRef.current, row - 1, col));
-        return;
-      }
-      if (key.downArrow) {
-        const { row, col } = offsetToRowCol(bufferRef.current, cursorRef.current);
-        if (row < splitLines(bufferRef.current).length - 1)
-          setCursor(rowColToOffset(bufferRef.current, row + 1, col));
         return;
       }
 
@@ -1076,7 +1112,7 @@ export function InputBox({
                 const realIdx = start + i;
                 const sel = realIdx === safeSelected;
                 return (
-                  <Text key={s.name} color={sel ? ORANGE : palette.command}>
+                  <Text key={s.name} color={sel ? palette.accent : palette.command}>
                     {sel ? "❯ " : "  "}/{s.name}
                     <Text dimColor> {s.description}</Text>
                   </Text>
@@ -1107,7 +1143,7 @@ export function InputBox({
         {fileSuggestions.map((path, i) => {
           const sel = i === safeFileSelected;
           return (
-            <Text key={path} color={sel ? ORANGE : palette.command}>
+            <Text key={path} color={sel ? palette.accent : palette.command}>
               {`${sel ? "❯ " : "  "}@${path}`}
             </Text>
           );

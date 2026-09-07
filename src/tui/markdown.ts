@@ -531,13 +531,14 @@ export function renderMarkdown(content: string): string {
 }
 
 // Markdown syntax sniff: if none of these markers appear, skip marked.lexer
-// entirely. Checked over the first 500 chars (markdown markers — headers, code
-// fences, lists — show up early; long tails are mostly plain text). Matches any
-// MD marker or an ordered-list start (`N. ` at line start). Ported from the
-// reference renderer.
+// entirely. The scan covers the WHOLE string — an LLM reply with a long prose
+// intro (>500 chars) followed by a fenced block/table/ordered list is common,
+// and slicing the probe let those markers leak through as literal text. The
+// regex test is O(n) and dwarfs the lexer's cost, so full-scan is cheap.
+// Matches any MD marker or an ordered-list start (`N. ` at line start).
 const MD_SYNTAX_RE = /[#*`|[>\-_~]|\n\n|^\d+\. |\n\d+\. /;
 function hasMarkdownSyntax(s: string): boolean {
-  return MD_SYNTAX_RE.test(s.length > 500 ? s.slice(0, 500) : s);
+  return MD_SYNTAX_RE.test(s);
 }
 
 // Exported for tests.

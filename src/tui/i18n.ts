@@ -110,6 +110,7 @@ const translations: Record<Language, Record<string, string>> = {
     // Tool cards
     "ui.tool.expandHint": "(ctrl+o to expand)",
     "ui.tool.expandMore": "… +{n} lines (ctrl+o to expand)",
+    "ui.tool.expandMoreShort": "… +{n} lines",
     "ui.tools.moreRunning": "… +{n} more running",
 
     // Turn events
@@ -129,6 +130,7 @@ const translations: Record<Language, Record<string, string>> = {
 
     // Collapsed thinking (P0-2)
     "ui.thinking.collapsed": "✻ Thought for {s}s · {n} lines (Ctrl+O to expand)",
+    "ui.thinking.thoughtFor": "Thought for {s}s",
     // No duration recorded (e.g. /resume replayed history)
     "ui.thinking.noSecs": "✻ Thinking · {n} lines (Ctrl+O to expand)",
 
@@ -306,6 +308,7 @@ const translations: Record<Language, Record<string, string>> = {
     // 工具卡
     "ui.tool.expandHint": "（ctrl+o 展开）",
     "ui.tool.expandMore": "… +{n} 行（ctrl+o 展开）",
+    "ui.tool.expandMoreShort": "… 还有 {n} 行",
     "ui.tools.moreRunning": "… 还有 {n} 个工具运行中",
 
     // 批次 B —— 输入行为
@@ -380,6 +383,7 @@ const translations: Record<Language, Record<string, string>> = {
 
     // 折叠的思维块（P0-2）
     "ui.thinking.collapsed": "✻ 已思考 {s} 秒 · 共 {n} 行（Ctrl+O 展开）",
+    "ui.thinking.thoughtFor": "已思考 {s} 秒",
     // 无时长记录（如 /resume 回放的历史）
     "ui.thinking.noSecs": "✻ 思考内容 · 共 {n} 行（Ctrl+O 展开）",
 

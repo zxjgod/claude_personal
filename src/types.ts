@@ -598,12 +598,17 @@ export interface LoopOptions {
   summarizeToolBatch?: (prompt: string) => Promise<string | null>;
   /**
    * Queued user input provider (M36, kernel §9). Called at each turn boundary
-   * (and before the loop would otherwise complete); any returned text is
-   * injected as user messages and the loop continues working on it instead of
+   * (and before the loop would otherwise complete); any returned items are
+   * injected as user messages and the loop continues working on them instead of
    * ending — type-ahead that's queued, not discarded. Returns [] when nothing is
    * queued. Injected by the CLI/TUI; absent in tests/sub-agents (no-op then).
+   *
+   * Each item is either a plain string (wrapped into a text block) or
+   * pre-built ContentBlock[] (the TUI expands paste/image chips at drain time
+   * so chips consumed here can't leak into later messages). May be async: the
+   * TUI's drain executes queued `!cmd` shell lines at the injection point.
    */
-  drainQueuedInput?: () => string[];
+  drainQueuedInput?: () => (string | ContentBlock[])[] | Promise<(string | ContentBlock[])[]>;
   /**
    * Background completion notification provider (M41). Drained at turn
    * boundaries: each returned <task_notification> block is injected as a user

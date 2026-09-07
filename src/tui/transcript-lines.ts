@@ -96,7 +96,7 @@ function itemLines(
       return md.map((l) => ({ text: l }));
     }
     case "thought":
-      return [{ text: `  Thought for ${item.seconds}s`, dim: true }];
+      return [{ text: `  ${t("ui.thinking.thoughtFor", { s: item.seconds })}`, dim: true }];
     case "thinking_text": {
       const lines = item.text.split("\n");
       // D6 (ctrl+e): the collapsed side folds thinking to one-liners even in
@@ -115,11 +115,11 @@ function itemLines(
       const rows: TranscriptLine[] = [{ text: `${BLACK_CIRCLE} ${t("ui.compact.title")}` }];
       if (item.messages !== undefined)
         rows.push({
-          text: `  ${TOOL_RESULT} ${t("ui.compact.messages", { n: item.messages })}`,
+          text: `  ${TOOL_RESULT}  ${t("ui.compact.messages", { n: item.messages })}`,
           dim: true,
         });
       rows.push({
-        text: `  ${TOOL_RESULT} ${t("ui.compact.context", { snippet: truncate(item.summary, 120) })}`,
+        text: `  ${TOOL_RESULT}  ${t("ui.compact.context", { snippet: truncate(item.summary, 120) })}`,
         dim: true,
       });
       return rows;
@@ -133,18 +133,24 @@ function itemLines(
       // (the glyph's own success/error color is the signal); body rows dim.
       const head = `${BLACK_CIRCLE} ${capitalize(r.toolName)}${item.detail ? `(${truncate(item.detail, 100)})` : ""}`;
       if (r.error)
-        return [{ text: head }, { text: `  ${TOOL_RESULT} ${r.error}`, color: "#f7768e" }];
+        return [{ text: head }, { text: `  ${TOOL_RESULT}  ${r.error}`, color: "#f7768e" }];
       const all = (r.formatted ?? "").split("\n");
       // P0-1: verbose mode (transcript viewer) shows everything; the compact
       // mode keeps the preview window.
       const limit = verbose ? Number.POSITIVE_INFINITY : PREVIEW_LINES;
       const isLong = all.length > limit;
       const shown = isLong ? all.slice(0, limit) : all;
+      // Official branch geometry: two spaces + ⎿ + two spaces on the first
+      // body row; continuation rows align under the content column (4 spaces).
       const body: TranscriptLine[] = shown.map((l, i) => ({
-        text: i === 0 ? `  ${TOOL_RESULT} ${l}` : `   ${l}`,
+        text: i === 0 ? `  ${TOOL_RESULT}  ${l}` : `    ${l}`,
         dim: true,
       }));
-      if (isLong) body.push({ text: `   … +${all.length - limit} lines`, dim: true });
+      if (isLong)
+        body.push({
+          text: `    ${t("ui.tool.expandMoreShort", { n: all.length - limit })}`,
+          dim: true,
+        });
       return [{ text: head }, ...body];
     }
   }

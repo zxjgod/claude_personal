@@ -253,7 +253,12 @@ export function defaultFrames(): string[] {
 }
 
 export const BASE_FRAMES = defaultFrames();
-export const SPINNER_FRAMES = [...BASE_FRAMES, ...[...BASE_FRAMES].reverse()];
+// Official cadence is 11 frames: forward 6 + reversed WITHOUT the first
+// element — the naive [...BASE, ...reverse(BASE)] duplicated BOTH endpoints
+// (✽ played twice mid-swing, · twice across the wrap), visibly stalling the
+// animation at each extreme. The neutral · bookends the cycle, so its 240ms
+// across the wrap reads as a rest, not a stutter.
+export const SPINNER_FRAMES = [...BASE_FRAMES, ...[...BASE_FRAMES].reverse().slice(1)];
 
 export const TEARDROP_ASTERISK = "✻";
 export const UP_ARROW = "↑";

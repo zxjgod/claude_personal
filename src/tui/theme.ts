@@ -13,41 +13,114 @@
 // permission-mode colors (autoAccept purple / planMode teal / error red).
 // Values are the official dark-readable picks; `accent`/`accentBright` were
 // already the official claude / claudeShimmer oranges.
+//
+// /theme (2026-09-08): `palette` is a LIVE object — applyTheme mutates it in
+// place, and components reading `palette.x` at RENDER time pick up the switch
+// on the next repaint (the command's log output triggers the store emit).
+// Never snapshot palette values at module scope (`const X = palette.y` at
+// file top freezes the dark value forever).
 // ============================================================
 
-/** Named role/element colors. Values are Ink `color` prop inputs (hex or name). */
-export const palette = {
+export type ThemeName = "dark" | "light";
+
+interface PaletteShape {
   /** Claude orange — spinner glyph/verb, primary accent (official `claude`). */
-  accent: "#d77757",
+  accent: string;
   /** Lighter orange for the shimmer sweep (official `claudeShimmer`). */
-  accentBright: "#f59575",
+  accentBright: string;
   /** Slash-command names in the palette / autocomplete. */
-  command: "#7dcfff",
-  /** Added lines / positive diffs — Claude Code dark success green rgb(78,186,101). */
-  success: "#4EBA65",
+  command: string;
+  /** Added lines / positive diffs. */
+  success: string;
   /** Errors / removed lines. */
-  error: "#f7768e",
+  error: string;
   /** Amber for warn-level states (context gauge, mid-risk hints). */
-  warning: "#e0af68",
+  warning: string;
   /** Input box rounded top border + `❯` chrome (official promptBorder). */
-  promptBorder: "#999999",
+  promptBorder: string;
   /** `!` shell-mode border + prompt (official bashBorder pink). */
-  bashBorder: "#ff0087",
+  bashBorder: string;
   /** Permission dialogs + their ▔ divider (official permission blue). */
-  permission: "#5769f7",
+  permission: string;
   /** Dim chrome replacement where dimColor can't be threaded (official subtle). */
+  subtle: string;
+  /** Permission mode colors. */
+  modeColors: Record<string, string>;
+}
+
+const DARK: PaletteShape = {
+  accent: "#d77757",
+  accentBright: "#f59575",
+  command: "#7dcfff",
+  /** Claude Code dark success green rgb(78,186,101). */
+  success: "#4EBA65",
+  error: "#f7768e",
+  warning: "#e0af68",
+  promptBorder: "#999999",
+  bashBorder: "#ff0087",
+  permission: "#5769f7",
   subtle: "#afafaf",
-  /** Permission mode colors. The official LIGHT-theme literals (teal #006666,
-   *  purple #8700ff) measure ~2.5:1 on dark terminals — the official dark
-   *  theme swaps them for ANSI bright variants, so we ship bright-equivalent
-   *  hexes that stay legible on dark (the common case) and acceptable on light. */
+  /** The official LIGHT-theme literals (teal #006666, purple #8700ff) measure
+   *  ~2.5:1 on dark terminals — the official dark theme swaps them for ANSI
+   *  bright variants, so we ship bright-equivalent hexes that stay legible on
+   *  dark (the common case) and acceptable on light. */
   modeColors: {
     default: "#afafaf",
     acceptEdits: "#c586c0", // official dark: magentaBright
     bypassPermissions: "#f7768e",
     plan: "#4ec9b0", // official dark: cyanBright
-  } as Record<string, string>,
-} as const;
+  },
+};
+
+/** Official LIGHT-theme literals (spec §2.7): success rgb(44,122,57), error
+ *  rgb(171,43,63), autoAccept purple #8700ff, planMode teal #006666 — on a
+ *  light background these native values are the legible ones. */
+const LIGHT: PaletteShape = {
+  accent: "#d77757", // brand orange reads on both
+  accentBright: "#d76d47", // shimmer darkened for light backgrounds
+  command: "#0a7ea4",
+  success: "#2c7a39", // official light rgb(44,122,57)
+  error: "#ab2b3f", // official rgb(171,43,63)
+  warning: "#9a6a00",
+  promptBorder: "#6e6e6e",
+  bashBorder: "#d0006f",
+  permission: "#3f4ed8",
+  subtle: "#595959",
+  modeColors: {
+    default: "#595959",
+    acceptEdits: "#8700ff", // official light purple rgb(135,0,255)
+    bypassPermissions: "#ab2b3f",
+    plan: "#006666", // official light teal rgb(0,102,102)
+  },
+};
+
+/** Live palette — see the header note. Initialized dark (the default theme). */
+export const palette: PaletteShape = { ...DARK, modeColors: { ...DARK.modeColors } };
+
+let activeTheme: ThemeName = "dark";
+
+/** Switch the live palette. Unknown names fall back to dark. */
+export function applyTheme(name: string): ThemeName {
+  const next: ThemeName = name === "light" ? "light" : "dark";
+  const src = next === "light" ? LIGHT : DARK;
+  palette.accent = src.accent;
+  palette.accentBright = src.accentBright;
+  palette.command = src.command;
+  palette.success = src.success;
+  palette.error = src.error;
+  palette.warning = src.warning;
+  palette.promptBorder = src.promptBorder;
+  palette.bashBorder = src.bashBorder;
+  palette.permission = src.permission;
+  palette.subtle = src.subtle;
+  palette.modeColors = { ...src.modeColors };
+  activeTheme = next;
+  return next;
+}
+
+export function currentTheme(): ThemeName {
+  return activeTheme;
+}
 
 /** Official permission-mode footer symbols (acceptEdits/bypass share ⏵⏵) —
  *  glyphs live in figures.ts, the mode→glyph mapping here. */

@@ -18,6 +18,7 @@ import { EnterPlanModeTool, ExitPlanModeTool } from "../tools/breadth/interactiv
 import { App } from "../tui/App.js";
 import { setLanguage } from "../tui/i18n.js";
 import { appendHistory, loadHistory } from "../tui/input-history.js";
+import { PlanApproval } from "../tui/PlanApproval.js";
 import { RewindPicker } from "../tui/RewindPicker.js";
 import { nextPermissionMode, TuiStore } from "../tui/store.js";
 import type { Tool } from "../types.js";
@@ -176,6 +177,62 @@ describe("C3 — two-stage rewind menu", () => {
     await flush();
     expect(lastFrame()!).not.toContain("Restore code and conversation");
     expect(lastFrame()).toContain("#3 third prompt");
+    unmount();
+  });
+
+  it('"Never mind" is a real selectable row that resolves null', async () => {
+    const { overlay, done } = makeOverlay();
+    const { stdin, unmount } = render(<RewindPicker overlay={overlay} />);
+    await flush();
+    stdin.write("\r"); // pick turn #3 → action stage
+    await flush();
+    stdin.write("4"); // number shortcut for the 4th row
+    await expect(done).resolves.toBeNull();
+    unmount();
+  });
+
+  it('"Never mind" is reachable by arrows too (down ×3 + Enter)', async () => {
+    const { overlay, done } = makeOverlay();
+    const { stdin, unmount } = render(<RewindPicker overlay={overlay} />);
+    await flush();
+    stdin.write("\r");
+    await flush();
+    for (const _ of [1, 2, 3]) {
+      stdin.write("\x1b[B");
+      await flush();
+    }
+    stdin.write("\r");
+    await expect(done).resolves.toBeNull();
+    unmount();
+  });
+});
+
+describe("D-review — PlanApproval overflow", () => {
+  beforeEach(() => setLanguage("en"));
+
+  function makePlanOverlay(plan: string) {
+    let resolve: (r: { choice: "approve" | "reject"; plan: string }) => void = () => {};
+    const done = new Promise<{ choice: "approve" | "reject"; plan: string }>((r) => (resolve = r));
+    return { overlay: { kind: "planApproval" as const, plan, resolve }, done };
+  }
+
+  it("a plan over 15 rendered lines shows the '+N more' overflow line", async () => {
+    const plan = Array.from({ length: 20 }, (_, i) => `step ${i + 1}`).join("\n");
+    const { overlay } = makePlanOverlay(plan);
+    const { lastFrame, unmount } = render(<PlanApproval overlay={overlay} />);
+    await flush();
+    expect(lastFrame()).toContain("+5 lines");
+    expect(lastFrame()).toContain("step 15");
+    expect(lastFrame()).not.toContain("step 16");
+    unmount();
+  });
+
+  it("a short plan renders fully with no overflow line", async () => {
+    const { overlay } = makePlanOverlay("one\ntwo\nthree");
+    const { lastFrame, unmount } = render(<PlanApproval overlay={overlay} />);
+    await flush();
+    expect(lastFrame()).toContain("three");
+    expect(lastFrame()!).not.toContain("lines");
     unmount();
   });
 });

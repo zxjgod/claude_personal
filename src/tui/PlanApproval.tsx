@@ -18,7 +18,10 @@ import { editInEditor } from "./open-editor.js";
 import type { Overlay } from "./store.js";
 import { palette } from "./theme.js";
 
-const PLAN_COLOR = palette.modeColors.plan ?? "#4ec9b0";
+// Read at render time (see theme.ts header): module-scope snapshots freeze the dark palette.
+function planColor(): string {
+  return palette.modeColors.plan ?? "#4ec9b0";
+}
 
 export function PlanApproval({ overlay }: { overlay: Extract<Overlay, { kind: "planApproval" }> }) {
   // The plan mutates when the user revises it in the editor — approval must
@@ -67,17 +70,30 @@ export function PlanApproval({ overlay }: { overlay: Extract<Overlay, { kind: "p
   });
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={PLAN_COLOR} paddingX={1}>
-      <Text bold color={PLAN_COLOR}>
+    <Box flexDirection="column" borderStyle="round" borderColor={planColor()} paddingX={1}>
+      <Text bold color={planColor()}>
         {t("ui.plan.title")}
       </Text>
       <Box marginTop={1} flexDirection="column">
-        {renderMarkdown(plan)
-          .split("\n")
-          .slice(0, 15)
-          .map((line, i) => (
-            <Text key={i}>{line}</Text>
-          ))}
+        {(() => {
+          // Cap the rendered plan at 15 rows, but NEVER silently: an
+          // overflow counter line keeps "approving what you can't see"
+          // from being invisible. Ctrl+g edits the full plan in $EDITOR.
+          const planLines = renderMarkdown(plan).split("\n");
+          const shown = planLines.slice(0, 15);
+          return (
+            <>
+              {shown.map((line, i) => (
+                <Text key={i}>{line}</Text>
+              ))}
+              {planLines.length > shown.length && (
+                <Text dimColor>
+                  {`  ${t("ui.tool.expandMoreShort", { n: planLines.length - shown.length })}`}
+                </Text>
+              )}
+            </>
+          );
+        })()}
       </Box>
       {editing ? (
         <Text dimColor italic>
@@ -87,7 +103,7 @@ export function PlanApproval({ overlay }: { overlay: Extract<Overlay, { kind: "p
         <Box marginTop={1} flexDirection="column">
           <Text>{t("ui.plan.proceed")}</Text>
           {options.map((opt, i) => (
-            <Text key={opt.value} color={i === selected ? PLAN_COLOR : undefined}>
+            <Text key={opt.value} color={i === selected ? planColor() : undefined}>
               {i === selected ? "❯ " : "  "}
               {i + 1}. {opt.label}
             </Text>

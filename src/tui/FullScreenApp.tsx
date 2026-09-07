@@ -25,7 +25,7 @@
 // ============================================================
 
 import { Box, Text, useInput } from "ink";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { CommandPicker } from "./CommandPicker.js";
 import { EffortPrompt } from "./EffortPrompt.js";
 import { HelpPanel } from "./HelpPanel.js";
@@ -288,7 +288,15 @@ export function FullScreenApp({
   const streamingText = useStoreField(store, "streamingText");
   const streamingThinking = useStoreField(store, "streamingThinking");
 
-  const lines = transcriptToLines(transcript, streamingText, streamingThinking);
+  // Perf: the component subscribes to streamingText (~30fps during a turn),
+  // so a naive transcriptToLines(transcript, ...) re-rendered ALL history —
+  // including a fresh renderMarkdown per assistant item — every frame
+  // (O(turn²) over a long session). The committed transcript changes by
+  // immutable array swap, so memo it by reference and only recompute the
+  // (small) streaming tail per frame.
+  const committedLines = useMemo(() => transcriptToLines(transcript, "", ""), [transcript]);
+  const tailLines = transcriptToLines([], streamingText, streamingThinking);
+  const lines = committedLines.concat(tailLines);
   const [scrollTop, setScrollTop] = useState(0);
   const [sticky, setSticky] = useState(true);
   const stickyRef = useRef(true);

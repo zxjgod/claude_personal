@@ -29,11 +29,13 @@ function clamp(n: number, lo: number, hi: number): number {
 }
 
 type RewindAction = "both" | "conversation" | "code";
-
-const ACTIONS: Array<{ value: RewindAction; labelKey: string }> = [
+/** Menu rows: the three restore actions + "Never mind" (a REAL row — it was
+ *  previously rendered dim as an unselectable pseudo-option). */
+const ACTIONS: Array<{ value: RewindAction | "nevermind"; labelKey: string }> = [
   { value: "both", labelKey: "ui.rewind.both" },
   { value: "conversation", labelKey: "ui.rewind.conversation" },
   { value: "code", labelKey: "ui.rewind.code" },
+  { value: "nevermind", labelKey: "ui.rewind.nevermind" },
 ];
 
 export function RewindPicker({ overlay }: { overlay: Extract<Overlay, { kind: "rewind" }> }) {
@@ -57,9 +59,19 @@ export function RewindPicker({ overlay }: { overlay: Extract<Overlay, { kind: "r
     setOffset((off) => nextOffset(next, off, windowSize));
   };
 
-  useInput((_input, key) => {
+  useInput((input, key) => {
     // --- Stage 2: the action menu for the chosen turn ---
     if (chosenTurn !== null) {
+      const pick = (idx: number) => {
+        const action = ACTIONS[idx];
+        if (!action) return;
+        // "Never mind" closes the menu without restoring (resolve null).
+        if (action.value === "nevermind") {
+          overlay.resolve(null);
+          return;
+        }
+        overlay.resolve({ turnIndex: chosenTurn, action: action.value });
+      };
       if (key.upArrow) {
         const next = (actionCursorRef.current - 1 + ACTIONS.length) % ACTIONS.length;
         actionCursorRef.current = next;
@@ -69,10 +81,10 @@ export function RewindPicker({ overlay }: { overlay: Extract<Overlay, { kind: "r
         actionCursorRef.current = next;
         setActionCursor(next);
       } else if (key.return) {
-        overlay.resolve({
-          turnIndex: chosenTurn,
-          action: ACTIONS[actionCursorRef.current]!.value,
-        });
+        pick(actionCursorRef.current);
+      } else if (/^[1-9]$/.test(input)) {
+        // Number shortcuts, same as every other picker.
+        pick(Number.parseInt(input, 10) - 1);
       } else if (key.escape || key.backspace || key.tab) {
         // Back to turn selection (Esc here is "go back", not cancel — the
         // turn list is one Esc away from cancelling).
@@ -117,11 +129,14 @@ export function RewindPicker({ overlay }: { overlay: Extract<Overlay, { kind: "r
           >{`  #${chosenEntry.turnIndex} ${truncateVisual(chosenEntry.label, 60)}`}</Text>
           <Box marginTop={1} flexDirection="column">
             {ACTIONS.map((a, i) => (
-              <Text key={a.value} color={i === actionCursor ? ORANGE : undefined}>
+              <Text
+                key={a.value}
+                dimColor={a.value === "nevermind"}
+                color={i === actionCursor ? ORANGE : undefined}
+              >
                 {`${i === actionCursor ? "❯ " : "  "}${i + 1}. ${t(a.labelKey)}`}
               </Text>
             ))}
-            <Text dimColor>{`  4. ${t("ui.rewind.nevermind")}`}</Text>
           </Box>
         </Box>
       ) : (
