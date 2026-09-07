@@ -66,14 +66,24 @@ describe("PromptFooter (official hint row)", () => {
     expect(lastFrame()).not.toContain("? for shortcuts");
   });
 
-  it("shows 'esc to interrupt' while busy (highest priority)", async () => {
+  it("busy + non-default mode: interrupt hint AND mode coexist (mid-turn Shift+Tab feedback)", async () => {
     const store = new TuiStore("p/m");
     store.setPermissionMode("plan");
     store.setBusy(true);
     const { lastFrame } = render(<PromptFooter store={store} />);
     await flush();
+    const frame = lastFrame()!;
+    expect(frame).toContain("esc to interrupt");
+    expect(frame).toContain("⏸ plan mode on");
+  });
+
+  it("busy + default mode: only the interrupt hint (nothing to show for default)", async () => {
+    const store = new TuiStore("p/m");
+    store.setBusy(true);
+    const { lastFrame } = render(<PromptFooter store={store} />);
+    await flush();
     expect(lastFrame()).toContain("esc to interrupt");
-    expect(lastFrame()).not.toContain("plan mode on");
+    expect(lastFrame()!).not.toContain("mode on");
   });
 
   it("carries the model and official context-remaining phrasing on the right", async () => {

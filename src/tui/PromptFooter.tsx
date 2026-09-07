@@ -69,13 +69,26 @@ export function PromptFooter({ store }: { store: TuiStore }) {
     const hint = t("ui.footer.exitHint");
     leftNode = <Text dimColor>{hint}</Text>;
     leftWidth = visualWidth(hint);
-  } else if (s.busy) {
-    const hint = t("ui.footer.interrupt");
-    leftNode = <Text dimColor>{hint}</Text>;
-    leftWidth = visualWidth(hint);
   } else {
     const modeText = modeFooterText(s.permissionMode);
-    if (modeText) {
+    const busyHint = s.busy ? t("ui.footer.interrupt") : null;
+    if (modeText && busyHint) {
+      // Busy + non-default mode: BOTH show. The official ModeIndicator keeps
+      // the mode part while loading (its hint is a part OF the indicator), so
+      // a mid-turn Shift+Tab is visibly acknowledged — permission checks read
+      // the mode live, and the user must see what they switched to.
+      const sep = " · ";
+      leftNode = (
+        <Text>
+          <Text color={modeColor(s.permissionMode)}>{modeText}</Text>
+          <Text dimColor>{sep + busyHint}</Text>
+        </Text>
+      );
+      leftWidth = visualWidth(modeText + sep + busyHint);
+    } else if (busyHint) {
+      leftNode = <Text dimColor>{busyHint}</Text>;
+      leftWidth = visualWidth(busyHint);
+    } else if (modeText) {
       const cycle = ` ${t("ui.footer.modeCycle")}`;
       leftNode = (
         <Text>

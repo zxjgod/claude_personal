@@ -858,7 +858,8 @@ export class TuiStore {
   cyclePermissionMode(): PermissionMode {
     const mode = nextPermissionMode(this.state.permissionMode);
     this.set({ permissionMode: mode });
-    // Toast removed - mode is visible in the status bar
+    // No toast: the PromptFooter shows the mode live — including mid-turn
+    // (busy + non-default mode render together, official ModeIndicator).
     return mode;
   }
 
