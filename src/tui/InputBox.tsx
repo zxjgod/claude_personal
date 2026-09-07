@@ -1006,7 +1006,13 @@ export function InputBox({
       // the model (expanded on submit by the runner).
       if (onLargePaste && sanitized.length > PASTE_FOLD_CHARS) {
         const chip = onLargePaste(sanitized);
-        const ins = bufferRef.current.length > 0 ? `\n${chip}` : chip;
+        // Start the chip on its own line ONLY when the text before the cursor
+        // doesn't already end at a line break — an unconditional prefix would
+        // leave a blank line after a trailing "\n" (and mid-word, the chip
+        // must never glue onto the character before the cursor either).
+        const before = bufferRef.current;
+        const needsBreak = pos > 0 && before[pos - 1] !== "\n";
+        const ins = needsBreak ? `\n${chip}` : chip;
         setBuffer((b) => b.slice(0, pos) + ins + b.slice(pos));
         setCursor(pos + ins.length);
         setHistoryIndex(-1);

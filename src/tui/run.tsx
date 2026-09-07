@@ -507,6 +507,9 @@ async function runResumePicker(store: TuiStore, deps: TuiDeps): Promise<void> {
     `  ── Resumed ${chosen.slice(0, 8)} · ${deps.messages.length} messages restored (0 tokens) ──`,
   );
   store.loadTranscript(transcript);
+  // D1: the resumed conversation is a different session — restart the tip
+  // rotation so its tips can all play again.
+  store.resetTipPool();
 }
 
 /**
@@ -1031,6 +1034,9 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
             // /clear wiped the conversation (and the tool's todo state) — the
             // pinned todo projection in the live region must go too.
             if (/^\/clear\b/i.test(value)) store.setTodos([]);
+            // D1: a replaced conversation (/clear, /resume <id>) restarts the
+            // spinner-tip rotation — the pool is per-session, not per-process.
+            if (/^\/(clear|resume)\b/i.test(value)) store.resetTipPool();
             return; // purely local command
           }
           if (result.prompt) effectiveText = result.prompt;

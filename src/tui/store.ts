@@ -905,6 +905,26 @@ export class TuiStore {
   }
 
   /**
+   * D1: spinner-tip rotation — ids already shown this session. A plain field,
+   * NOT StoreState: mutating it never needs a re-render, so it stays out of
+   * the pub/sub snapshot. Living on the store (not module scope) ties the
+   * pool to the TUI instance — tests get isolation per `new TuiStore()`, and
+   * the runner resets it when the conversation is replaced (/clear, /resume)
+   * so a fresh session gets the full rotation again.
+   */
+  private tipPool = new Set<string>();
+
+  /** D1: the session's spinner-tip pool. Mutated in place by nextTipId(). */
+  getTipPool(): Set<string> {
+    return this.tipPool;
+  }
+
+  /** D1: a replaced conversation (/clear, /resume) restarts the rotation. */
+  resetTipPool(): void {
+    this.tipPool.clear();
+  }
+
+  /**
    * P0-4: show a live retry countdown ("retrying in Ns · attempt a/m"). Owns
    * a 1s tick that decrements `secondsLeft`; auto-clears at 0. Replaced by a
    * subsequent call (the newest backoff wins).

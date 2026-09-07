@@ -16,7 +16,7 @@
 // ============================================================
 
 import { Box, Static, Text, useInput } from "ink";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { CommandPicker } from "./CommandPicker.js";
 import { EffortPrompt } from "./EffortPrompt.js";
 import { FullScreenApp } from "./FullScreenApp.js";
@@ -333,8 +333,6 @@ function NextTodoRegion({ store }: { store: TuiStore }) {
   return <Text dimColor>{`  ${t("ui.todos.next", { task: next.content })}`}</Text>;
 }
 
-/** D1: session-wide tip rotation — a tip never repeats within one session. */
-const shownTipIds = new Set<string>();
 /** D1: a tip only shows once the spinner has been running this long. */
 const TIP_AFTER_MS = 8000;
 
@@ -343,21 +341,38 @@ const TIP_AFTER_MS = 8000;
  * has run ≥8s AND the todo projection is empty (todos own this slot via
  * "Next:" first — official effectiveTip priority). Owns a slow tick so the
  * 8s deadline fires even while the stream is silent; reduced motion keeps
- * the line but drops the ticking cadence cost.
+ * the line but drops the ticking cadence cost. The rotation pool lives on
+ * the store (one per TUI instance, reset on /clear and /resume), so a tip
+ * never repeats within a session.
  */
-export function TipLine({ turnStartedAt, todos }: { turnStartedAt: number; todos: number }) {
+export function TipLine({
+  turnStartedAt,
+  todos,
+  pool,
+}: {
+  turnStartedAt: number;
+  todos: number;
+  pool: Set<string>;
+}) {
   const [tipId, setTipId] = useState<string | null>(null);
-  const [chance] = useState(() => nextTipId(shownTipIds));
+  // The tip leaves the pool ONLY when the 8s gate fires — picking at mount
+  // would burn one pool entry per turn even when the turn ends before the
+  // tip ever displays, silently exhausting all 14 tips on short turns.
+  // The ref (not a state updater) does the picking: React may double-invoke
+  // updaters, and nextTipId mutates the pool.
+  const tipIdRef = useRef<string | null>(null);
   const reduced = isReducedMotion();
   useEffect(() => {
     const t = setInterval(
       () => {
-        if (Date.now() - turnStartedAt >= TIP_AFTER_MS) setTipId(chance);
+        if (Date.now() - turnStartedAt < TIP_AFTER_MS) return;
+        if (tipIdRef.current === null) tipIdRef.current = nextTipId(pool);
+        setTipId(tipIdRef.current);
       },
       reduced ? 1000 : 500,
     );
     return () => clearInterval(t);
-  }, [turnStartedAt, chance, reduced]);
+  }, [turnStartedAt, pool, reduced]);
   if (tipId === null || todos > 0 || turnStartedAt <= 0) return null;
   return <Text dimColor>{`  ⎿ Tip: ${t(`ui.tip.${tipId}`)}`}</Text>;
 }
@@ -382,7 +397,7 @@ function StatusLineRegion({ store }: { store: TuiStore }) {
         cycleVerbs={spinner === "thinking"}
       />
       <NextTodoRegion store={store} />
-      <TipLine turnStartedAt={turnStartedAt} todos={todoCount} />
+      <TipLine turnStartedAt={turnStartedAt} todos={todoCount} pool={store.getTipPool()} />
     </Box>
   );
 }

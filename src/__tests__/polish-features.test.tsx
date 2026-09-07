@@ -38,27 +38,59 @@ describe("D1 — spinner tips", () => {
   });
 
   it("TipLine stays hidden before 8s / with todos / no turn", async () => {
-    const { lastFrame, unmount } = render(<TipLine turnStartedAt={Date.now() - 1000} todos={0} />);
+    const pool = new Set<string>();
+    const { lastFrame, unmount } = render(
+      <TipLine turnStartedAt={Date.now() - 1000} todos={0} pool={pool} />,
+    );
     await flush();
     expect(lastFrame()!).not.toContain("Tip:");
     unmount();
 
-    const todos = render(<TipLine turnStartedAt={Date.now() - 30_000} todos={2} />);
+    const todos = render(<TipLine turnStartedAt={Date.now() - 30_000} todos={2} pool={pool} />);
     await flush();
     expect(todos.lastFrame()!).not.toContain("Tip:"); // todos own the slot
     todos.unmount();
 
-    const noTurn = render(<TipLine turnStartedAt={0} todos={0} />);
+    const noTurn = render(<TipLine turnStartedAt={0} todos={0} pool={pool} />);
     await flush();
     expect(noTurn.lastFrame()!).toBe(""); // renders nothing at all
     noTurn.unmount();
   });
 
   it("TipLine shows a tip after the turn has run 8s+", async () => {
-    const { lastFrame, unmount } = render(<TipLine turnStartedAt={Date.now() - 9000} todos={0} />);
+    const { lastFrame, unmount } = render(
+      <TipLine turnStartedAt={Date.now() - 9000} todos={0} pool={new Set()} />,
+    );
     await new Promise((r) => setTimeout(r, 700)); // wait past the 500ms tick
     expect(lastFrame()).toContain("Tip:");
     unmount();
+  });
+
+  it("a tip leaves the pool only when shown — short turns consume nothing", async () => {
+    const pool = new Set<string>();
+    const short = render(<TipLine turnStartedAt={Date.now() - 1000} todos={0} pool={pool} />);
+    await new Promise((r) => setTimeout(r, 700)); // past at least one tick
+    expect(short.lastFrame()!).not.toContain("Tip:");
+    short.unmount();
+    // Mounting (and ticking below the 8s gate) must not burn a pool entry —
+    // the old mount-time pick would have consumed one here.
+    expect(pool.size).toBe(0);
+
+    const long = render(<TipLine turnStartedAt={Date.now() - 9000} todos={0} pool={pool} />);
+    await new Promise((r) => setTimeout(r, 700)); // past the 500ms tick
+    expect(long.lastFrame()).toContain("Tip:");
+    long.unmount();
+    expect(pool.size).toBe(1); // exactly one, at show time
+  });
+
+  it("resetTipPool restarts the rotation for a replaced conversation", () => {
+    const store = new TuiStore("p/m");
+    const pool = store.getTipPool();
+    expect(nextTipId(pool)).not.toBeNull();
+    expect(pool.size).toBe(1);
+    store.resetTipPool();
+    expect(pool.size).toBe(0); // same Set instance, cleared in place
+    expect(store.getTipPool()).toBe(pool); // the pool outlives the reset
   });
 });
 
@@ -99,6 +131,34 @@ describe("D5 — large-paste folding", () => {
     const frame = lastFrame()!;
     expect(frame).toContain("[Pasted text #1 +1 lines]");
     expect(frame).not.toContain("xxxx"); // raw wall never lands in the buffer
+    unmount();
+  });
+
+  it("chip after a trailing newline gets no extra blank line", async () => {
+    const big = "y".repeat(PASTE_FOLD_CHARS + 10);
+    let submitted: string | null = null;
+    const { stdin, unmount } = render(
+      <InputBox
+        commands={[]}
+        disabled={false}
+        onSubmit={(text) => {
+          submitted = text;
+        }}
+        onLargePaste={(content) => makePasteChip(1, content.split("\n").length)}
+      />,
+    );
+    await flush();
+    // A small paste below the fold threshold lands raw, leaving the buffer
+    // ending in a newline.
+    stdin.write(`\x1b[200~abc\n\x1b[201~`);
+    await flush();
+    stdin.write(`\x1b[200~${big}\x1b[201~`);
+    await flush();
+    stdin.write("\r");
+    await flush();
+    // The chip starts its own line WITHOUT a doubled "\n" (the old
+    // unconditional prefix produced "abc\n\n[chip]").
+    expect(submitted).toBe("abc\n[Pasted text #1 +1 lines]");
     unmount();
   });
 
@@ -188,6 +248,27 @@ describe("D6 — transcript viewer completion", () => {
     await flush();
     expect(two.lastFrame()).toMatch(/\(1\/2\)/); // live badge while typing
     two.unmount();
+  });
+
+  it("badge counts the match Enter will land on, not the one above the offset", async () => {
+    const store = new TuiStore("p/m");
+    store.setReviewing(true);
+    store.addUserMessage("hello first");
+    for (let i = 0; i < 27; i++) store.addUserMessage(`filler ${i}`);
+    store.addUserMessage("hello last");
+    const { lastFrame, stdin, unmount } = render(
+      <App store={store} commands={[]} onSubmit={() => {}} expandedId={null} />,
+    );
+    await flush();
+    stdin.write("/");
+    await flush();
+    stdin.write("hello");
+    await flush();
+    // The viewer opens at the BOTTOM, so the scroll offset sits BETWEEN the
+    // two matches and Enter jumps forward to "hello last" — match 2 of 2.
+    // (The old last-match-above count showed (1/2) here.)
+    expect(lastFrame()).toContain("(2/2)");
+    unmount();
   });
 
   it("q still closes the viewer (less-style)", async () => {

@@ -24,15 +24,16 @@ import { t } from "./i18n.js";
 import { openInEditor } from "./open-editor.js";
 import { bottomScrollTop, clampScrollTop, ScrollView } from "./ScrollView.js";
 import type { TuiStore } from "./store.js";
-import { stripAnsi } from "./terminal-width.js";
+import { stripAnsi, visualWidth } from "./terminal-width.js";
 import { type TranscriptLine, transcriptToLines } from "./transcript-lines.js";
 import { useStoreSelector } from "./useStoreSelector.js";
 import { useTerminalSize } from "./useTerminalSize.js";
 
-/** Rows reserved for the viewer's own chrome (title + search + the wrap-capable
- *  footer hint) and the app status bar. The footer wraps to two lines under
- *  ~80 columns, so the budget covers both rows. */
-const CHROME_ROWS = 6;
+/** Rows reserved for the viewer's own chrome (title + search + a ONE-ROW
+ *  footer hint) and the app status bar. The footer's real row count is added
+ *  on top — it wraps under narrow terminals, so a wide terminal must not pay
+ *  for the narrow case. */
+const CHROME_ROWS = 5;
 
 const SEARCH_HIGHLIGHT = "yellow";
 
@@ -50,8 +51,7 @@ export function TranscriptReview({ store }: { store: TuiStore }) {
     store,
     selectContent,
   );
-  const { rows } = useTerminalSize();
-  const viewportHeight = Math.max(3, rows - CHROME_ROWS);
+  const { rows, columns } = useTerminalSize();
 
   // Verbose: this viewer IS the Ctrl+O transcript mode. ctrl+e (D6) toggles
   // the official showAll — the collapsed side folds thinking to one-liners
@@ -61,6 +61,13 @@ export function TranscriptReview({ store }: { store: TuiStore }) {
     verbose: true,
     collapseThinking: !showAll,
   });
+
+  // The footer wraps when its display width exceeds the terminal columns
+  // (CJK counts double) — budget its REAL row count so a wide terminal
+  // doesn't lose a viewport row to a static worst-case reserve.
+  const footerText = `  ${t("ui.viewer.footer", { action: t(showAll ? "ui.viewer.collapse" : "ui.viewer.expand") })}`;
+  const footerRows = Math.max(1, Math.ceil(visualWidth(footerText) / Math.max(1, columns)));
+  const viewportHeight = Math.max(3, rows - (CHROME_ROWS - 1 + footerRows));
 
   // Open at the bottom (most recent content). Sticky stays OFF: streaming
   // appends must not yank the reader — new content only re-clamps the offset.
@@ -236,9 +243,14 @@ export function TranscriptReview({ store }: { store: TuiStore }) {
       : lines;
 
   const matchCount = matches.length;
-  // 1-based index of the match currently in view (the last match at or above
-  // the scroll offset) — the official less-style (current/count) badge.
-  const currentMatch = matchCount > 0 ? matches.filter((m) => m <= scrollTop).length || 1 : 0;
+  // The badge predicts where Enter will land: jumpToMatch(scrollTop - 1, 1)
+  // picks the first match at or below the scroll offset, wrapping to the
+  // first match overall when every match is above it. (The badge only shows
+  // while the query is being typed, so "next jump target" is the only
+  // reading — a plain last-match-above count would be off by one whenever
+  // the offset sits between two matches.)
+  const currentMatch =
+    matchCount > 0 ? (matches.filter((m) => m < scrollTop).length % matchCount) + 1 : 0;
 
   return (
     <Box flexDirection="column">
@@ -264,9 +276,7 @@ export function TranscriptReview({ store }: { store: TuiStore }) {
           }`}
         </Text>
       ) : (
-        <Text dimColor>
-          {`  ${t("ui.viewer.footer", { action: t(showAll ? "ui.viewer.collapse" : "ui.viewer.expand") })}`}
-        </Text>
+        <Text dimColor>{footerText}</Text>
       )}
     </Box>
   );
