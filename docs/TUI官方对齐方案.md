@@ -4,7 +4,8 @@
 > - ✅ **批次 A（视觉骨架）已完成并通过验收**（2026-09-06）——按决策 1-A/2-A/3-A/4-A/5-B 执行：默认英文、官方极简 footer、先 A 批验收、Ctrl+O 展开语义、官方 188 动词全量。含两轮代码审查修复与用户真机反馈三修（底线补回为完整 ╭╮╰╯ 圆角框、Spinner 平台帧序列 Windows ✳→`*` + 动词橙色恢复、PromptFooter key 警告消除）。测试 1438 → 1476（全绿），tsc/lint/build 通过。详见 [完成报告](./更新日志/20260906-TUI官方对齐批次A.md)。
 > - ✅ **批次 B（输入行为）已完成**（2026-09-06）——`!` bash 模式、`#` 记忆前缀、Ctrl+R 历史搜索（内联 reverse-i-search，工具卡展开完全退役由 Ctrl+O 查看器承接）、Ctrl+S 暂存草稿、Ctrl+G $EDITOR 编辑草稿、Ctrl+T todos 收展（含 Next: 行）、Ctrl+D/L、空闲 Ctrl+C 清空→双击退出（footer exit 提示）、排队消息 dim 可视化 + ↑ 取回、双击 Esc 800ms、Alt+P 模型选择器、Alt+T thinking 开关。测试 1476 → 1494（全绿）。详见 [批次 B 完成报告](./更新日志/20260906-TUI官方对齐批次B.md)。
 > - ✅ **批次 C（模式与状态流）已完成**（2026-09-07）——模式循环改官方顺序 default→acceptEdits→plan→bypass（+meta+m 兜底）；ExitPlanMode 升级为官方审批流（plan 参数 + "Ready to code?" 面板：批准切 acceptEdits / ctrl+g 编辑计划回填 / 拒绝留计划模式，plan 模式权限门豁免）；rewind 二级动作（还原代码和对话/仅对话/仅代码/Never mind）；compact 官方摘要样式（⏺ Summarized conversation + ⎿ N messages + ⎿ Context）；水位 toast 改常驻 Context-low 行；输入历史按项目跨 session 持久化（JSONL+连续去重）。测试 1494 → 1513（全绿）。详见 [批次 C 完成报告](./更新日志/20260907-TUI官方对齐批次C.md)。
-> - ⏳ 批次 D（打磨：spinner tips、/statusline、帮助面板重排、大粘贴折叠）待启动。
+> - ✅ **批次 D（打磨，用户选定 D1/D5/D6）已完成**（2026-09-07）——D1 Spinner tips（14 条双语、运行 8s 后显示、会话内不重复、todos 存在时让位 Next: 行）；D5 大粘贴折叠（>1024 字符 → `[Pasted text #N +L lines]` chip，提交时展开全文进上下文，paste-chip 纯模块）；D6 查看器补齐（官方 footer 文案、ctrl+e 折叠/展开 thinking、搜索 (当前/总数) 角标、q 退出）。测试 1513 → 1524（全绿）。
+> - ❌ **D2 /statusline 与 D3 帮助面板重排未选**；**D4 Banner 永久否决**（用户决定：永远保留经典双栏样式，不采用官方新版简洁风）。
 
 > 目标：**对齐官方 Claude Code 的 TUI 界面体验**（视觉骨架 + 交互行为 + 状态功能三层）。
 > 信息源（四路交叉验证，均为一手资料）：

@@ -28,6 +28,10 @@ const PREVIEW_LINES = 12;
 export interface TranscriptRenderOptions {
   /** Verbose (transcript viewer): full tool output + full thinking. */
   verbose?: boolean;
+  /** Batch D6 (viewer ctrl+e): collapse thinking to one-liners even in
+   *  verbose mode — the official transcript:toggleShowAll "collapse" side.
+   *  Tool output stays full; only thinking folds. */
+  collapseThinking?: boolean;
 }
 
 /** One display row: plain text plus optional whole-row Ink styling. */
@@ -63,7 +67,11 @@ export function collapsedThinkingLine(seconds: number | undefined, lineCount: nu
 }
 
 /** One transcript item → its display rows. */
-function itemLines(item: TranscriptItem, verbose: boolean): TranscriptLine[] {
+function itemLines(
+  item: TranscriptItem,
+  verbose: boolean,
+  opts: TranscriptRenderOptions,
+): TranscriptLine[] {
   switch (item.kind) {
     case "user": {
       // Official: dim user turns with a "> " marker. A multi-line draft
@@ -91,7 +99,9 @@ function itemLines(item: TranscriptItem, verbose: boolean): TranscriptLine[] {
       return [{ text: `  Thought for ${item.seconds}s`, dim: true }];
     case "thinking_text": {
       const lines = item.text.split("\n");
-      if (verbose) {
+      // D6 (ctrl+e): the collapsed side folds thinking to one-liners even in
+      // verbose mode — tool output stays full either way.
+      if (verbose && !opts.collapseThinking) {
         // Transcript viewer: the full reasoning text.
         return lines.map((l) => ({ text: `  ${l}`, dim: true }));
       }
@@ -154,7 +164,7 @@ export function transcriptToLines(
   const verbose = opts.verbose ?? false;
   const out: TranscriptLine[] = [];
   for (const item of transcript) {
-    out.push(...itemLines(item, verbose));
+    out.push(...itemLines(item, verbose, opts));
     if (item.kind === "assistant" || item.kind === "tool") out.push({ text: "" });
   }
   if (streamingThinking.trim()) {

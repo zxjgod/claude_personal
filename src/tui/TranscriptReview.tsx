@@ -29,8 +29,10 @@ import { type TranscriptLine, transcriptToLines } from "./transcript-lines.js";
 import { useStoreSelector } from "./useStoreSelector.js";
 import { useTerminalSize } from "./useTerminalSize.js";
 
-/** Rows reserved for the viewer's own chrome (title + search + hint) and the app status bar. */
-const CHROME_ROWS = 5;
+/** Rows reserved for the viewer's own chrome (title + search + the wrap-capable
+ *  footer hint) and the app status bar. The footer wraps to two lines under
+ *  ~80 columns, so the budget covers both rows. */
+const CHROME_ROWS = 6;
 
 const SEARCH_HIGHLIGHT = "yellow";
 
@@ -51,9 +53,13 @@ export function TranscriptReview({ store }: { store: TuiStore }) {
   const { rows } = useTerminalSize();
   const viewportHeight = Math.max(3, rows - CHROME_ROWS);
 
-  // Verbose: this viewer IS the Ctrl+O transcript mode.
+  // Verbose: this viewer IS the Ctrl+O transcript mode. ctrl+e (D6) toggles
+  // the official showAll — the collapsed side folds thinking to one-liners
+  // while tool output stays full.
+  const [showAll, setShowAll] = useState(true);
   const lines = transcriptToLines(transcript, streamingText, streamingThinking, {
     verbose: true,
+    collapseThinking: !showAll,
   });
 
   // Open at the bottom (most recent content). Sticky stays OFF: streaming
@@ -163,6 +169,12 @@ export function TranscriptReview({ store }: { store: TuiStore }) {
       return;
     }
 
+    // --- ctrl+e: official transcript:toggleShowAll (expand/collapse) ---
+    if (key.ctrl && input === "e") {
+      setShowAll((v) => !v);
+      return;
+    }
+
     // --- search / jumps / editor ---
     if (input === "/") {
       setSearching(true);
@@ -224,6 +236,9 @@ export function TranscriptReview({ store }: { store: TuiStore }) {
       : lines;
 
   const matchCount = matches.length;
+  // 1-based index of the match currently in view (the last match at or above
+  // the scroll offset) — the official less-style (current/count) badge.
+  const currentMatch = matchCount > 0 ? matches.filter((m) => m <= scrollTop).length || 1 : 0;
 
   return (
     <Box flexDirection="column">
@@ -241,11 +256,17 @@ export function TranscriptReview({ store }: { store: TuiStore }) {
       {searching ? (
         <Text color={SEARCH_HIGHLIGHT}>
           {`${t("ui.viewer.searchPrompt", { q: query })} ${
-            query ? `· ${t("ui.viewer.matches", { n: matchCount })}` : ""
+            query && matchCount > 0
+              ? `· (${currentMatch}/${matchCount})`
+              : query
+                ? `· ${t("ui.viewer.matches", { n: 0 })}`
+                : ""
           }`}
         </Text>
       ) : (
-        <Text dimColor>{`  ${t("ui.viewer.hint")}`}</Text>
+        <Text dimColor>
+          {`  ${t("ui.viewer.footer", { action: t(showAll ? "ui.viewer.collapse" : "ui.viewer.expand") })}`}
+        </Text>
       )}
     </Box>
   );

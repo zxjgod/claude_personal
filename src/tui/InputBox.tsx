@@ -49,6 +49,7 @@ import { useEffect, useRef, useState } from "react";
 import { POINTER } from "./figures.js";
 import { t } from "./i18n.js";
 import { editInEditor } from "./open-editor.js";
+import { PASTE_FOLD_CHARS } from "./paste-chip.js";
 import { nextOffset } from "./SessionPicker.js";
 import { terminalColumns } from "./terminal-width.js";
 import { palette } from "./theme.js";
@@ -229,6 +230,10 @@ export interface InputBoxProps {
    *  empty first row). Returns the recalled text or null when the queue is
    *  empty; the caller removes it from the queue. */
   onQueuePop?: () => string | null;
+  /** D5: fold a paste above PASTE_FOLD_CHARS into a "[Pasted text #N +L
+   *  lines]" chip instead of dumping it into the buffer. The runner stores
+   *  the content and expands the chip on submit. Absent = no folding. */
+  onLargePaste?: (content: string) => string;
   /** B4/B5: one-shot command dispatched by global hotkeys through the store
    *  (stash / editor / clear / historySearch). The InputBox owns the buffer,
    *  so the hotkey layer signals rather than reaching in. */
@@ -272,6 +277,7 @@ export function InputBox({
   onRewind,
   onImagePaste,
   onQueuePop,
+  onLargePaste,
   pendingAction,
   inputSuspended,
   onDraftChange,
@@ -995,6 +1001,19 @@ export function InputBox({
       const sanitized = text.replace(/\r\n?/g, "\n");
       if (sanitized.length === 0) return;
       const pos = cursorRef.current;
+      // D5: an oversized paste folds into a chip — the buffer stays readable
+      // and the transcript echo stays one line; the full content still reaches
+      // the model (expanded on submit by the runner).
+      if (onLargePaste && sanitized.length > PASTE_FOLD_CHARS) {
+        const chip = onLargePaste(sanitized);
+        const ins = bufferRef.current.length > 0 ? `\n${chip}` : chip;
+        setBuffer((b) => b.slice(0, pos) + ins + b.slice(pos));
+        setCursor(pos + ins.length);
+        setHistoryIndex(-1);
+        historyRestoreRef.current = null;
+        setPasteNote(t("ui.paste.folded", { n: sanitized.split("\n").length }));
+        return;
+      }
       setBuffer((b) => b.slice(0, pos) + sanitized + b.slice(pos));
       setCursor(pos + sanitized.length);
       setHistoryIndex(-1);

@@ -210,7 +210,7 @@ describe("App", () => {
     expect(frame).toContain("Transcript —");
     expect(frame).toContain("old question");
     // P0-1: verbose viewer footer advertises search/jump/editor/close keys.
-    expect(frame).toContain("q/Esc close");
+    expect(frame).toContain("Showing detailed transcript"); // D6 official footer
   });
 
   it("keeps the Static transcript MOUNTED while reviewing (no reprint on exit)", async () => {

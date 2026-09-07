@@ -58,6 +58,7 @@ import type { CommandInfo } from "./InputBox.js";
 import { t } from "./i18n.js";
 import { appendHistory, loadHistory } from "./input-history.js";
 import { InputQueue } from "./input-queue.js";
+import { expandPastedChips, makePasteChip } from "./paste-chip.js";
 import { lookupContextWindow } from "./session-stats.js";
 import {
   type ProviderPickerItem,
@@ -664,6 +665,11 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
   // in `messages` history (model-visible on every later turn, official style).
   const imagesRef = useRef(new Map<number, string>());
   const imageCounterRef = useRef(0);
+  // D5: large-paste store. Unlike images, pastes are NOT single-use: the chip
+  // keeps resolving for the whole session (a chip recalled from history or
+  // moved between drafts still expands — the content is text, cheap to keep).
+  const pastesRef = useRef(new Map<number, string>());
+  const pasteCounterRef = useRef(0);
   // Live session id (P0-3 fix): /resume rewrites session.id in place, so the
   // startup-captured deps.sessionId goes stale — checkpoints and /rewind would
   // then query different buckets. Same getter pattern as getWorkspaceRoot.
@@ -671,10 +677,12 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
 
   // Chips are SINGLE-USE: an attached image is consumed on submit, so a chip
   // recalled from history (or typed literally) can't silently re-attach a
-  // stale image to a later message.
+  // stale image to a later message. Paste chips (D5) are the exception — see
+  // pastesRef: they expand every time, straight into the text.
   const buildUserContent = useCallback((text: string): ContentBlock[] => {
-    const blocks: ContentBlock[] = [{ type: "text", text }];
-    for (const m of text.matchAll(/\[Image #(\d+)\]/g)) {
+    const resolved = expandPastedChips(text, pastesRef.current);
+    const blocks: ContentBlock[] = [{ type: "text", text: resolved }];
+    for (const m of resolved.matchAll(/\[Image #(\d+)\]/g)) {
       const n = Number(m[1]);
       const data = imagesRef.current.get(n);
       if (data) {
@@ -683,6 +691,16 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
       }
     }
     return blocks;
+  }, []);
+
+  // D5: the InputBox hands over pastes above the fold threshold and gets the
+  // chip back — same shape as onImagePaste, but synchronous (the content is
+  // already in hand; no clipboard read to await).
+  const onLargePaste = useCallback((content: string): string => {
+    pasteCounterRef.current += 1;
+    pastesRef.current.set(pasteCounterRef.current, content);
+    const lines = content.split("\n").length;
+    return makePasteChip(pasteCounterRef.current, lines);
   }, []);
 
   // P0-5: InputBox Ctrl/Alt+V → read the system clipboard. Registers the
@@ -1137,6 +1155,7 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
         onQueuePop={onQueuePop}
         onModelPicker={onModelPicker}
         onThinkingToggle={onThinkingToggle}
+        onLargePaste={onLargePaste}
       />
     </>
   );

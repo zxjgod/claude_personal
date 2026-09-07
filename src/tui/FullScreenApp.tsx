@@ -124,6 +124,7 @@ function FsInteraction({
   onRewind,
   onImagePaste,
   onQueuePop,
+  onLargePaste,
 }: {
   store: TuiStore;
   commands: CommandInfo[];
@@ -133,6 +134,8 @@ function FsInteraction({
   onRewind?: () => void;
   onImagePaste?: () => Promise<string | null>;
   onQueuePop?: () => string | null;
+  /** D5: fold large pastes into chips. */
+  onLargePaste?: (content: string) => string;
 }) {
   const { overlay, busy, inputHistory, queuedMessages, inputAction } = useStoreSelector(
     store,
@@ -179,6 +182,7 @@ function FsInteraction({
         onRewind={busy ? undefined : onRewind}
         onImagePaste={onImagePaste}
         onQueuePop={busy ? onQueuePop : undefined}
+        onLargePaste={onLargePaste}
         pendingAction={inputAction}
         inputSuspended={() => store.getSnapshot().showHelp}
         onDraftChange={(draft) => store.setDraft(draft)}
@@ -261,6 +265,7 @@ export function FullScreenApp({
   onQueuePop,
   onModelPicker,
   onThinkingToggle,
+  onLargePaste,
 }: {
   store: TuiStore;
   commands: CommandInfo[];
@@ -275,6 +280,8 @@ export function FullScreenApp({
   onModelPicker?: () => void;
   /** B8 (alt+t): flip extended thinking on/off. */
   onThinkingToggle?: () => void;
+  /** D5: fold large pastes into chips. */
+  onLargePaste?: (content: string) => string;
 }) {
   const { rows } = useTerminalSize();
   const transcript = useStoreField(store, "transcript");
@@ -394,6 +401,7 @@ export function FullScreenApp({
           (InputBox renders with no bottom rule in this path). */}
       <FsInteraction
         onQueuePop={onQueuePop}
+        onLargePaste={onLargePaste}
         store={store}
         commands={commands}
         onSubmit={onSubmit}

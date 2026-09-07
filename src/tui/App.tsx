@@ -16,7 +16,7 @@
 // ============================================================
 
 import { Box, Static, Text, useInput } from "ink";
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { CommandPicker } from "./CommandPicker.js";
 import { EffortPrompt } from "./EffortPrompt.js";
 import { FullScreenApp } from "./FullScreenApp.js";
@@ -37,7 +37,7 @@ import { RewindPicker } from "./RewindPicker.js";
 import { SessionPicker } from "./SessionPicker.js";
 import { StatusLine } from "./StatusLine.js";
 import { StreamingMarkdown } from "./StreamingMarkdown.js";
-import { actionLabel } from "./spinner-core.js";
+import { actionLabel, isReducedMotion, nextTipId } from "./spinner-core.js";
 import type { StoreState, TranscriptItem, TuiStore } from "./store.js";
 import { CTX_CRITICAL_PCT, CTX_WARN_PCT } from "./store.js";
 import { Toast } from "./Toast.js";
@@ -333,6 +333,35 @@ function NextTodoRegion({ store }: { store: TuiStore }) {
   return <Text dimColor>{`  ${t("ui.todos.next", { task: next.content })}`}</Text>;
 }
 
+/** D1: session-wide tip rotation — a tip never repeats within one session. */
+const shownTipIds = new Set<string>();
+/** D1: a tip only shows once the spinner has been running this long. */
+const TIP_AFTER_MS = 8000;
+
+/**
+ * D1: the official-style tip line under the spinner. Appears once the turn
+ * has run ≥8s AND the todo projection is empty (todos own this slot via
+ * "Next:" first — official effectiveTip priority). Owns a slow tick so the
+ * 8s deadline fires even while the stream is silent; reduced motion keeps
+ * the line but drops the ticking cadence cost.
+ */
+export function TipLine({ turnStartedAt, todos }: { turnStartedAt: number; todos: number }) {
+  const [tipId, setTipId] = useState<string | null>(null);
+  const [chance] = useState(() => nextTipId(shownTipIds));
+  const reduced = isReducedMotion();
+  useEffect(() => {
+    const t = setInterval(
+      () => {
+        if (Date.now() - turnStartedAt >= TIP_AFTER_MS) setTipId(chance);
+      },
+      reduced ? 1000 : 500,
+    );
+    return () => clearInterval(t);
+  }, [turnStartedAt, chance, reduced]);
+  if (tipId === null || todos > 0 || turnStartedAt <= 0) return null;
+  return <Text dimColor>{`  ⎿ Tip: ${t(`ui.tip.${tipId}`)}`}</Text>;
+}
+
 /**
  * Animated status line while thinking / responding (no active tool). Subscribes
  * to the small slice that decides visibility + label; the StatusLine owns its
@@ -340,7 +369,7 @@ function NextTodoRegion({ store }: { store: TuiStore }) {
  * never touches this subscription.
  */
 function StatusLineRegion({ store }: { store: TuiStore }) {
-  const { busy, spinner, turnStartedAt, spinnerTokens, activityAt, toolCount, label } =
+  const { busy, spinner, turnStartedAt, spinnerTokens, activityAt, toolCount, label, todoCount } =
     useStoreSelector(store, selectStatusLine);
   if (!(busy && toolCount === 0 && spinner !== "idle")) return null;
   return (
@@ -353,6 +382,7 @@ function StatusLineRegion({ store }: { store: TuiStore }) {
         cycleVerbs={spinner === "thinking"}
       />
       <NextTodoRegion store={store} />
+      <TipLine turnStartedAt={turnStartedAt} todos={todoCount} />
     </Box>
   );
 }
@@ -365,6 +395,7 @@ function selectStatusLine(s: StoreState) {
     spinnerTokens: s.spinnerTokens,
     activityAt: s.spinnerActivityAt,
     toolCount: s.activeTools.length,
+    todoCount: s.todos.length,
     label: statusLabel(s.activeTools, s.spinner),
   };
 }
@@ -406,6 +437,7 @@ function InteractionRegion({
   onRewind,
   onImagePaste,
   onQueuePop,
+  onLargePaste,
 }: {
   store: TuiStore;
   commands: CommandInfo[];
@@ -419,6 +451,8 @@ function InteractionRegion({
   onImagePaste?: () => Promise<string | null>;
   /** B6: recall the last queued message (Up from an empty buffer). */
   onQueuePop?: () => string | null;
+  /** D5: fold large pastes into chips. */
+  onLargePaste?: (content: string) => string;
 }) {
   const { overlay, busy, inputHistory, queuedMessages, inputAction } = useStoreSelector(
     store,
@@ -463,6 +497,7 @@ function InteractionRegion({
         onRewind={busy ? undefined : onRewind}
         onImagePaste={onImagePaste}
         onQueuePop={busy ? onQueuePop : undefined}
+        onLargePaste={onLargePaste}
         pendingAction={inputAction}
         inputSuspended={() => store.getSnapshot().showHelp}
         onDraftChange={(draft) => store.setDraft(draft)}
@@ -513,6 +548,9 @@ function ModeHotkey({
   onModelPicker?: () => void;
   /** B8 (alt+t): flip extended thinking on/off. */
   onThinkingToggle?: () => void;
+  /** D5: fold a large paste into a "[Pasted text #N +L lines]" chip; the
+   *  runner stores the content and expands it on submit. */
+  onLargePaste?: (content: string) => string;
 }) {
   useInput((input, key) => {
     const result = globalResolver(input, key, ["Global"]);
@@ -587,6 +625,7 @@ function ReviewableBody({
   onRewind,
   onImagePaste,
   onQueuePop,
+  onLargePaste,
 }: {
   store: TuiStore;
   commands: CommandInfo[];
@@ -598,6 +637,8 @@ function ReviewableBody({
   onImagePaste?: () => Promise<string | null>;
   /** B6: recall the last queued message (Up from an empty buffer). */
   onQueuePop?: () => string | null;
+  /** D5: fold large pastes into chips. */
+  onLargePaste?: (content: string) => string;
 }) {
   const reviewing = useStoreField(store, "reviewing");
   if (reviewing) {
@@ -628,6 +669,7 @@ function ReviewableBody({
         onRewind={onRewind}
         onImagePaste={onImagePaste}
         onQueuePop={onQueuePop}
+        onLargePaste={onLargePaste}
       />
     </>
   );
@@ -646,6 +688,7 @@ export function App({
   onQueuePop,
   onModelPicker,
   onThinkingToggle,
+  onLargePaste,
 }: {
   store: TuiStore;
   commands: CommandInfo[];
@@ -670,6 +713,9 @@ export function App({
   onModelPicker?: () => void;
   /** B8 (alt+t): flip extended thinking on/off. */
   onThinkingToggle?: () => void;
+  /** D5: fold a large paste into a "[Pasted text #N +L lines]" chip; the
+   *  runner stores the content and expands it on submit. */
+  onLargePaste?: (content: string) => string;
 }) {
   if (fullscreen) {
     // FullScreenApp contains its own FsModeHotkey — no need for ModeHotkey wrapper.
@@ -685,6 +731,7 @@ export function App({
         onQueuePop={onQueuePop}
         onModelPicker={onModelPicker}
         onThinkingToggle={onThinkingToggle}
+        onLargePaste={onLargePaste}
       />
     );
   }

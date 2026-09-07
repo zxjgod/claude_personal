@@ -359,6 +359,42 @@ export function computeShimmerSegments(
   return { before, shimmer, after };
 }
 
+// --- Tips (D1) ----------------------------------------------------------------
+
+/** Official-flavored usage tips shown under the spinner after it has been
+ *  running a while. ids index the i18n table (`ui.tip.<id>`); zh ships its
+ *  own translations so both locales read natively. */
+export const SPINNER_TIP_IDS = [
+  "queue",
+  "rewind",
+  "bash",
+  "memory",
+  "historySearch",
+  "editor",
+  "todos",
+  "transcript",
+  "atFiles",
+  "stash",
+  "help",
+  "modelPicker",
+  "compact",
+  "todoList",
+] as const;
+
+/**
+ * Pick the next un-shown tip for this session (official tipScheduler flavor,
+ * simplified): random among the not-yet-seen ids, null once every tip has
+ * played. `shown` is the caller's session set — mutate it in place on
+ * success, or use `resetTipRotation` semantics by passing a fresh Set.
+ */
+export function nextTipId(shown: Set<string>): string | null {
+  const pool = SPINNER_TIP_IDS.filter((id) => !shown.has(id));
+  if (pool.length === 0) return null;
+  const id = pool[Math.floor(Math.random() * pool.length)]!;
+  shown.add(id);
+  return id;
+}
+
 // --- Formatting --------------------------------------------------------------
 
 /** Format a duration in ms as the spinner's short form (e.g. "16s", "2m 5s"). */

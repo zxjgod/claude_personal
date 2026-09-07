@@ -100,6 +100,8 @@ const translations: Record<Language, Record<string, string>> = {
 
     // Input box
     "ui.paste.note": "Pasted {n} lines — review, then Enter to send",
+    "ui.paste.folded":
+      "pasted {n} lines folded into the attached chip — full text still reaches the model",
     "ui.file.hint": "Tab insert · Esc close",
     "ui.suggest.moreAbove": "↑ {n} more",
     "ui.suggest.moreBelow": "↓ {n} more",
@@ -140,6 +142,10 @@ const translations: Record<Language, Record<string, string>> = {
     "ui.viewer.title": "Transcript — {n} lines (verbose)",
     "ui.viewer.titleStreaming": "Transcript — {n} lines (verbose) · still streaming",
     "ui.viewer.hint": "/ search · n/N matches · { } prompts · v editor · q/Esc close",
+    "ui.viewer.footer":
+      "Showing detailed transcript · ctrl+o to toggle · ↑↓ scroll · home/end top/bottom · {action} · / search · v editor",
+    "ui.viewer.collapse": "ctrl+e to collapse",
+    "ui.viewer.expand": "ctrl+e to expand",
     "ui.viewer.searchPrompt": "search: {q}",
     "ui.viewer.matches": "{n} matches",
     "ui.viewer.editorFailed": "could not open the transcript in $VISUAL/$EDITOR — kept at {path}",
@@ -192,6 +198,22 @@ const translations: Record<Language, Record<string, string>> = {
     "ui.compact.messages": "Summarized {n} messages",
     "ui.compact.context": 'Context: "{snippet}"',
     "ui.compact.low": "Context low ({pct}% remaining) · Run /compact to compact & continue",
+
+    // Spinner tips (D1) — shown under the spinner after ~8s of running
+    "ui.tip.queue": "Hit Enter while Claude is working to queue a follow-up message.",
+    "ui.tip.rewind": "Press Esc twice to rewind to an earlier point — code and conversation.",
+    "ui.tip.bash": "Type ! to run a shell command — its output joins the conversation.",
+    "ui.tip.memory": "Type # to save a note to CLAUDE.md for future sessions.",
+    "ui.tip.historySearch": "Press ctrl+r to search everything you've typed before.",
+    "ui.tip.editor": "Press ctrl+g to edit your prompt in $VISUAL/$EDITOR.",
+    "ui.tip.todos": "Press ctrl+t to collapse the todo list into a single Next: line.",
+    "ui.tip.transcript": "Press ctrl+o for the full transcript — tool outputs and thinking.",
+    "ui.tip.atFiles": "Type @ to attach a file path with autocomplete.",
+    "ui.tip.stash": "Press ctrl+s to stash your draft and restore it later.",
+    "ui.tip.help": "Run /help (or press ?) to see every shortcut.",
+    "ui.tip.modelPicker": "Press alt+p to switch models without spending tokens.",
+    "ui.tip.compact": "Run /compact when the context runs low to summarize and continue.",
+    "ui.tip.todoList": "Ask Claude to create a todo list for complex, multi-step tasks.",
 
     // Pickers
     "ui.picker.commands": "↑↓ move · Enter run · Esc cancel · Shift+Tab mode",
@@ -275,6 +297,7 @@ const translations: Record<Language, Record<string, string>> = {
     "ui.elide.thinking": "… 思考前文约 {n} 行已省略",
 
     "ui.paste.note": "已粘贴 {n} 行 — 检查后 Enter 发送",
+    "ui.paste.folded": "已粘贴 {n} 行，折叠为附件引用 — 全文仍会完整发给模型",
     "ui.file.hint": "Tab 插入 · Esc 关闭",
     "ui.suggest.moreAbove": "↑ 还有 {n} 条",
     "ui.suggest.moreBelow": "↓ 还有 {n} 条",
@@ -317,6 +340,22 @@ const translations: Record<Language, Record<string, string>> = {
     "ui.compact.context": '上下文："{snippet}"',
     "ui.compact.low": "上下文不足（剩余 {pct}%）· 运行 /compact 压缩后继续",
 
+    // Spinner 提示（D1）——运行约 8 秒后在转轮下方显示
+    "ui.tip.queue": "Claude 工作时按 Enter 可排队下一条消息。",
+    "ui.tip.rewind": "连按两次 Esc 可回退到之前的节点——代码和对话一起还原。",
+    "ui.tip.bash": "输入 ! 直接运行 shell 命令——输出会进入对话上下文。",
+    "ui.tip.memory": "输入 # 把一条笔记存入 CLAUDE.md，供以后的会话使用。",
+    "ui.tip.historySearch": "按 ctrl+r 搜索你输入过的所有内容。",
+    "ui.tip.editor": "按 ctrl+g 在 $VISUAL/$EDITOR 中编辑当前草稿。",
+    "ui.tip.todos": "按 ctrl+t 把待办列表折叠成一行“下一个：”。",
+    "ui.tip.transcript": "按 ctrl+o 查看完整记录——工具输出与思考全文。",
+    "ui.tip.atFiles": "输入 @ 附带文件路径，带自动补全。",
+    "ui.tip.stash": "按 ctrl+s 暂存草稿，稍后再按一次恢复。",
+    "ui.tip.help": "运行 /help（或按 ?）查看全部快捷键。",
+    "ui.tip.modelPicker": "按 alt+p 切换模型，不消耗 token。",
+    "ui.tip.compact": "上下文吃紧时运行 /compact，摘要后继续。",
+    "ui.tip.todoList": "复杂多步任务可以让 Claude 建一个待办清单。",
+
     // 选择器
     "ui.picker.commands": "↑↓ 移动 · Enter 运行 · Esc 取消 · Shift+Tab 切换模式",
     "ui.picker.sessions": "↑↓ 移动 · Enter 恢复 · Esc 取消 · Shift+Tab 切换模式",
@@ -354,6 +393,10 @@ const translations: Record<Language, Record<string, string>> = {
     "ui.viewer.title": "会话记录 — 共 {n} 行（完整模式）",
     "ui.viewer.titleStreaming": "会话记录 — 共 {n} 行（完整模式）· 仍在输出",
     "ui.viewer.hint": "/ 搜索 · n/N 匹配项 · { } 跳转提问 · v 编辑器 · q/Esc 关闭",
+    "ui.viewer.footer":
+      "详细会话记录 · ctrl+o 切换 · ↑↓ 滚动 · home/end 顶/底 · {action} · / 搜索 · v 编辑器",
+    "ui.viewer.collapse": "ctrl+e 折叠",
+    "ui.viewer.expand": "ctrl+e 展开",
     "ui.viewer.searchPrompt": "搜索：{q}",
     "ui.viewer.matches": "{n} 处匹配",
     "ui.viewer.editorFailed": "无法在 $VISUAL/$EDITOR 中打开会话记录 — 已保留在 {path}",
