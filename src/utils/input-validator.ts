@@ -73,8 +73,7 @@ export class InputValidator {
       const parsed = new URL(url);
 
       // Block certain protocols
-      const blockedProtocols = ["file:", "ftp:", "data:", "javascript:"];
-      if (blockedProtocols.includes(parsed.protocol)) {
+      if (!["http:", "https:"].includes(parsed.protocol)) {
         return { valid: false, error: `Protocol ${parsed.protocol} is not allowed` };
       }
 
@@ -154,8 +153,12 @@ export class InputValidator {
       // dd to device
       [/\bdd\s+.*of=\/dev\//, "dd to device"],
 
-      // Dangerous rm patterns
-      [/\brm\s+-rf\s+\/($|\s)/, "recursive delete of root"],
+      // Dangerous rm patterns — short flag clusters (-rf, -R) AND the
+      // --recursive long form, in any flag order, targeting `/` or `/*`.
+      [
+        /\brm\b[^|;&\n]*(?:(?:\s|^)['"]?-[a-z]*r[a-z]*['"]?|(?:\s|^)['"]?--recursive['"]?)[^|;&\n]*\s+\/\s*(?:\*|$)/i,
+        "recursive delete of root",
+      ],
 
       // mkfs (format filesystem)
       [/\bmkfs/, "filesystem format"],
@@ -187,7 +190,7 @@ export class InputValidator {
    *     "::ffff:127.0.0.1") embeds a private IPv4 that a prefix check cannot see.
    *   - 0.0.0.0 (all interfaces) and :: (unspecified) were in no range at all.
    */
-  private static isPrivateNetwork(hostname: string): boolean {
+  static isPrivateNetwork(hostname: string): boolean {
     // Strip IPv6 brackets before any address parsing.
     let host = hostname;
     if (host.startsWith("[") && host.endsWith("]")) {
@@ -195,7 +198,7 @@ export class InputValidator {
     }
 
     // Local hostnames.
-    if (/^localhost$/i.test(host)) {
+    if (/(^|\.)localhost\.?$/i.test(host)) {
       return true;
     }
 

@@ -12,6 +12,7 @@
 // soon as the code arrives (or times out).
 // ============================================================
 
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as http from "node:http";
 import * as os from "node:os";
@@ -42,6 +43,7 @@ export interface MCPOAuthConfig {
 // --- Persisted state on disk ---
 
 interface StoredAuth {
+  binding?: string;
   clientInformation?: OAuthClientInformationFull;
   tokens?: OAuthTokens;
   codeVerifier?: string;
@@ -63,19 +65,36 @@ export class FileTokenOAuthProvider implements OAuthClientProvider {
   private readonly storePath: string;
   private readonly storeDir: string;
   private stored: StoredAuth;
+  private readonly binding: string;
   /** Authorization URL captured during the SDK's redirect step. */
   private pendingAuthUrl: URL | null = null;
 
   constructor(
     private readonly serverName: string,
-    /** Reserved for the authorization flow (currently the SDK drives URLs itself). */
-    _serverUrl: URL,
+    serverUrl: URL,
     private readonly config: MCPOAuthConfig,
     /** Override the auth-state directory (tests). Defaults to ~/.claude/mcp-auth. */
     storeDir: string = authDir(),
   ) {
     this.storeDir = storeDir;
-    this.storePath = path.join(storeDir, `${safeName(serverName)}.json`);
+    const resource = new URL(serverUrl);
+    resource.hash = "";
+    this.binding = createHash("sha256")
+      .update(
+        JSON.stringify([
+          serverName,
+          resource.href,
+          config.clientId ?? null,
+          config.scopes ?? [],
+          this.redirectUrl,
+        ]),
+      )
+      .digest("hex");
+    // Never import legacy name-only stores: their token audience is unknown.
+    this.storePath = path.join(
+      storeDir,
+      `${safeName(serverName).slice(0, 60)}-${this.binding}.json`,
+    );
     this.stored = this.read();
   }
 
@@ -83,7 +102,8 @@ export class FileTokenOAuthProvider implements OAuthClientProvider {
 
   private read(): StoredAuth {
     try {
-      return JSON.parse(fs.readFileSync(this.storePath, "utf-8")) as StoredAuth;
+      const stored = JSON.parse(fs.readFileSync(this.storePath, "utf-8")) as StoredAuth;
+      return stored.binding === this.binding ? stored : {};
     } catch {
       return {};
     }
@@ -95,9 +115,13 @@ export class FileTokenOAuthProvider implements OAuthClientProvider {
     } catch {
       /* best effort */
     }
-    fs.writeFileSync(this.storePath, JSON.stringify(this.stored, null, 2), {
-      mode: 0o600,
-    });
+    fs.writeFileSync(
+      this.storePath,
+      JSON.stringify({ ...this.stored, binding: this.binding }, null, 2),
+      {
+        mode: 0o600,
+      },
+    );
   }
 
   // --- OAuthClientProvider interface ---

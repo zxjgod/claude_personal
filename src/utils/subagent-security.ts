@@ -1,34 +1,30 @@
 // ============================================================
 // Sub-agent Permission Control
 // ============================================================
-// Provides restricted approval functions for sub-agents to prevent
-// them from bypassing security checks via defaultAskUser.
+// Provides restricted approval functions for sub-agents so they cannot bypass
+// security checks via defaultAskUser. Approval is capability-based: only an
+// operation the tool itself reports as read-only for the given input is
+// auto-approved; everything else is forwarded to the parent's approval
+// channel (or denied when there is none).
 
 import type { AskUserFn, Tool } from "../types.js";
 
 /**
  * Create a restricted approval function for sub-agents.
- * Dangerous tools (bash, write, edit) require parent approval;
- * read-only tools are auto-approved.
+ * Auto-approval requires ALL of: no risk hint, the tool reports itself
+ * read-only for this input, and the tool does not demand approval itself.
+ * Anything else — writes, unknown/new tools, risk-hinted reads — goes to the
+ * parent approver; with no parent approver it is denied in restrictive mode
+ * (the default), so a future writable tool can never silently inherit a yes.
  */
 export function createSubAgentApprover(
   parentApprover?: AskUserFn,
   restrictive: boolean = true,
 ): AskUserFn {
   return async (tool: Tool, input: Record<string, unknown>, riskHint?: string) => {
-    // Dangerous tools that can modify system state
-    const dangerousTools = new Set([
-      "bash",
-      "write",
-      "edit",
-      "multi_edit",
-      "notebook_edit",
-      "enter_worktree",
-      "exit_worktree",
-    ]);
-
-    // If this is a dangerous tool, require parent approval
-    if (dangerousTools.has(tool.name)) {
+    // Unknown/new capabilities must not silently inherit approval. A risk
+    // hint can also force approval for an otherwise read-only operation.
+    if (riskHint || !tool.isReadOnly(input) || tool.requiresApproval?.()) {
       if (parentApprover) {
         // Forward to parent approver with the correct riskHint parameter
         return parentApprover(tool, input, riskHint);
@@ -47,21 +43,4 @@ export function createSubAgentApprover(
     // Read-only tools are always allowed
     return true;
   };
-}
-
-/**
- * Check if a tool is considered dangerous and requires approval.
- */
-export function isDangerousTool(toolName: string): boolean {
-  const dangerousTools = new Set([
-    "bash",
-    "write",
-    "edit",
-    "multi_edit",
-    "notebook_edit",
-    "enter_worktree",
-    "exit_worktree",
-  ]);
-
-  return dangerousTools.has(toolName);
 }

@@ -60,6 +60,10 @@ describe("isBlockedPath", () => {
       ".kube/config",
       ".git-credentials",
       ".netrc",
+      // Kernel pseudo-filesystems (anchored to the filesystem root).
+      "/proc/self/environ",
+      "/proc/cpuinfo",
+      "/sys/class/dmi/id/product_uuid",
     ]) {
       expect(isBlockedPath(p), p).toBe(true);
     }
@@ -71,6 +75,11 @@ describe("isBlockedPath", () => {
       "readme.md",
       "foo.env", // not a literal `.env` basename
       "package.json",
+      // Workspace directories named "proc"/"sys" are ordinary data, not the
+      // pseudo-filesystems (those only exist at the filesystem root).
+      "src/sys/config.ts",
+      "vendor/proc/fs.h",
+      "D:\\proj\\sys\\x.ts",
     ]) {
       expect(isBlockedPath(p), p).toBe(false);
     }

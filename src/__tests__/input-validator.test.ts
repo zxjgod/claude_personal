@@ -72,6 +72,25 @@ describe("InputValidator", () => {
       expect(result.error).toContain("recursive delete");
     });
 
+    it("should reject recursive delete of root via long options", () => {
+      for (const cmd of [
+        "rm --recursive /",
+        "rm --recursive --force /",
+        "rm --force --recursive /*",
+        "rm -R /",
+      ]) {
+        const result = InputValidator.validateCommand(cmd);
+        expect(result.valid, cmd).toBe(false);
+        expect(result.error).toContain("recursive delete");
+      }
+    });
+
+    it("should not flag recursive deletes of ordinary paths", () => {
+      for (const cmd of ["rm -r build/", "rm --recursive tmp/cache", "rm -rf /tmp/x"]) {
+        expect(InputValidator.validateCommand(cmd).valid, cmd).toBe(true);
+      }
+    });
+
     it("should reject mkfs", () => {
       const result = InputValidator.validateCommand("mkfs.ext4 /dev/sda1");
       expect(result.valid).toBe(false);

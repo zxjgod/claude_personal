@@ -222,6 +222,12 @@ const BLOCKED_PATTERNS = [
   /(^|[/\\])\.docker([/\\]|$)/,
   /(^|[/\\])\.azure([/\\]|$)/,
   /(^|[/\\])\.config[/\\](gcloud|gh)([/\\]|$)/,
+  // Process and kernel pseudo-files expose other processes' environment,
+  // command lines, and host secrets. Anchored to the filesystem root: the
+  // pseudo-filesystems only exist at /proc and /sys, so a workspace directory
+  // named "proc" or "sys" (common in embedded/kernel code) stays accessible.
+  /^\/proc(\/|$)/,
+  /^\/sys(\/|$)/,
   /(^|[/\\])\.git-credentials$/,
   /(^|[/\\])\.netrc$/,
   // --- VCS internals: the whole .git/ tree, not just config/hooks. Editing

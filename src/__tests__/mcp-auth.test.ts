@@ -25,6 +25,47 @@ afterEach(() => {
 const url = new URL("https://mcp.example.com/sse");
 
 describe("FileTokenOAuthProvider", () => {
+  it("isolates credentials by resource, client identity, and unsanitized name", () => {
+    const original = new FileTokenOAuthProvider("same/name", url, { clientId: "client-a" }, dir);
+    original.saveTokens({ access_token: "fake-token", token_type: "Bearer" });
+    for (const provider of [
+      new FileTokenOAuthProvider(
+        "same/name",
+        new URL("https://other.example/sse"),
+        { clientId: "client-a" },
+        dir,
+      ),
+      new FileTokenOAuthProvider(
+        "same/name",
+        new URL("https://mcp.example.com/other"),
+        { clientId: "client-a" },
+        dir,
+      ),
+      new FileTokenOAuthProvider("same/name", url, { clientId: "client-b" }, dir),
+      new FileTokenOAuthProvider("same_name", url, { clientId: "client-a" }, dir),
+    ])
+      expect(provider.tokens()).toBeUndefined();
+    expect(
+      new FileTokenOAuthProvider("same/name", url, { clientId: "client-a" }, dir).tokens()
+        ?.access_token,
+    ).toBe("fake-token");
+  });
+
+  it("does not trust legacy unbound credentials or mismatched binding metadata", () => {
+    fs.writeFileSync(
+      path.join(dir, "srv.json"),
+      JSON.stringify({ tokens: { access_token: "legacy", token_type: "Bearer" } }),
+    );
+    const provider = new FileTokenOAuthProvider("srv", url, {}, dir);
+    expect(provider.tokens()).toBeUndefined();
+    provider.saveTokens({ access_token: "new", token_type: "Bearer" });
+    const boundFile = fs.readdirSync(dir).find((name) => name !== "srv.json");
+    if (!boundFile) throw new Error("Missing bound credential file");
+    const stored = JSON.parse(fs.readFileSync(path.join(dir, boundFile), "utf8"));
+    stored.binding = "wrong-resource";
+    fs.writeFileSync(path.join(dir, boundFile), JSON.stringify(stored));
+    expect(new FileTokenOAuthProvider("srv", url, {}, dir).tokens()).toBeUndefined();
+  });
   it("builds client metadata with the localhost redirect", () => {
     const p = new FileTokenOAuthProvider("srv", url, { redirectPort: 40000 }, dir);
     expect(p.redirectUrl).toBe("http://127.0.0.1:40000/callback");

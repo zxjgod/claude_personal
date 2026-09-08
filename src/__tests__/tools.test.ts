@@ -415,10 +415,69 @@ describe("bashCommandIsReadOnly (M29)", () => {
     expect(bashCommandIsReadOnly("ls $HOME")).toBe(true);
   });
 
+  it("auto-approves wildcards and quoted metacharacters for read-only leaders", () => {
+    // Unquoted wildcards can only widen WHAT an allowlisted read-only command
+    // reads — they cannot turn it into a write.
+    expect(bashCommandIsReadOnly("ls *.ts")).toBe(true);
+    expect(bashCommandIsReadOnly("cat src/**/*.md")).toBe(true);
+    // Quoted arguments are data: regex parens, redirect-looking literals,
+    // single-quoted `$` anchors, and `%` must not force an approval prompt.
+    expect(bashCommandIsReadOnly('grep "(foo)" src/app.ts')).toBe(true);
+    expect(bashCommandIsReadOnly('grep "->" src')).toBe(true);
+    expect(bashCommandIsReadOnly("grep 'foo$' src")).toBe(true);
+    expect(bashCommandIsReadOnly('echo "100%"')).toBe(true);
+    // Windows-style path separators are fine as long as nothing is escaped.
+    expect(bashCommandIsReadOnly("cat C:\\Users\\me\\report.txt")).toBe(true);
+    // Unquoted shell-active characters still route through approval.
+    expect(bashCommandIsReadOnly("ls (x)")).toBe(false);
+    expect(bashCommandIsReadOnly("cat a\\;rm -rf /")).toBe(false);
+    // Wildcards that could expand to a blocked secret path require approval.
+    expect(bashCommandIsReadOnly("cat *")).toBe(false);
+    expect(bashCommandIsReadOnly("cat cred*")).toBe(false);
+    expect(bashCommandIsReadOnly("cat .e*")).toBe(false);
+    expect(bashCommandIsReadOnly("cat *.json")).toBe(false); // credentials.json
+    expect(bashCommandIsReadOnly("ls src/*")).toBe(false); // src/.env, src/.ssh/…
+  });
+
+  it("keeps unquoted wildcards behind approval for git (flag smuggling via expansion)", () => {
+    // An expanded filename like `--output=x` would arrive as a git FLAG.
+    expect(bashCommandIsReadOnly("git log *.ts")).toBe(false);
+    expect(bashCommandIsReadOnly("git diff src/*")).toBe(false);
+    // Quoted pathspecs never reach the shell expander and stay auto-approved.
+    expect(bashCommandIsReadOnly('git log -- "*.ts"')).toBe(true);
+  });
+
   it("rejects write-capable git subcommands", () => {
     expect(bashCommandIsReadOnly("git commit -am x")).toBe(false);
     expect(bashCommandIsReadOnly("git checkout -b new")).toBe(false);
     expect(bashCommandIsReadOnly("git config user.name me")).toBe(false);
+  });
+
+  it("treats inspection-only git subcommands as read-only", () => {
+    for (const command of [
+      "git diff",
+      "git diff --cached",
+      "git diff --stat HEAD~1",
+      "git diff -- src/app.ts",
+      "git show --stat HEAD",
+      "git blame src/app.ts",
+      "git grep TODO",
+      "git log -- src/",
+    ]) {
+      expect(bashCommandIsReadOnly(command), command).toBe(true);
+    }
+  });
+
+  it("keeps option-driven git behavior behind approval", () => {
+    expect(bashCommandIsReadOnly("git diff --output=out.patch")).toBe(false);
+    expect(bashCommandIsReadOnly("git diff --ext-diff")).toBe(false);
+    expect(bashCommandIsReadOnly("git grep -Oless TODO")).toBe(false);
+    // reflog's `expire` sub-verb mutates and is indistinguishable from `show`
+    // by position alone — the subcommand stays out entirely.
+    expect(bashCommandIsReadOnly("git reflog show")).toBe(false);
+    expect(bashCommandIsReadOnly("git reflog expire --expire=now --all")).toBe(false);
+    // cat-file needs its -p/-t flags, which are not allowlisted.
+    expect(bashCommandIsReadOnly("git cat-file -p HEAD")).toBe(false);
   });
 
   it("rejects empty / non-string input", () => {
@@ -450,6 +509,18 @@ describe("powershellCommandIsReadOnly", () => {
     expect(powershellCommandIsReadOnly("Test-Path x")).toBe(true);
     expect(powershellCommandIsReadOnly("pwd")).toBe(true);
     expect(powershellCommandIsReadOnly("Get-ChildItem | Where-Object Name -eq 'a'")).toBe(true);
+  });
+
+  it("accepts wildcard arguments (stage leaders are pinned to the read-only set)", () => {
+    expect(powershellCommandIsReadOnly("Get-ChildItem *.ts")).toBe(true);
+    expect(powershellCommandIsReadOnly("Get-Content src\\*.md")).toBe(true);
+    // Blocked-path arguments are still rejected even with wildcards around.
+    expect(powershellCommandIsReadOnly("Get-Content .ssh\\id_rsa")).toBe(false);
+    // Wildcards that could expand to a secret path require approval —
+    // PowerShell expands wildcards even inside quotes.
+    expect(powershellCommandIsReadOnly("Get-Content .e*")).toBe(false);
+    expect(powershellCommandIsReadOnly("Get-Content *")).toBe(false);
+    expect(powershellCommandIsReadOnly('Get-Content "*.e*"')).toBe(false);
   });
 
   it("rejects mutating cmdlets and shell features", () => {

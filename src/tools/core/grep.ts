@@ -6,8 +6,10 @@ import { execFile } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { promisify } from "node:util";
+import { Script } from "node:vm";
 import fg from "fast-glob";
 import { z } from "zod";
+import { isBlockedPath } from "../../permissions.js";
 import type { Tool, ToolResult } from "../../types.js";
 import { buildTool } from "../registry.js";
 import { resolveInWorkspace } from "../utils/path.js";
@@ -15,6 +17,7 @@ import { resolveInWorkspace } from "../utils/path.js";
 const execFileAsync = promisify(execFile);
 
 const DEFAULT_HEAD_LIMIT = 250;
+class RipgrepUnavailableError extends Error {}
 
 // Packaged ripgrep binary (M37). `@vscode/ripgrep` is a thin shim that resolves
 // the correct per-platform binary from an optional dependency and exports its
@@ -128,10 +131,19 @@ export const GrepTool: Tool = buildTool({
     } else {
       searchDir = context.workspaceRoot;
     }
+    if (isBlockedPath(searchDir)) {
+      return { content: "", error: "Access denied: search target is a blocked path" };
+    }
+    if (!fs.existsSync(searchDir)) {
+      // Check up front: a statSync ENOENT deeper down would masquerade as "rg
+      // binary missing" (same error code) and reroute into the Node fallback,
+      // surfacing as a confusing generic failure instead of a clear message.
+      return { content: "", error: `Path not found: ${searchDir}` };
+    }
 
     // Prefer ripgrep (fast, gitignore-aware); fall back to a Node.js scan.
     try {
-      return await runRipgrep(input, searchDir, context.abortSignal);
+      return await runRipgrep(input, searchDir, context.workspaceRoot, context.abortSignal);
     } catch (error) {
       const execError = error as Record<string, unknown>;
       // Interrupt: ripgrep subprocess was killed. Do not fall back.
@@ -142,7 +154,12 @@ export const GrepTool: Tool = buildTool({
       if (execError.code === 1 && execError.stdout === "") {
         return { content: "No matches found.", metadata: { linesRead: 0, summary: "No matches" } };
       }
-      // rg missing (ENOENT), invalid regex, or any other error → Node.js fallback.
+      if (!(error instanceof RipgrepUnavailableError) && execError.code !== "ENOENT") {
+        return {
+          content: "",
+          error: String(execError.stderr || execError.message || "Search failed"),
+        };
+      }
       return runNodeFallback(input, searchDir, context);
     }
   },
@@ -155,6 +172,7 @@ export const GrepTool: Tool = buildTool({
 async function runRipgrep(
   input: GrepInput,
   searchDir: string,
+  workspaceRoot: string,
   abortSignal?: AbortSignal,
 ): Promise<ToolResult> {
   // Resolve the PACKAGED ripgrep binary instead of a host `rg` on PATH. This
@@ -167,7 +185,7 @@ async function runRipgrep(
   try {
     rgPath = await resolveRgPath();
   } catch {
-    throw new Error("packaged ripgrep binary unavailable for this platform");
+    throw new RipgrepUnavailableError("packaged ripgrep binary unavailable for this platform");
   }
 
   // Build the rg invocation as an argv array passed to execFile rather than a
@@ -216,17 +234,74 @@ async function runRipgrep(
 
   // `--` terminates option parsing, so a pattern beginning with `-` (e.g.
   // "-foo", "-\d+") is treated as the regex, not a ripgrep flag.
-  argv.push("--", input.pattern, searchDir);
-
-  const { stdout } = await execFileAsync(argv[0]!, argv.slice(1), {
-    timeout: 30_000,
-    maxBuffer: 10 * 1024 * 1024,
-    signal: abortSignal, // Ctrl+C kills the ripgrep child process
-  });
+  // Enumerate names first, then apply the same policy as Read BEFORE rg opens
+  // any content. Ignore globs alone are not a security boundary: explicit
+  // paths and user-supplied globs override them.
+  let candidates: string[];
+  if (fs.statSync(searchDir).isFile()) {
+    candidates = [searchDir];
+  } else {
+    const listArgs = [
+      "--no-config",
+      "--files",
+      "--null",
+      "--glob",
+      "!node_modules",
+      "--glob",
+      "!.git",
+    ];
+    if (input.type) listArgs.push("--type", input.type);
+    if (fileFilter) listArgs.push("--glob", fileFilter);
+    listArgs.push("--", searchDir);
+    const listed = await execFileAsync(rgPath, listArgs, {
+      timeout: 30_000,
+      maxBuffer: 10 * 1024 * 1024,
+      signal: abortSignal,
+    });
+    candidates = listed.stdout.split("\0").filter(Boolean);
+  }
+  const files = [
+    ...new Set(
+      candidates.flatMap((file) => {
+        const resolved = resolveInWorkspace(file, workspaceRoot);
+        return resolved.ok && !isBlockedPath(file) && !isBlockedPath(resolved.path)
+          ? [resolved.path]
+          : [];
+      }),
+    ),
+  ];
+  let stdout = "";
+  let sizeCapped = false;
+  // Bound argv length on Windows and the accumulated result across batches.
+  for (let i = 0; i < files.length; i += 32) {
+    const args = [
+      ...argv.slice(1),
+      "--with-filename",
+      "--",
+      input.pattern,
+      ...files.slice(i, i + 32),
+    ];
+    try {
+      const result = await execFileAsync(rgPath, args, {
+        timeout: 30_000,
+        maxBuffer: 10 * 1024 * 1024,
+        signal: abortSignal,
+      });
+      stdout += result.stdout;
+    } catch (error) {
+      if ((error as { code?: number }).code !== 1) throw error;
+    }
+    if (stdout.length >= 10 * 1024 * 1024) {
+      sizeCapped = true;
+      break;
+    }
+  }
 
   const rawLines = stdout.trim().split("\n").filter(Boolean);
   const headLimit = input.head_limit ?? DEFAULT_HEAD_LIMIT;
-  const truncated = rawLines.length > headLimit;
+  // Stopping early on the size cap leaves later batches unsearched — the
+  // result is incomplete even when the line count fits under headLimit.
+  const truncated = rawLines.length > headLimit || sizeCapped;
   const lines = rawLines.slice(0, headLimit);
 
   if (lines.length === 0) {
@@ -246,7 +321,7 @@ async function runRipgrep(
 async function runNodeFallback(
   input: GrepInput,
   searchDir: string,
-  context: { workspaceRoot: string },
+  context: { workspaceRoot: string; abortSignal?: AbortSignal },
 ): Promise<ToolResult> {
   // Fallback: fast-glob + manual regex search, honoring the common options.
   // A `glob`/`include` filter wins over `type` when both are given (the model
@@ -256,12 +331,15 @@ async function runNodeFallback(
   else if (input.type && TYPE_GLOB[input.type]) patterns.push(TYPE_GLOB[input.type]!);
   if (patterns.length === 0) patterns.push("**/*");
 
-  const files = await fg(patterns, {
-    cwd: searchDir,
-    ignore: ["**/node_modules/**", "**/.git/**"],
-    absolute: true,
-    onlyFiles: true,
-  });
+  const files = fs.statSync(searchDir).isFile()
+    ? [searchDir]
+    : await fg(patterns, {
+        cwd: searchDir,
+        ignore: ["**/node_modules/**", "**/.git/**"],
+        absolute: true,
+        onlyFiles: true,
+        followSymbolicLinks: false,
+      });
 
   if (input["-e"]) {
     return {
@@ -270,9 +348,8 @@ async function runNodeFallback(
     };
   }
   const flags = input["-i"] ? (input.multiline ? "gim" : "gi") : input.multiline ? "gm" : "g";
-  let regex: RegExp;
   try {
-    regex = new RegExp(input.pattern, flags);
+    new RegExp(input.pattern, flags);
   } catch {
     return { content: "", error: `Invalid regex pattern: ${input.pattern}` };
   }
@@ -280,10 +357,42 @@ async function runNodeFallback(
   const headLimit = input.head_limit ?? DEFAULT_HEAD_LIMIT;
   const results: string[] = [];
   const fileMatchCount = new Map<string, number>();
+  const deadline = Date.now() + 5000;
+  // Execute all matching for one bounded file under V8's interruptible VM
+  // deadline. A JS timer around regex.test cannot interrupt backtracking.
+  const matcher = new Script(`
+    const regex = new RegExp(pattern, flags);
+    const hits = [];
+    for (let i = 0; i < lines.length; i++) {
+      regex.lastIndex = 0;
+      const first = regex.exec(lines[i]);
+      if (!first) continue;
+      const matches = [];
+      if (only) {
+        let match = first;
+        while (match && matches.length < limit) {
+          matches.push(match[0]);
+          if (match.index === regex.lastIndex) regex.lastIndex++;
+          match = regex.exec(lines[i]);
+        }
+      }
+      hits.push([i, matches]);
+    }
+    hits;
+  `);
 
-  for (const file of files) {
+  for (const candidate of files) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    if (context.abortSignal?.aborted)
+      return { content: "Search aborted.", metadata: { aborted: true } };
+    // Satisfied results beat the deadline: a full headLimit page is complete,
+    // whereas the timeout branch would discard it.
     if (results.length >= headLimit) break;
+    if (Date.now() >= deadline) return { content: "", error: "Fallback search timed out" };
     try {
+      const resolved = resolveInWorkspace(candidate, context.workspaceRoot);
+      if (!resolved.ok || isBlockedPath(candidate) || isBlockedPath(resolved.path)) continue;
+      const file = resolved.path;
       const stat = fs.statSync(file);
       if (stat.isDirectory() || stat.size > 1024 * 1024) continue;
 
@@ -295,12 +404,22 @@ async function runNodeFallback(
       const contextAfter = input["-A"] ?? input["-C"] ?? 0;
       // Honor -n:false (suppress line numbers) and -o (only matching substrings).
       const showLineNum = input["-n"] !== false;
-      const onlyRegex = input["-o"] ? new RegExp(input.pattern, flags) : null;
-
-      for (let i = 0; i < contentLines.length; i++) {
-        const line = contentLines[i]!;
-        regex.lastIndex = 0;
-        if (!regex.test(line)) continue;
+      let hits: Array<[number, string[]]>;
+      try {
+        hits = matcher.runInNewContext(
+          {
+            pattern: input.pattern,
+            flags,
+            lines: contentLines,
+            only: !!input["-o"],
+            limit: headLimit,
+          },
+          { timeout: 100 },
+        );
+      } catch {
+        return { content: "", error: "Fallback regex search timed out; simplify the pattern" };
+      }
+      for (const [i, matches] of hits) {
         if (input.output_mode === "files_with_matches") {
           fileMatchCount.set(relPath, 1);
           continue;
@@ -309,15 +428,12 @@ async function runNodeFallback(
           fileMatchCount.set(relPath, (fileMatchCount.get(relPath) ?? 0) + 1);
           continue;
         }
-        if (onlyRegex) {
+        if (input["-o"]) {
           // -o: emit each matching substring (context lines are not emitted with
           // -o; they would duplicate the match on the same line).
-          let m = onlyRegex.exec(line);
-          while (m !== null) {
-            results.push(showLineNum ? `${relPath}:${i + 1}:${m[0]}` : m[0]);
-            if (m.index === onlyRegex.lastIndex) onlyRegex.lastIndex++;
+          for (const match of matches) {
+            results.push(showLineNum ? `${relPath}:${i + 1}:${match}` : match);
             if (results.length >= headLimit) break;
-            m = onlyRegex.exec(line);
           }
         } else {
           // content mode: emit match lines with optional context
