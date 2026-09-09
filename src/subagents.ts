@@ -75,6 +75,7 @@ const SUBAGENT_TYPES = new Map<string, SubagentType>([
         "When you need to explore, search, or understand code across many files and only need a summary of findings back (not the raw tool output).",
       toolNames: ["read", "glob", "grep", "bash"],
       systemPrompt: EXPLORER_PROMPT,
+      maxTurns: 20,
     },
   ],
   [
@@ -86,6 +87,7 @@ const SUBAGENT_TYPES = new Map<string, SubagentType>([
         "When you want an independent review of existing code for correctness bugs, security issues, and clarity, returned as a structured summary.",
       toolNames: ["read", "glob", "grep"],
       systemPrompt: REVIEWER_PROMPT,
+      maxTurns: 30,
     },
   ],
   [
@@ -97,6 +99,7 @@ const SUBAGENT_TYPES = new Map<string, SubagentType>([
         "When you need a multi-step task carried out end to end (including file edits) and only need a summary of what changed back.",
       toolNames: ["read", "glob", "grep", "bash", "write", "edit"],
       systemPrompt: GENERAL_PROMPT,
+      maxTurns: 20,
     },
   ],
 ]);
@@ -156,7 +159,7 @@ export function setCoreToolsForSubagents(tools: Tool[]): void {
  * standalone tests/usage without CLI wiring still work).
  */
 export async function getCoreToolsForSubagents(): Promise<Tool[]> {
-  if (_coreTools) return _coreTools;
+  if (_coreTools) return _coreTools.filter((tool) => tool.isEnabled());
   const { ReadTool, GlobTool, GrepTool, BashTool, WriteTool, EditTool } = await import(
     "./tools/index.js"
   );

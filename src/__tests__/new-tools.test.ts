@@ -9,9 +9,10 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearTodos, getTodos, TodoTool } from "../tools/extended/todo.js";
 import { InputValidationError } from "../tools/registry.js";
+import * as publicHttp from "../tools/utils/public-http.js";
 import type { ToolContext } from "../types.js";
 
 let tmpDir: string;
@@ -200,14 +201,15 @@ describe("WebFetchTool", () => {
 
   it("should accept valid URLs", async () => {
     // Test that valid input passes Zod but still has SSRF check in call().
-    // Stub global fetch so the test is hermetic — no real network / DNS,
+    // Stub the validated transport so the test is hermetic — no real network / DNS,
     // otherwise it hangs in restricted networks and times out the suite.
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async () =>
-      new Response("<html><body>ok</body></html>", {
-        status: 200,
-        headers: { "content-type": "text/html" },
-      })) as typeof fetch;
+    const request = vi.spyOn(publicHttp, "publicHttpGet").mockImplementation(
+      async () =>
+        new Response("<html><body>ok</body></html>", {
+          status: 200,
+          headers: { "content-type": "text/html" },
+        }),
+    );
     try {
       const result = await WebFetchTool.call(
         { url: "https://github.com", fetchInfo: "homepage" },
@@ -216,7 +218,7 @@ describe("WebFetchTool", () => {
       expect(result.error).toBeUndefined();
       expect(result.content).toContain("ok");
     } finally {
-      globalThis.fetch = originalFetch;
+      request.mockRestore();
     }
   });
 });
@@ -315,7 +317,6 @@ describe("TaskTool", () => {
 // mocking the model caller to emit a write tool call and asserting the parent
 // askUser is invoked.
 
-import { vi } from "vitest";
 import type { ModelConfig } from "../types.js";
 
 vi.mock("../llm-adapter.js", () => ({
@@ -357,7 +358,8 @@ describe("TaskTool sub-agent permission forwarding", () => {
     // mode, so the forwarded parent askUser must have been consulted. Before
     // the fix, defaultAskUser (always-true) would have run it unattended.
     expect(parentAskUser).toHaveBeenCalled();
-    // User denied → the write was blocked; result reflects the sub-agent ran.
-    expect(result.error).toBeUndefined();
+    // User denied → the write was blocked; the sub-agent reports that it did
+    // not reach a completed final report instead of claiming success.
+    expect(result.error).toContain("incomplete");
   });
 });

@@ -2116,3 +2116,141 @@ describe("job-store — completion notifications (M41)", () => {
     expect(output).toContain("E".repeat(100));
   });
 });
+
+// ============================================================
+// Attempt boundaries & interrupt attribution (TUI state-sync S1-S3)
+// ============================================================
+
+describe("agentLoop — attempt boundaries and interrupt attribution", () => {
+  function probeTool(capture: (ctx: { requestPlanApproval?: unknown }) => void): Tool {
+    return {
+      name: "probe",
+      description: "Probe",
+      promptDescription: "Captures its tool context",
+      inputSchema: { type: "object", properties: {}, required: [] },
+      isEnabled: () => true,
+      isReadOnly: () => true,
+      isConcurrencySafe: () => true,
+      call: async (_input, context) => {
+        capture(context);
+        return { content: "ok" };
+      },
+      formatResult: (result) => result.content,
+      checkPermissions: async () => ({ allowed: true }),
+    };
+  }
+
+  it("propagates requestPlanApproval from toolContext into the tool context", async () => {
+    // Regression (S2): baseContext rebuilt the ToolContext field-by-field and
+    // dropped requestPlanApproval, so ExitPlanMode saw no approval channel and
+    // silently switched permission mode without ever asking the user.
+    let captured: { requestPlanApproval?: unknown } | undefined;
+    const approval = async () => ({ choice: "approve" as const, plan: "p" });
+    const caller = makeMockCaller([
+      [
+        { type: "tool_use", id: "p1", name: "probe", input: {} },
+        {
+          type: "done",
+          usage: { input_tokens: 1, output_tokens: 1 },
+          finish_reason: "tool_calls",
+        },
+      ],
+    ]);
+    await drain(
+      agentLoop(messages("run probe"), [probeTool((ctx) => (captured = ctx))], caller, testConfig, {
+        systemPrompt: "s",
+        speculation: false,
+        toolContext: { requestPlanApproval: approval },
+      }),
+    );
+    expect(captured?.requestPlanApproval).toBe(approval);
+  });
+
+  it("reports a mid-stream user interrupt as aborted, not as an error", async () => {
+    // Regression (S3): adapters surface Ctrl+C during streaming as an
+    // AbortError through the model-error path; the loop used to forward it as
+    // an `error` event and terminal "model_error", so the TUI persisted the
+    // session as "failed" instead of "stopped_by_user".
+    const controller = new AbortController();
+    const caller: ModelCaller = async function* () {
+      yield { type: "text_delta", delta: "partial answer" };
+      controller.abort(); // user hits Ctrl+C while the model is streaming
+      const err = new Error("Aborted");
+      err.name = "AbortError";
+      yield { type: "error", error: err };
+    };
+    const { events, terminal } = await drain(
+      agentLoop(messages("hi"), [], caller, testConfig, {
+        systemPrompt: "s",
+        speculation: false,
+        abortSignal: controller.signal,
+      }),
+    );
+    expect(events.some((e: any) => e.type === "error")).toBe(false);
+    expect(events.some((e: any) => e.type === "aborted")).toBe(true);
+    expect(terminal.reason).toBe("aborted_streaming");
+  });
+
+  it("still reports a genuine model failure as an error", async () => {
+    // Guard for S3: a non-abort failure with a live signal must NOT be
+    // reclassified as a user interrupt.
+    const caller: ModelCaller = async function* () {
+      const err = new Error("Internal Server Error");
+      (err as { status?: number }).status = 500;
+      yield { type: "error", error: err };
+    };
+    const { events, terminal } = await drain(
+      agentLoop(messages("hi"), [], caller, testConfig, {
+        systemPrompt: "s",
+        speculation: false,
+      }),
+    );
+    expect(events.some((e: any) => e.type === "aborted")).toBe(false);
+    expect(events.some((e: any) => e.type === "error")).toBe(true);
+    expect(terminal.reason).toBe("model_error");
+  });
+
+  it("emits model_retry at the attempt boundary so consumers can discard the failed stream", async () => {
+    // Regression (S1): the failed attempt's partial text never enters model
+    // history, but the loop used to retry silently — the TUI appended the new
+    // attempt's output to the dead fragment, forking transcript from history.
+    // The fallback-model path retries without a backoff sleep, so it exercises
+    // the same boundary event deterministically.
+    let call = 0;
+    const caller: ModelCaller = async function* () {
+      call++;
+      if (call === 1) {
+        yield { type: "text_delta", delta: "partial from doomed attempt" };
+        const err = new Error("Internal Server Error");
+        (err as { status?: number }).status = 500;
+        yield { type: "error", error: err };
+        return;
+      }
+      yield { type: "text_delta", delta: "clean answer" };
+      yield {
+        type: "done",
+        usage: { input_tokens: 1, output_tokens: 1 },
+        finish_reason: "stop",
+      };
+    };
+    const { events, terminal } = await drain(
+      agentLoop(
+        messages("hi"),
+        [],
+        caller,
+        { ...testConfig, fallbackModels: ["fb"] },
+        {
+          systemPrompt: "s",
+          speculation: false,
+        },
+      ),
+    );
+    const types = events.map((e: any) => e.type as string);
+    const retryIdx = types.indexOf("model_retry");
+    expect(retryIdx).toBeGreaterThan(-1);
+    // The boundary sits between the failed attempt's text and the retry's text.
+    expect(types.slice(0, retryIdx)).toContain("text_delta");
+    expect(types.slice(retryIdx + 1)).toContain("text_delta");
+    expect(terminal.reason).toBe("completed");
+  });
+});

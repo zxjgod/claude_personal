@@ -281,12 +281,15 @@ export const anthropicCaller: ModelCaller = async function* (
 
   // Phase 1 of cache-break detection: hash the cacheable prefix + tools so the
   // post-call check can attribute a cache miss to the exact cause.
-  recordPromptState({
-    systemPrompt,
-    tools,
-    model: config.model || "claude-opus-4-8",
-    effort: getEffort(config.options),
-  });
+  recordPromptState(
+    {
+      systemPrompt,
+      tools,
+      model: config.model || "claude-opus-4-8",
+      effort: getEffort(config.options),
+    },
+    messages,
+  );
 
   // Claude 4.8 benefits from adaptive thinking; harmlessly omitted when the
   // caller uses a non-Claude provider because this adapter only runs for
@@ -404,8 +407,8 @@ export const anthropicCaller: ModelCaller = async function* (
     const cacheCreation = u.cache_creation_input_tokens ?? 0;
 
     // Phase 2 of cache-break detection: surface a break with its root cause.
-    const cacheBreak = checkResponseForCacheBreak(cacheRead, cacheCreation);
-    if (cacheBreak) {
+    const cacheBreak = checkResponseForCacheBreak(cacheRead, cacheCreation, messages);
+    if (cacheBreak && process.env.DEBUG_PROMPT_CACHE === "1") {
       console.warn(
         `[prompt cache break] ${cacheBreak.reason} ` +
           `(cache read ${cacheRead} tokens, creation ${cacheCreation})`,
@@ -431,6 +434,13 @@ export const anthropicCaller: ModelCaller = async function* (
       finish_reason: finishReason,
       ...(thinkingBlocks.length > 0 ? { thinking: thinkingBlocks } : {}),
     };
+  } catch (error) {
+    if (combinedSignal.aborted && !abortSignal?.aborted) {
+      const timeoutError = new Error("Request timed out");
+      timeoutError.name = "TimeoutError";
+      throw timeoutError;
+    }
+    throw error;
   } finally {
     abortSignal?.removeEventListener("abort", onAbort);
     combined.cleanup();

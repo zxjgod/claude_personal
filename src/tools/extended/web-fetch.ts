@@ -9,6 +9,7 @@ import { z } from "zod";
 import type { Tool, ToolResult } from "../../types.js";
 import { InputValidator } from "../../utils/input-validator.js";
 import { buildTool } from "../registry.js";
+import { publicHttpGet } from "../utils/public-http.js";
 
 // --- Constants ---
 
@@ -188,8 +189,7 @@ export const WebFetchTool: Tool = buildTool({
         content: "",
         error:
           `Fetch failed: ${(err as Error).message}\n` +
-          `Network unreachable. Check your connection, or set HTTPS_PROXY/HTTP_PROXY ` +
-          `(with NODE_USE_ENV_PROXY=1).`,
+          `Check direct network access. WebFetch uses validated direct connections for SSRF protection.`,
       };
     }
   },
@@ -225,12 +225,7 @@ async function fetchWithManualRedirects(
       return { ok: false, error: `Blocked redirect target: ${check.error ?? currentUrl}` };
     }
 
-    const response = await fetch(currentUrl, {
-      method: "GET",
-      headers,
-      redirect: "manual",
-      signal,
-    });
+    const response = await publicHttpGet(currentUrl, headers, signal, MAX_RESPONSE_SIZE);
 
     const status = response.status;
     if (status >= 300 && status < 400) {

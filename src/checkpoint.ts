@@ -183,6 +183,7 @@ export interface RestoreResult {
   restored: string[];
   /** Session-created files deleted by the rewind. */
   deleted: string[];
+  failures?: Array<{ path: string; error: string }>;
 }
 
 /**
@@ -200,6 +201,7 @@ export function restoreToTurn(sessionId: string, turn: number): RestoreResult {
   const boundary = s.turnSnapshots.get(target);
   const restored: string[] = [];
   const deleted: string[] = [];
+  const failures: Array<{ path: string; error: string }> = [];
 
   for (const [path, original] of s.originals) {
     const firstTurn = s.firstWriteTurn.get(path) ?? target;
@@ -221,7 +223,20 @@ export function restoreToTurn(sessionId: string, turn: number): RestoreResult {
         }
       } else {
         fs.mkdirSync(dirname(path), { recursive: true });
-        fs.writeFileSync(path, content, "utf-8");
+        // Restore atomically so a crash cannot leave a half-written file. The
+        // temp file lives beside the destination, ensuring rename stays on the
+        // same filesystem and readers see either old or restored content.
+        const tmp = `${path}.${process.pid}.${Date.now()}.rewind.tmp`;
+        try {
+          fs.writeFileSync(tmp, content, "utf-8");
+          fs.renameSync(tmp, path);
+        } finally {
+          try {
+            if (fs.existsSync(tmp)) fs.rmSync(tmp, { force: true });
+          } catch {
+            /* best effort cleanup */
+          }
+        }
         invalidateCache(s, path); // we just changed the disk state
         restored.push(path);
         // The restored content differs on disk from what the session last
@@ -233,10 +248,12 @@ export function restoreToTurn(sessionId: string, turn: number): RestoreResult {
           /* stat failure right after write — skip tracker refresh */
         }
       }
-    } catch {
-      // Best-effort restore: a locked/readonly file is reported by absence.
+    } catch (error) {
+      failures.push({ path, error: error instanceof Error ? error.message : String(error) });
     }
   }
+  // Retain the boundary and shadows on partial failure, so retry is possible.
+  if (failures.length) return { restored, deleted, failures };
 
   // /diff hygiene: paths FULLY undone by this rewind (first write ≥ target,
   // so they are back to pristine) no longer count as session changes.

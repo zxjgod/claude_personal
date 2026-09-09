@@ -71,10 +71,15 @@ interface State {
   prevCacheRead: number | null;
 }
 
-let state: State | null = null;
+const defaultScope = {};
+let states = new WeakMap<object, State>();
 
 /** Record the pre-call prompt/tool state and diff against the previous call. */
-export function recordPromptState(snapshot: PromptStateSnapshot): void {
+export function recordPromptState(
+  snapshot: PromptStateSnapshot,
+  scope: object = defaultScope,
+): void {
+  let state = states.get(scope);
   const system = stablePrefix(snapshot.systemPrompt);
   const systemHash = djb2Hash(system);
   const toolNames = snapshot.tools.map((t) => t.name);
@@ -100,6 +105,7 @@ export function recordPromptState(snapshot: PromptStateSnapshot): void {
       pendingChanges: null,
       prevCacheRead: null,
     };
+    states.set(scope, state);
     return;
   }
 
@@ -156,7 +162,9 @@ export function checkResponseForCacheBreak(
   cacheReadTokens: number,
   // Reserved for future attribution (creation-side breaks); not yet consulted.
   _cacheCreationTokens: number,
+  scope: object = defaultScope,
 ): CacheBreakReport | null {
+  const state = states.get(scope);
   if (!state) return null;
   const prevCacheRead = state.prevCacheRead;
   state.prevCacheRead = cacheReadTokens;
@@ -198,5 +206,5 @@ export function checkResponseForCacheBreak(
 
 /** Test/util: reset tracking state. */
 export function resetPromptCacheState(): void {
-  state = null;
+  states = new WeakMap();
 }

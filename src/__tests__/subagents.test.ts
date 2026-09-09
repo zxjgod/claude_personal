@@ -82,7 +82,7 @@ describe("subagent registry", () => {
     const injected = [fakeTool("read"), fakeTool("bash")];
     setCoreToolsForSubagents(injected);
     const got = await getCoreToolsForSubagents();
-    expect(got).toBe(injected);
+    expect(got).toEqual(injected);
   });
 });
 

@@ -23,11 +23,13 @@
 // ============================================================
 
 import type { Tool, ToolExecutionResult } from "./types.js";
+import { CancellationScope } from "./utils/cancellation.js";
 
 /** The loop's single-tool runner, injected to avoid duplicating STEP 5 logic. */
 export type SingleToolRunner = (
   toolName: string,
   input: Record<string, unknown>,
+  signal?: AbortSignal,
 ) => Promise<ToolExecutionResult>;
 
 export class StreamingToolExecutor {
@@ -35,10 +37,16 @@ export class StreamingToolExecutor {
   private readonly tools: Tool[];
   private readonly run: SingleToolRunner;
   private readonly inflight = new Map<string, Promise<ToolExecutionResult>>();
+  private readonly scopes = new Set<CancellationScope>();
   started = 0;
   hits = 0;
 
-  constructor(enabled: boolean, tools: Tool[], run: SingleToolRunner) {
+  constructor(
+    enabled: boolean,
+    tools: Tool[],
+    run: SingleToolRunner,
+    private readonly parentSignal?: AbortSignal,
+  ) {
     this.enabled = enabled;
     this.tools = tools;
     this.run = run;
@@ -69,11 +77,13 @@ export class StreamingToolExecutor {
     if (!this.enabled) return;
     if (this.inflight.has(id)) return;
     if (!this.isSafeToStart(toolName, input)) return;
+    const scope = new CancellationScope(this.parentSignal);
+    this.scopes.add(scope);
     this.started++;
     // Swallow rejections into the promise; STEP 5's runner already returns a
     // typed error result, so this should not reject, but guard anyway.
     const p = Promise.resolve()
-      .then(() => this.run(toolName, input))
+      .then(() => this.run(toolName, input, scope.signal))
       .catch(
         (e): ToolExecutionResult => ({
           toolName,
@@ -81,7 +91,11 @@ export class StreamingToolExecutor {
           formatted: `Error executing ${toolName}: ${e instanceof Error ? e.message : String(e)}`,
           isError: true,
         }),
-      );
+      )
+      .finally(() => {
+        scope.dispose();
+        this.scopes.delete(scope);
+      });
     this.inflight.set(id, p);
   }
 
@@ -100,5 +114,15 @@ export class StreamingToolExecutor {
   /** How many early starts are still in flight (diagnostics/tests). */
   get pending(): number {
     return this.inflight.size;
+  }
+
+  /** Drop early-started results when a model turn is retried or aborted. */
+  clear(): void {
+    for (const scope of this.scopes) {
+      scope.cancel("hard", "Discarded model attempt");
+      scope.dispose();
+    }
+    this.scopes.clear();
+    this.inflight.clear();
   }
 }

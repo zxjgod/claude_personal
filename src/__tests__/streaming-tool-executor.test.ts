@@ -96,4 +96,27 @@ describe("StreamingToolExecutor", () => {
     expect(result?.isError).toBe(true);
     expect(result?.error).toContain("boom");
   });
+
+  it("cancels and removes discarded early calls", async () => {
+    let cancelled = false;
+    const ex = new StreamingToolExecutor(true, [readTool], async (_n, _i, signal) => {
+      await new Promise<void>((resolve) => {
+        signal?.addEventListener(
+          "abort",
+          () => {
+            cancelled = true;
+            resolve();
+          },
+          { once: true },
+        );
+      });
+      return ok("read");
+    });
+    ex.add("discarded", "read", { filePath: "a.ts" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    ex.clear();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(cancelled).toBe(true);
+    expect(ex.pending).toBe(0);
+  });
 });

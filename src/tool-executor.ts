@@ -110,17 +110,22 @@ export function abortedResult(call: ToolCall): ToolExecutionResult {
 const DEFAULT_TOOL_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_TOOL_TIMEOUT_MS = 30 * 60 * 1000;
 
-function toolTimeoutMs(): number {
+function toolTimeoutMs(defaultMs = DEFAULT_TOOL_TIMEOUT_MS): number {
   const raw = Number(process.env.CLAUDE_CODE_TOOL_TIMEOUT_MS);
   if (Number.isFinite(raw) && raw > 0) return Math.min(raw, MAX_TOOL_TIMEOUT_MS);
-  return DEFAULT_TOOL_TIMEOUT_MS;
+  return defaultMs;
 }
 
 async function withToolWatchdog<T>(
   operation: (signal: AbortSignal) => Promise<T>,
   abortSignal?: AbortSignal,
+  timeoutOverrideMs?: number,
 ): Promise<T> {
-  const timeoutMs = toolTimeoutMs();
+  const timeoutMs = toolTimeoutMs(
+    timeoutOverrideMs && Number.isFinite(timeoutOverrideMs) && timeoutOverrideMs > 0
+      ? Math.min(timeoutOverrideMs, MAX_TOOL_TIMEOUT_MS)
+      : DEFAULT_TOOL_TIMEOUT_MS,
+  );
   const combined = combineAbortSignals(abortSignal, timeoutMs);
   try {
     return await new Promise<T>((resolve, reject) => {
@@ -344,6 +349,7 @@ export async function executeSingleTool(
       result = await withToolWatchdog(
         (signal) => tool.call(input, { ...toolContext, abortSignal: signal }),
         abortSignal,
+        tool.timeoutMs,
       );
     }
     const duration = Date.now() - startTime;

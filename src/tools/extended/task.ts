@@ -25,6 +25,7 @@ import type { Message, Tool, ToolResult } from "../../types.js";
 import { CancellationScope } from "../../utils/cancellation.js";
 import { createSubAgentApprover } from "../../utils/subagent-security.js";
 import { buildTool } from "../registry.js";
+import { collectPartialReport } from "./subagent-report.js";
 
 // Register the agent-memory loader once (M35). Done here rather than in
 // subagents.ts to keep that module free of a static node:fs dependency.
@@ -95,11 +96,10 @@ async function acquireSlot(signal?: AbortSignal): Promise<void> {
     }
     waitQueue.push(waiter);
   });
-  activeCount++;
+  // releaseSlot transfers its existing reservation to this waiter.
 }
 
 function releaseSlot(): void {
-  activeCount--;
   while (waitQueue.length > 0) {
     const next = waitQueue.shift()!;
     if (next.signal?.aborted) {
@@ -111,6 +111,7 @@ function releaseSlot(): void {
     next.resolve();
     return;
   }
+  activeCount--;
 }
 
 // --- Tool ---
@@ -142,6 +143,7 @@ export const TaskTool: Tool = buildTool({
   isReadOnly: false,
   requiresApproval: false,
   isConcurrencySafe: true,
+  timeoutMs: 15 * 60 * 1000,
   searchHint: "task subagent fork parallel agent",
   aliases: ["subagent", "spawn", "agent"],
 
@@ -187,11 +189,14 @@ export const TaskTool: Tool = buildTool({
     // Fork seeds the sub-loop with a copy of the parent's history (inherit
     // context) then appends the fork task; a typed sub-agent starts clean.
     const seed: Message[] = isFork ? context.getParentMessages!() : [];
-    const seedLen = seed.length;
     const subMessages: Message[] = [
       ...seed,
       { role: "user", content: [{ type: "text", text: input.prompt }] },
     ];
+    // Mark the inherited parent history by IDENTITY, not length: autoCompact
+    // splices subMessages in place, so an index boundary (seedLen) drifts after
+    // compaction and a completed fork reads as "no final report".
+    const seedSet = new Set<Message>(seed);
 
     const subCaller = createModelCaller(context.modelConfig);
     // Fork reuses the parent prompt verbatim (shared cache); a typed sub-agent
@@ -214,6 +219,8 @@ export const TaskTool: Tool = buildTool({
     const startTime = Date.now();
     let toolCallCount = 0;
     let errorMessage: string | undefined;
+    let finishReason: string | undefined;
+    let partialReport = "";
 
     let slotAcquired = false;
     try {
@@ -270,10 +277,7 @@ export const TaskTool: Tool = buildTool({
             });
             break;
           case "done":
-            context.onSubAgentProgress?.({
-              subagentName,
-              phase: "done",
-            });
+            finishReason = event.finishReason;
             break;
           case "aborted":
             errorMessage = event.reason;
@@ -286,26 +290,53 @@ export const TaskTool: Tool = buildTool({
             break;
         }
       }
+      if (finishReason === "max_turns" && !scope.signal.aborted) {
+        partialReport = await collectPartialReport(
+          subMessages,
+          subCaller,
+          context.modelConfig,
+          subSystemPrompt,
+          scope.signal,
+        );
+      }
     } catch (error) {
       errorMessage = (error as Error).message || String(error);
     } finally {
       if (slotAcquired) releaseSlot();
       scope.dispose();
+      context.onSubAgentProgress?.({
+        subagentName,
+        phase: "done",
+        reason: context.abortSignal?.aborted ? "aborted" : (finishReason ?? "model_error"),
+      });
     }
 
     const duration = Date.now() - startTime;
     // Context protection (kernel §4): return ONLY the sub-agent's final
     // assistant text — never its accumulated multi-turn narration or raw tool
     // output. For a fork, the sub-loop's messages start with a copy of the
-    // PARENT's history (seedLen messages); we slice past it so extraction can
-    // only see the fork's own turns and never echoes a parent assistant message.
-    const own = isFork ? subMessages.slice(seedLen) : subMessages;
+    // PARENT's history; identity filtering sees only the fork's own turns even
+    // after in-place compaction (surviving parents keep their references).
+    const own = subMessages.filter((m) => !seedSet.has(m));
     const output = extractLastAssistantText(own);
 
-    if (errorMessage && !output) {
+    if (finishReason === "max_turns" && !context.abortSignal?.aborted) {
+      // The bounded handoff call can come back empty (timeout, refusal, or the
+      // model tried a tool); the sub-agent's own final text is the next-best
+      // report. Either way the result stays labeled incomplete.
+      const report = partialReport || output;
+      if (report) {
+        return {
+          content: `[Sub-agent "${subagentName}" partial report — turn budget reached; task incomplete]\n${report}`,
+          metadata: { durationMs: duration, linesRead: toolCallCount, incomplete: true },
+        };
+      }
+    }
+
+    if (finishReason !== "end_turn" || !output) {
       return {
-        content: "",
-        error: `${isFork ? "Fork" : "Sub-agent"} failed: ${errorMessage}`,
+        content: output ? `Partial output (not a completed report):\n${output}` : "",
+        error: `${isFork ? "Fork" : "Sub-agent"} incomplete: ${errorMessage || finishReason || "no terminal event"}${!output ? "; no final report" : ""}`,
         metadata: { durationMs: duration },
       };
     }
@@ -321,11 +352,16 @@ export const TaskTool: Tool = buildTool({
     ].join("\n");
 
     return {
-      content: header + (output || "(no output)"),
+      content: header + output,
       truncated: false,
       metadata: { durationMs: duration, linesRead: toolCallCount },
     };
   },
+
+  formatResult: (result) =>
+    result.error
+      ? `Error: ${result.error}${result.content ? `\n${result.content}` : ""}`
+      : result.content,
 
   async checkPermissions(_input, context) {
     // Plan mode: never spawn sub-agents (they run their own loop).

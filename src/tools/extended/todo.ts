@@ -66,7 +66,10 @@ export const TodoTool: Tool = buildTool({
     "included will be removed. Each item needs: content (task description), " +
     "status (one of 'pending' | 'in_progress' | 'completed'), and activeForm " +
     "(present-tense label shown while working, e.g. 'Adding tests'). " +
-    "Use this to track multi-step tasks and show progress to the user.",
+    "Use this to track multi-step tasks and show progress to the user. " +
+    "Set the current step to in_progress before starting it and update the list when a step finishes. " +
+    "Background job creation is not completion; verify its exit status and output first. " +
+    "Do not mark timed-out or incomplete delegated work as completed.",
   schema: TodoSchema,
   isReadOnly: false,
   isConcurrencySafe: false,

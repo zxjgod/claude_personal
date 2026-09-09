@@ -204,9 +204,14 @@ async function* openAICompatibleCaller(
           if (finishReason === "length") {
             continue;
           }
+          // Preserve malformed JSON for a paired error result; the next model
+          // call can correct its arguments without losing the whole response.
           yield {
-            type: "error",
-            error: new Error(`Failed to parse tool arguments for "${buf.name}"`),
+            type: "tool_use",
+            id: buf.id,
+            name: buf.name,
+            input: {},
+            rawArguments: buf.arguments,
           };
         }
       }
@@ -274,6 +279,16 @@ async function* openAICompatibleCaller(
     }
     yield* emitToolCalls();
     yield { type: "done", usage, finish_reason: finishReason };
+  } catch (error) {
+    // The SDK may normalize an AbortController timeout to a generic
+    // AbortError. Preserve a distinct TimeoutError so the agent loop retries a
+    // transient provider timeout instead of treating it as Ctrl+C.
+    if (combinedSignal.aborted && !abortSignal?.aborted) {
+      const timeoutError = new Error("Request timed out");
+      timeoutError.name = "TimeoutError";
+      throw timeoutError;
+    }
+    throw error;
   } finally {
     combined.cleanup();
   }

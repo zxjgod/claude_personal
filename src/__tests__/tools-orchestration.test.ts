@@ -249,7 +249,7 @@ describe("PowerShellTool execution (Windows only)", () => {
       { command: "Write-Output '你好世界'", description: "print CJK text" },
       ctx(),
     );
-    expect(r.error).toBeUndefined();
+    expect(r.error, r.content).toBeUndefined();
     expect(r.content).toContain("你好世界");
     expect(r.content).not.toContain("\ufffd");
   });
@@ -263,7 +263,7 @@ describe("PowerShellTool execution (Windows only)", () => {
       { command: `cd "${sub}"`, description: "enter subdir" },
       ctx({ sessionId }),
     );
-    expect(cd.error).toBeUndefined();
+    expect(cd.error, cd.content).toBeUndefined();
     const pwd = await PowerShellTool.call(
       { command: "(Get-Location).Path", description: "print cwd" },
       ctx({ sessionId }),

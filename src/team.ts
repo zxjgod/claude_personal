@@ -272,7 +272,7 @@ export async function runAgentTurn(
           });
           break;
         case "done":
-          ctx.onProgress?.({ subagentName: agent.id, phase: "done" });
+          ctx.onProgress?.({ subagentName: agent.id, phase: "done", reason: event.finishReason });
           break;
         case "aborted":
           error = event.reason;

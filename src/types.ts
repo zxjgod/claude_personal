@@ -157,6 +157,7 @@ export interface ToolResultMetadata {
    * as a live region; the committed tool row stays compact via `summary`.
    */
   todos?: TodoDisplayItem[];
+  incomplete?: boolean;
 }
 
 export interface ToolContext {
@@ -244,6 +245,8 @@ export interface UserQuestion {
 export interface SubAgentProgress {
   subagentName: string;
   phase: "tool_use" | "tool_results" | "done";
+  /** Terminal reason for a done event (end_turn, max_turns, model_error…). */
+  reason?: string;
   toolName?: string;
   input?: Record<string, unknown>;
   results?: ToolExecutionResult[];
@@ -367,6 +370,7 @@ export interface Tool<T extends ToolInput = ToolInput> {
    * "wait" = let it finish (cheap read-only work not worth tearing down).
    */
   interruptBehavior?: "kill" | "wait";
+  timeoutMs?: number;
   /** Extract the primary filesystem path this call touches, if any (for UI/safety). */
   getPath?(input: T): string | undefined;
   /**
@@ -411,7 +415,13 @@ export interface ModelConfig {
 
 export type StreamEvent =
   | { type: "text_delta"; delta: string }
-  | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> }
+  | {
+      type: "tool_use";
+      id: string;
+      name: string;
+      input: Record<string, unknown>;
+      rawArguments?: string;
+    }
   | { type: "thinking"; delta?: string }
   | {
       type: "done";
@@ -448,6 +458,12 @@ export type LoopEvent =
    * `{type:"thinking"}` phase marker so consumers don't reset spinner state
    * per token. */
   | { type: "thinking_delta"; delta: string }
+  /** Attempt boundary: the previous model call FAILED and is being retried
+   * (rate limit / transient / context compaction / fallback model). Its
+   * partial stream never entered model history, so UI consumers must DISCARD
+   * buffered streaming text — appending the retry's output to it would fork
+   * the transcript from the real conversation. */
+  | { type: "model_retry" }
   | { type: "compacting" }
   | {
       type: "compacted";

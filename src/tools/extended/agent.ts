@@ -24,6 +24,7 @@ import {
 import type { Message, Tool, ToolResult } from "../../types.js";
 import { createSubAgentApprover } from "../../utils/subagent-security.js";
 import { buildTool } from "../registry.js";
+import { collectPartialReport } from "./subagent-report.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -143,6 +144,7 @@ export const AgentTool: Tool = buildTool({
   isReadOnly: false,
   requiresApproval: false,
   isConcurrencySafe: true,
+  timeoutMs: 15 * 60 * 1000,
   searchHint: "agent subagent spawn fork parallel task isolation worktree",
   aliases: ["agent"],
 
@@ -223,6 +225,11 @@ export const AgentTool: Tool = buildTool({
         },
       ];
 
+      // Mark the inherited context by IDENTITY, not index: autoCompact splices
+      // this array in place, so a `slice(initialMessages.length)` boundary
+      // drifts after compaction and a completed fork reads as "no final report".
+      const inherited = new Set<Message>(initialMessages);
+
       // Create model caller
       const modelCaller = createModelCaller(modelConfig);
 
@@ -231,7 +238,8 @@ export const AgentTool: Tool = buildTool({
 
       const loop = agentLoop(messages, tools, modelCaller, modelConfig, {
         systemPrompt,
-        maxTurns: 10,
+        applyEffortInstruction: !isFork,
+        maxTurns: subagentType?.maxTurns ?? 20,
         autoCompactThreshold: 50_000,
         abortSignal: context.abortSignal,
         toolContext: {
@@ -248,6 +256,20 @@ export const AgentTool: Tool = buildTool({
       // Consume loop events
       let terminal: { reason: string; turns: number; error?: unknown } | undefined;
       for await (const event of loop) {
+        if (event.type === "tool_use") {
+          context.onSubAgentProgress?.({
+            subagentName,
+            phase: "tool_use",
+            toolName: event.name,
+            input: event.input,
+          });
+        } else if (event.type === "tool_results") {
+          context.onSubAgentProgress?.({
+            subagentName,
+            phase: "tool_results",
+            results: event.results,
+          });
+        }
         if (event.type === "done") {
           terminal = { reason: event.finishReason, turns: event.turns };
         } else if (event.type === "error") {
@@ -257,8 +279,27 @@ export const AgentTool: Tool = buildTool({
         }
       }
 
-      // Extract final output
-      const finalText = extractLastAssistantText(messages);
+      const partialReport =
+        terminal?.reason === "max_turns"
+          ? await collectPartialReport(
+              messages,
+              modelCaller,
+              modelConfig,
+              systemPrompt,
+              context.abortSignal,
+            )
+          : "";
+      context.onSubAgentProgress?.({
+        subagentName,
+        phase: "done",
+        reason: context.abortSignal?.aborted ? "aborted" : (terminal?.reason ?? "model_error"),
+      });
+
+      // Extract final output — the last assistant message the sub-agent itself
+      // produced. Compaction keeps surviving messages by reference, so identity
+      // filtering still sees the fork's own turns and never echoes a parent
+      // assistant message that happened to survive in the tail.
+      const finalText = extractLastAssistantText(messages.filter((m) => !inherited.has(m)));
       const duration = Date.now() - startTime;
 
       // Clean up worktree if successful
@@ -266,10 +307,23 @@ export const AgentTool: Tool = buildTool({
         await removeWorktree(context.workspaceRoot, worktree.path, worktree.branch);
       }
 
-      if (terminal?.error) {
+      if (terminal?.reason === "max_turns" && !context.abortSignal?.aborted) {
+        // The bounded handoff call can come back empty (timeout, refusal, or
+        // the model tried a tool); the sub-agent's own final text is the
+        // next-best report. Either way the result stays labeled incomplete —
+        // hitting the turn budget is never reported as a completed task.
+        const report = partialReport || finalText;
+        if (report) {
+          return {
+            content: `[Agent partial report — turn budget reached; task incomplete]\n${report}`,
+            metadata: { durationMs: duration, incomplete: true },
+          };
+        }
+      }
+      if (terminal?.reason !== "end_turn" || !finalText) {
         return {
           content: finalText || "",
-          error: String(terminal.error),
+          error: `Agent incomplete: ${terminal?.error || terminal?.reason || "no terminal event"}${!finalText ? "; no final report" : ""}`,
           metadata: { durationMs: duration },
         };
       }
@@ -288,4 +342,8 @@ export const AgentTool: Tool = buildTool({
       throw error;
     }
   },
+  formatResult: (result) =>
+    result.error
+      ? `Error: ${result.error}${result.content ? `\nPartial output (not a completed report):\n${result.content}` : ""}`
+      : result.content,
 });

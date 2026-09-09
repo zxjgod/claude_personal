@@ -46,6 +46,14 @@ export const rewindCommand: SlashCommand = {
     let deleted = 0;
     if (cpTurn !== null) {
       const r = restoreToTurn(ctx.sessionId, cpTurn);
+      if (r.failures?.length) {
+        console.log(
+          chalk.red(
+            `  Rewind incomplete: ${r.failures.map((f) => `${f.path}: ${f.error}`).join("; ")}. Conversation and checkpoints retained for retry.`,
+          ),
+        );
+        return;
+      }
       restored = r.restored.length;
       deleted = r.deleted.length;
     }
