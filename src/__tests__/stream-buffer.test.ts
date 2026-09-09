@@ -84,4 +84,23 @@ describe("StreamBuffer", () => {
     tick();
     expect(buf.pendingLength).toBe(0);
   });
+
+  it("discard() drops pending text without emitting, keeping the clock alive", () => {
+    // S1: at a model_retry boundary the buffered tail of the FAILED attempt
+    // must never reach the store; the retry's deltas keep flowing on the same
+    // buffer instance.
+    const { timers, tick } = fakeTimers();
+    const flushes: string[] = [];
+    const buf = new StreamBuffer((t) => flushes.push(t), { timers });
+
+    buf.push("doomed");
+    buf.discard();
+    tick();
+    expect(flushes).toEqual([]); // nothing emitted for the discarded attempt
+    expect(buf.pendingLength).toBe(0);
+
+    buf.push("retry text");
+    tick();
+    expect(flushes).toEqual(["retry text"]); // clock survived the discard
+  });
 });

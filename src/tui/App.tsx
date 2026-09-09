@@ -15,7 +15,7 @@
 // M24 "response smoothing": no more whole-tree reconcile per frame.
 // ============================================================
 
-import { Box, Static, Text, useInput } from "ink";
+import { Box, Static, Text, useInput, usePaste } from "ink";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { CommandPicker } from "./CommandPicker.js";
 import { EffortPrompt } from "./EffortPrompt.js";
@@ -37,7 +37,7 @@ import { RewindPicker } from "./RewindPicker.js";
 import { SessionPicker } from "./SessionPicker.js";
 import { StatusLine } from "./StatusLine.js";
 import { StreamingMarkdown } from "./StreamingMarkdown.js";
-import { actionLabel, isReducedMotion, nextTipId } from "./spinner-core.js";
+import { isReducedMotion, nextTipId } from "./spinner-core.js";
 import type { StoreState, TranscriptItem, TuiStore } from "./store.js";
 import { CTX_CRITICAL_PCT, CTX_WARN_PCT } from "./store.js";
 import { Toast } from "./Toast.js";
@@ -60,23 +60,29 @@ function AssistantMessage({ children }: { children: ReactNode }) {
 }
 
 /**
- * Present-continuous status for the live status line (M23.3). While a tool is
- * running we show the concrete action ("Reading App.tsx", "Running npm test");
- * otherwise the phase word ("Thinking" / "Responding").
+ * Present-continuous phase word for the live status line (M23.3). The concrete
+ * per-tool action ("Reading App.tsx") lives on the tool cards below the status
+ * line, so the label only reflects the loop phase ("Thinking" / "Responding").
  */
-function statusLabel(
-  activeTools: StoreState["activeTools"],
-  spinner: StoreState["spinner"],
-): string {
-  if (activeTools.length === 1) {
-    const tool = activeTools[0]!;
-    return actionLabel(tool.name, tool.detail);
-  }
-  if (activeTools.length > 1) {
-    return t("ui.phase.runningTools", { n: activeTools.length });
-  }
+function statusLabel(spinner: StoreState["spinner"]): string {
   if (spinner === "responding") return t("ui.phase.responding");
   return t("ui.phase.thinking");
+}
+
+/**
+ * Keeps bracketed-paste mode (2004h) enabled for the WHOLE app lifetime.
+ * InputBox is the primary usePaste consumer, but overlays and the transcript
+ * pager REPLACE (unmount) it — the hook's refcount then drops to zero, Ink
+ * writes `\x1b[?2004l`, and a paste floods the modal's useInput handlers as
+ * raw keystrokes. Overlays resolve on single keys (`y` approves a permission,
+ * Enter confirms a picker, `v` opens $EDITOR in the pager), so the first
+ * pasted character can act on them instantly. This always-mounted no-op
+ * absorber holds the refcount above zero and routes paste bytes to the paste
+ * channel, where they are safely dropped while InputBox is absent.
+ */
+function PasteGuard(): null {
+  usePaste(() => {});
+  return null;
 }
 
 function TranscriptRow({ item, expanded }: { item: TranscriptItem; expanded: boolean }) {
@@ -201,8 +207,8 @@ function TranscriptRegion({ store, expandedId }: { store: TuiStore; expandedId: 
  */
 function selectLiveChromeRows(s: StoreState): number {
   let rows = 0;
-  // Status line (hidden while tools run — the tool cards replace it).
-  if (s.busy && s.activeTools.length === 0 && s.spinner !== "idle") rows += 1;
+  // Status line (shown whenever the loop is busy — spinner phase + live region).
+  if (s.busy && s.spinner !== "idle") rows += 1;
   // Todo region: windowed to at most TODO_MAX_ROWS rows.
   if (s.todos.length > 0) rows += Math.min(s.todos.length, TODO_MAX_ROWS);
   // Active tool cards: ≤3 + one overflow row.
@@ -312,7 +318,7 @@ function ActiveToolsRegion({ store }: { store: TuiStore }) {
 /** Pinned live todo list, hanging below the status line (mirrors the reference
  *  layout: spinner on top, todo list attached under it via `⎿`). The list is a
  *  projection of the Todo tool's session state — it updates in place on every
- *  todo call and persists after the turn ends until the next update. Rendering
+ *  todo call and is retired when the turn ends. Rendering
  *  (incl. the active-item-centered window for long lists) lives in TodoList. */
 function TodoRegion({ store }: { store: TuiStore }) {
   const todos = useStoreField(store, "todos");
@@ -378,15 +384,15 @@ export function TipLine({
 }
 
 /**
- * Animated status line while thinking / responding (no active tool). Subscribes
- * to the small slice that decides visibility + label; the StatusLine owns its
- * own per-frame interval for the glyph/shimmer/clock, so the animation itself
- * never touches this subscription.
+ * Animated status line, shown whenever the loop is busy (tool cards render in
+ * their own region below). Subscribes to the small slice that decides
+ * visibility + label; the StatusLine owns its own per-frame interval for the
+ * glyph/shimmer/clock, so the animation itself never touches this subscription.
  */
 function StatusLineRegion({ store }: { store: TuiStore }) {
-  const { busy, spinner, turnStartedAt, spinnerTokens, activityAt, toolCount, label, todoCount } =
+  const { busy, spinner, turnStartedAt, spinnerTokens, activityAt, label, todoCount } =
     useStoreSelector(store, selectStatusLine);
-  if (!(busy && toolCount === 0 && spinner !== "idle")) return null;
+  if (!(busy && spinner !== "idle")) return null;
   return (
     <Box flexDirection="column">
       <StatusLine
@@ -394,7 +400,7 @@ function StatusLineRegion({ store }: { store: TuiStore }) {
         startedAt={turnStartedAt}
         tokens={spinnerTokens}
         activityAt={activityAt}
-        cycleVerbs={spinner === "thinking"}
+        cycleVerbs={spinner !== "responding"}
       />
       <NextTodoRegion store={store} />
       <TipLine turnStartedAt={turnStartedAt} todos={todoCount} pool={store.getTipPool()} />
@@ -409,9 +415,8 @@ function selectStatusLine(s: StoreState) {
     turnStartedAt: s.turnStartedAt,
     spinnerTokens: s.spinnerTokens,
     activityAt: s.spinnerActivityAt,
-    toolCount: s.activeTools.length,
     todoCount: s.todos.length,
-    label: statusLabel(s.activeTools, s.spinner),
+    label: statusLabel(s.spinner),
   };
 }
 
@@ -735,19 +740,22 @@ export function App({
   if (fullscreen) {
     // FullScreenApp contains its own FsModeHotkey — no need for ModeHotkey wrapper.
     return (
-      <FullScreenApp
-        store={store}
-        commands={commands}
-        onSubmit={onSubmit}
-        editorMode={editorMode}
-        completeFiles={completeFiles}
-        onRewind={onRewind}
-        onImagePaste={onImagePaste}
-        onQueuePop={onQueuePop}
-        onModelPicker={onModelPicker}
-        onThinkingToggle={onThinkingToggle}
-        onLargePaste={onLargePaste}
-      />
+      <>
+        <PasteGuard />
+        <FullScreenApp
+          store={store}
+          commands={commands}
+          onSubmit={onSubmit}
+          editorMode={editorMode}
+          completeFiles={completeFiles}
+          onRewind={onRewind}
+          onImagePaste={onImagePaste}
+          onQueuePop={onQueuePop}
+          onModelPicker={onModelPicker}
+          onThinkingToggle={onThinkingToggle}
+          onLargePaste={onLargePaste}
+        />
+      </>
     );
   }
   // The root no longer subscribes to the store at all — each region below owns
@@ -757,6 +765,7 @@ export function App({
   // InputBox keeps a predictable position (M24.5).
   return (
     <Box flexDirection="column">
+      <PasteGuard />
       <ModeHotkey store={store} onModelPicker={onModelPicker} onThinkingToggle={onThinkingToggle} />
       <Toast store={store} />
       <ReviewableBody

@@ -42,7 +42,6 @@ import { RewindPicker } from "./RewindPicker.js";
 import { bottomScrollTop, clampScrollTop, ScrollView } from "./ScrollView.js";
 import { SessionPicker } from "./SessionPicker.js";
 import { StatusLine } from "./StatusLine.js";
-import { actionLabel } from "./spinner-core.js";
 import type { StoreState, TuiStore } from "./store.js";
 import { Toast } from "./Toast.js";
 import { TodoList } from "./TodoList.js";
@@ -51,16 +50,9 @@ import { transcriptToLines } from "./transcript-lines.js";
 import { useStoreField, useStoreSelector } from "./useStoreSelector.js";
 import { useTerminalSize } from "./useTerminalSize.js";
 
-/** Present-continuous status label for the live status line. */
-function statusLabel(
-  activeTools: StoreState["activeTools"],
-  spinner: StoreState["spinner"],
-): string {
-  if (activeTools.length === 1) {
-    const tool = activeTools[0]!;
-    return actionLabel(tool.name, tool.detail);
-  }
-  if (activeTools.length > 1) return t("ui.phase.runningTools", { n: activeTools.length });
+/** Present-continuous phase word for the live status line (the concrete
+ *  per-tool action lives on the tool cards, not in this label). */
+function statusLabel(spinner: StoreState["spinner"]): string {
   if (spinner === "responding") return t("ui.phase.responding");
   return t("ui.phase.thinking");
 }
@@ -72,23 +64,24 @@ function selectStatusLine(s: StoreState) {
     turnStartedAt: s.turnStartedAt,
     spinnerTokens: s.spinnerTokens,
     activityAt: s.spinnerActivityAt,
-    toolCount: s.activeTools.length,
-    label: statusLabel(s.activeTools, s.spinner),
+    label: statusLabel(s.spinner),
   };
 }
 
-/** Animated status line while thinking / responding (no active tool). */
+/** Animated status line, shown whenever the loop is busy. */
 function FsStatusLine({ store }: { store: TuiStore }) {
-  const { busy, spinner, turnStartedAt, spinnerTokens, activityAt, toolCount, label } =
-    useStoreSelector(store, selectStatusLine);
-  if (!(busy && toolCount === 0 && spinner !== "idle")) return null;
+  const { busy, spinner, turnStartedAt, spinnerTokens, activityAt, label } = useStoreSelector(
+    store,
+    selectStatusLine,
+  );
+  if (!(busy && spinner !== "idle")) return null;
   return (
     <StatusLine
       label={label}
       startedAt={turnStartedAt}
       tokens={spinnerTokens}
       activityAt={activityAt}
-      cycleVerbs={spinner === "thinking"}
+      cycleVerbs={spinner !== "responding"}
     />
   );
 }
@@ -204,7 +197,8 @@ function FsRetryRegion({ store }: { store: TuiStore }) {
  *  windowing are shared via TodoList. */
 function FsTodoRegion({ store }: { store: TuiStore }) {
   const todos = useStoreField(store, "todos");
-  if (todos.length === 0) return null;
+  const collapsed = useStoreField(store, "todosCollapsed");
+  if (todos.length === 0 || collapsed) return null;
   return <TodoList todos={todos} />;
 }
 

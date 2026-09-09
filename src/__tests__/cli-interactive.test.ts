@@ -54,6 +54,15 @@ const COMMANDS: CommandInfo[] = [
 ];
 
 describe("createRawInputReader (TTY)", () => {
+  it("close resolves an outstanding input read and removes its listener", async () => {
+    const input = new FakeStdin();
+    const { out } = fakeStdout();
+    const reader = createRawInputReader({ commands: COMMANDS, input: input as any, output: out });
+    const pending = reader.readInput();
+    reader.close();
+    await expect(pending).resolves.toBeNull();
+    expect(input.listenerCount("data")).toBe(0);
+  });
   it("commits a typed line on Enter", async () => {
     const input = new FakeStdin();
     const { out } = fakeStdout();

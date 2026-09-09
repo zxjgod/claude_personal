@@ -108,7 +108,7 @@ export interface TuiDeps {
 }
 
 /** Run one user turn through the agent loop, pushing events into the store. */
-async function runTurn(
+export async function runTurn(
   store: TuiStore,
   deps: TuiDeps,
   controller: AbortController,
@@ -140,6 +140,8 @@ async function runTurn(
   // Live session id (see TuiDeps.getSessionId): reads session.id at turn
   // start so /resume's in-place rewrite can't leave checkpoint buckets split.
   const sid = deps.getSessionId?.() ?? deps.sessionId;
+  const cancelPrompts = () => store.cancelOverlays();
+  controller.signal.addEventListener("abort", cancelPrompts, { once: true });
   const loop = agentLoop(deps.messages, deps.tools, deps.callModel, deps.modelConfig, {
     systemPrompt: turnSystemPrompt,
     toolContext: {
@@ -167,7 +169,10 @@ async function runTurn(
             `    ⎿ [${ev.subagentName}] ${capitalize(ev.toolName ?? "tool")}${d ? `(${truncate(d, 80)})` : ""}`,
           );
         } else if (ev.phase === "done") {
-          store.addSubAgentActivity(`    ⎿ [${ev.subagentName}] done`);
+          store.setActivityLabel(null);
+          const doneLabel =
+            ev.reason === "end_turn" ? "done" : `stopped (${ev.reason ?? "unknown"})`;
+          store.addSubAgentActivity(`    ⎿ [${ev.subagentName}] ${doneLabel}`);
         }
       },
     },
@@ -186,6 +191,16 @@ async function runTurn(
     drainQueuedInput: async () => {
       const drained = queue.drain();
       const out: ContentBlock[][] = [];
+      if (drained.length > 0) {
+        // Commit the in-flight assistant segment BEFORE prepareQueuedLine
+        // echoes the queued user message: the echo is appended during this
+        // drain, and an uncommitted live segment would (a) land in the
+        // transcript AFTER the echo it predates and (b) merge with the next
+        // response. Settling here keeps response-then-user order.
+        streamBuffer.flush();
+        settleThinking();
+        store.commitStreaming();
+      }
       for (const text of drained) {
         const blocks = await prepareQueuedLine(text);
         if (blocks !== null) out.push(blocks);
@@ -263,11 +278,38 @@ async function runTurn(
       // P0-4: any event from the (retried) call retires the countdown.
       store.clearRetry();
       switch (event.type) {
-        case "thinking":
+        case "thinking": {
+          // Continuation boundary (budget nudge / truncation recovery /
+          // queued-input / notification continuation): the previous model
+          // call's segment may still sit uncommitted in the live buffers.
+          // Commit it FIRST so the new segment lands as its own transcript
+          // item instead of silently merging. On a fresh turn the buffers are
+          // empty and this is a no-op; a FAILED attempt was already discarded
+          // by model_retry below, so it never reaches here.
+          const snap = store.getSnapshot();
+          if (snap.streamingText.trim() || snap.streamingThinking.trim() || thoughtReported) {
+            streamBuffer.flush();
+            settleThinking();
+            store.commitStreaming();
+          }
+          store.clearActiveTools();
+          store.setActivityLabel(null);
           deps.onSave("waiting_for_model");
           thinkingStart = Date.now();
           thoughtReported = false;
           store.setSpinner("thinking");
+          break;
+        }
+        case "model_retry":
+          // Attempt boundary: the failed call's partial stream never entered
+          // model history. Discard it (buffered deltas AND store state) so the
+          // retry's text starts clean instead of appending to a dead fragment,
+          // and reset the live token estimate that counted the dead chars.
+          streamBuffer.discard();
+          store.discardStreaming();
+          streamedCharsThisCall = 0;
+          thinkingStart = Date.now();
+          thoughtReported = false;
           break;
         case "thinking_delta":
           // Live reasoning content: dims in the live region, commits to the
@@ -276,6 +318,7 @@ async function runTurn(
           store.appendThinking(event.delta);
           break;
         case "text_delta":
+          store.setActivityLabel(null);
           settleThinking();
           store.setSpinner("responding");
           streamedCharsThisCall += event.delta.length;
@@ -305,6 +348,9 @@ async function runTurn(
           break;
         }
         case "tool_results":
+          store.clearActiveTools();
+          store.setActivityLabel(null);
+          store.setSpinner("thinking");
           // Batch boundary: every tool in this turn is done. Persist now.
           deps.onSave("waiting_for_model");
           break;
@@ -324,6 +370,7 @@ async function runTurn(
           store.setSpinnerTokens(committedOutputTokens);
           break;
         case "compacting":
+          store.setActivityLabel(t("ui.compact.started"));
           deps.onSave("recovering");
           store.addNotice(t("ui.compact.started"));
           break;
@@ -369,11 +416,16 @@ async function runTurn(
       }
     }
   } finally {
+    controller.signal.removeEventListener("abort", cancelPrompts);
+    store.cancelOverlays();
     streamBuffer.stop();
     store.setSpinner("idle");
     store.setSpinnerTokens(0);
     store.stopTurnClock();
     store.setBusy(false);
+    store.setTodos([]);
+    store.setActivityLabel(null);
+    store.clearActiveTools();
     store.clearRetry();
     // Drain any frame-coalesced notify so the idle state (spinner cleared,
     // input re-enabled) paints immediately rather than waiting on a trailing
@@ -389,7 +441,16 @@ async function runTurn(
 
 function toolDetail(input?: Record<string, unknown>): string {
   if (!input) return "";
-  for (const k of ["command", "filePath", "pattern", "url", "query"]) {
+  for (const k of [
+    "command",
+    "filePath",
+    "pattern",
+    "url",
+    "query",
+    "description",
+    "subagent_type",
+    "subagent_name",
+  ]) {
     const v = input[k];
     if (typeof v === "string") return v;
   }
@@ -973,10 +1034,17 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
     // /resume have none — the conversation still rewinds, honestly reported.
     // "conversation" skips this entirely; "code" does ONLY this.
     const restoreFiles = action !== "conversation";
-    const { restored, deleted } =
+    const restoration =
       restoreFiles && target.cpTurn !== null
         ? restoreToTurn(sid, target.cpTurn)
         : { restored: [], deleted: [] };
+    if (restoration.failures?.length) {
+      store.addNotice(
+        `Rewind incomplete: ${restoration.failures.map((f) => `${f.path}: ${f.error}`).join("; ")}. Conversation and checkpoints retained for retry.`,
+      );
+      return;
+    }
+    const { restored, deleted } = restoration;
 
     if (action !== "code") {
       deps.messages.length = cutAt;
@@ -1065,7 +1133,9 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
       if (value.toLowerCase() === "exit" || value.toLowerCase() === "/exit") {
         // Tear down resources before exiting. Previously this was a bare
         // process.exit(0) that skipped onSave (session lost), MCP disconnect,
-        // and LSP dispose. onSave() flushes the session; Ink unmounts on exit.
+        // and LSP dispose. onSave() flushes the session. NOTE: process.exit
+        // does NOT unmount Ink — the runTui-level "exit" hook restores raw
+        // mode / bracketed paste / cursor so the shell isn't left broken.
         try {
           deps.onSave();
         } catch {
@@ -1414,6 +1484,25 @@ export function runTui(deps: TuiDeps): Promise<void> {
       process.exit(143); // 128 + SIGTERM
     });
   }
+
+  // process.exit() — the `exit` command, SIGTERM, a fatal error — skips Ink's
+  // beforeExit teardown, so raw mode, bracketed paste and the hidden cursor
+  // would leak into the user's shell (no echo, `200~` markers on paste,
+  // invisible cursor until a manual `reset`). The "exit" event is the last
+  // synchronous hook that runs on EVERY termination path, so restore there.
+  // After a clean Ink unmount every step is an idempotent no-op.
+  let terminalRestored = false;
+  const restoreTerminalState = () => {
+    if (terminalRestored) return;
+    terminalRestored = true;
+    try {
+      if (process.stdin.isTTY && process.stdin.isRaw) process.stdin.setRawMode(false);
+      process.stdout.write("\x1b[?2004l\x1b[?25h");
+    } catch {
+      /* terminal already gone */
+    }
+  };
+  process.once("exit", restoreTerminalState);
 
   // In full-screen mode the layout is the whole viewport (the banner becomes the
   // first scroll line); in the default mode we print the banner into scrollback

@@ -285,6 +285,8 @@ export interface StoreState {
    * call. Owns a 1s tick that decrements secondsLeft down to 0.
    */
   retryStatus: RetryStatus | null;
+  /** Most recent nested-agent activity for the live status line. */
+  activityLabel: string | null;
   /**
    * Increments whenever the transcript is bulk-replaced (rewind / session
    * reload). The transcript region keys its <Static> on this epoch: Ink's
@@ -386,6 +388,7 @@ export class TuiStore {
       inputHistory: [],
       reviewing: false,
       retryStatus: null,
+      activityLabel: null,
       transcriptEpoch: 0,
       inputAction: null,
       todosCollapsed: false,
@@ -505,6 +508,14 @@ export class TuiStore {
     this.set({ busy });
   }
 
+  setActivityLabel(label: string | null): void {
+    this.set({ activityLabel: label, spinnerActivityAt: Date.now() });
+  }
+
+  clearActiveTools(): void {
+    this.set({ activeTools: [] });
+  }
+
   /** Mirror the type-ahead queue's length (status-bar "queued N" badge). */
   setQueuedInputs(n: number): void {
     this.set({ queuedInputs: Math.max(0, n) });
@@ -614,6 +625,16 @@ export class TuiStore {
     const text = this.state.streamingText.trim();
     if (text) this.push({ kind: "assistant", text } as TranscriptItem);
     this.set({ streamingText: "" });
+  }
+
+  /**
+   * Drop the in-flight streaming buffers WITHOUT committing them, and reset
+   * the live token estimate. Used at a `model_retry` boundary: the failed
+   * attempt's partial text never entered model history, so committing it
+   * would fork the transcript from the real conversation.
+   */
+  discardStreaming(): void {
+    this.set({ streamingText: "", streamingThinking: "", spinnerTokens: 0 });
   }
 
   /** Append streamed thinking content to the live region. */
@@ -881,8 +902,44 @@ export class TuiStore {
    * would hang — the agent loop stalls until the user happens to leave the
    * viewer. Any overlay therefore exits review mode first.
    */
+  private overlayQueue: Overlay[] = [];
+
   private openOverlay(overlay: Overlay): void {
-    this.set({ overlay, reviewing: false });
+    if (this.state.overlay) {
+      this.overlayQueue.push(overlay);
+      return;
+    }
+    let settled = false;
+    const visible = {
+      ...overlay,
+      resolve: (answer: unknown) => {
+        if (settled || this.state.overlay !== visible) return;
+        settled = true;
+        (overlay.resolve as (value: unknown) => void)(answer);
+        const next = this.overlayQueue.shift();
+        if (next) this.openOverlay(next);
+      },
+    } as Overlay;
+    this.set({ overlay: visible, reviewing: false });
+  }
+
+  /** Cancel all waiting interactions on interruption/turn teardown. */
+  cancelOverlays(): void {
+    const queued = this.overlayQueue.splice(0);
+    const cancel = (overlay: Overlay) => {
+      switch (overlay.kind) {
+        case "permission":
+          return overlay.resolve("no");
+        case "confirm":
+          return overlay.resolve(false);
+        case "planApproval":
+          return overlay.resolve({ choice: "reject", plan: overlay.plan });
+        default:
+          return overlay.resolve(null);
+      }
+    };
+    if (this.state.overlay) cancel(this.state.overlay);
+    queued.forEach(cancel);
   }
 
   /** Set the input history (e.g. after loading from a session). */

@@ -68,6 +68,15 @@ export class StreamBuffer {
     }
   }
 
+  /**
+   * Throw away buffered deltas WITHOUT emitting them, keeping the flush clock
+   * running. Used at a model-retry boundary: the pending text belongs to the
+   * failed attempt and must never reach the store.
+   */
+  discard(): void {
+    this.pending = "";
+  }
+
   /** Buffered characters not yet flushed (for tests/inspection). */
   get pendingLength(): number {
     return this.pending.length;

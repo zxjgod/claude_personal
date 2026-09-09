@@ -39,6 +39,21 @@ describe("TuiStore", () => {
     expect(last).toMatchObject({ kind: "assistant", text: "Hello world" });
   });
 
+  it("discardStreaming drops a failed attempt without committing it", () => {
+    // S1: at a model_retry boundary the partial stream of the FAILED attempt
+    // must vanish — committing it would fork the transcript from model history.
+    const store = new TuiStore("p/m");
+    store.appendStreamingWithTokens("partial from doomed attempt", 42);
+    store.appendThinking("doomed reasoning");
+    store.discardStreaming();
+    const snap = store.getSnapshot();
+    expect(snap.streamingText).toBe("");
+    expect(snap.streamingThinking).toBe("");
+    expect(snap.spinnerTokens).toBe(0);
+    expect(snap.transcript.some((i) => i.kind === "assistant")).toBe(false);
+    expect(snap.transcript.some((i) => i.kind === "thinking_text")).toBe(false);
+  });
+
   it("ignores empty streaming commits", () => {
     const store = new TuiStore("p/m");
     store.appendStreaming("   ");
@@ -56,6 +71,24 @@ describe("TuiStore", () => {
     const snap = store.getSnapshot();
     expect(snap.activeTools).toEqual([]);
     expect(snap.transcript.at(-1)).toMatchObject({ kind: "tool", name: "read" });
+  });
+
+  it("tracks and clears nested-agent activity", () => {
+    const store = new TuiStore("p/m");
+    store.setActivityLabel("[code-reviewer] Read(src/app.ts)");
+    expect(store.getSnapshot().activityLabel).toContain("code-reviewer");
+    store.setActivityLabel(null);
+    expect(store.getSnapshot().activityLabel).toBeNull();
+  });
+
+  it("clears stale active tools after a turn abort", () => {
+    const store = new TuiStore("p/m");
+    store.startTool("read", "a.ts", "c1");
+    store.setActivityLabel("[agent] Read(a.ts)");
+    store.clearActiveTools();
+    store.setActivityLabel(null);
+    expect(store.getSnapshot().activeTools).toEqual([]);
+    expect(store.getSnapshot().activityLabel).toBeNull();
   });
 
   it("tracks several concurrent tools and finishes them out of order", () => {

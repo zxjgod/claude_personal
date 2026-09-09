@@ -191,6 +191,7 @@ function sanitizePaste(text: string): string {
 
 class Region {
   private lineCount = 0;
+  private cursorRow = 0;
 
   constructor(private out: NodeJS.WriteStream) {}
 
@@ -199,11 +200,15 @@ class Region {
     this.clear();
     this.out.write(lines.join("\n"));
     this.lineCount = lines.length;
+    this.cursorRow = Math.max(0, lines.length - 1);
   }
 
   /** Move the cursor up `linesFromBottom` lines and to column `col` (0-based). */
   positionCursor(linesFromBottom: number, col: number): void {
-    if (linesFromBottom > 0) this.out.write(`\x1b[${linesFromBottom}A`);
+    if (linesFromBottom > 0) {
+      this.out.write(`\x1b[${linesFromBottom}A`);
+      this.cursorRow = Math.max(0, this.cursorRow - linesFromBottom);
+    }
     this.out.write(`\r`);
     if (col > 0) this.out.write(`\x1b[${col}C`);
   }
@@ -214,16 +219,20 @@ class Region {
       this.out.write("\r\x1b[J");
       return;
     }
-    // Cursor may be anywhere within the region; normalise to column 0 of the
-    // top line, then clear to end of screen.
+    // Cursor may be anywhere within the region; normalize relative to its
+    // tracked row. The old implementation always moved lineCount-1 rows,
+    // even when repaint had parked the cursor on the prompt row, erasing
+    // unrelated scrollback above the input widget.
     this.out.write("\r");
-    if (this.lineCount > 1) this.out.write(`\x1b[${this.lineCount - 1}A`);
+    if (this.cursorRow > 0) this.out.write(`\x1b[${this.cursorRow}A`);
     this.out.write("\x1b[J");
     this.lineCount = 0;
+    this.cursorRow = 0;
   }
 
   reset(): void {
     this.lineCount = 0;
+    this.cursorRow = 0;
   }
 }
 
@@ -256,6 +265,7 @@ export function createRawInputReader(opts: {
   // active input-box's cleanup so an idle widget can be committed externally.
   const injected: string[] = [];
   let activeWidgetCleanup: ((committed: string | null) => void) | null = null;
+  let activeQuestionCleanup: ((result: string | null) => void) | null = null;
 
   const renderWidget = (
     state: WidgetState,
@@ -466,6 +476,7 @@ export function createRawInputReader(opts: {
       const finish = (result: string | null) => {
         if (finished) return;
         finished = true;
+        if (activeQuestionCleanup === finish) activeQuestionCleanup = null;
         input.off("data", onData);
         if (input.isTTY) input.setRawMode(false);
         output.write("\x1b[?2004l"); // disable bracketed paste
@@ -503,6 +514,7 @@ export function createRawInputReader(opts: {
           }
         }
       };
+      activeQuestionCleanup = finish;
       input.resume();
       if (input.isTTY) input.setRawMode(true);
       output.write("\x1b[?2004h"); // enable bracketed paste
@@ -517,6 +529,13 @@ export function createRawInputReader(opts: {
     isClosed: () => closed,
     close: () => {
       closed = true;
+      // Settle an outstanding read before pausing the stream. Otherwise the
+      // caller awaiting readInput remains blocked forever and its data listener
+      // survives the shutdown path.
+      activeWidgetCleanup?.(null);
+      activeWidgetCleanup = null;
+      activeQuestionCleanup?.(null);
+      activeQuestionCleanup = null;
       if (input.isTTY) {
         try {
           input.setRawMode(false);
