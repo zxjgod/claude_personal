@@ -8,6 +8,8 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   getScheduledJob,
+  loadDurableJobs,
+  persistDurableJobs,
   registerScheduledJob,
   resetScheduledJobs,
 } from "../tools/extended/cron-shared.js";
@@ -204,5 +206,34 @@ describe("startScheduler", () => {
     expect(host.delivered).toEqual([]);
     // The due job was never even collected.
     expect(listWakeupJobs()).toHaveLength(0);
+  });
+
+  it("displays completions for the resumed session without consuming another session's queue", () => {
+    const host = makeHost({ busy: false });
+    let sessionId = "original";
+    host.sessionId = () => sessionId;
+    stop = startScheduler(host);
+    sessionId = "resumed";
+    for (const id of ["original", "resumed"]) {
+      pushTaskNotification(id, { id, kind: "bash", status: "done", summary: id });
+    }
+    vi.advanceTimersByTime(1000);
+    expect(host.shown).toBe(1);
+    expect(drainNotifications("resumed")).toHaveLength(1);
+    sessionId = "original";
+    vi.advanceTimersByTime(1000);
+    expect(host.shown).toBe(2);
+  });
+
+  it("does not reload a completed durable relative delay after restart", () => {
+    const host = makeHost({ busy: false });
+    registerScheduledJob({ cron: "+1", prompt: "once", recurring: false, durable: true });
+    persistDurableJobs(dir);
+    stop = startScheduler(host);
+    vi.advanceTimersByTime(1100);
+    expect(host.delivered).toHaveLength(1);
+    stop();
+    resetScheduledJobs();
+    expect(loadDurableJobs(dir).loaded).toBe(0);
   });
 });

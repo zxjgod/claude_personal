@@ -5,6 +5,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import chalk from "chalk";
+import { clearCwd } from "../tools/session-cwd.js";
 import type { SlashCommand } from "./types.js";
 
 export const cdCommand: SlashCommand = {
@@ -39,6 +40,7 @@ export const cdCommand: SlashCommand = {
     const prev = ctx.workspaceRoot;
     const ok = ctx.setWorkspaceRoot(target);
     if (ok) {
+      clearCwd(ctx.sessionId);
       console.log(chalk.green(`  Workspace: ${prev} → ${target}`));
     } else {
       console.log(chalk.red(`  Could not change workspace to: ${target}`));

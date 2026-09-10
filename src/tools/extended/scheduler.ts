@@ -30,7 +30,7 @@ export interface ScheduledPrompt {
 
 export interface SchedulerHost {
   /** Session whose background completions are surfaced in the idle UI. */
-  sessionId: string;
+  sessionId: string | (() => string);
   /** Workspace containing .claude/scheduled_tasks.json. */
   workspaceRoot: string | (() => string);
   /** True while an agent turn is in progress (delivery is deferred). */
@@ -87,14 +87,15 @@ export function startScheduler(host: SchedulerHost): () => void {
     if (stopped) return;
     // Surface background completions to the user first (peek-only; the model
     // still receives the queued copy at the next delivery point).
-    const unseen = takeUnseenForDisplay(host.sessionId);
+    const sessionId = typeof host.sessionId === "function" ? host.sessionId() : host.sessionId;
+    const unseen = takeUnseenForDisplay(sessionId);
     if (unseen.length > 0) host.displayNotifications(unseen);
 
     const prompts = schedulerTick(new Date());
     // collectDueCronJobs removes one-shot durable entries as they fire. Rewrite
     // the durable file after every firing pass so a consumed one-shot never
     // resurrects on restart. Recurring entries are emitted unchanged.
-    if (prompts.some((p) => p.source === "cron")) {
+    if (prompts.length > 0) {
       const root =
         typeof host.workspaceRoot === "function" ? host.workspaceRoot() : host.workspaceRoot;
       persistDurableJobs(root);

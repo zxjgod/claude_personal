@@ -3,7 +3,7 @@
 // ============================================================
 // A vertically-stacked, arrow-navigable list of switchable models, built
 // from the saved provider profiles plus the current model. Selecting one
-// (Enter) resolves the overlay with that model id; the run.tsx handler
+// (Enter) resolves the overlay with that profile choice id; the runner
 // swaps the live ModelConfig in place WITHOUT any LLM call. Esc cancels.
 // Custom ids stay on /model <id> — this picker only lists known-good pairs.
 //
@@ -55,11 +55,13 @@ export function ModelPicker({ overlay }: { overlay: Extract<Overlay, { kind: "mo
     else if (key.downArrow) move(1);
     else if (key.pageUp) move(-windowSize);
     else if (key.pageDown) move(windowSize);
-    else if (key.return) overlay.resolve(items[cursorRef.current]?.name ?? null);
-    else if (key.escape) overlay.resolve(null);
+    else if (key.return) {
+      const item = items[cursorRef.current];
+      overlay.resolve(item?.id ?? item?.name ?? null);
+    } else if (key.escape) overlay.resolve(null);
     else if (/^[1-9]$/.test(input)) {
       const idx = offset + parseInt(input, 10) - 1;
-      if (idx < items.length) overlay.resolve(items[idx]!.name);
+      if (idx < items.length) overlay.resolve(items[idx]!.id ?? items[idx]!.name);
     }
   });
 
@@ -81,7 +83,7 @@ export function ModelPicker({ overlay }: { overlay: Extract<Overlay, { kind: "mo
           const realIdx = start + i;
           const selected = realIdx === cursor;
           return (
-            <Text key={m.name} color={selected ? ACCENT : undefined}>
+            <Text key={m.id ?? m.name} color={selected ? ACCENT : undefined}>
               {selected ? "❯ " : "  "}
               <Text color={m.current ? CURRENT : undefined}>{m.current ? "● " : ""}</Text>
               {m.name}

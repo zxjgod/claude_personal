@@ -180,9 +180,9 @@ export type Overlay =
     }
   | {
       /** Batch B8 (alt+p): quick model switcher. Items are provider/model
-       *  pairs (from provider profiles); resolving picks the model id. */
+       *  pairs (from provider profiles); resolving picks the profile choice id. */
       kind: "modelPicker";
-      items: Array<{ name: string; label: string; current: boolean }>;
+      items: Array<{ id?: string; name: string; label: string; current: boolean }>;
       resolve: (model: string | null) => void;
     }
   | {
@@ -570,7 +570,7 @@ export class TuiStore {
 
   /** Batch B8 (alt+p): provider/model picker overlay. */
   askModelPicker(
-    items: Array<{ name: string; label: string; current: boolean }>,
+    items: Array<{ id?: string; name: string; label: string; current: boolean }>,
   ): Promise<string | null> {
     return new Promise((resolve) => {
       this.openOverlay({

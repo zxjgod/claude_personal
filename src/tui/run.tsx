@@ -58,6 +58,7 @@ import type { CommandInfo } from "./InputBox.js";
 import { t } from "./i18n.js";
 import { appendHistory, loadHistory } from "./input-history.js";
 import { InputQueue } from "./input-queue.js";
+import { runModelPicker } from "./model-picker-flow.js";
 import { expandPastedChips, makePasteChip } from "./paste-chip.js";
 import { lookupContextWindow } from "./session-stats.js";
 import {
@@ -585,7 +586,7 @@ async function runResumePicker(store: TuiStore, deps: TuiDeps): Promise<void> {
  * live ModelConfig in place. No LLM call — the next turn uses the new endpoint.
  */
 async function runProviderPicker(store: TuiStore, deps: TuiDeps): Promise<void> {
-  const profiles = loadProviderProfiles(deps.workspaceRoot);
+  const profiles = loadProviderProfiles(deps.getWorkspaceRoot?.() ?? deps.workspaceRoot);
   if (profiles.length === 0) {
     store.addNotice("  No provider profiles. Create .claude/providers.json to use /provider.");
     return;
@@ -938,33 +939,7 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
   // resizes the context gauge to the new model's window.
   const onModelPicker = useCallback(() => {
     if (store.getSnapshot().overlay) return;
-    void (async () => {
-      const profiles = loadProviderProfiles(deps.getWorkspaceRoot?.() ?? deps.workspaceRoot);
-      const cfg = deps.modelConfig;
-      const currentLabel = `${cfg.provider}/${cfg.model}`;
-      const seen = new Set<string>([currentLabel]);
-      const items: Array<{ name: string; label: string; current: boolean }> = [
-        { name: cfg.model, label: currentLabel, current: true },
-      ];
-      for (const p of profiles) {
-        const label = `${p.provider ?? "openai"}/${p.model ?? "default"}`;
-        const id = p.model ?? "default";
-        if (seen.has(label)) continue;
-        seen.add(label);
-        items.push({ name: id, label, current: false });
-      }
-      if (items.length === 1) {
-        store.addNotice("  No saved models — add .claude/providers.json or use /model <id>.");
-        return;
-      }
-      const chosen = await store.askModelPicker(items);
-      if (!chosen || chosen === cfg.model) return;
-      const prev = cfg.model;
-      cfg.model = chosen;
-      store.setModel(chosen, `${cfg.provider}/${chosen}`);
-      store.setContextLimit(lookupContextWindow(chosen) ?? 0);
-      store.addNotice(`  Model: ${prev} → ${chosen}`);
-    })();
+    void runModelPicker(store, deps.modelConfig, deps.getWorkspaceRoot?.() ?? deps.workspaceRoot);
   }, [store, deps]);
 
   // B8 (alt+t): flip extended thinking on/off by toggling the adapter's
@@ -1349,8 +1324,8 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
   // boundary. The scheduler owns its interval and returns a cleanup function.
   useEffect(() => {
     return startScheduler({
-      sessionId: sessionId(),
-      workspaceRoot: deps.getWorkspaceRoot?.() ?? deps.workspaceRoot,
+      sessionId,
+      workspaceRoot: () => deps.getWorkspaceRoot?.() ?? deps.workspaceRoot,
       // An open overlay (permission/question prompt from a BACKGROUND agent
       // surfacing while the main turn is idle) counts as busy: injecting a
       // scheduled prompt now would start a competing turn under the prompt.

@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { recordChange, resetChangeTracker } from "../change-tracker.js";
 import { type CommandContext, handleSlashCommand } from "../commands.js";
 import { registerSkill, resetSkills } from "../skills.js";
+import { clearCwd, getCwd, setCwd } from "../tools/session-cwd.js";
 import { SessionStats } from "../tui/session-stats.js";
 import type { Message, ModelCaller, ModelConfig } from "../types.js";
 
@@ -40,6 +41,29 @@ afterEach(() => {
 });
 
 describe("handleSlashCommand", () => {
+  it("/cd clears a remembered shell directory only when the workspace change succeeds", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-cd-"));
+    const ctx = makeCtx([]);
+    ctx.workspaceRoot = root;
+    const next = path.join(root, "next");
+    fs.mkdirSync(next);
+    try {
+      setCwd(ctx.sessionId, root);
+      ctx.setWorkspaceRoot = () => false;
+      await handleSlashCommand(`/cd ${next}`, ctx);
+      expect(getCwd(ctx.sessionId)).toBe(root);
+      ctx.setWorkspaceRoot = (value) => {
+        ctx.workspaceRoot = value;
+        return true;
+      };
+      await handleSlashCommand(`/cd ${next}`, ctx);
+      expect(getCwd(ctx.sessionId) ?? ctx.workspaceRoot).toBe(next);
+    } finally {
+      clearCwd(ctx.sessionId);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("returns handled=false for normal text", async () => {
     const r = await handleSlashCommand("hello there", makeCtx([]));
     expect(r.handled).toBe(false);

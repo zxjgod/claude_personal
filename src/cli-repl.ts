@@ -205,7 +205,7 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
   // completions to the user. Deliveries deferred mid-turn are parked inside
   // the scheduler and delivered at the busy→idle flip.
   const stopScheduler = startScheduler({
-    sessionId: session.id,
+    sessionId: () => session.id,
     workspaceRoot: getWorkspaceRoot,
     isBusy: () => turnInProgress || getPendingPromptCount() > 0,
     deliver: (prompt) => injectInput(prompt),
