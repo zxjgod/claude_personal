@@ -12,7 +12,6 @@
 // ============================================================
 
 import { Box, Text } from "ink";
-import type React from "react";
 import { useEffect, useState } from "react";
 import type { ToolExecutionResult } from "./../types.js";
 import { BLACK_CIRCLE, TOOL_RESULT } from "./figures.js";
@@ -24,10 +23,10 @@ import {
   isReducedMotion,
   STATUS_GRAY,
   STATUS_GRAY_BRIGHT,
-  STATUS_GREEN,
 } from "./spinner-core.js";
 import { truncateVisual } from "./terminal-width.js";
 import { palette } from "./theme.js";
+import { toolOutputLines } from "./tool-output.js";
 import { toolResultSummary } from "./tool-result-summary.js";
 
 const PREVIEW_LINES = 12;
@@ -43,13 +42,6 @@ export function isToolExpandable(result: ToolExecutionResult): boolean {
   if (result.error) return false;
   if (toolResultSummary(result)) return true;
   return (result.formatted ?? "").split("\n").length > PREVIEW_LINES;
-}
-
-function colorizeLine(line: string): React.ReactNode {
-  if (line.startsWith("+ ")) return <Text color={palette.success}>{line}</Text>;
-  if (line.startsWith("- ")) return <Text color={palette.error}>{line}</Text>;
-  if (line.startsWith("Error:")) return <Text color={palette.error}>{line}</Text>;
-  return <Text>{line}</Text>;
 }
 
 /** Tool status glyph: gray blinking while executing, green static when done,
@@ -70,7 +62,7 @@ function ToolStatusGlyph({ isActive, isError }: { isActive: boolean; isError?: b
   if (isActive) {
     return <Text color={flash ? STATUS_GRAY_BRIGHT : STATUS_GRAY}>{BLACK_CIRCLE}</Text>;
   } else {
-    return <Text color={isError ? palette.error : STATUS_GREEN}>{BLACK_CIRCLE}</Text>;
+    return <Text color={isError ? palette.error : palette.success}>{BLACK_CIRCLE}</Text>;
   }
 }
 
@@ -129,8 +121,11 @@ export function CompletedToolCard({
   const title = (
     <Box>
       <ToolStatusGlyph isActive={false} isError={!!result.error} />
-      <Text bold> {capitalize(result.toolName)}</Text>
-      {detail ? <Text dimColor>({truncate(detail, 100)})</Text> : null}
+      <Text color={palette.text} bold>
+        {" "}
+        {capitalize(result.toolName)}
+      </Text>
+      {detail ? <Text color={palette.text}>({truncate(detail, 100)})</Text> : null}
     </Box>
   );
 
@@ -143,7 +138,7 @@ export function CompletedToolCard({
     );
   }
 
-  const allLines = (result.formatted ?? "").split("\n");
+  const allLines = toolOutputLines(result, detail);
   const isLong = allLines.length > PREVIEW_LINES;
 
   // Read/Grep/Glob collapse to a single summary line ("Read N lines"); expanding
@@ -164,8 +159,8 @@ export function CompletedToolCard({
       <Box flexDirection="column" paddingLeft={2}>
         {shown.map((line, i) => (
           <Box key={i}>
-            <Text dimColor>{i === 0 ? `${TOOL_RESULT}  ` : "   "}</Text>
-            {colorizeLine(line)}
+            <Text color={palette.muted}>{i === 0 ? `${TOOL_RESULT}  ` : "   "}</Text>
+            <Text color={palette.text}>{line}</Text>
           </Box>
         ))}
         {collapsedToSummary && allLines.length > 0 ? (

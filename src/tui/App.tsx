@@ -45,6 +45,7 @@ import { TODO_MAX_ROWS, TodoList } from "./TodoList.js";
 import { ActiveToolCard, CompletedToolCard } from "./ToolCard.js";
 import { TranscriptReview } from "./TranscriptReview.js";
 import { truncateVisual } from "./terminal-width.js";
+import { palette } from "./theme.js";
 import { collapsedThinkingLine } from "./transcript-lines.js";
 import { useStoreField, useStoreSelector } from "./useStoreSelector.js";
 import { useTerminalSize } from "./useTerminalSize.js";
@@ -118,7 +119,7 @@ function TranscriptRow({ item, expanded }: { item: TranscriptItem; expanded: boo
     case "assistant":
       return (
         <AssistantMessage>
-          <Text>{renderMarkdown(item.text)}</Text>
+          <Text color={palette.text}>{renderMarkdown(item.text)}</Text>
         </AssistantMessage>
       );
     case "thinking_text":
@@ -129,7 +130,7 @@ function TranscriptRow({ item, expanded }: { item: TranscriptItem; expanded: boo
       // no-duration case (/resume replayed history shows "Thinking · N
       // lines", not a misleading "Thought for 0s").
       return (
-        <Text dimColor italic>
+        <Text color={palette.secondary}>
           {`  ${collapsedThinkingLine(item.seconds, item.text.split("\n").length)}`}
         </Text>
       );
@@ -142,7 +143,7 @@ function TranscriptRow({ item, expanded }: { item: TranscriptItem; expanded: boo
         />
       ) : null;
     case "thought":
-      return <Text dimColor>{`  Thought for ${item.seconds}s`}</Text>;
+      return <Text color={palette.secondary}>{`  Thought for ${item.seconds}s`}</Text>;
     case "notice":
       return <Text dimColor>{item.text}</Text>;
     case "compact":

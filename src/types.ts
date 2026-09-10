@@ -152,6 +152,8 @@ export interface ToolResultMetadata {
    * folded content preview.
    */
   summary?: string;
+  /** Bounded display-only snapshot for the Write result's syntax preview. */
+  codePreview?: { filePath: string; text: string; totalLines: number; truncated?: boolean };
   /**
    * Structured todo list (Todo tool only). The TUI pins this under the spinner
    * as a live region; the committed tool row stays compact via `summary`.

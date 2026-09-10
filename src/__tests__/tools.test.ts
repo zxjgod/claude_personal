@@ -88,6 +88,19 @@ describe("ReadTool", () => {
 // --- Write Tool ---
 
 describe("WriteTool", () => {
+  it("bounds the display snapshot while preserving the full file and model result", async () => {
+    const content = Array.from({ length: 30 }, (_, i) => `// line ${i}: ${"x".repeat(500)}`).join(
+      "\n",
+    );
+    const result = await WriteTool.call({ filePath: "preview.ts", content }, ctx);
+    expect(result.error).toBeUndefined();
+    expect(result.metadata?.codePreview?.text.length).toBeLessThanOrEqual(4000);
+    expect(result.metadata?.codePreview?.totalLines).toBe(30);
+    expect(result.metadata?.codePreview?.truncated).toBe(true);
+    expect(result.content).not.toContain("// line");
+    expect(fs.readFileSync(path.join(tmpDir, "preview.ts"), "utf8")).toBe(content);
+  });
+
   it("should create a new file", async () => {
     const result = await WriteTool.call({ filePath: "newfile.txt", content: "hello world" }, ctx);
     expect(result.error).toBeUndefined();

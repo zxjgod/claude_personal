@@ -14,6 +14,7 @@ import type { SubAgentProgress, ToolExecutionResult } from "../types.js";
 import { t } from "./i18n.js";
 import { renderMarkdown } from "./markdown.js";
 import { terminalColumns, truncateVisual, visualWidth } from "./terminal-width.js";
+import { toolOutputLines } from "./tool-output.js";
 import { toolResultSummary } from "./tool-result-summary.js";
 
 // Windows-safe glyphs (see constants/figures.ts in the reference source).
@@ -150,7 +151,7 @@ export function renderToolResult(result: ToolExecutionResult): void {
   // Read/Grep/Glob show a compact summary line ("Read N lines") instead of
   // dumping their raw output; every other tool shows a folded content preview.
   const summary = toolResultSummary(result);
-  const rendered = summary ?? renderFormattedToolOutput(result.formatted);
+  const rendered = summary ?? renderFormattedToolOutput(toolOutputLines(result).join("\n"));
   if (rendered) {
     process.stdout.write(`  ${chalk.dim(BRANCH)} ${indentContinuation(rendered)}${duration}\n`);
   } else {
@@ -261,14 +262,7 @@ function renderFormattedToolOutput(text: string): string {
   const clipped = lines.slice(0, MAX_LINES);
   const wasClipped = lines.length > MAX_LINES;
 
-  const rendered = clipped
-    .map((line) => {
-      if (line.startsWith("+ ")) return chalk.green(line);
-      if (line.startsWith("- ")) return chalk.red(line);
-      if (line.startsWith("Error:")) return chalk.red(line);
-      return line;
-    })
-    .join("\n");
+  const rendered = clipped.join("\n");
 
   if (wasClipped) {
     const extra = lines.length - MAX_LINES;

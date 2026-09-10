@@ -24,6 +24,13 @@
 export type ThemeName = "dark" | "light";
 
 interface PaletteShape {
+  text: string;
+  secondary: string;
+  muted: string;
+  inlineCode: string;
+  diffAddedBg: string;
+  diffRemovedBg: string;
+  syntax: Record<string, string>;
   /** Claude orange — spinner glyph/verb, primary accent (official `claude`). */
   accent: string;
   /** Lighter orange for the shimmer sweep (official `claudeShimmer`). */
@@ -49,6 +56,32 @@ interface PaletteShape {
 }
 
 const DARK: PaletteShape = {
+  text: "#d4d4d4",
+  secondary: "#999999",
+  muted: "#707070",
+  inlineCode: "#b1b9f9",
+  diffAddedBg: "#002800",
+  diffRemovedBg: "#380000",
+  syntax: {
+    keyword: "#ff0087",
+    built_in: "#a6e22e",
+    type: "#66d9ef",
+    literal: "#ae81ff",
+    number: "#ae81ff",
+    string: "#e6db74",
+    symbol: "#e6db74",
+    regexp: "#e6db74",
+    variable: "#f8f8f2",
+    attribute: "#a6e22e",
+    tag: "#ff0087",
+    name: "#a6e22e",
+    title: "#a6e22e",
+    section: "#a6e22e",
+    function: "#a6e22e",
+    comment: "#85816c",
+    doctag: "#85816c",
+    meta: "#999999",
+  },
   accent: "#d77757",
   accentBright: "#f59575",
   command: "#7dcfff",
@@ -76,6 +109,32 @@ const DARK: PaletteShape = {
  *  rgb(171,43,63), autoAccept purple #8700ff, planMode teal #006666 — on a
  *  light background these native values are the legible ones. */
 const LIGHT: PaletteShape = {
+  text: "#242424",
+  secondary: "#595959",
+  muted: "#707070",
+  inlineCode: "#4b50a8",
+  diffAddedBg: "#daf0da",
+  diffRemovedBg: "#f9dddd",
+  syntax: {
+    keyword: "#af005f",
+    built_in: "#476b00",
+    type: "#006b80",
+    literal: "#7040a0",
+    number: "#7040a0",
+    string: "#756000",
+    symbol: "#756000",
+    regexp: "#756000",
+    variable: "#242424",
+    attribute: "#476b00",
+    tag: "#af005f",
+    name: "#476b00",
+    title: "#476b00",
+    section: "#476b00",
+    function: "#476b00",
+    comment: "#707060",
+    doctag: "#707060",
+    meta: "#595959",
+  },
   accent: "#d77757", // brand orange reads on both
   accentBright: "#d76d47", // shimmer darkened for light backgrounds
   command: "#0a7ea4",
@@ -103,6 +162,13 @@ let activeTheme: ThemeName = "dark";
 export function applyTheme(name: string): ThemeName {
   const next: ThemeName = name === "light" ? "light" : "dark";
   const src = next === "light" ? LIGHT : DARK;
+  palette.text = src.text;
+  palette.secondary = src.secondary;
+  palette.muted = src.muted;
+  palette.inlineCode = src.inlineCode;
+  palette.diffAddedBg = src.diffAddedBg;
+  palette.diffRemovedBg = src.diffRemovedBg;
+  palette.syntax = { ...src.syntax };
   palette.accent = src.accent;
   palette.accentBright = src.accentBright;
   palette.command = src.command;

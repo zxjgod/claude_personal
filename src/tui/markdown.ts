@@ -14,6 +14,7 @@ import chalk, { type ChalkInstance } from "chalk";
 import hljs from "highlight.js";
 import { marked, type Token, type Tokens } from "marked";
 import { padAligned, stripAnsi, terminalColumns, visualWidth } from "./terminal-width.js";
+import { palette } from "./theme.js";
 
 const EOL = "\n";
 
@@ -173,7 +174,7 @@ function renderTable(token: Tokens.Table): string {
         const idx = lineIdx - offsets[col]!;
         let cellText = idx >= 0 && idx < lines.length ? lines[idx]! : "";
         const align = isHeader ? "center" : (token.align?.[col] ?? "left");
-        if (isHeader) cellText = chalk.bold.cyan(cellText);
+        if (isHeader) cellText = chalk.hex(palette.text).bold(cellText);
         line += " " + padAligned(cellText, visualWidth(cellText), columnWidths[col]!, align) + " │";
       }
       result.push(line);
@@ -247,38 +248,25 @@ function renderTable(token: Tokens.Table): string {
 
 // --- Token formatting (ported subset of formatToken) ---
 
-const inlineCode = chalk.cyan;
+function syntaxColor(classes: string): ChalkInstance {
+  // highlight.js emits compound classes such as "title function_".
+  const token = classes.split(/\s+/)[0] ?? "";
+  return chalk.hex(palette.syntax[token] ?? palette.text);
+}
 
-/**
- * Map highlight.js token types to chalk colors.
- * Terminal-friendly colors with good contrast.
- */
-const HLJS_TOKEN_COLORS: Record<string, ChalkInstance> = {
-  keyword: chalk.cyan,
-  built_in: chalk.cyan,
-  type: chalk.green,
-  literal: chalk.magenta,
-  number: chalk.magenta,
-  string: chalk.yellow,
-  symbol: chalk.yellow,
-  regexp: chalk.yellow,
-  variable: chalk.blue,
-  "template-variable": chalk.blue,
-  attribute: chalk.green,
-  tag: chalk.red,
-  name: chalk.red,
-  "selector-tag": chalk.red,
-  "selector-id": chalk.yellow,
-  "selector-class": chalk.yellow,
-  title: chalk.blue.bold,
-  section: chalk.blue.bold,
-  function: chalk.blue.bold,
-  comment: chalk.gray.italic,
-  doctag: chalk.gray.italic,
-  meta: chalk.dim,
-  "meta-keyword": chalk.dim,
-  "meta-string": chalk.dim,
-};
+export function highlightCode(code: string, language = ""): string {
+  const lower = language.toLowerCase();
+  const resolved = LANGUAGE_ALIASES[lower] ?? lower;
+  let html = escapeHtml(code);
+  if (resolved && hljs.getLanguage(resolved)) {
+    try {
+      html = hljs.highlight(code, { language: resolved }).value;
+    } catch {
+      // Incomplete streamed code remains readable as plain text.
+    }
+  }
+  return chalk.hex(palette.text)(parseHljsOutput(html));
+}
 
 /**
  * Parse highlight.js HTML output and convert to chalk-styled string.
@@ -312,9 +300,9 @@ function parseHljsOutput(html: string): string {
       let colorFn: ChalkInstance;
       if (openTagMatch[1] !== undefined) {
         const cls = openTagMatch[2]!;
-        colorFn = HLJS_TOKEN_COLORS[cls] ?? chalk.white;
+        colorFn = syntaxColor(cls);
       } else {
-        colorFn = stack.length > 0 ? stack[stack.length - 1]![0] : chalk.white;
+        colorFn = stack.length > 0 ? stack[stack.length - 1]![0] : chalk.hex(palette.text);
       }
       stack.push([colorFn, ""]);
       i += openTagMatch[0]!.length;
@@ -424,30 +412,15 @@ function formatToken(
         (token.tokens ?? []).map((t) => formatToken(t, 0, null, parent)).join(""),
       );
     case "codespan":
-      return inlineCode(decodeHtmlEntities((token as Tokens.Codespan).text));
+      return chalk.hex(palette.inlineCode)(decodeHtmlEntities((token as Tokens.Codespan).text));
     case "code": {
       const codeToken = token as Tokens.Code;
-      const code = codeToken.text;
-      const lang = codeToken.lang || "";
-      // Resolve language alias (e.g. "js" → "javascript")
-      const lower = lang.toLowerCase();
-      const resolvedLang = LANGUAGE_ALIASES[lower] ?? lower;
-      // Try to highlight with resolved language; fall back to plain gray
-      let highlighted: string;
-      if (resolvedLang && hljs.getLanguage(resolvedLang)) {
-        try {
-          highlighted = hljs.highlight(code, { language: resolvedLang }).value;
-        } catch {
-          highlighted = escapeHtml(code);
-        }
-      } else {
-        highlighted = escapeHtml(code);
-      }
-      // Parse HTML and apply chalk colors for terminal rendering
-      return parseHljsOutput(highlighted) + EOL;
+      return highlightCode(codeToken.text, codeToken.lang || "") + EOL;
     }
     case "heading":
-      return chalk.bold.cyan((token.tokens ?? []).map((t) => formatToken(t)).join("")) + EOL;
+      return (
+        chalk.hex(palette.text).bold((token.tokens ?? []).map((t) => formatToken(t)).join("")) + EOL
+      );
     case "hr":
       return chalk.dim("─".repeat(Math.min(terminalColumns() - 1, 60))) + EOL;
     case "blockquote": {
@@ -489,7 +462,7 @@ function formatToken(
     case "link": {
       const link = token as Tokens.Link;
       const text = (link.tokens ?? []).map((t) => formatToken(t)).join("");
-      return chalk.cyan(text || link.href);
+      return chalk.hex(palette.inlineCode)(text || link.href);
     }
     case "table":
       return renderTable(token as Tokens.Table) + EOL;

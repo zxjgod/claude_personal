@@ -88,6 +88,8 @@ export const WriteTool: Tool = buildTool({
 
       const size = Buffer.byteLength(input.content, "utf-8");
       const action = existed ? "Updated" : "Created";
+      const lines = input.content.split("\n");
+      const preview = lines.slice(0, 10).join("\n");
 
       recordChange(
         context.sessionId,
@@ -98,7 +100,15 @@ export const WriteTool: Tool = buildTool({
 
       return {
         content: `${action} file: ${input.filePath} (${formatSize(size)})`,
-        metadata: { fileSize: size },
+        metadata: {
+          fileSize: size,
+          codePreview: {
+            filePath: input.filePath,
+            text: preview.slice(0, 4000),
+            totalLines: lines.length,
+            truncated: preview.length > 4000,
+          },
+        },
       };
     } catch (error) {
       return {

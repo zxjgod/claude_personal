@@ -6,10 +6,8 @@
 // in-flight streaming text into that flat array, mirroring the <Static> path's
 // visual structure (● assistant, ⎿ tool result, etc.).
 //
-// P3-16: rows now carry a role COLOR (user blue, tool head orange, tool body
-// and system notices dim, errors red) so the pager/full-screen view reads like
-// the colored default path instead of a wall of monochrome text. Still one
-// color per row — exact windowing stays intact (no per-node measurement).
+// Rows carry neutral text plus ANSI syntax/diff colors shared with ToolCard.
+// Muted chrome stays separate so syntax is not dimmed in the history viewer.
 //
 // P0-1: `verbose` mode (transcript viewer / Ctrl+O) shows FULL tool output
 // (no 12-line preview cut) and FULL thinking text; the non-verbose mode keeps
@@ -17,11 +15,14 @@
 // `role: "user"` marker so the viewer can jump between prompts with { / }.
 // ============================================================
 
+import chalk from "chalk";
 import { BLACK_CIRCLE, TOOL_RESULT } from "./figures.js";
 import { t } from "./i18n.js";
 import { renderMarkdown } from "./markdown.js";
 import type { TranscriptItem } from "./store.js";
 import { truncateVisual } from "./terminal-width.js";
+import { palette } from "./theme.js";
+import { toolOutputLines } from "./tool-output.js";
 
 const PREVIEW_LINES = 12;
 
@@ -93,7 +94,7 @@ function itemLines(
       // Official: plain assistant text carries NO bullet (⏺ belongs to tool
       // calls); rows render unindented at full width.
       const md = renderMarkdown(item.text).split("\n");
-      return md.map((l) => ({ text: l }));
+      return md.map((l) => ({ text: l, color: palette.text }));
     }
     case "thought":
       return [{ text: `  ${t("ui.thinking.thoughtFor", { s: item.seconds })}`, dim: true }];
@@ -130,11 +131,12 @@ function itemLines(
       const r = item.result;
       if (!r) return [];
       // Official head: `⏺ Name(detail)` — the head carries no accent tint
-      // (the glyph's own success/error color is the signal); body rows dim.
-      const head = `${BLACK_CIRCLE} ${capitalize(r.toolName)}${item.detail ? `(${truncate(item.detail, 100)})` : ""}`;
+      // (the glyph's own success/error color is the signal).
+      const dot = chalk.hex(r.error ? palette.error : palette.success)(BLACK_CIRCLE);
+      const head = `${dot} ${capitalize(r.toolName)}${item.detail ? `(${truncate(item.detail, 100)})` : ""}`;
       if (r.error)
-        return [{ text: head }, { text: `  ${TOOL_RESULT}  ${r.error}`, color: "#f7768e" }];
-      const all = (r.formatted ?? "").split("\n");
+        return [{ text: head }, { text: `  ${TOOL_RESULT}  ${r.error}`, color: palette.error }];
+      const all = toolOutputLines(r, item.detail);
       // P0-1: verbose mode (transcript viewer) shows everything; the compact
       // mode keeps the preview window.
       const limit = verbose ? Number.POSITIVE_INFINITY : PREVIEW_LINES;
@@ -144,7 +146,7 @@ function itemLines(
       // body row; continuation rows align under the content column (4 spaces).
       const body: TranscriptLine[] = shown.map((l, i) => ({
         text: i === 0 ? `  ${TOOL_RESULT}  ${l}` : `    ${l}`,
-        dim: true,
+        color: palette.text,
       }));
       if (isLong)
         body.push({
@@ -179,7 +181,7 @@ export function transcriptToLines(
   if (streamingText.trim()) {
     // Plain assistant text — no bullet (official rendering).
     const md = renderMarkdown(streamingText).split("\n");
-    out.push(...md.map((l) => ({ text: l })));
+    out.push(...md.map((l) => ({ text: l, color: palette.text })));
   }
   return out;
 }

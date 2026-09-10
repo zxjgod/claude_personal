@@ -25,6 +25,7 @@ import { Text } from "ink";
 import { marked } from "marked";
 import { memo, useRef } from "react";
 import { renderMarkdown } from "./markdown.js";
+import { palette } from "./theme.js";
 
 // Debug logging is handled by run.tsx via the debugLogger module.
 // This component only handles markdown rendering.
@@ -35,7 +36,7 @@ import { renderMarkdown } from "./markdown.js";
  * this output and `renderMarkdown` (the lexer) doesn't run again for it.
  */
 const MarkdownChunk = memo(function MarkdownChunk({ content }: { content: string }) {
-  return <Text>{renderMarkdown(content)}</Text>;
+  return <Text color={palette.text}>{renderMarkdown(content)}</Text>;
 });
 
 export function StreamingMarkdown({ children }: { children: string }) {

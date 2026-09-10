@@ -89,7 +89,7 @@ describe("transcriptToLines", () => {
     expect(lines.some((l) => l.text.includes("streaming now"))).toBe(true);
   });
 
-  it("styles rows by role (official): user dim, tool head plain + ⏺, body dim", () => {
+  it("styles rows by role: muted user, neutral tool body, muted notices", () => {
     const items: TranscriptItem[] = [
       { kind: "user", id: 1, text: "hello" },
       {
@@ -107,7 +107,8 @@ describe("transcriptToLines", () => {
     const head = lines.find((l) => l.text.startsWith(`${BLACK_CIRCLE} Read`))!;
     expect(head.color).toBeUndefined(); // official: no accent tint on the head
     const body = lines.find((l) => l.text.includes("file body"))!;
-    expect(body.dim).toBe(true);
+    expect(body.color).toBe("#d4d4d4");
+    expect(body.dim).toBeUndefined();
     const notice = lines.find((l) => l.text === "system note")!;
     expect(notice.dim).toBe(true);
     const think = lines.find((l) => l.text.includes("reasoning line"))!;
