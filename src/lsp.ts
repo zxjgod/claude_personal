@@ -18,6 +18,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import { createRequire } from "node:module";
 import * as path from "node:path";
+import { resolveAllowedWorkspaceFile } from "./tools/utils/path.js";
 
 export interface Diagnostic {
   file: string;
@@ -148,8 +149,10 @@ export class LspClient {
    * timeoutMs bounds each underlying tsserver request.
    */
   async getDiagnostics(filePath: string, timeoutMs = 20000): Promise<Diagnostic[]> {
+    const resolution = resolveAllowedWorkspaceFile(filePath, this.rootPath);
+    if (!resolution.ok) throw new Error(resolution.error);
+    const abs = resolution.path;
     await this.ensureInitialized();
-    const abs = path.isAbsolute(filePath) ? filePath : path.resolve(this.rootPath, filePath);
     const text = fs.existsSync(abs) ? fs.readFileSync(abs, "utf-8") : "";
 
     // open is a notification (no response required) but tsserver still acks.
@@ -186,8 +189,10 @@ export class LspClient {
     column: number,
     timeoutMs = 15000,
   ): Promise<CompletionItem[]> {
+    const resolution = resolveAllowedWorkspaceFile(filePath, this.rootPath);
+    if (!resolution.ok) throw new Error(resolution.error);
+    const abs = resolution.path;
     await this.ensureInitialized();
-    const abs = path.isAbsolute(filePath) ? filePath : path.resolve(this.rootPath, filePath);
     const text = fs.existsSync(abs) ? fs.readFileSync(abs, "utf-8") : "";
     const scriptKindName = abs.endsWith(".tsx") ? "TSX" : abs.endsWith(".ts") ? "TS" : "JS";
 
@@ -313,14 +318,29 @@ export class LspClient {
   /** Shutdown the server cleanly. Idempotent. */
   async dispose(): Promise<void> {
     if (!this.proc) return;
-    try {
-      await this.request("exit", null).catch(() => undefined);
-    } finally {
-      this.proc.kill();
-      this.proc = null;
-      this.pending.clear();
-      this.ready = false;
-    }
+    const proc = this.proc;
+    // tsserver exits without acknowledging this command. Wait for process
+    // closure with a short bound instead of a request that always times out.
+    const closed = new Promise<void>((resolve) => {
+      let timer: ReturnType<typeof setTimeout>;
+      const finish = () => {
+        clearTimeout(timer);
+        proc.removeListener("close", finish);
+        resolve();
+      };
+      timer = setTimeout(() => {
+        proc.kill();
+        finish();
+      }, 1000);
+      proc.once("close", finish);
+    });
+    this.writeMessage({ seq: this.nextSeq++, type: "request", command: "exit" });
+    this.proc = null;
+    this.ready = false;
+    this.initPromise = null;
+    for (const pending of this.pending.values()) pending.reject(new Error("LSP client disposed"));
+    this.pending.clear();
+    await closed;
   }
 }
 

@@ -9,6 +9,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import chalk from "chalk";
+import { resolveAllowedWorkspaceFile } from "../tools/utils/path.js";
 import type { CommandContext, CommandResult, SlashCommand } from "./types.js";
 
 /** Render a compact, shareable transcript (no raw tool args/results dump). */
@@ -58,7 +59,12 @@ export const shareCommand: SlashCommand = {
       return;
     }
     try {
-      const abs = path.isAbsolute(target) ? target : path.join(ctx.workspaceRoot, target);
+      const resolution = resolveAllowedWorkspaceFile(target, ctx.workspaceRoot);
+      if (!resolution.ok) {
+        console.log(chalk.red(`  Could not write: ${resolution.error}`));
+        return;
+      }
+      const abs = resolution.path;
       fs.mkdirSync(path.dirname(abs) || ".", { recursive: true });
       fs.writeFileSync(abs, md, "utf-8");
       console.log(chalk.gray(`  Shared transcript written → ${abs}`));

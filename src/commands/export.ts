@@ -2,6 +2,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import chalk from "chalk";
+import { resolveAllowedWorkspaceFile } from "../tools/utils/path.js";
 import type { CommandContext, SlashCommand } from "./types.js";
 
 /**
@@ -58,8 +59,13 @@ export const exportCommand: SlashCommand = {
   name: "export",
   description: "Export the current session to a markdown file (/export [path])",
   run: (args, ctx): undefined => {
-    const target =
-      args.trim() || path.join(ctx.workspaceRoot, `session-${ctx.sessionId.slice(0, 8)}.md`);
+    const requested = args.trim() || `session-${ctx.sessionId.slice(0, 8)}.md`;
+    const resolution = resolveAllowedWorkspaceFile(requested, ctx.workspaceRoot);
+    if (!resolution.ok) {
+      console.log(chalk.red(`  Could not export: ${resolution.error}`));
+      return;
+    }
+    const target = resolution.path;
     const md = renderSessionMarkdown(ctx);
     try {
       fs.mkdirSync(path.dirname(target) || ".", { recursive: true });

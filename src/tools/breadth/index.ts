@@ -9,7 +9,6 @@
 
 import { execFile } from "node:child_process";
 import * as fs from "node:fs";
-import * as path from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
 import { recordChange } from "../../change-tracker.js";
@@ -23,7 +22,12 @@ import { filterByFile, formatDiagnostics, parseTscOutput } from "../../lsp-legac
 import { checkReadBeforeEdit, refreshRead } from "../../read-tracker.js";
 import type { Tool, ToolResult } from "../../types.js";
 import { buildTool } from "../registry.js";
-import { relForDisplay, resolveInWorkspace, statMtimeMs } from "../utils/path.js";
+import {
+  relForDisplay,
+  resolveAllowedWorkspaceFile,
+  resolveInWorkspace,
+  statMtimeMs,
+} from "../utils/path.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -205,11 +209,9 @@ export const LspDiagnosticsTool: Tool = buildTool({
     // through to the tsc shell-out (tsserver drives diagnostics per open
     // document). The Diagnostic shape is identical, so output is uniform.
     if (typeof input.filePath === "string" && input.filePath) {
-      const resolved = `${cwd}/${input.filePath}`.replace(/\\/g, "/").replace(/\/+/g, "/");
-      const abs =
-        input.filePath.startsWith(cwd) || path.isAbsolute(input.filePath)
-          ? input.filePath
-          : resolved;
+      const resolution = resolveAllowedWorkspaceFile(input.filePath, cwd);
+      if (!resolution.ok) return { content: "", error: resolution.error };
+      const abs = resolution.path;
       const client = getLspClient(cwd);
       if (client) {
         try {
@@ -277,12 +279,14 @@ export const LspCompletionsTool: Tool = buildTool({
         error: "No tsconfig.json in workspace — lsp_completions needs a TypeScript project.",
       };
     }
+    const resolution = resolveAllowedWorkspaceFile(input.filePath, cwd);
+    if (!resolution.ok) return { content: "", error: resolution.error };
     const client = getLspClient(cwd);
     if (!client) {
       return { content: "", error: "tsserver unavailable — cannot fetch completions." };
     }
     try {
-      const items = await client.getCompletions(input.filePath, input.line, input.column);
+      const items = await client.getCompletions(resolution.path, input.line, input.column);
       if (items.length === 0) return { content: "No completions." };
       const lines = items.map(
         (i) =>

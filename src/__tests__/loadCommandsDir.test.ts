@@ -53,7 +53,11 @@ describe("expandCommandBody", () => {
   });
 
   it("expands !`shell` (trusted command body)", async () => {
-    const out = await expandCommandBody("v=!`echo hi`", { args: "", workspaceRoot: repo });
+    const out = await expandCommandBody("v=!`echo hi`", {
+      args: "",
+      workspaceRoot: repo,
+      trustedShell: true,
+    });
     expect(out.trim()).toBe("v=hi");
   });
 });

@@ -23,24 +23,20 @@
 //   - ${ENV_NAME}                → process.env.ENV_NAME (when set)
 //   - !`shell command`           → command stdout — TRUSTED SOURCES ONLY.
 //
-// Disk skills are trusted (the user authored them on their own machine), so
-// shell expansion runs. MCP/remote skills are untrusted and disable it
-// (see skills.ts SkillSource); this loader only ever produces trusted ones.
+// Only user-scope templates can expand shell commands or environment values.
+// Project templates remain prompt-only, including when they override user skills.
 // ============================================================
 
-import { execFile } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { promisify } from "node:util";
 import { registerSkill, type SkillContext, type SkillDefinition } from "../skills.js";
+import { expandDiskTemplate } from "../utils/disk-template.js";
 import { type ParsedFrontmatter, parseFrontmatter } from "../utils/frontmatter.js";
 
 // Back-compat alias: the shared parser was previously defined in this module.
 export { parseFrontmatter };
 export type ParsedSkillFile = ParsedFrontmatter;
-
-const execFileAsync = promisify(execFile);
 
 /** Reject a skill directory name that would escape the skills root. */
 function isSafeSkillName(name: string): boolean {
@@ -72,51 +68,22 @@ function asList(v: string | string[] | undefined): string[] | undefined {
 }
 
 /**
- * Expand a trusted disk-skill body. `${VAR}` substitution always runs;
- * `` !`cmd` `` shell expansion runs only when `trustedShell` is true (it always
- * is for disk skills, but the flag keeps the contract explicit and testable).
+ * Expand a disk skill. Project templates expand arguments/workspace only;
+ * user-scope templates may also expand environment values and literal shell commands.
  */
 export async function expandSkillBody(
   body: string,
   opts: { args?: string; workspaceRoot?: string; trustedShell: boolean },
 ): Promise<string> {
-  // ${VAR} — ARGUMENTS/ARGS, WORKSPACE, then process.env fallback.
-  let out = body.replace(/\$\{([A-Z0-9_]+)\}/g, (_match, name: string) => {
-    if (name === "ARGUMENTS" || name === "ARGS") return opts.args ?? "";
-    if (name === "WORKSPACE") return opts.workspaceRoot ?? process.cwd();
-    const env = process.env[name];
-    return env ?? "";
-  });
-
-  if (!opts.trustedShell) {
-    // Untrusted source: strip shell directives rather than execute them.
-    return out.replace(/!`[^`]*`/g, "");
-  }
-
-  // !`cmd` — run each, splice stdout in. Failures degrade to an inline note so
-  // a broken command doesn't abort the whole expansion.
-  const matches = [...out.matchAll(/!`([^`]+)`/g)];
-  for (const match of matches) {
-    const cmd = match[1]!.trim();
-    let replacement: string;
-    try {
-      const { stdout } = await execFileAsync(
-        process.platform === "win32" ? "cmd" : "sh",
-        process.platform === "win32" ? ["/c", cmd] : ["-c", cmd],
-        { cwd: opts.workspaceRoot ?? process.cwd(), timeout: 10_000, windowsHide: true },
-      );
-      replacement = stdout.trimEnd();
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      replacement = `[shell expansion failed: ${detail}]`;
-    }
-    out = out.replace(match[0], replacement);
-  }
-  return out;
+  return expandDiskTemplate(body, opts);
 }
 
 /** Build a SkillDefinition from one parsed SKILL.md (body stays lazy). */
-function defFromFile(name: string, parsed: ParsedSkillFile): SkillDefinition {
+function defFromFile(
+  name: string,
+  parsed: ParsedSkillFile,
+  trustedShell: boolean,
+): SkillDefinition {
   const fm = parsed.frontmatter;
   const context = asString(fm.context) === "fork" ? "fork" : "inline";
   return {
@@ -133,7 +100,7 @@ function defFromFile(name: string, parsed: ParsedSkillFile): SkillDefinition {
       expandSkillBody(parsed.body, {
         args: ctx.args,
         workspaceRoot: ctx.workspaceRoot,
-        trustedShell: true,
+        trustedShell,
       }),
   };
 }
@@ -145,7 +112,7 @@ function defFromFile(name: string, parsed: ParsedSkillFile): SkillDefinition {
  */
 export function loadSkillsDir(workspaceRoot: string): string[] {
   const loaded: string[] = [];
-  for (const root of skillDirRoots(workspaceRoot)) {
+  for (const [index, root] of skillDirRoots(workspaceRoot).entries()) {
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(root, { withFileTypes: true });
@@ -162,7 +129,7 @@ export function loadSkillsDir(workspaceRoot: string): string[] {
         continue; // no SKILL.md in this dir
       }
       const parsed = parseFrontmatter(raw);
-      registerSkill(defFromFile(entry.name, parsed));
+      registerSkill(defFromFile(entry.name, parsed, index === 0));
       loaded.push(asString(parsed.frontmatter.name) || entry.name);
     }
   }

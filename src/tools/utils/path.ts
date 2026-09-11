@@ -4,6 +4,17 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { isBlockedPath } from "../../permissions.js";
+
+/** Apply the sensitive-file policy to both the supplied and canonical path. */
+export function resolveAllowedWorkspaceFile(inputPath: string, workspaceRoot: string) {
+  const resolution = resolveInWorkspace(inputPath, workspaceRoot);
+  if (!resolution.ok) return resolution;
+  if (isBlockedPath(inputPath) || isBlockedPath(resolution.path)) {
+    return { ok: false as const, error: "Access denied: path is blocked for security reasons." };
+  }
+  return resolution;
+}
 
 /**
  * Resolve a user-supplied path against the workspace root and confirm it

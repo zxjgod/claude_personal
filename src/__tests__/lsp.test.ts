@@ -60,6 +60,25 @@ const hasTsserver = (() => {
 })();
 
 describe("LspClient (real tsserver)", () => {
+  it("rejects diagnostics and completions outside the workspace", async () => {
+    if (!hasTsserver) return;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-lsp-boundary-"));
+    try {
+      fs.writeFileSync(path.join(dir, "tsconfig.json"), JSON.stringify({ compilerOptions: {} }));
+      clearLspClientCache(dir);
+      const client = getLspClient(dir)!;
+      await expect(client.getDiagnostics(path.join(dir, "..", "outside.ts"))).rejects.toThrow(
+        /outside workspace/,
+      );
+      await expect(client.getCompletions(path.join(dir, "..", "outside.ts"), 1, 1)).rejects.toThrow(
+        /outside workspace/,
+      );
+      await client.dispose();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }, 40000);
+
   it("returns null when tsserver can't be resolved", () => {
     // In this repo tsserver resolves, so getLspClient returns a client;
     // the null branch is covered by guarding in the tool. Here we just

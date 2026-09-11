@@ -11,8 +11,8 @@
 //      ~1% of the context window. The full body loads only at the moment of
 //      invocation, via getPromptForCommand().
 //   2. Three sources, one registry: builtin (compiled in), disk (user/project
-//      <name>/SKILL.md), MCP (remote). Disk/builtin are TRUSTED — their bodies
-//      may run `!`shell`` expansion. MCP is UNTRUSTED — shell is disabled.
+//      <name>/SKILL.md), MCP (remote). Only user-scope disk templates may run
+//      literal shell expansion; project templates are prompt-only.
 //   3. Dispatched through one Skill tool, not special-cased in the model layer.
 //      The user's `/<name>` is just sugar that expands to the same prompt
 //      Command (see handleSlashCommand).

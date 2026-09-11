@@ -23,19 +23,16 @@
 //   $1 .. $9                            → positional args (whitespace-split)
 //   !`shell command`                    → command stdout — TRUSTED SOURCES ONLY.
 //
-// Commands are authored by the user on their own machine, so shell expansion
-// runs (same trust model as disk skills). See loadSkillsDir.ts.
+// User-scope commands may execute literal shell directives. Project commands
+// are prompt-only and cannot expand environment values (see loadSkillsDir.ts).
 // ============================================================
 
-import { execFile } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { promisify } from "node:util";
+import { expandDiskTemplate } from "../utils/disk-template.js";
 import { parseFrontmatter } from "../utils/frontmatter.js";
 import type { SlashCommand } from "./types.js";
-
-const execFileAsync = promisify(execFile);
 
 /** User-scope commands root can be redirected for tests / sandboxes. */
 const USER_COMMANDS_ENV = "CCR_USER_COMMANDS_DIR";
@@ -56,54 +53,16 @@ function asString(v: string | string[] | undefined): string | undefined {
   return Array.isArray(v) ? v.join(", ") : v;
 }
 
-/** Split args on whitespace into positional tokens (for `$1`..`$9`). */
-function positionalArgs(args: string): string[] {
-  return args.split(/\s+/).filter(Boolean);
-}
-
-/**
- * Expand a trusted disk-command body. `$ARGUMENTS` / `${ARGUMENTS}` / `${ARGS}`
- * and `$1`..`$9` always substitute; `` !`cmd` `` shell expansion runs (commands
- * are trusted, authored locally). A failed shell command degrades to an inline
- * note rather than aborting the expansion.
- */
+/** Project templates are prompt-only; user-scope templates may run literal commands. */
 export async function expandCommandBody(
   body: string,
-  opts: { args?: string; workspaceRoot?: string },
+  opts: { args?: string; workspaceRoot?: string; trustedShell?: boolean },
 ): Promise<string> {
-  const args = opts.args ?? "";
-  const positional = positionalArgs(args);
-
-  let out = body.replace(/\$\{([A-Z0-9_]+)\}/g, (_m, name: string) => {
-    if (name === "ARGUMENTS" || name === "ARGS") return args;
-    const env = process.env[name];
-    return env ?? "";
+  return expandDiskTemplate(body, {
+    ...opts,
+    trustedShell: opts.trustedShell === true,
+    positional: true,
   });
-  // Bare `$ARGUMENTS` / `$ARGS`, then positional `$1`..`$9`.
-  out = out.replace(/\$(ARGUMENTS|ARGS)\b/g, (_m, name: string) => {
-    return name === "ARGUMENTS" || name === "ARGS" ? args : "";
-  });
-  out = out.replace(/\$([1-9])\b/g, (_m, idx: string) => positional[Number(idx) - 1] ?? "");
-
-  // !`cmd` — run each, splice stdout in.
-  const matches = [...out.matchAll(/!`([^`]+)`/g)];
-  for (const match of matches) {
-    const cmd = match[1]!.trim();
-    let replacement: string;
-    try {
-      const { stdout } = await execFileAsync(
-        process.platform === "win32" ? "cmd" : "sh",
-        process.platform === "win32" ? ["/c", cmd] : ["-c", cmd],
-        { cwd: opts.workspaceRoot ?? process.cwd(), timeout: 10_000, windowsHide: true },
-      );
-      replacement = stdout.trimEnd();
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      replacement = `[shell expansion failed: ${detail}]`;
-    }
-    out = out.replace(match[0], replacement);
-  }
-  return out;
 }
 
 /** Build a prompt-injection SlashCommand from one parsed `.md` file. */
@@ -111,13 +70,18 @@ function commandFromFile(
   name: string,
   body: string,
   frontmatter: Record<string, string | string[]>,
+  trustedShell: boolean,
 ): SlashCommand {
   const description = asString(frontmatter.description) || `Custom command "${name}"`;
   return {
     name,
     description,
     run: async (args, ctx) => ({
-      prompt: await expandCommandBody(body, { args, workspaceRoot: ctx.workspaceRoot }),
+      prompt: await expandCommandBody(body, {
+        args,
+        workspaceRoot: ctx.workspaceRoot,
+        trustedShell,
+      }),
     }),
   };
 }
@@ -152,7 +116,7 @@ export function resetCustomCommands(): void {
  */
 export function loadCommandsDir(workspaceRoot: string): string[] {
   const loaded: string[] = [];
-  for (const root of commandDirRoots(workspaceRoot)) {
+  for (const [index, root] of commandDirRoots(workspaceRoot).entries()) {
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(root, { withFileTypes: true });
@@ -172,7 +136,7 @@ export function loadCommandsDir(workspaceRoot: string): string[] {
       }
       const { frontmatter, body } = parseFrontmatter(raw);
       if (!body) continue; // a command with no prompt body is useless
-      registerCustomCommand(commandFromFile(name, body, frontmatter));
+      registerCustomCommand(commandFromFile(name, body, frontmatter, index === 0));
       loaded.push(name);
     }
   }
