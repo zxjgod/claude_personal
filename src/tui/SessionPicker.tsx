@@ -16,9 +16,17 @@ import { Box, Text, useInput } from "ink";
 import { useRef, useState } from "react";
 import { t } from "./i18n.js";
 import type { Overlay } from "./store.js";
+import { palette } from "./theme.js";
 
-const CYAN = "cyan";
-const ORANGE = "#d77757";
+// Read at RENDER time (see the header note in theme.ts). CYAN used to be the
+// bare ANSI name "cyan", which ignored the theme entirely; it is now the
+// palette's command colour, and ORANGE is the accent.
+function cyan(): string {
+  return palette.command;
+}
+function orange(): string {
+  return palette.accent;
+}
 
 /** How many session rows are visible at once before the list scrolls. */
 const VISIBLE = 8;
@@ -86,8 +94,8 @@ export function SessionPicker({
   const hiddenBelow = sessions.length - (start + windowSize);
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={CYAN} paddingX={1}>
-      <Text bold color={CYAN}>
+    <Box flexDirection="column" borderStyle="round" borderColor={cyan()} paddingX={1}>
+      <Text bold color={cyan()}>
         Resume a session
       </Text>
       <Text dimColor>
@@ -102,9 +110,9 @@ export function SessionPicker({
           const selected = realIdx === cursor;
           return (
             <Box key={s.sessionId} flexDirection="column">
-              <Text color={selected ? CYAN : undefined}>
+              <Text color={selected ? cyan() : undefined}>
                 {selected ? "❯ " : "  "}
-                <Text color={s.current ? ORANGE : undefined}>{s.current ? "● " : ""}</Text>
+                <Text color={s.current ? orange() : undefined}>{s.current ? "● " : ""}</Text>
                 {s.label}
               </Text>
               {s.preview ? <Text dimColor>{"      " + s.preview}</Text> : null}

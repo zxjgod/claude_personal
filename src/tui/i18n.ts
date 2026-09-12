@@ -225,6 +225,50 @@ const translations: Record<Language, Record<string, string>> = {
     // Todos
     "ui.todo.moreAbove": "↑ {n} more",
     "ui.todo.moreBelow": "↓ {n} more",
+
+    // Help panel (D3). Key-column labels stay literal — they are key names, not
+    // copy — so only the descriptions are translated.
+    "ui.help.title": "Keyboard shortcuts",
+    "ui.help.section.shortcuts": "Global shortcuts",
+    "ui.help.section.modes": "Permission modes (Shift+Tab to cycle)",
+    "ui.help.close": "Esc or Enter to close",
+    "ui.help.shortcut.modeCycle":
+      "Cycle permission mode (default → acceptEdits → plan → bypassPermissions)",
+    "ui.help.shortcut.interrupt":
+      "Interrupt the running turn · idle: Ctrl+C clears input, twice exits",
+    "ui.help.shortcut.exit": "Exit (double press within 800ms)",
+    "ui.help.shortcut.rewind": "Rewind to an earlier message and restore files (idle, empty input)",
+    "ui.help.shortcut.verbose":
+      "Toggle the verbose transcript viewer (full tool output + thinking)",
+    "ui.help.shortcut.history":
+      "Search the input history (reverse-i-search · Enter runs the match)",
+    "ui.help.shortcut.stash": "Stash the draft · press again on an empty prompt to restore it",
+    "ui.help.shortcut.editor": "Edit the draft in $VISUAL/$EDITOR",
+    "ui.help.shortcut.todos":
+      "Collapse / expand the todo list (collapsed shows 'Next:' under the spinner)",
+    "ui.help.shortcut.clear": "Clear the screen and repaint",
+    "ui.help.shortcut.model": "Switch model (picker) · toggle extended thinking",
+    "ui.help.shortcut.bash": "Bash mode — run a shell command, output joins the conversation",
+    "ui.help.shortcut.memory": "Memory mode — append a note to CLAUDE.md",
+    "ui.help.shortcut.image": "Paste a clipboard image as an [Image #N] attachment",
+    "ui.help.shortcut.help": "Show this help panel",
+    "ui.help.shortcut.slash": "Slash command palette (Tab accepts the selection)",
+    "ui.help.shortcut.at": "File-path completion at the cursor (Tab inserts · Esc closes)",
+    "ui.help.shortcut.arrows":
+      "Palette selection · history · recall a queued message (empty prompt, while busy)",
+    "ui.help.shortcut.word": "Jump to the previous / next word in the input",
+    "ui.help.shortcut.pgup": "Open the transcript viewer (scroll while the model streams)",
+    "ui.help.shortcut.viewerKeys":
+      "Search / next / previous match · jump between prompts (in viewer)",
+    "ui.help.shortcut.viewerEditor": "Open the transcript in $VISUAL/$EDITOR (in viewer)",
+    "ui.help.shortcut.fsScroll": "Scroll the transcript (full-screen mode)",
+    "ui.help.shortcut.fsBottom": "Jump to the bottom (full-screen mode)",
+    "ui.help.mode.default": "Ask before running tools that modify files or execute commands",
+    "ui.help.mode.acceptEdits": "Auto-approve Read/Edit/Write tools without prompting",
+    "ui.help.mode.plan":
+      "Plan only — describe what would happen without executing destructive tools",
+    "ui.help.mode.bypassPermissions":
+      "Auto-approve all tools except dangerous patterns (rm -rf, sudo, pipe-to-shell)",
   },
   "zh-CN": {
     // Permission errors
@@ -420,6 +464,42 @@ const translations: Record<Language, Record<string, string>> = {
     "ui.image.pasted": "已附加 {chip} — 将随下一条消息发送",
     "ui.image.none": "剪贴板中没有图片",
     "ui.image.stale": "剪贴板图片在草稿发送后才读取完成 — 请重新粘贴",
+
+    // 帮助面板（D3）——键名列保持原样（键名不是文案），只翻译说明
+    "ui.help.title": "键盘快捷键",
+    "ui.help.section.shortcuts": "全局快捷键",
+    "ui.help.section.modes": "权限模式（Shift+Tab 循环）",
+    "ui.help.close": "Esc 或 Enter 关闭",
+    "ui.help.shortcut.modeCycle":
+      "循环切换权限模式（default → acceptEdits → plan → bypassPermissions）",
+    "ui.help.shortcut.interrupt": "中断当前回合 · 空闲时：Ctrl+C 清空输入，连按两次退出",
+    "ui.help.shortcut.exit": "退出（800ms 内连按两次）",
+    "ui.help.shortcut.rewind": "回退到之前的消息并还原文件（空闲且输入为空时）",
+    "ui.help.shortcut.verbose": "切换完整会话记录查看器（工具输出全文 + 思考）",
+    "ui.help.shortcut.history": "搜索输入历史（反向搜索 · Enter 直接执行匹配项）",
+    "ui.help.shortcut.stash": "暂存草稿 · 在空提示符下再按一次恢复",
+    "ui.help.shortcut.editor": "在 $VISUAL/$EDITOR 中编辑草稿",
+    "ui.help.shortcut.todos": "折叠 / 展开待办列表（折叠后转轮下方显示“Next:”）",
+    "ui.help.shortcut.clear": "清屏并重绘",
+    "ui.help.shortcut.model": "切换模型（选择器）· 开关深度思考",
+    "ui.help.shortcut.bash": "bash 模式 — 直接运行 shell 命令，输出并入对话",
+    "ui.help.shortcut.memory": "记忆模式 — 追加一条笔记到 CLAUDE.md",
+    "ui.help.shortcut.image": "粘贴剪贴板图片为 [Image #N] 附件",
+    "ui.help.shortcut.help": "显示本帮助面板",
+    "ui.help.shortcut.slash": "斜杠命令面板（Tab 接受选中项）",
+    "ui.help.shortcut.at": "光标处补全文件路径（Tab 插入 · Esc 关闭）",
+    "ui.help.shortcut.arrows": "面板选择 · 历史 · 取回排队消息（空闲且输入为空、模型忙时）",
+    "ui.help.shortcut.word": "在输入中跳到上/下一个词",
+    "ui.help.shortcut.pgup": "打开会话记录查看器（模型输出时可滚动）",
+    "ui.help.shortcut.viewerKeys": "搜索 / 下一个 / 上一个匹配 · 在提问间跳转（查看器内）",
+    "ui.help.shortcut.viewerEditor": "在 $VISUAL/$EDITOR 中打开会话记录（查看器内）",
+    "ui.help.shortcut.fsScroll": "滚动会话记录（全屏模式）",
+    "ui.help.shortcut.fsBottom": "跳到最底部（全屏模式）",
+    "ui.help.mode.default": "执行会修改文件或运行命令的工具前先询问",
+    "ui.help.mode.acceptEdits": "自动批准 Read/Edit/Write 工具，不再询问",
+    "ui.help.mode.plan": "只做计划 — 描述将要发生什么，不执行破坏性工具",
+    "ui.help.mode.bypassPermissions":
+      "自动批准全部工具，危险模式除外（rm -rf、sudo、管道到 shell）",
   },
 };
 

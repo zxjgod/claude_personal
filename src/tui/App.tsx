@@ -29,7 +29,7 @@ import { ModelPicker } from "./ModelPicker.js";
 import { renderMarkdown } from "./markdown.js";
 import { PlanApproval } from "./PlanApproval.js";
 import { PromptFooter } from "./PromptFooter.js";
-import { ConfirmPrompt, PermissionPrompt, QuestionPrompt } from "./Prompts.js";
+import { ConfirmPrompt, ElicitationPrompt, PermissionPrompt, QuestionPrompt } from "./Prompts.js";
 import { ProviderPicker } from "./ProviderPicker.js";
 import { QueuedMessages } from "./QueuedMessages.js";
 import { RetryLine } from "./RetryLine.js";
@@ -437,7 +437,9 @@ function TokenWarningRegion({ store }: { store: TuiStore }) {
   if (fraction < CTX_WARN_PCT) return null;
   const remaining = 100 - Math.floor(fraction * 100);
   const line = t("ui.compact.low", { pct: remaining });
-  return <Text color={fraction >= CTX_CRITICAL_PCT ? "#f7768e" : "#e0af68"}>{line}</Text>;
+  // palette.error / palette.warning, not literals: the old hexes were the DARK
+  // values, so this warning stayed dark-red on a light theme.
+  return <Text color={fraction >= CTX_CRITICAL_PCT ? palette.error : palette.warning}>{line}</Text>;
 }
 
 /** P0-4: live model-error retry countdown ("⚠ 429 — retrying in 8s · 2/10").
@@ -485,6 +487,8 @@ function InteractionRegion({
         return <PermissionPrompt overlay={overlay} store={store} />;
       case "question":
         return <QuestionPrompt overlay={overlay} />;
+      case "elicitation":
+        return <ElicitationPrompt overlay={overlay} />;
       case "sessionPicker":
         return <SessionPicker overlay={overlay} />;
       case "providerPicker":

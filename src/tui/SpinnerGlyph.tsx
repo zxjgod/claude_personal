@@ -14,6 +14,7 @@
 import { Text } from "ink";
 import { useEffect, useState } from "react";
 import { GLYPH_FRAME_MS, SPINNER_FRAMES } from "./spinner-core.js";
+import { palette } from "./theme.js";
 
 export type AnimationMode = "blink" | "static";
 
@@ -24,7 +25,10 @@ export interface SpinnerGlyphProps {
   animation?: AnimationMode;
 }
 
-export function SpinnerGlyph({ color = "#d77757", animation = "blink" }: SpinnerGlyphProps) {
+// The default is resolved at RENDER time from the live palette (see the header
+// note in theme.ts) so /theme can recolor the glyph; a literal here would pin
+// it to the dark accent.
+export function SpinnerGlyph({ color = palette.accent, animation = "blink" }: SpinnerGlyphProps) {
   const [i, setI] = useState(0);
 
   useEffect(() => {

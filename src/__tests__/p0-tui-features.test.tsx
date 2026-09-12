@@ -39,9 +39,26 @@ function flush(ms = 15): Promise<void> {
 
 /** A bare ESC is held ~20ms by Ink's escape-sequence disambiguation before it
  *  is emitted as an escape keypress — assertions after writing one need to
- *  outlive that timer. */
+ *  outlive that timer. Use this for NEGATIVE assertions ("nothing happened"),
+ *  which have no condition to poll. */
 function escFlush(): Promise<void> {
   return new Promise((r) => setTimeout(r, 60));
+}
+
+/**
+ * Poll `cond` until it holds or `timeoutMs` elapses.
+ *
+ * POSITIVE Esc assertions must use this instead of escFlush: a fixed sleep only
+ * *bets* that Ink's ~20ms disambiguation timer has fired, and under parallel
+ * load the event loop can be starved well past that budget — which is what made
+ * these tests flake in full-suite runs while passing in isolation.
+ */
+async function waitFor(cond: () => boolean, timeoutMs = 2000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!cond()) {
+    if (Date.now() >= deadline) return;
+    await new Promise((r) => setTimeout(r, 5));
+  }
 }
 
 // ============================================================
@@ -494,7 +511,7 @@ describe("InputBox P0 keys", () => {
     await escFlush();
     expect(onRewind).not.toHaveBeenCalled(); // armed, not fired
     stdin.write(ESC);
-    await escFlush();
+    await waitFor(() => onRewind.mock.calls.length > 0);
     expect(onRewind).toHaveBeenCalledTimes(1);
   });
 
@@ -508,10 +525,10 @@ describe("InputBox P0 keys", () => {
     await flush();
     expect(lastFrame()).toContain("draft text");
     stdin.write(ESC);
-    await escFlush();
+    await waitFor(() => !(lastFrame() ?? "").includes("draft text"));
     expect(lastFrame()).not.toContain("draft text"); // cleared
     stdin.write(ESC);
-    await escFlush();
+    await waitFor(() => onRewind.mock.calls.length > 0);
     expect(onRewind).toHaveBeenCalledTimes(1);
   });
 
@@ -704,7 +721,7 @@ describe("help hotkey arbitration (App-level)", () => {
     store.setShowHelp(true);
     await flush();
     stdin.write(ESC);
-    await escFlush();
+    await waitFor(() => store.getSnapshot().showHelp === false);
     expect(store.getSnapshot().showHelp).toBe(false);
     expect(lastFrame()).toContain("keep me");
     expect(store.getSnapshot().draft.text.length).toBe(7);

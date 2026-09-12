@@ -24,6 +24,7 @@ import { formatCliError } from "./../cli-errors.js";
 import type { CommandContext } from "./../commands.js";
 import { handleSlashCommand } from "./../commands.js";
 import { debugLogger } from "../debug-logger.js";
+import type { ElicitationRequest, ElicitationResult } from "../mcp/index.js";
 import {
   applyProfile,
   loadProviderProfiles,
@@ -62,6 +63,7 @@ import { runModelPicker } from "./model-picker-flow.js";
 import { expandPastedChips, makePasteChip } from "./paste-chip.js";
 import { lookupContextWindow } from "./session-stats.js";
 import {
+  EXIT_DOUBLE_PRESS_MS,
   type ProviderPickerItem,
   type RewindEntry,
   type SessionPickerItem,
@@ -99,6 +101,8 @@ export interface TuiDeps {
   permissionKey: (toolName: string, input: Record<string, unknown>) => string;
   /** M15.3: optional LLM permission classifier (opt-in via CLI flag). */
   permissionClassifier?: PermissionClassifier;
+  permissionPolicy?: import("../permission-policy.js").PermissionPolicy;
+  allowedDirectories?: string[];
   /** M36: background memory/skill prefetch (returns a <system-reminder> or null). */
   prefetch?: (latestUserText: string) => Promise<string | null>;
   /** M36: opt-in tool-batch digest (undefined = disabled). */
@@ -106,6 +110,7 @@ export interface TuiDeps {
   /** M25.2: opt-in full-screen alt-screen layout (default off). */
   fullscreen?: boolean;
   onSave: (taskState?: TaskState, lastTerminalReason?: string) => void;
+  setupElicitation?: (store: TuiStore) => void;
 }
 
 /** Run one user turn through the agent loop, pushing events into the store. */
@@ -156,6 +161,9 @@ export async function runTurn(
       // M15.3: thread the LLM permission classifier (when enabled) so flagged
       // dangerous calls get a model-assessed risk hint/block in the TUI too.
       permissionClassifier: deps.permissionClassifier,
+      permissionPolicy: deps.permissionPolicy,
+      allowedDirectories: deps.allowedDirectories,
+      hooks: deps.hooks,
       // Stream nested sub-agent (Task) activity into the transcript live, so
       // its Reads/Greps appear as they happen rather than dumping in a block
       // when the Task finishes.
@@ -1388,8 +1396,10 @@ export function InterruptHotkey({
   // B5: the official double-press window for the idle Ctrl+C / Ctrl+D exit —
   // the first press clears the draft and arms "Press ctrl+c again to exit"
   // (the footer shows it via store.showExitHint); a second press within
-  // 800ms exits. Reading the draft from the snapshot at event time matches
-  // the "?" hotkey's guard pattern.
+  // EXIT_DOUBLE_PRESS_MS exits, a later one re-arms. Note this is NOT
+  // EXIT_HINT_MS: the hint stays readable for longer than the press window on
+  // purpose (see the constant). Reading the draft from the snapshot at event
+  // time matches the "?" hotkey's guard pattern.
   const exitPressRef = useRef(0);
   useInput((input, key) => {
     const isCtrlC = key.ctrl && input === "c";
@@ -1416,7 +1426,7 @@ export function InterruptHotkey({
       exitPressRef.current = now;
       return;
     }
-    if (now - exitPressRef.current <= 800 && store.getSnapshot().showExitHint) {
+    if (now - exitPressRef.current <= EXIT_DOUBLE_PRESS_MS && store.getSnapshot().showExitHint) {
       exit();
       return;
     }
@@ -1488,6 +1498,7 @@ export function runTui(deps: TuiDeps): Promise<void> {
       permissionMode: deps.permissionMode,
       modelId: deps.modelConfig.model,
     });
+    deps.setupElicitation?.(store);
     store.setContextLimit(lookupContextWindow(deps.modelConfig.model) ?? 0);
     // Batch C5: seed ↑-history from this project's persisted log.
     store.setInputHistory(loadHistory(deps.workspaceRoot));
@@ -1526,6 +1537,7 @@ export function runTui(deps: TuiDeps): Promise<void> {
     permissionMode: deps.permissionMode,
     modelId: deps.modelConfig.model,
   });
+  deps.setupElicitation?.(store);
   // Context gauge: unknown models get 0 → gauge hidden rather than mis-sized.
   store.setContextLimit(lookupContextWindow(deps.modelConfig.model) ?? 0);
   // Batch C5: seed ↑-history from this project's persisted log.

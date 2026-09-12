@@ -138,6 +138,24 @@ export type Overlay =
       resolve: (choice: "yes" | "always" | "no") => void;
     }
   | {
+      kind: "elicitation";
+      message: string;
+      fields: Array<{
+        name: string;
+        type?: string;
+        title?: string;
+        description?: string;
+        enum?: string[];
+        required?: boolean;
+        minimum?: number;
+        maximum?: number;
+      }>;
+      resolve: (result: {
+        action: "accept" | "decline" | "cancel";
+        content?: Record<string, string | number | boolean | string[]>;
+      }) => void;
+    }
+  | {
       kind: "question";
       header: string;
       question: string;
@@ -304,7 +322,8 @@ export interface StoreState {
   inputAction: { kind: InputActionKind; seq: number } | null;
   /** Batch B4 (ctrl+t): the pinned todo list collapses to the "Next:" line. */
   todosCollapsed: boolean;
-  /** Batch B5: "Press ctrl+c again to exit" is armed (auto-clears after 3s). */
+  /** Batch B5: "Press ctrl+c again to exit" is armed (auto-clears after
+   *  EXIT_HINT_MS — see that constant for why it outlives the press window). */
   showExitHint: boolean;
   /**
    * Batch B6: the type-ahead queue's CONTENT mirror (newest last). Rendered
@@ -331,6 +350,23 @@ const FRAME_MS = 16;
 // by the PromptFooter colors and the crossing toasts below.
 export const CTX_WARN_PCT = 0.75;
 export const CTX_CRITICAL_PCT = 0.9;
+
+/**
+ * Batch B5, two deliberately DIFFERENT durations for one gesture:
+ *
+ *   EXIT_DOUBLE_PRESS_MS — how long a second Ctrl+C / Ctrl+D counts as "the
+ *     second press". This is the official useDoublePress constant, same as the
+ *     Esc+Esc rewind window (B7). run.tsx checks it.
+ *   EXIT_HINT_MS — how long the "Press ctrl+c again to exit" footer hint stays
+ *     readable. Deliberately LONGER than the press window: a hint the user
+ *     cannot finish reading is useless, and every press re-arms it, so a
+ *     hesitant user keeps getting the hint until they land two presses inside
+ *     the window. Per the B5 spec (3s).
+ *
+ * They are separate constants on purpose — do not "unify" them.
+ */
+export const EXIT_DOUBLE_PRESS_MS = 800;
+export const EXIT_HINT_MS = 3000;
 
 export const PERMISSION_MODE_CYCLE: PermissionMode[] = [
   "default",
@@ -543,15 +579,16 @@ export class TuiStore {
   }
 
   /**
-   * Batch B5: arm "Press ctrl+c again to exit" — true for 3s, then auto-clears
-   * (same timer pattern as the toast). A second ctrl+c while armed exits.
+   * Batch B5: arm "Press ctrl+c again to exit" — true for EXIT_HINT_MS, then
+   * auto-clears (same timer pattern as the toast). A second ctrl+c inside
+   * EXIT_DOUBLE_PRESS_MS exits; a later one re-arms this hint instead.
    */
   armExitHint(): void {
     this.set({ showExitHint: true });
     setTimeout(() => {
       // Only clear when still armed — a re-arm inside the window must win.
       if (this.state.showExitHint) this.set({ showExitHint: false });
-    }, 3000);
+    }, EXIT_HINT_MS);
   }
 
   /** Batch C2: plan-approval overlay (ExitPlanMode → "Ready to code?"). */
@@ -803,6 +840,35 @@ export class TuiStore {
     });
   }
 
+  askElicitation(
+    message: string,
+    fields: Array<{
+      name: string;
+      type?: string;
+      title?: string;
+      description?: string;
+      enum?: string[];
+      required?: boolean;
+      minimum?: number;
+      maximum?: number;
+    }>,
+  ): Promise<{
+    action: "accept" | "decline" | "cancel";
+    content?: Record<string, string | number | boolean | string[]>;
+  }> {
+    return new Promise((resolve) =>
+      this.openOverlay({
+        kind: "elicitation",
+        message,
+        fields,
+        resolve: (result) => {
+          this.set({ overlay: null });
+          resolve(result);
+        },
+      }),
+    );
+  }
+
   /** Open the interactive /effort slider; resolves with the chosen tier or null. */
   askEffort(current: EffortLevel): Promise<EffortLevel | null> {
     return new Promise((resolve) => {
@@ -928,6 +994,8 @@ export class TuiStore {
     const queued = this.overlayQueue.splice(0);
     const cancel = (overlay: Overlay) => {
       switch (overlay.kind) {
+        case "elicitation":
+          return overlay.resolve({ action: "cancel" });
         case "permission":
           return overlay.resolve("no");
         case "confirm":

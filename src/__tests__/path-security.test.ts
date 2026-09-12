@@ -3,11 +3,19 @@
 // ============================================================
 
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { resolveInWorkspace } from "../tools/utils/path.js";
 
 describe("resolveInWorkspace", () => {
+  it("allows files under explicitly granted additional directories", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-root-"));
+    const extra = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-extra-"));
+    const file = path.join(extra, "x.txt");
+    fs.writeFileSync(file, "x");
+    expect(resolveInWorkspace(file, root, [extra])).toEqual({ ok: true, path: file });
+  });
   describe("basic boundary checks", () => {
     it("should accept paths inside workspace", () => {
       const result = resolveInWorkspace("src/index.ts", "/workspace");

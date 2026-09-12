@@ -7,6 +7,13 @@ export default defineConfig({
     // but excluded from `npm test` because the include only matched `.test.ts`.
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
     exclude: ["claude-code-参考标准/**", "**/node_modules/**"],
+    // 20s, not the 5s default. The TUI component tests drive real Ink render
+    // loops on real timers (tui-components.test.tsx: ~14s for the file,
+    // input-box.test.tsx: ~83s), so under parallel load a test whose own body
+    // is ~20ms — e.g. the PgUp viewer test — can still be starved past a 5s
+    // budget and fail as a timeout. 20s keeps that headroom while still
+    // catching a genuine hang.
+    testTimeout: 20000,
     coverage: {
       provider: "v8",
       reporter: ["text", "lcov"],

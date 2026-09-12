@@ -5,6 +5,14 @@ import { stripAnsi, terminalColumns, visualWidth } from "./terminal-width.js";
 import { palette } from "./theme.js";
 
 export function toolOutputLines(result: ToolExecutionResult, detail = ""): string[] {
+  // Edit results carry an absolute line number per changed line — render the
+  // gutter, matching the Write preview below. Falls through to the plain diff
+  // path when the metadata is absent (older sessions, replayed history).
+  const diffLines = result.result?.metadata?.diffLines;
+  if (diffLines && diffLines.length > 0) {
+    const language = languageForPath(detail);
+    return diffLines.map((d) => renderNumberedDiffLine(d, language));
+  }
   const preview = result.result?.metadata?.codePreview;
   if (preview) {
     const code = highlightCode(preview.text, languageForPath(preview.filePath)).split("\n");
@@ -36,6 +44,26 @@ export function languageForPath(filePath: string): string {
       >
     )[extension] ?? extension
   );
+}
+
+/** Width of the line-number gutter, matching the Write preview's 4 columns. */
+const GUTTER = 4;
+
+/**
+ * One changed line of an Edit result with its file line number in the gutter —
+ * `padStart(4)` so the digits line up with the Write preview's numbering.
+ */
+export function renderNumberedDiffLine(
+  d: { sign: "-" | "+"; text: string; line: number },
+  language = "",
+): string {
+  const added = d.sign === "+";
+  const foreground = added ? palette.success : palette.error;
+  const background = added ? palette.diffAddedBg : palette.diffRemovedBg;
+  const gutter = chalk.hex(palette.muted)(String(d.line).padStart(GUTTER));
+  const rendered = `${gutter} ${chalk.hex(foreground)(d.sign)} ${highlightCode(stripAnsi(d.text), language)}`;
+  const width = Math.max(1, terminalColumns() - 5);
+  return chalk.bgHex(background)(rendered + " ".repeat(Math.max(0, width - visualWidth(rendered))));
 }
 
 export function renderDiffLine(line: string, language = ""): string {

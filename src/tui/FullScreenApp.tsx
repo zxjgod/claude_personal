@@ -34,7 +34,7 @@ import { t } from "./i18n.js";
 import { ModelPicker } from "./ModelPicker.js";
 import { PlanApproval } from "./PlanApproval.js";
 import { PromptFooter } from "./PromptFooter.js";
-import { ConfirmPrompt, PermissionPrompt, QuestionPrompt } from "./Prompts.js";
+import { ConfirmPrompt, ElicitationPrompt, PermissionPrompt, QuestionPrompt } from "./Prompts.js";
 import { ProviderPicker } from "./ProviderPicker.js";
 import { QueuedMessages } from "./QueuedMessages.js";
 import { RetryLine } from "./RetryLine.js";
@@ -140,6 +140,8 @@ function FsInteraction({
         return <PermissionPrompt overlay={overlay} store={store} />;
       case "question":
         return <QuestionPrompt overlay={overlay} />;
+      case "elicitation":
+        return <ElicitationPrompt overlay={overlay} />;
       case "sessionPicker":
         return <SessionPicker overlay={overlay} />;
       case "providerPicker":

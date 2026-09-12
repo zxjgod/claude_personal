@@ -24,12 +24,19 @@ function accent(): string {
   return palette.permission;
 }
 
-/** Risk level visual indicators */
+/** Risk level visual indicators. Colors come from the LIVE palette at render
+ *  time — hardcoded hexes here froze the dark success/warning/error values, so
+ *  the high-risk badge stayed dark-red under /theme light. */
 const RISK_LEVELS = {
-  low: { icon: "⚡", color: "#4EBA65", label: "Low Risk" },
-  medium: { icon: "⚠️", color: "#e0af68", label: "Medium Risk" },
-  high: { icon: "🔴", color: "#f7768e", label: "High Risk" },
+  low: { icon: "⚡", color: "success", label: "Low Risk" },
+  medium: { icon: "⚠️", color: "warning", label: "Medium Risk" },
+  high: { icon: "🔴", color: "error", label: "High Risk" },
 } as const;
+
+/** Resolve a risk level's palette token to its current color. */
+function riskColor(level: keyof typeof RISK_LEVELS): string {
+  return palette[RISK_LEVELS[level].color];
+}
 
 /** Get risk level from riskHint */
 function getRiskLevel(riskHint?: string): keyof typeof RISK_LEVELS | null {
@@ -105,7 +112,7 @@ export function PermissionPrompt({
             {overlay.header}
           </Text>
           {riskLevel && (
-            <Text color={RISK_LEVELS[riskLevel].color} bold>
+            <Text color={riskColor(riskLevel)} bold>
               {" "}
               {RISK_LEVELS[riskLevel].icon}
             </Text>
@@ -114,7 +121,7 @@ export function PermissionPrompt({
         {overlay.detail ? <Text>{overlay.detail}</Text> : null}
         {riskLevel ? (
           <Box>
-            <Text color={RISK_LEVELS[riskLevel].color}>{RISK_LEVELS[riskLevel].label}</Text>
+            <Text color={riskColor(riskLevel)}>{RISK_LEVELS[riskLevel].label}</Text>
             <Text dimColor>: {overlay.riskHint}</Text>
           </Box>
         ) : overlay.riskHint ? (
@@ -197,6 +204,61 @@ export function QuestionPrompt({ overlay }: { overlay: Extract<Overlay, { kind: 
           ? "↑↓ move · Space toggle · Enter confirm · Esc cancel"
           : "↑↓ move · Enter select · Esc cancel"}
       </Text>
+    </Box>
+  );
+}
+
+export function ElicitationPrompt({
+  overlay,
+}: {
+  overlay: Extract<Overlay, { kind: "elicitation" }>;
+}) {
+  const [index, setIndex] = useState(0);
+  const [values, setValues] = useState<Record<string, string>>({});
+  useInput((input, key) => {
+    const field = overlay.fields[index];
+    if (!field) return;
+    if (key.upArrow) setIndex((i) => Math.max(0, i - 1));
+    else if (key.downArrow || key.tab) setIndex((i) => Math.min(overlay.fields.length - 1, i + 1));
+    else if (key.escape) overlay.resolve({ action: "cancel" });
+    else if (key.return) {
+      if (overlay.fields.some((f) => f.required && !values[f.name])) {
+        overlay.resolve({ action: "decline" });
+        return;
+      }
+      const content: Record<string, string | number | boolean | string[]> = {};
+      for (const f of overlay.fields) {
+        const v = values[f.name] ?? "";
+        if (!v) continue;
+        if (f.type === "number" || f.type === "integer") content[f.name] = Number(v);
+        else if (f.type === "boolean") content[f.name] = /^(true|yes|y)$/i.test(v);
+        else if (f.type === "array")
+          content[f.name] = v
+            .split(",")
+            .map((x) => x.trim())
+            .filter(Boolean);
+        else content[f.name] = v;
+      }
+      overlay.resolve({ action: "accept", content });
+    } else if (input && input.length === 1 && !key.ctrl && !key.meta)
+      setValues((v) => ({ ...v, [field.name]: (v[field.name] ?? "") + input }));
+    else if (key.backspace || key.delete)
+      setValues((v) => ({ ...v, [field.name]: (v[field.name] ?? "").slice(0, -1) }));
+  });
+  return (
+    <Box flexDirection="column" borderStyle="round" borderColor={accent()} paddingX={1}>
+      <Text bold color={accent()}>
+        MCP request
+      </Text>
+      <Text>{overlay.message}</Text>
+      {overlay.fields.map((f, i) => (
+        <Text key={f.name} color={i === index ? accent() : undefined}>
+          {i === index ? "❯ " : "  "}
+          {f.title ?? f.name}: {values[f.name] ?? ""}
+          {f.enum?.length ? ` [${f.enum.join("/")}]` : ""}
+        </Text>
+      ))}
+      <Text dimColor>↑↓/Tab field · type · Enter submit · Esc cancel</Text>
     </Box>
   );
 }

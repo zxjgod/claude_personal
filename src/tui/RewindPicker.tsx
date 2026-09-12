@@ -19,8 +19,13 @@ import { t } from "./i18n.js";
 import { nextOffset } from "./SessionPicker.js";
 import type { Overlay } from "./store.js";
 import { truncateVisual } from "./terminal-width.js";
+import { palette } from "./theme.js";
 
-const ORANGE = "#d77757";
+// Read at RENDER time (see the header note in theme.ts) — a module-scope
+// `const ORANGE = "#d77757"` froze the dark accent forever.
+function orange(): string {
+  return palette.accent;
+}
 /** Rewind entries carry a message preview + timestamp — two rows each. */
 const VISIBLE = 5;
 
@@ -116,8 +121,8 @@ export function RewindPicker({ overlay }: { overlay: Extract<Overlay, { kind: "r
     chosenTurn !== null ? entries.find((e) => e.turnIndex === chosenTurn) : undefined;
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={ORANGE} paddingX={1}>
-      <Text bold color={ORANGE}>
+    <Box flexDirection="column" borderStyle="round" borderColor={orange()} paddingX={1}>
+      <Text bold color={orange()}>
         {t("ui.rewind.title")}
       </Text>
 
@@ -132,7 +137,7 @@ export function RewindPicker({ overlay }: { overlay: Extract<Overlay, { kind: "r
               <Text
                 key={a.value}
                 dimColor={a.value === "nevermind"}
-                color={i === actionCursor ? ORANGE : undefined}
+                color={i === actionCursor ? orange() : undefined}
               >
                 {`${i === actionCursor ? "❯ " : "  "}${i + 1}. ${t(a.labelKey)}`}
               </Text>
@@ -147,7 +152,7 @@ export function RewindPicker({ overlay }: { overlay: Extract<Overlay, { kind: "r
             const selected = realIdx === cursor;
             return (
               <Box key={e.turnIndex} flexDirection="column">
-                <Text color={selected ? ORANGE : undefined}>
+                <Text color={selected ? orange() : undefined}>
                   {`${selected ? "❯ " : "  "}#${e.turnIndex} ${truncateVisual(e.label, 60)}`}
                 </Text>
                 <Text dimColor>

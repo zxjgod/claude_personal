@@ -25,6 +25,19 @@ import type { ToolExecutionResult } from "../types.js";
 const noopSubmit = () => {};
 const commands = [{ name: "help", description: "Show help" }];
 
+/**
+ * Poll `cond` until it holds or `timeoutMs` elapses. Ink dispatches stdin on a
+ * later tick, so asserting straight after `stdin.write` is a bet on scheduling
+ * — one that loses under full-suite parallel load (this file alone takes ~14s).
+ */
+async function waitFor(cond: () => boolean, timeoutMs = 2000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!cond()) {
+    if (Date.now() >= deadline) return;
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
 describe("App", () => {
   it("renders the official prompt footer fallback hint when idle (default mode)", () => {
     const store = new TuiStore("deepseek/chat");
@@ -203,7 +216,7 @@ describe("App", () => {
     );
     await new Promise((r) => setTimeout(r, 10));
     stdin.write("\x1b[5~"); // PgUp
-    await new Promise((r) => setTimeout(r, 10));
+    await waitFor(() => store.getSnapshot().reviewing === true);
 
     expect(store.getSnapshot().reviewing).toBe(true);
     const frame = lastFrame()!;

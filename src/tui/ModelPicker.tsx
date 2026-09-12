@@ -16,9 +16,18 @@ import { useRef, useState } from "react";
 import { t } from "./i18n.js";
 import { nextOffset } from "./SessionPicker.js";
 import type { Overlay } from "./store.js";
+import { palette } from "./theme.js";
 
-const ACCENT = "#5769f7";
-const CURRENT = "#d77757";
+// Palette values are read at RENDER time, never snapshotted at module scope —
+// see the header note in theme.ts. ACCENT used to be a literal "#5769f7" (the
+// DARK palette.permission), so /theme light left this picker on dark-theme
+// blue; CURRENT is palette.accent.
+function accentColor(): string {
+  return palette.permission;
+}
+function currentColor(): string {
+  return palette.accent;
+}
 
 /** How many model rows are visible at once before the list scrolls. */
 const VISIBLE = 8;
@@ -71,8 +80,8 @@ export function ModelPicker({ overlay }: { overlay: Extract<Overlay, { kind: "mo
   const hiddenBelow = items.length - (start + windowSize);
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={ACCENT} paddingX={1}>
-      <Text bold color={ACCENT}>
+    <Box flexDirection="column" borderStyle="round" borderColor={accentColor()} paddingX={1}>
+      <Text bold color={accentColor()}>
         Switch model
       </Text>
       <Text dimColor>alt+p · /model &lt;id&gt; for anything not listed</Text>
@@ -83,9 +92,9 @@ export function ModelPicker({ overlay }: { overlay: Extract<Overlay, { kind: "mo
           const realIdx = start + i;
           const selected = realIdx === cursor;
           return (
-            <Text key={m.id ?? m.name} color={selected ? ACCENT : undefined}>
+            <Text key={m.id ?? m.name} color={selected ? accentColor() : undefined}>
               {selected ? "❯ " : "  "}
-              <Text color={m.current ? CURRENT : undefined}>{m.current ? "● " : ""}</Text>
+              <Text color={m.current ? currentColor() : undefined}>{m.current ? "● " : ""}</Text>
               {m.name}
               <Text dimColor>{`  ${m.label}`}</Text>
             </Text>
