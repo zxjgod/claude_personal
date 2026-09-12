@@ -27,6 +27,7 @@ import * as path from "node:path";
 import lockfile from "proper-lockfile";
 import { firstUserPreview } from "./tui/history-replay.js";
 import type { Message } from "./types.js";
+import { ccrPath } from "./workspace-config.js";
 
 // --- Format Version ---
 
@@ -182,7 +183,7 @@ export class SessionMemory {
   private saveChain: Promise<void> = Promise.resolve();
 
   constructor(workspaceRoot: string) {
-    this.sessionsDir = path.join(workspaceRoot, ".claude", "sessions");
+    this.sessionsDir = ccrPath(workspaceRoot, "sessions");
   }
 
   /**

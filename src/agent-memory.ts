@@ -4,7 +4,7 @@
 // Optional persistence that lets a repeatedly-used agent TYPE accumulate
 // experience across sessions. Three scopes:
 //
-//   user    ~/.claude/agent-memory/<type>/MEMORY.md   cross-project, general
+//   user    .claude/agent-memory/<type>/MEMORY.md     legacy alias of project
 //   project .claude/agent-memory/<type>/MEMORY.md     shared via VCS
 //   local   .claude/agent-memory-local/<type>/MEMORY.md  gitignored, env-redirectable
 //
@@ -15,8 +15,8 @@
 // ============================================================
 
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
+import { ccrPath } from "./workspace-config.js";
 
 export type MemoryScope = "user" | "project" | "local";
 
@@ -46,7 +46,7 @@ export function agentMemoryDir(
   let root: string;
   switch (scope) {
     case "user":
-      root = path.join(os.homedir(), ".claude", "agent-memory");
+      root = ccrPath(workspaceRoot, "agent-memory");
       break;
     case "project":
       root = path.join(workspaceRoot, ".claude", "agent-memory");

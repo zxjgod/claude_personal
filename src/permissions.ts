@@ -5,6 +5,7 @@
 
 import * as path from "node:path";
 import { buildClassifierPrompt } from "./classifier-rules.js";
+import { policyDecision } from "./permission-policy.js";
 import type {
   ClassifierResult,
   PermissionClassifier,
@@ -417,6 +418,18 @@ export async function checkPermission(
 }> {
   const action = formatActionForClassifier(tool.name, input).slice(0, 100);
 
+  // Configured deny rules are the highest user policy layer and apply even to
+  // otherwise read-only tools. Allow rules only suppress the ordinary prompt;
+  // the safety floor below still applies.
+  const configured = policyDecision(context.permissionPolicy, tool.name, input);
+  if (configured === "deny") {
+    return {
+      allowed: false,
+      reason: `Denied by permission rule for ${tool.name}.`,
+      decisionReason: "rule",
+    };
+  }
+
   // Safety-floor blocked paths must run before the read-only fast path. A tool
   // being non-mutating does not make sensitive files safe to disclose.
   if (input.filePath && typeof input.filePath === "string") {
@@ -433,7 +446,7 @@ export async function checkPermission(
 
   // Read-only tools are otherwise always allowed. Pass input so data-driven
   // tools (Bash: `cat` read-only, `rm` not) decide per call (M29).
-  if (tool.isReadOnly(input)) {
+  if (tool.isReadOnly(input) && configured !== "ask") {
     const result = { allowed: true as const };
     logPermissionDecision(2, tool.name, action, result);
     return result;
@@ -587,7 +600,12 @@ export async function checkPermission(
 
   // Step 6: Default — ask only for tools that require interactive approval.
   const needsApproval = tool.requiresApproval ? tool.requiresApproval() : !tool.isReadOnly(input);
-  if (!needsApproval) {
+  if (configured === "allow") {
+    const result = { allowed: true, decisionReason: "rule" as const };
+    logPermissionDecision(6, tool.name, action, result, { stage: "allow-rule" });
+    return result;
+  }
+  if (!needsApproval && configured !== "ask") {
     const result = { allowed: true };
     logPermissionDecision(6, tool.name, action, result);
     return result;

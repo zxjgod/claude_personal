@@ -14,6 +14,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { ccrPath } from "./workspace-config.js";
 
 export interface TelemetryEvent {
   /** Event name, e.g. "session_start", "turn", "tool_call". */
@@ -33,7 +34,7 @@ export interface TelemetryOptions {
  * Returns { enabled:false } unless the user explicitly opted in.
  */
 export function resolveTelemetryOptions(workspaceRoot: string): TelemetryOptions {
-  const filePath = path.join(workspaceRoot, ".claude", "telemetry", "events.jsonl");
+  const filePath = ccrPath(workspaceRoot, "telemetry", "events.jsonl");
 
   // Env toggle (highest priority, both on and off forms).
   const env = process.env.CCR_TELEMETRY ?? process.env.LLM_TELEMETRY;
@@ -42,7 +43,7 @@ export function resolveTelemetryOptions(workspaceRoot: string): TelemetryOptions
 
   // settings.json { telemetry: { enabled: bool } }
   try {
-    const settingsPath = path.join(workspaceRoot, ".claude", "settings.json");
+    const settingsPath = ccrPath(workspaceRoot, "settings.json");
     const raw = fs.readFileSync(settingsPath, "utf-8");
     const settings = JSON.parse(raw);
     if (settings?.telemetry?.enabled === true) {

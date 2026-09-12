@@ -163,6 +163,7 @@ export async function* agentLoop(
   // Build the full ToolContext from caller-provided values.
   const baseContext: ToolContext = {
     workspaceRoot: toolContext?.workspaceRoot ?? process.cwd(),
+    allowedDirectories: toolContext?.allowedDirectories,
     sessionId: toolContext?.sessionId ?? "default",
     permissionMode: toolContext?.getPermissionMode?.() ?? toolContext?.permissionMode ?? "default",
     getPermissionMode: toolContext?.getPermissionMode,
@@ -175,6 +176,8 @@ export async function* agentLoop(
     // approval overlay never opens and the user never gets a say.
     requestPlanApproval: toolContext?.requestPlanApproval,
     permissionClassifier: toolContext?.permissionClassifier,
+    hooks: toolContext?.hooks,
+    permissionPolicy: toolContext?.permissionPolicy,
     askUser: toolContext?.askUser ?? askUser,
     abortSignal,
     getParentMessages: () => messages.slice(),
@@ -263,10 +266,22 @@ export async function* agentLoop(
       }
 
       if (prepared.needsAutoCompact) {
+        await baseContext.hooks
+          ?.runEvent?.("PreCompact", {
+            session_id: baseContext.sessionId,
+            message_count: messages.length,
+          })
+          .catch(() => {});
         yield { type: "compacting" };
         try {
           const messagesBefore = messages.length;
           replaceMessages(await autoCompact(messages, safeCallModel, modelConfig, abortSignal));
+          await baseContext.hooks
+            ?.runEvent?.("PostCompact", {
+              session_id: baseContext.sessionId,
+              message_count: messages.length,
+            })
+            .catch(() => {});
           yield {
             type: "compacted",
             summary: "Context compressed",
@@ -422,7 +437,27 @@ export async function* agentLoop(
                 try {
                   const messagesBefore = messages.length;
                   replaceMessages(
-                    await autoCompact(messages, safeCallModel, modelConfig, abortSignal),
+                    await (async () => {
+                      await baseContext.hooks
+                        ?.runEvent?.("PreCompact", {
+                          session_id: baseContext.sessionId,
+                          message_count: messages.length,
+                        })
+                        .catch(() => {});
+                      const compacted = await autoCompact(
+                        messages,
+                        safeCallModel,
+                        modelConfig,
+                        abortSignal,
+                      );
+                      await baseContext.hooks
+                        ?.runEvent?.("PostCompact", {
+                          session_id: baseContext.sessionId,
+                          message_count: compacted.length,
+                        })
+                        .catch(() => {});
+                      return compacted;
+                    })(),
                   );
                   yield {
                     type: "compacted",

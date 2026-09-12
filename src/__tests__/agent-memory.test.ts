@@ -44,9 +44,10 @@ describe("agentMemoryDir scopes", () => {
     expect(dir).toBe(path.join(workspace, ".claude", "agent-memory", "general"));
   });
 
-  it("user scope lives under ~/.claude/agent-memory", () => {
+  it("legacy user scope is workspace-local and never reads the user profile", () => {
     const dir = agentMemoryDir("user", "general", workspace);
-    expect(dir).toBe(path.join(os.homedir(), ".claude", "agent-memory", "general"));
+    expect(dir).toBe(path.join(workspace, ".claude", "agent-memory", "general"));
+    expect(dir).not.toBe(path.join(os.homedir(), ".claude", "agent-memory", "general"));
   });
 
   it("local scope can be redirected by env", () => {

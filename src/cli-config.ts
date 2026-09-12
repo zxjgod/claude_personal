@@ -5,15 +5,28 @@
 // ============================================================
 
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 
 import { readSettings } from "./hooks-config.js";
 import { resolveProviderConfig } from "./llm-adapter.js";
+import { mergePermissionPolicies, type PermissionPolicy } from "./permission-policy.js";
 import type { ModelConfig, PermissionMode } from "./types.js";
 
 export function loadConfig(): ModelConfig {
-  const provider = (process.env.LLM_PROVIDER || "openai") as ModelConfig["provider"];
+  const workspace = process.env.WORKSPACE_ROOT || process.cwd();
+  const settings = readSettings(workspace);
+  const env = settings?.env;
+  if (env && typeof env === "object" && !Array.isArray(env)) {
+    for (const [key, value] of Object.entries(env as Record<string, unknown>)) {
+      if (typeof value === "string" && process.env[key] === undefined) process.env[key] = value;
+    }
+  }
+  const modelSettings = settings?.model;
+  const provider = (process.env.LLM_PROVIDER ||
+    (typeof modelSettings === "string"
+      ? undefined
+      : (modelSettings as { provider?: unknown } | undefined)?.provider) ||
+    "openai") as ModelConfig["provider"];
   const apiKey = process.env.LLM_API_KEY;
 
   if (!apiKey) {
@@ -29,7 +42,11 @@ export function loadConfig(): ModelConfig {
   const config = resolveProviderConfig({
     provider,
     apiKey,
-    model: process.env.LLM_MODEL || undefined,
+    model:
+      process.env.LLM_MODEL ||
+      (typeof modelSettings === "string"
+        ? modelSettings
+        : ((modelSettings as { name?: unknown } | undefined)?.name as string | undefined)),
     baseURL: process.env.LLM_BASE_URL || undefined,
     maxTokens: process.env.LLM_MAX_TOKENS ? parseInt(process.env.LLM_MAX_TOKENS, 10) : undefined,
     temperature: process.env.LLM_TEMPERATURE ? parseFloat(process.env.LLM_TEMPERATURE) : undefined,
@@ -104,12 +121,34 @@ export function getPermissionMode(workspaceRoot: string): PermissionMode {
       return projectMode;
     }
   }
-  const user = readSettings(os.homedir());
-  const userMode = user?.permissionMode as PermissionMode | undefined;
-  if (userMode && VALID_PERMISSION_MODES.includes(userMode)) {
-    return userMode;
-  }
   return "default";
+}
+
+function flagValues(flag: string): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < process.argv.length; i++) {
+    const arg = process.argv[i]!;
+    if (arg === flag && process.argv[i + 1]) out.push(process.argv[++i]!);
+    else if (arg.startsWith(`${flag}=`)) out.push(arg.slice(flag.length + 1));
+  }
+  return out
+    .flatMap((v) => v.split(","))
+    .map((v) => v.trim())
+    .filter(Boolean);
+}
+
+/** Resolve durable permission rules: user settings, project settings, then CLI flags. */
+export function getPermissionPolicy(workspaceRoot: string): PermissionPolicy {
+  const project = readSettings(workspaceRoot);
+  const policy = mergePermissionPolicies(project?.permissions);
+  policy.allow.push(...flagValues("--allowedTools"), ...flagValues("--allowed-tools"));
+  policy.deny.push(...flagValues("--disallowedTools"), ...flagValues("--disallowed-tools"));
+  if (process.argv.includes("--dangerously-skip-permissions")) {
+    // Preserve the explicit opt-out semantics while still leaving the safety
+    // floor in checkPermission intact.
+    policy.allow.push("*");
+  }
+  return policy;
 }
 
 // --- Max turns (loop bound) ---

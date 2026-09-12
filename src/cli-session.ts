@@ -7,7 +7,7 @@
 // ============================================================
 
 import chalk from "chalk";
-
+import { parseCliArgs } from "./cli-args.js";
 import { formatCliError } from "./cli-errors.js";
 import { PersistenceManager } from "./persistence.js";
 import { Telemetry } from "./telemetry.js";
@@ -48,8 +48,16 @@ export async function initSession(deps: {
   }
 
   // Parse --session from CLI args
-  const sessionArg = process.argv.find((a) => a.startsWith("--session="));
-  let sessionId = sessionArg?.split("=")[1];
+  const cliArgs = parseCliArgs(process.argv);
+  let sessionId = cliArgs.sessionId ?? cliArgs.resume;
+  if (!sessionId) {
+    const sessionArg = process.argv.find((a) => a.startsWith("--session="));
+    sessionId = sessionArg?.split("=")[1];
+  }
+  if (!sessionId && cliArgs.continue) {
+    const recent = await persistence.searchSessions("");
+    sessionId = recent[0]?.sessionId;
+  }
 
   // If no session specified, list available ones in verbose mode only.
   // Use /sessions during normal use.
@@ -75,6 +83,12 @@ export async function initSession(deps: {
     const existing = await persistence.load(sessionId);
     if (existing) {
       messages.push(...existing.messages);
+      if (cliArgs.forkSession) {
+        const sourceId = sessionId;
+        sessionId = persistence.generateId();
+        if (verbose)
+          console.log(`Forked session ${sourceId.slice(0, 8)}... as ${sessionId.slice(0, 8)}...`);
+      }
       if (verbose) {
         console.log(
           `Resumed session ${sessionId.slice(0, 8)}... (${existing.messageCount} messages)`,

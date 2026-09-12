@@ -3,8 +3,8 @@
 // ============================================================
 
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
+import { ccrPath } from "../../workspace-config.js";
 import type { KeybindingBlock } from "./types.js";
 
 /**
@@ -48,7 +48,7 @@ export function parseBindingsFile(raw: string): KeybindingBlock[] | null {
  * returns null and the caller falls back to defaults. NEVER throws.
  */
 export function loadUserBindings(): KeybindingBlock[] | null {
-  const file = path.join(os.homedir(), ".claude", "keybindings.json");
+  const file = ccrPath(process.cwd(), "keybindings.json");
   let raw: string;
   try {
     raw = fs.readFileSync(file, "utf-8");

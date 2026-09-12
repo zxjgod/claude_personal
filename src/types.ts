@@ -155,6 +155,15 @@ export interface ToolResultMetadata {
   /** Bounded display-only snapshot for the Write result's syntax preview. */
   codePreview?: { filePath: string; text: string; totalLines: number; truncated?: boolean };
   /**
+   * Display-only numbered companion to the Edit result's diff. The model-facing
+   * `content` keeps the header-less diff; this carries the same changes with
+   * absolute file line numbers so the TUI can draw a gutter, matching what the
+   * Write preview already does above. Declared inline rather than imported from
+   * tools/utils/diff to keep the core types module free of a dependency on the
+   * tool layer.
+   */
+  diffLines?: Array<{ sign: "-" | "+"; text: string; line: number }>;
+  /**
    * Structured todo list (Todo tool only). The TUI pins this under the spinner
    * as a live region; the committed tool row stays compact via `summary`.
    */
@@ -164,6 +173,7 @@ export interface ToolResultMetadata {
 
 export interface ToolContext {
   workspaceRoot: string;
+  allowedDirectories?: string[];
   sessionId: string;
   permissionMode: PermissionMode;
   /** Optional live permission-mode hooks; TUI uses these for mid-turn Shift+Tab changes. */
@@ -202,6 +212,9 @@ export interface ToolContext {
    * disabled (--llm-perm-classifier off). See src/permissions.ts.
    */
   permissionClassifier?: PermissionClassifier;
+  hooks?: HookRunner;
+  /** Rules loaded from settings.json and CLI permission flags. */
+  permissionPolicy?: import("./permission-policy.js").PermissionPolicy;
   /**
    * The current turn's AbortSignal (set when the agent loop is created). Tools
    * that spawn long-running subprocesses (Bash, Grep, ...) should observe it
@@ -678,6 +691,7 @@ export interface HookRunner {
     preventContinuation?: boolean;
     reason?: string;
   }>;
+  runEvent?(event: string, payload: Record<string, unknown>): Promise<void>;
 }
 
 /** Prompts the user to approve a destructive/dangerous tool call. */

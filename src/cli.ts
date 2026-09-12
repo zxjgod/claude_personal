@@ -15,14 +15,24 @@
 // ============================================================
 
 import * as fs from "node:fs";
+import * as path from "node:path";
 import * as readline from "node:readline";
 import chalk from "chalk";
+import { agentLoop } from "./agent-loop.js";
 import {
   DEFAULT_CLASSIFIER_RULES,
   mergeClassifierRules,
   parseClassifierRules,
 } from "./classifier-rules.js";
-import { getPermissionMode, getWorkspaceRoot, loadClaudeMd, loadConfig } from "./cli-config.js";
+import { parseCliArgs } from "./cli-args.js";
+import {
+  getPermissionMode,
+  getPermissionPolicy,
+  getWorkspaceRoot,
+  loadClaudeMd,
+  loadConfig,
+  resolveMaxTurns,
+} from "./cli-config.js";
 import { checkOrCreateEnv, maybeHandleInfoFlags } from "./cli-env.js";
 import { formatCliError } from "./cli-errors.js";
 import { createCliInputReader } from "./cli-input.js";
@@ -33,14 +43,17 @@ import { setupTools } from "./cli-tools.js";
 import { COMMANDS } from "./commands.js";
 import { formatGitContext, gatherGitContext } from "./git-context.js";
 import { HookRegistry } from "./hooks.js";
-import { loadHooksFromSettingsTrusted } from "./hooks-config.js";
+import { loadHooksFromSettingsTrusted, readSettings, warnUnknownSettings } from "./hooks-config.js";
 import { createModelCaller } from "./llm-adapter.js";
 import { MemoryStore } from "./memory-extract.js";
+import { savePersistentAlwaysAllow } from "./permission-policy.js";
+import { pluginDirs } from "./plugins.js";
 import { renderPrefetchAttachment, startPrefetch } from "./prefetch.js";
 import { normalizeFinishReason } from "./session-memory.js";
 import { listSkills } from "./skills.js";
 import { buildSystemPrompt, renderSystemPrompt } from "./system-prompt.js";
 import { loadDurableJobs } from "./tools/extended/cron-shared.js";
+import { registerNotificationHook } from "./tools/notifications.js";
 import { createRawInputReader } from "./tui/cli-interactive.js";
 import { detectLanguage } from "./tui/i18n.js";
 import type { Message, ModelCaller, PermissionClassifier, PermissionMode } from "./types.js";
@@ -81,6 +94,8 @@ async function main() {
   if (!modelConfig.provider) return;
   let workspaceRoot = getWorkspaceRoot();
   let permissionMode = getPermissionMode(workspaceRoot);
+  const permissionPolicy = getPermissionPolicy(workspaceRoot);
+  warnUnknownSettings(readSettings(workspaceRoot));
   const permissionModeState = {
     get: () => permissionMode,
     set: (mode: PermissionMode) => {
@@ -118,6 +133,7 @@ async function main() {
     tools: toolRegistry.enabledCount,
     mcpServers: mcpManager.serverCount,
     permissionMode,
+    permissionPolicy,
   });
 
   // Mutable session holders read by both the system-prompt builder and the
@@ -272,6 +288,9 @@ async function main() {
   // trusted, or that the user confirms right now (interactive only — piped/CI
   // sessions skip untrusted hooks, fail-closed).
   const hooks = new HookRegistry();
+  const unregisterNotificationHook = registerNotificationHook((payload) =>
+    hooks.runEvent("Notification", payload),
+  );
   try {
     const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
     const hookResult = await loadHooksFromSettingsTrusted(
@@ -299,6 +318,101 @@ async function main() {
     }
   } catch {
     // Hooks are optional; a malformed settings.json never blocks startup.
+  }
+  for (const pluginDir of pluginDirs(workspaceRoot)) {
+    try {
+      await loadHooksFromSettingsTrusted(pluginDir, hooks, null);
+    } catch {
+      /* isolated plugin */
+    }
+  }
+  await hooks.runEvent("SessionStart", { session_id: session.id, workspace_root: workspaceRoot });
+
+  // Official-compatible one-shot/headless mode. It deliberately uses the same
+  // agent loop and permission policy as the interactive clients, while never
+  // opening an approval prompt (unsafe calls are denied in CI).
+  const cliArgs = parseCliArgs(process.argv);
+  const allowedDirectories = cliArgs.addDirs.map((dir) => path.resolve(workspaceRoot, dir));
+  if (cliArgs.print) {
+    let prompts: string[] = cliArgs.prompt ? [cliArgs.prompt] : [];
+    if (cliArgs.inputFormat === "stream-json") {
+      try {
+        prompts.push(
+          ...fs
+            .readFileSync(0, "utf8")
+            .split(/\r?\n/)
+            .filter(Boolean)
+            .map((line) => {
+              const value = JSON.parse(line) as {
+                prompt?: unknown;
+                content?: unknown;
+                message?: { content?: unknown };
+              };
+              return typeof value.prompt === "string"
+                ? value.prompt
+                : typeof value.content === "string"
+                  ? value.content
+                  : typeof value.message?.content === "string"
+                    ? value.message.content
+                    : "";
+            })
+            .filter(Boolean),
+        );
+      } catch {
+        /* malformed input is reported as an empty request */
+      }
+    } else if (prompts.length === 0 && !process.stdin.isTTY) {
+      try {
+        prompts = [fs.readFileSync(0, "utf8").trim()].filter(Boolean);
+      } catch {
+        prompts = [];
+      }
+    }
+    if (prompts.length === 0) prompts = [""];
+    for (const prompt of prompts) {
+      const headlessEvents: unknown[] = [];
+      messages.push({ role: "user", content: [{ type: "text", text: prompt }] });
+      for await (const event of agentLoop(messages, tools, callModel, modelConfig, {
+        systemPrompt: cliArgs.appendSystemPrompt
+          ? `${buildTurnSystemPrompt()}\n\n${cliArgs.appendSystemPrompt}`
+          : buildTurnSystemPrompt(),
+        maxTurns: resolveMaxTurns(),
+        askUser: async () => false,
+        hooks,
+        toolContext: {
+          workspaceRoot,
+          allowedDirectories,
+          sessionId: session.id,
+          permissionMode,
+          modelConfig,
+          permissionPolicy,
+        },
+      })) {
+        headlessEvents.push(event);
+        if (cliArgs.outputFormat === "stream-json")
+          process.stdout.write(`${JSON.stringify(event)}\n`);
+      }
+      const text = headlessEvents
+        .filter(
+          (e): e is { type: "text_delta"; delta: string } =>
+            typeof e === "object" && e !== null && (e as { type?: unknown }).type === "text_delta",
+        )
+        .map((e) => e.delta)
+        .join("");
+      if (cliArgs.outputFormat === "json") {
+        process.stdout.write(
+          `${JSON.stringify({ type: "result", id: session.id, result: text, events: headlessEvents })}\n`,
+        );
+      } else if (cliArgs.outputFormat === "text") {
+        if (text) process.stdout.write(`${text}\n`);
+      }
+    }
+    await hooks
+      .runEvent("SessionEnd", { session_id: session.id, workspace_root: workspaceRoot })
+      .catch(() => {});
+    await mcpManager.disconnectAll();
+    unregisterNotificationHook();
+    return;
   }
 
   // --- Input ---
@@ -334,6 +448,75 @@ async function main() {
     injectInput = inputReader.inject;
   }
 
+  // MCP elicitation bridge. The same callback serves TTY and non-TTY modes:
+  // TUI/raw readers already own the terminal, while piped CI sessions receive
+  // deterministic line prompts. Invalid or incomplete answers are declined.
+  mcpManager.setElicitationHandler(async (request) => {
+    if (request.mode === "url") {
+      if (request.url) {
+        const { execFile } = await import("node:child_process");
+        const opener =
+          process.platform === "win32"
+            ? "cmd"
+            : process.platform === "darwin"
+              ? "open"
+              : "xdg-open";
+        const args =
+          process.platform === "win32" ? ["/c", "start", "", request.url] : [request.url];
+        execFile(opener, args, { windowsHide: true }, () => {});
+      }
+      const answer = await askQuestion(
+        `\n${request.message}\nOpen the URL above, then type 'accept' (or 'cancel'): `,
+      );
+      return { action: answer?.trim().toLowerCase() === "accept" ? "accept" : "cancel" };
+    }
+    const schema = request.requestedSchema ?? {};
+    const properties = (
+      schema.properties && typeof schema.properties === "object" ? schema.properties : {}
+    ) as Record<
+      string,
+      {
+        type?: string;
+        title?: string;
+        description?: string;
+        enum?: string[];
+        minimum?: number;
+        maximum?: number;
+      }
+    >;
+    const required = Array.isArray(schema.required)
+      ? schema.required.filter((x): x is string => typeof x === "string")
+      : [];
+    console.log(`\nMCP request: ${request.message}`);
+    const content: Record<string, string | number | boolean | string[]> = {};
+    for (const [name, field] of Object.entries(properties)) {
+      const hint = field.enum?.length ? ` [${field.enum.join("/")}]` : "";
+      const raw = await askQuestion(`${field.title ?? name}${hint}: `);
+      if (raw === null || raw.trim().toLowerCase() === "cancel") return { action: "cancel" };
+      const value = raw.trim();
+      if (!value && required.includes(name)) return { action: "decline" };
+      if (!value) continue;
+      if (field.enum && !field.enum.includes(value)) return { action: "decline" };
+      if (field.type === "boolean") content[name] = /^(true|yes|y)$/i.test(value);
+      else if (field.type === "number" || field.type === "integer") {
+        const n = Number(value);
+        if (
+          !Number.isFinite(n) ||
+          (field.minimum !== undefined && n < field.minimum) ||
+          (field.maximum !== undefined && n > field.maximum)
+        )
+          return { action: "decline" };
+        content[name] = n;
+      } else if (field.type === "array")
+        content[name] = value
+          .split(",")
+          .map((x) => x.trim())
+          .filter(Boolean);
+      else content[name] = value;
+    }
+    return { action: "accept", content };
+  });
+
   // Permission + structured-question prompts, sharing one serialization chain.
   const { alwaysAllow, askUser, askUserQuestion, getPendingPromptCount } = createUserPrompters({
     isInteractive,
@@ -353,7 +536,10 @@ async function main() {
     ui: uiState,
     permissions: {
       listAlwaysAllow: () => Array.from(alwaysAllow),
-      clearAlwaysAllow: () => alwaysAllow.clear(),
+      clearAlwaysAllow: () => {
+        alwaysAllow.clear();
+        savePersistentAlwaysAllow(alwaysAllow);
+      },
     },
     resumeSession,
     stats: state.stats,
@@ -368,6 +554,7 @@ async function main() {
     goal: goalHolder,
     editorMode: editorModeHolder,
     outputStyle: outputStyleHolder,
+    permissionPolicy,
     input: {
       askConfirmation: async (question: string): Promise<boolean> => {
         const answer = await askQuestion(question);
@@ -423,6 +610,51 @@ async function main() {
       // M15.3: opt-in LLM permission classifier, threaded into the TUI's
       // agent loop the same way as the line-based REPL path.
       permissionClassifier,
+      permissionPolicy,
+      allowedDirectories,
+      setupElicitation: (store) => {
+        mcpManager.setElicitationHandler(async (request) => {
+          if (request.mode === "url") {
+            const { execFile } = await import("node:child_process");
+            if (request.url) {
+              const opener =
+                process.platform === "win32"
+                  ? "cmd"
+                  : process.platform === "darwin"
+                    ? "open"
+                    : "xdg-open";
+              const args =
+                process.platform === "win32" ? ["/c", "start", "", request.url] : [request.url];
+              execFile(opener, args, { windowsHide: true }, () => {});
+            }
+            store.showToast(`${request.message} — browser opened`);
+            const confirmed = await store.askConfirmation(
+              "After completing authentication in the browser, continue?",
+            );
+            return { action: confirmed ? "accept" : "cancel" };
+          }
+          const schema = request.requestedSchema ?? {};
+          const properties = (
+            schema.properties && typeof schema.properties === "object" ? schema.properties : {}
+          ) as Record<
+            string,
+            {
+              type?: string;
+              title?: string;
+              description?: string;
+              enum?: string[];
+              minimum?: number;
+              maximum?: number;
+            }
+          >;
+          const fields = Object.entries(properties).map(([name, field]) => ({
+            ...field,
+            name,
+            required: Array.isArray(schema.required) && schema.required.includes(name),
+          }));
+          return store.askElicitation(request.message, fields);
+        });
+      },
       // M36: background memory/skill prefetch + (opt-in) tool-batch digest.
       prefetch: prefetchMemories,
       summarizeToolBatch,
@@ -451,6 +683,8 @@ async function main() {
     getWorkspaceRoot: () => workspaceRoot,
     permissionModeState,
     permissionClassifier,
+    permissionPolicy,
+    allowedDirectories,
     prefetch: prefetchMemories,
     summarizeToolBatch,
     hooks,

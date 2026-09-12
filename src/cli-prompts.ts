@@ -8,7 +8,7 @@
 
 import * as readline from "node:readline";
 import chalk from "chalk";
-
+import { loadPersistentAlwaysAllow, savePersistentAlwaysAllow } from "./permission-policy.js";
 import { promptPermissionMenu, promptSelectMenu } from "./tui/cli-interactive.js";
 import { renderPermissionPrompt } from "./tui/cli-renderer.js";
 import type { AskUserFn, UserQuestion } from "./types.js";
@@ -64,7 +64,7 @@ export function createUserPrompters(deps: {
   askQuestion: (prompt: string) => Promise<string | null>;
 }): UserPrompters {
   const { isInteractive, askQuestion } = deps;
-  const alwaysAllow = new Set<string>();
+  const alwaysAllow = loadPersistentAlwaysAllow();
   let promptChain: Promise<unknown> = Promise.resolve();
   // M41: a prompt can be pending while NO turn is running — a background
   // agent's approver forwards here (run_in_background, team members).
@@ -88,6 +88,7 @@ export function createUserPrompters(deps: {
       });
       if (choice === "always") {
         alwaysAllow.add(key);
+        savePersistentAlwaysAllow(alwaysAllow);
         // P2-2: Show confirmation feedback for "always allow"
         const target = detail || tool.name;
         console.log(chalk.green(`  ✓ 已记住: ${target} (本会话内不再询问)`));
@@ -104,6 +105,7 @@ export function createUserPrompters(deps: {
 
     if (answer === "a" || answer === "always") {
       alwaysAllow.add(key);
+      savePersistentAlwaysAllow(alwaysAllow);
       // P2-2: Show confirmation feedback for "always allow"
       const target =
         (typeof input.command === "string" && input.command) ||

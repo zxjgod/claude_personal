@@ -54,6 +54,8 @@ export interface ReplDeps {
     set: (mode: PermissionMode) => void;
   };
   permissionClassifier: PermissionClassifier | undefined;
+  permissionPolicy?: import("./permission-policy.js").PermissionPolicy;
+  allowedDirectories?: string[];
   prefetch: (latestUserText: string) => Promise<string | null>;
   summarizeToolBatch: ((prompt: string) => Promise<string | null>) | undefined;
   hooks: HookRegistry;
@@ -83,6 +85,8 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
     getWorkspaceRoot,
     permissionModeState,
     permissionClassifier,
+    permissionPolicy,
+    allowedDirectories,
     prefetch,
     summarizeToolBatch,
     hooks,
@@ -301,6 +305,9 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
 
       // Run agent loop. Rebuild the turn system prompt so a /goal or /output-style
       // change made earlier this session takes effect next turn.
+      await hooks
+        .runEvent("UserPromptSubmit", { prompt: userInput, session_id: session.id })
+        .catch(() => {});
       const turnSystemPrompt = buildTurnSystemPrompt();
       const loop = agentLoop(messages, tools, callModel, modelConfig, {
         systemPrompt: turnSystemPrompt,
@@ -323,6 +330,9 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
           },
           // M15.3: opt-in LLM permission classifier for flagged dangerous calls.
           permissionClassifier,
+          permissionPolicy,
+          allowedDirectories,
+          hooks,
         },
         askUser: askUserGuarded,
         abortSignal: controller.signal,
@@ -588,6 +598,9 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
       await new Promise<void>((resolve) => process.stdout.write("", () => resolve()));
     }
   } finally {
+    await hooks
+      .runEvent("SessionEnd", { session_id: session.id, workspace_root: getWorkspaceRoot() })
+      .catch(() => {});
     // Normal exit (EOF / "exit" / /exit) AND a loop-breaking error both land
     // here — the session is saved and long-lived children (MCP stdio servers,
     // tsserver, REPL sessions) are torn down either way.
