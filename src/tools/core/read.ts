@@ -50,7 +50,11 @@ export const ReadTool: Tool = buildTool({
       return { content: "", error: pathValidation.error };
     }
 
-    const resolution = resolveInWorkspace(input.filePath, context.workspaceRoot);
+    const resolution = resolveInWorkspace(
+      input.filePath,
+      context.workspaceRoot,
+      context.allowedDirectories,
+    );
     if (!resolution.ok) {
       return { content: "", error: resolution.error };
     }
@@ -131,6 +135,48 @@ export const ReadTool: Tool = buildTool({
           content: `[Binary file: ${filePath}]`,
           metadata: { fileSize: stat.size },
         };
+      }
+
+      // Render notebooks structurally so the model can reason about cells
+      // without parsing a large JSON blob. Keep outputs bounded and preserve
+      // source line numbering inside each cell.
+      if (filePath.toLowerCase().endsWith(".ipynb")) {
+        try {
+          const notebook = JSON.parse(buffer.toString("utf-8")) as {
+            cells?: Array<{
+              cell_type?: string;
+              source?: string | string[];
+              outputs?: unknown[];
+              execution_count?: number | null;
+            }>;
+          };
+          if (Array.isArray(notebook.cells)) {
+            const rendered = notebook.cells
+              .map((cell, index) => {
+                const source = Array.isArray(cell.source)
+                  ? cell.source.join("")
+                  : String(cell.source ?? "");
+                const lines = source
+                  .split("\n")
+                  .map((line, i) => `${String(i + 1).padStart(4, " ")}: ${line}`)
+                  .join("\n");
+                const outputCount = Array.isArray(cell.outputs) ? cell.outputs.length : 0;
+                return `Cell ${index} [${cell.cell_type ?? "unknown"}]${cell.execution_count != null ? ` execution=${cell.execution_count}` : ""}${outputCount ? ` outputs=${outputCount}` : ""}\n${lines}`;
+              })
+              .join("\n\n");
+            markRead(context.sessionId, filePath, stat.mtimeMs);
+            return {
+              content: rendered || "(empty notebook)",
+              metadata: {
+                fileSize: stat.size,
+                summary: `Read notebook (${notebook.cells.length} cells)`,
+                linesRead: rendered.split("\n").length,
+              },
+            };
+          }
+        } catch {
+          // Invalid notebook JSON falls through to normal text rendering.
+        }
       }
 
       let lines = buffer.toString("utf-8").split("\n");

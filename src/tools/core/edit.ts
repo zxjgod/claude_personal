@@ -11,7 +11,12 @@ import { checkDangerousPattern, isBlockedPath } from "../../permissions.js";
 import { checkReadBeforeEdit, refreshRead } from "../../read-tracker.js";
 import type { Tool, ToolResult } from "../../types.js";
 import { buildTool } from "../registry.js";
-import { crlfTolerantPair, generateSimpleDiff, spliceAll } from "../utils/diff.js";
+import {
+  crlfTolerantPair,
+  diffDisplayLines,
+  generateSimpleDiff,
+  spliceAll,
+} from "../utils/diff.js";
 import { relForDisplay, resolveInWorkspace, statMtimeMs } from "../utils/path.js";
 
 const EditSchema = z.strictObject({
@@ -50,7 +55,11 @@ export const EditTool: Tool = buildTool({
   searchHint: "edit modify replace search change update",
 
   async call(input, context): Promise<ToolResult> {
-    const resolution = resolveInWorkspace(input.filePath, context.workspaceRoot);
+    const resolution = resolveInWorkspace(
+      input.filePath,
+      context.workspaceRoot,
+      context.allowedDirectories,
+    );
     if (!resolution.ok) {
       return { content: "", error: resolution.error };
     }
@@ -119,11 +128,14 @@ export const EditTool: Tool = buildTool({
       // Replace via index-based splicing instead of String.replace, which
       // would interpret special patterns ($&, $1, $`, $') in new_string and
       // silently corrupt the content.
+      // Offset of the first match. The count>1 && !replaceAll case already
+      // returned above, so this is the only match when replaceAll is false —
+      // and it seeds the display line numbers below either way.
+      const idx = content.indexOf(oldStr);
       let newContent: string;
       if (replaceAll) {
         newContent = spliceAll(content, oldStr, newStr);
       } else {
-        const idx = content.indexOf(oldStr);
         newContent = content.slice(0, idx) + newStr + content.slice(idx + oldStr.length);
       }
       shadowBeforeWrite(context.sessionId, filePath); // P0-3: shadow for rewind
@@ -135,6 +147,10 @@ export const EditTool: Tool = buildTool({
 
       // Generate a simple diff
       const diff = generateSimpleDiff(oldStr, newStr);
+      // Display-only companion carrying absolute file line numbers for the TUI
+      // gutter. Kept out of `content` so the model-facing result is unchanged.
+      const startLine = content.slice(0, idx).split("\n").length;
+      const diffLines = diffDisplayLines(oldStr, newStr, startLine);
       const summary = replaceAll
         ? `Edit applied to ${input.filePath} (${count} occurrence${count > 1 ? "s" : ""}):`
         : `Edit applied to ${input.filePath}:`;
@@ -146,7 +162,7 @@ export const EditTool: Tool = buildTool({
       );
       return {
         content: `${summary}\n${diff}`,
-        metadata: { fileSize: Buffer.byteLength(newContent, "utf-8") },
+        metadata: { fileSize: Buffer.byteLength(newContent, "utf-8"), diffLines },
       };
     } catch (error) {
       const errno = error as NodeJS.ErrnoException;
@@ -235,7 +251,11 @@ export const MultiEditTool: Tool = buildTool({
   searchHint: "batch edit multiple changes atomic",
 
   async call(input, context): Promise<ToolResult> {
-    const resolution = resolveInWorkspace(input.filePath, context.workspaceRoot);
+    const resolution = resolveInWorkspace(
+      input.filePath,
+      context.workspaceRoot,
+      context.allowedDirectories,
+    );
     if (!resolution.ok) {
       return { content: "", error: resolution.error };
     }

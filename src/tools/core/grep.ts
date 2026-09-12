@@ -123,7 +123,11 @@ export const GrepTool: Tool = buildTool({
     // path cannot override the workspace root and search/read files outside it.
     let searchDir: string;
     if (input.path) {
-      const resolution = resolveInWorkspace(input.path, context.workspaceRoot);
+      const resolution = resolveInWorkspace(
+        input.path,
+        context.workspaceRoot,
+        context.allowedDirectories,
+      );
       if (!resolution.ok) {
         return { content: "", error: resolution.error };
       }
@@ -143,7 +147,13 @@ export const GrepTool: Tool = buildTool({
 
     // Prefer ripgrep (fast, gitignore-aware); fall back to a Node.js scan.
     try {
-      return await runRipgrep(input, searchDir, context.workspaceRoot, context.abortSignal);
+      return await runRipgrep(
+        input,
+        searchDir,
+        context.workspaceRoot,
+        context.abortSignal,
+        context.allowedDirectories,
+      );
     } catch (error) {
       const execError = error as Record<string, unknown>;
       // Interrupt: ripgrep subprocess was killed. Do not fall back.
@@ -174,6 +184,7 @@ async function runRipgrep(
   searchDir: string,
   workspaceRoot: string,
   abortSignal?: AbortSignal,
+  allowedDirectories: string[] = [],
 ): Promise<ToolResult> {
   // Resolve the PACKAGED ripgrep binary instead of a host `rg` on PATH. This
   // removes the hidden host dependency, fixes the old path's cmd.exe quoting
@@ -263,7 +274,7 @@ async function runRipgrep(
   const files = [
     ...new Set(
       candidates.flatMap((file) => {
-        const resolved = resolveInWorkspace(file, workspaceRoot);
+        const resolved = resolveInWorkspace(file, workspaceRoot, allowedDirectories);
         return resolved.ok && !isBlockedPath(file) && !isBlockedPath(resolved.path)
           ? [resolved.path]
           : [];
@@ -321,7 +332,7 @@ async function runRipgrep(
 async function runNodeFallback(
   input: GrepInput,
   searchDir: string,
-  context: { workspaceRoot: string; abortSignal?: AbortSignal },
+  context: { workspaceRoot: string; abortSignal?: AbortSignal; allowedDirectories?: string[] },
 ): Promise<ToolResult> {
   // Fallback: fast-glob + manual regex search, honoring the common options.
   // A `glob`/`include` filter wins over `type` when both are given (the model
@@ -390,7 +401,11 @@ async function runNodeFallback(
     if (results.length >= headLimit) break;
     if (Date.now() >= deadline) return { content: "", error: "Fallback search timed out" };
     try {
-      const resolved = resolveInWorkspace(candidate, context.workspaceRoot);
+      const resolved = resolveInWorkspace(
+        candidate,
+        context.workspaceRoot,
+        context.allowedDirectories,
+      );
       if (!resolved.ok || isBlockedPath(candidate) || isBlockedPath(resolved.path)) continue;
       const file = resolved.path;
       const stat = fs.statSync(file);

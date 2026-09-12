@@ -84,7 +84,11 @@ export const NotebookEditTool: Tool = buildTool({
   isConcurrencySafe: false,
 
   async call(input, context): Promise<ToolResult> {
-    const resolution = resolveInWorkspace(input.filePath, context.workspaceRoot);
+    const resolution = resolveInWorkspace(
+      input.filePath,
+      context.workspaceRoot,
+      context.allowedDirectories,
+    );
     if (!resolution.ok) return { content: "", error: resolution.error };
     const filePath = resolution.path;
 
@@ -209,7 +213,11 @@ export const LspDiagnosticsTool: Tool = buildTool({
     // through to the tsc shell-out (tsserver drives diagnostics per open
     // document). The Diagnostic shape is identical, so output is uniform.
     if (typeof input.filePath === "string" && input.filePath) {
-      const resolution = resolveAllowedWorkspaceFile(input.filePath, cwd);
+      const resolution = resolveAllowedWorkspaceFile(
+        input.filePath,
+        cwd,
+        context.allowedDirectories,
+      );
       if (!resolution.ok) return { content: "", error: resolution.error };
       const abs = resolution.path;
       const client = getLspClient(cwd);
@@ -279,7 +287,7 @@ export const LspCompletionsTool: Tool = buildTool({
         error: "No tsconfig.json in workspace — lsp_completions needs a TypeScript project.",
       };
     }
-    const resolution = resolveAllowedWorkspaceFile(input.filePath, cwd);
+    const resolution = resolveAllowedWorkspaceFile(input.filePath, cwd, context.allowedDirectories);
     if (!resolution.ok) return { content: "", error: resolution.error };
     const client = getLspClient(cwd);
     if (!client) {
@@ -362,6 +370,8 @@ export interface MCPResourceProvider {
     Array<{ server: string; uri: string; name?: string; mimeType?: string }>
   >;
   readResource(uri: string): Promise<string | null>;
+  listPrompts?(): Promise<Array<{ server: string; name: string; description?: string }>>;
+  getPrompt?(name: string, args?: Record<string, string>): Promise<string | null>;
 }
 
 export function createMcpResourceTools(provider: MCPResourceProvider): Tool[] {
@@ -409,5 +419,45 @@ export function createMcpResourceTools(provider: MCPResourceProvider): Tool[] {
     },
   });
 
-  return [listTool, readTool];
+  const promptTools: Tool[] = [];
+  if (provider.listPrompts && provider.getPrompt) {
+    const listPrompts = buildTool({
+      name: "mcp_list_prompts",
+      description: "List prompts exposed by connected MCP servers",
+      promptDescription:
+        "List MCP server prompts available as reusable slash-style prompt templates.",
+      schema: z.strictObject({}),
+      isReadOnly: true,
+      isConcurrencySafe: true,
+      async call(): Promise<ToolResult> {
+        const prompts = await provider.listPrompts!();
+        return {
+          content: prompts.length
+            ? prompts
+                .map(
+                  (p) => `- [${p.server}] ${p.name}${p.description ? ` — ${p.description}` : ""}`,
+                )
+                .join("\n")
+            : "No MCP prompts available.",
+        };
+      },
+    });
+    const getPrompt = buildTool({
+      name: "mcp_get_prompt",
+      description: "Render an MCP prompt by name",
+      promptDescription:
+        "Fetch a prompt template from an MCP server. name is the prompt name; arguments are optional string values.",
+      schema: z.strictObject({ name: z.string(), arguments: z.record(z.string()).optional() }),
+      isReadOnly: true,
+      isConcurrencySafe: true,
+      async call(input): Promise<ToolResult> {
+        const text = await provider.getPrompt!(input.name, input.arguments);
+        return text === null
+          ? { content: "", error: `MCP prompt not found: ${input.name}` }
+          : { content: text };
+      },
+    });
+    promptTools.push(listPrompts, getPrompt);
+  }
+  return [listTool, readTool, ...promptTools];
 }

@@ -33,7 +33,11 @@ export const GlobTool: Tool = buildTool({
     // enumerate files outside it.
     let searchDir: string;
     if (input.path) {
-      const resolution = resolveInWorkspace(input.path, context.workspaceRoot);
+      const resolution = resolveInWorkspace(
+        input.path,
+        context.workspaceRoot,
+        context.allowedDirectories,
+      );
       if (!resolution.ok) {
         return { content: "", error: resolution.error };
       }

@@ -7,8 +7,12 @@ import * as path from "node:path";
 import { isBlockedPath } from "../../permissions.js";
 
 /** Apply the sensitive-file policy to both the supplied and canonical path. */
-export function resolveAllowedWorkspaceFile(inputPath: string, workspaceRoot: string) {
-  const resolution = resolveInWorkspace(inputPath, workspaceRoot);
+export function resolveAllowedWorkspaceFile(
+  inputPath: string,
+  workspaceRoot: string,
+  allowedDirectories: string[] = [],
+) {
+  const resolution = resolveInWorkspace(inputPath, workspaceRoot, allowedDirectories);
   if (!resolution.ok) return resolution;
   if (isBlockedPath(inputPath) || isBlockedPath(resolution.path)) {
     return { ok: false as const, error: "Access denied: path is blocked for security reasons." };
@@ -35,6 +39,7 @@ export function resolveAllowedWorkspaceFile(inputPath: string, workspaceRoot: st
 export function resolveInWorkspace(
   inputPath: string,
   workspaceRoot: string,
+  allowedDirectories: string[] = [],
 ): { ok: true; path: string } | { ok: false; error: string } {
   const root = path.resolve(workspaceRoot);
   const rootReal = (() => {
@@ -57,9 +62,15 @@ export function resolveInWorkspace(
 
   const normalizeForContainment = (value: string): string =>
     process.platform === "win32" ? value.toLowerCase() : value;
-  const normalizedRoot = normalizeForContainment(rootReal);
+  const normalizedRoots = [rootReal, ...allowedDirectories.map((d) => path.resolve(d))].map(
+    normalizeForContainment,
+  );
   const normalizedReal = normalizeForContainment(real.path);
-  if (normalizedReal !== normalizedRoot && !normalizedReal.startsWith(normalizedRoot + path.sep)) {
+  if (
+    !normalizedRoots.some(
+      (root) => normalizedReal === root || normalizedReal.startsWith(root + path.sep),
+    )
+  ) {
     return {
       ok: false,
       error: `Access denied: "${inputPath}" resolves outside workspace`,

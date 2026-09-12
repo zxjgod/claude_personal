@@ -6,6 +6,13 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import chalk from "chalk";
 import { z } from "zod";
+import { runWindowsSandbox } from "../../native-sandbox.js";
+import {
+  loadSandboxPolicy,
+  nativeSandboxSupported,
+  requiresNativeSandbox,
+  sandboxViolation,
+} from "../../sandbox-policy.js";
 import type { Tool, ToolContext, ToolResult } from "../../types.js";
 import { InputValidator } from "../../utils/input-validator.js";
 import { createJob, settleJob } from "../job-store.js";
@@ -72,9 +79,41 @@ export const BashTool: Tool = buildTool({
     // M39: seed the spawn cwd from the remembered session cwd, falling back to
     // the workspace root on the first call.
     const cwd = getCwd(context.sessionId) ?? context.workspaceRoot;
+    const policy = loadSandboxPolicy(context.workspaceRoot);
+    const violation = sandboxViolation(policy, input.command, cwd);
+    if (violation) return { content: "", error: violation };
 
     if (input.run_in_background) {
+      if (requiresNativeSandbox(policy))
+        return {
+          content: "",
+          error:
+            "Native sandbox background execution requires the native runner; use a supported Windows environment.",
+        };
       return runInBackground(input, context, cwd);
+    }
+
+    if (requiresNativeSandbox(policy)) {
+      if (!nativeSandboxSupported())
+        return {
+          content: "",
+          error: "Native sandbox is unavailable on this platform; command refused.",
+        };
+      const result = await runWindowsSandbox({ command: input.command, cwd, timeoutMs: timeout });
+      if (result.code === null || result.code < 0)
+        return {
+          content: "",
+          error: "Native Windows sandbox could not be started; command refused.",
+        };
+      return {
+        content: [result.stdout, result.stderr].filter(Boolean).join("\n") || "(no output)",
+        error: result.timedOut
+          ? `Command timed out (${Math.round(timeout / 1000)}s)`
+          : result.code !== 0
+            ? `Command failed (exit code: ${result.code})`
+            : undefined,
+        metadata: { exitCode: result.code },
+      };
     }
 
     const abortSignal = context.abortSignal;

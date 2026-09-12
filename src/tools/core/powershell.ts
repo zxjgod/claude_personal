@@ -9,6 +9,13 @@ import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import chalk from "chalk";
 import { z } from "zod";
+import { runWindowsSandbox } from "../../native-sandbox.js";
+import {
+  loadSandboxPolicy,
+  nativeSandboxSupported,
+  requiresNativeSandbox,
+  sandboxViolation,
+} from "../../sandbox-policy.js";
 import type { Tool, ToolResult } from "../../types.js";
 import { InputValidator } from "../../utils/input-validator.js";
 import { buildTool } from "../registry.js";
@@ -58,6 +65,35 @@ export const PowerShellTool: Tool = buildTool({
 
     // M39 parity with Bash: seed the spawn cwd from the remembered session cwd.
     const cwd = getCwd(context.sessionId) ?? context.workspaceRoot;
+    const policy = loadSandboxPolicy(context.workspaceRoot);
+    const violation = sandboxViolation(policy, input.command, cwd);
+    if (violation) return { content: "", error: violation };
+    if (requiresNativeSandbox(policy)) {
+      if (!nativeSandboxSupported())
+        return {
+          content: "",
+          error: "Native sandbox is unavailable on this platform; command refused.",
+        };
+      const result = await runWindowsSandbox({
+        command: `powershell -NoProfile -NonInteractive -Command ${JSON.stringify(input.command)}`,
+        cwd,
+        timeoutMs: timeout,
+      });
+      if (result.code === null || result.code < 0)
+        return {
+          content: "",
+          error: "Native Windows sandbox could not be started; command refused.",
+        };
+      return {
+        content: [result.stdout, result.stderr].filter(Boolean).join("\n") || "(no output)",
+        error: result.timedOut
+          ? `Command timed out (${Math.round(timeout / 1000)}s)`
+          : result.code !== 0
+            ? `Command failed (exit code: ${result.code})`
+            : undefined,
+        metadata: { exitCode: result.code },
+      };
+    }
 
     // Force UTF-8 output. powershell.exe on a Chinese/Japanese/Korean Windows
     // writes pipes in the console codepage (GBK/cp936 etc.), which utf8

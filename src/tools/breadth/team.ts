@@ -40,6 +40,7 @@ function runCtx(context: ToolContext, notifyResults = false): TeamRunContext | {
     parentSignal: context.abortSignal,
     // M41: background turns push their completion as a task notification.
     notifyResults,
+    hooks: context.hooks,
   };
 }
 

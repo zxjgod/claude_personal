@@ -50,7 +50,11 @@ export const WriteTool: Tool = buildTool({
       return { content: "", error: contentValidation.error };
     }
 
-    const resolution = resolveInWorkspace(input.filePath, context.workspaceRoot);
+    const resolution = resolveInWorkspace(
+      input.filePath,
+      context.workspaceRoot,
+      context.allowedDirectories,
+    );
     if (!resolution.ok) {
       return { content: "", error: resolution.error };
     }
