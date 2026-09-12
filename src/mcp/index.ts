@@ -15,8 +15,14 @@ import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { WebSocketClientTransport } from "@modelcontextprotocol/sdk/client/websocket.js";
-import type { CallToolResult, TextContent } from "@modelcontextprotocol/sdk/types.js";
+import {
+  type CallToolResult,
+  ElicitRequestSchema,
+  type TextContent,
+} from "@modelcontextprotocol/sdk/types.js";
+import { pluginDirs } from "../plugins.js";
 import type { PermissionResult, Tool, ToolContext, ToolResult } from "../types.js";
+import { ccrPath } from "../workspace-config.js";
 import { FileTokenOAuthProvider, type MCPOAuthConfig } from "./auth.js";
 
 // --- Timeout helper ---
@@ -240,6 +246,11 @@ export class MCPManager {
    * skip the prompt so a trusted tool doesn't nag every turn.
    */
   private confirmedMcpTools: Set<string> = new Set();
+  private elicitationHandler: ElicitationHandler | null = null;
+
+  setElicitationHandler(handler: typeof this.elicitationHandler): void {
+    this.elicitationHandler = handler;
+  }
 
   /**
    * Load MCP configuration from a JSON file
@@ -327,7 +338,10 @@ export class MCPManager {
         activeTransport = transport;
         client = new Client(
           { name: "claude-code-replica", version: "1.0.0" },
-          { capabilities: {} },
+          { capabilities: { elicitation: {} } },
+        );
+        client.setRequestHandler(ElicitRequestSchema, async (request) =>
+          this.handleElicitation(request.params),
         );
         await withTimeout("connect(stdio)", client.connect(transport), CONNECT_TIMEOUT_MS);
       } else if (config.type === "http" || config.type === "sse" || config.type === "ws") {
@@ -338,7 +352,10 @@ export class MCPManager {
         const url = new URL(config.url);
         client = new Client(
           { name: "claude-code-replica", version: "1.0.0" },
-          { capabilities: {} },
+          { capabilities: { elicitation: {} } },
+        );
+        client.setRequestHandler(ElicitRequestSchema, async (request) =>
+          this.handleElicitation(request.params),
         );
 
         // OAuth provider (11.2) — only meaningful for http/sse. The SDK drives
@@ -529,6 +546,22 @@ export class MCPManager {
     }
   }
 
+  private async handleElicitation(params: {
+    message: string;
+    requestedSchema?: Record<string, unknown>;
+    mode?: string;
+    url?: string;
+  }): Promise<{
+    action: "accept" | "decline" | "cancel";
+    content?: Record<string, string | number | boolean | string[]>;
+  }> {
+    if (params.mode === "url") {
+      return this.elicitationHandler ? this.elicitationHandler(params) : { action: "decline" };
+    }
+    if (!this.elicitationHandler) return { action: "decline" };
+    return this.elicitationHandler(params);
+  }
+
   /**
    * Build a network transport for the given type. http → StreamableHTTP
    * (current standard), sse → SSEClientTransport (legacy, still common),
@@ -655,6 +688,47 @@ export class MCPManager {
     return null;
   }
 
+  async listPrompts(): Promise<Array<{ server: string; name: string; description?: string }>> {
+    const out: Array<{ server: string; name: string; description?: string }> = [];
+    for (const [name, server] of this.servers) {
+      try {
+        const res = await withTimeout(
+          `listPrompts(${name})`,
+          server.client.listPrompts(),
+          RESOURCE_TIMEOUT_MS,
+        );
+        for (const p of res.prompts ?? [])
+          out.push({ server: name, name: p.name, description: p.description });
+      } catch (error) {
+        if (error instanceof TimeoutError) await this.disconnectServer(name);
+      }
+    }
+    return out;
+  }
+
+  async getPrompt(name: string, args: Record<string, string> = {}): Promise<string | null> {
+    for (const [serverName, server] of this.servers) {
+      try {
+        const res = await withTimeout(
+          `getPrompt(${name})`,
+          server.client.getPrompt({ name, arguments: args }),
+          RESOURCE_TIMEOUT_MS,
+        );
+        const text = (res.messages ?? [])
+          .map((m) => {
+            const c = m.content as { type?: string; text?: string };
+            return c.type === "text" ? (c.text ?? "") : "";
+          })
+          .filter(Boolean)
+          .join("\n");
+        if (text) return text;
+      } catch (error) {
+        if (error instanceof TimeoutError) await this.disconnectServer(serverName);
+      }
+    }
+    return null;
+  }
+
   /**
    * Disconnect all MCP servers
    */
@@ -690,6 +764,18 @@ export class MCPManager {
   }
 }
 
+export interface ElicitationRequest {
+  message: string;
+  requestedSchema?: Record<string, unknown>;
+  mode?: string;
+  url?: string;
+}
+export interface ElicitationResult {
+  action: "accept" | "decline" | "cancel";
+  content?: Record<string, string | number | boolean | string[]>;
+}
+export type ElicitationHandler = (request: ElicitationRequest) => Promise<ElicitationResult>;
+
 // --- Discover MCP Config Files ---
 
 /**
@@ -699,15 +785,16 @@ export function discoverMCPConfigs(workspaceRoot: string): string[] {
   const configs: string[] = [];
 
   // User-level config (~/.claude/mcp.json)
-  const userConfig = path.join(os.homedir(), ".claude", "mcp.json");
-  if (fs.existsSync(userConfig)) {
-    configs.push(userConfig);
-  }
-
-  // Project-level config (<workspace>/.mcp.json)
-  const projectConfig = path.join(workspaceRoot, ".mcp.json");
+  // CCR-only workspace config; never read official Claude Code locations.
+  const projectConfig = ccrPath(workspaceRoot, "mcp.json");
   if (fs.existsSync(projectConfig)) {
     configs.push(projectConfig);
+  }
+  for (const dir of pluginDirs(workspaceRoot)) {
+    const file = path.join(dir, "mcp.json");
+    if (fs.existsSync(file)) configs.push(file);
+    const nested = ccrPath(dir, "mcp.json");
+    if (fs.existsSync(nested)) configs.push(nested);
   }
 
   return configs;

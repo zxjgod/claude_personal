@@ -32,14 +32,16 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { registerSubagentType, type SubagentType } from "../subagents.js";
 import { parseFrontmatter } from "../utils/frontmatter.js";
+import { ccrPath } from "../workspace-config.js";
 
 /** User-scope agents root can be redirected for tests / sandboxes. */
 const USER_AGENTS_ENV = "CCR_USER_AGENTS_DIR";
 
 /** Roots scanned for disk agents, lowest → highest precedence (project wins). */
 export function agentDirRoots(workspaceRoot: string): string[] {
-  const userRoot = process.env[USER_AGENTS_ENV] || path.join(os.homedir(), ".claude", "agents");
-  return [userRoot, path.join(workspaceRoot, ".claude", "agents")];
+  const roots = [ccrPath(workspaceRoot, "agents")];
+  if (process.env[USER_AGENTS_ENV]) roots.unshift(process.env[USER_AGENTS_ENV]!);
+  return roots;
 }
 
 /** Reject an agent filename that would escape the agents root. */

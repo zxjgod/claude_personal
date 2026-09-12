@@ -33,6 +33,7 @@ import * as path from "node:path";
 import { registerSkill, type SkillContext, type SkillDefinition } from "../skills.js";
 import { expandDiskTemplate } from "../utils/disk-template.js";
 import { type ParsedFrontmatter, parseFrontmatter } from "../utils/frontmatter.js";
+import { ccrPath } from "../workspace-config.js";
 
 // Back-compat alias: the shared parser was previously defined in this module.
 export { parseFrontmatter };
@@ -48,8 +49,9 @@ const USER_SKILLS_ENV = "CCR_USER_SKILLS_DIR";
 
 /** Roots scanned for disk skills, lowest → highest precedence (project wins). */
 export function skillDirRoots(workspaceRoot: string): string[] {
-  const userRoot = process.env[USER_SKILLS_ENV] || path.join(os.homedir(), ".claude", "skills");
-  return [userRoot, path.join(workspaceRoot, ".claude", "skills")];
+  const roots = [ccrPath(workspaceRoot, "skills")];
+  if (process.env[USER_SKILLS_ENV]) roots.unshift(process.env[USER_SKILLS_ENV]!);
+  return roots;
 }
 
 function asString(v: string | string[] | undefined): string | undefined {

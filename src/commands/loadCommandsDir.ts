@@ -32,6 +32,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { expandDiskTemplate } from "../utils/disk-template.js";
 import { parseFrontmatter } from "../utils/frontmatter.js";
+import { ccrPath } from "../workspace-config.js";
 import type { SlashCommand } from "./types.js";
 
 /** User-scope commands root can be redirected for tests / sandboxes. */
@@ -39,8 +40,9 @@ const USER_COMMANDS_ENV = "CCR_USER_COMMANDS_DIR";
 
 /** Roots scanned for disk commands, lowest → highest precedence (project wins). */
 export function commandDirRoots(workspaceRoot: string): string[] {
-  const userRoot = process.env[USER_COMMANDS_ENV] || path.join(os.homedir(), ".claude", "commands");
-  return [userRoot, path.join(workspaceRoot, ".claude", "commands")];
+  const roots = [ccrPath(workspaceRoot, "commands")];
+  if (process.env[USER_COMMANDS_ENV]) roots.unshift(process.env[USER_COMMANDS_ENV]!);
+  return roots;
 }
 
 /** Reject a command filename that would escape the commands root. */

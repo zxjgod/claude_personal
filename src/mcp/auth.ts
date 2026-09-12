@@ -15,7 +15,6 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as http from "node:http";
-import * as os from "node:os";
 import * as path from "node:path";
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import type {
@@ -24,6 +23,7 @@ import type {
   OAuthClientMetadata,
   OAuthTokens,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
+import { ccrPath } from "../workspace-config.js";
 
 // --- Config (from .mcp.json `oauth` block) ---
 
@@ -50,7 +50,7 @@ interface StoredAuth {
 }
 
 function authDir(): string {
-  return path.join(os.homedir(), ".claude", "mcp-auth");
+  return ccrPath(process.cwd(), "mcp-auth");
 }
 
 function safeName(serverName: string): string {
