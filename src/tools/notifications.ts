@@ -64,6 +64,13 @@ interface PendingNotification {
   displayed: boolean;
 }
 
+type NotificationHook = (payload: Record<string, unknown>) => void | Promise<void>;
+const notificationHooks = new Set<NotificationHook>();
+export function registerNotificationHook(hook: NotificationHook): () => void {
+  notificationHooks.add(hook);
+  return () => notificationHooks.delete(hook);
+}
+
 const queues = new Map<string, PendingNotification[]>();
 let counter = 0;
 
@@ -90,6 +97,8 @@ export function pushTaskNotification(sessionId: string, input: TaskNotificationI
     createdAt: Date.now(),
     displayed: false,
   });
+  for (const hook of notificationHooks)
+    void Promise.resolve(hook({ session_id: sessionId, notification: input })).catch(() => {});
 }
 
 /**

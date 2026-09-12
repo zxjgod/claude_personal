@@ -59,6 +59,7 @@ docs/更新日志/
 
 | 日期 | 类型 | 模块 | 主题 | commit | 关联 |
 |---|---|---|---|---|---|
+| 2026-09-10 | fix / feature | TUI / commands / tools / 测试基建 | [修复第一批+第二批：`/release-notes` 死链、`/theme` 在 picker 失效、HelpPanel 模式顺序自相矛盾、diff 缺行号槽、CI 抖动；新增 `/copy` 与 `/release-notes`；订正 DesignSync 文档吹嘘](./20260910-tui-batch1-batch2-fixes.md) | 待提交 | [TUI官方对齐方案](../TUI官方对齐方案.md)（D2/D3）、[批次B](./20260906-TUI官方对齐批次B.md)（B5） |
 | 2026-08-28 | feature | TUI / StatusBar / InputBox / ToolCard | [TUI 状态显示与交互升级（StatusBar v2 含 ctx 水位/成本/queued、ctrl+r 展开兑现、Esc 中断、@ 文件补全、usePaste 粘贴、按键冲突修复、reduced-motion 贯通、P3 i18n/列宽截断/翻页器上色）](./20260828-tui-status-interaction-upgrade.md) | 待提交 | — |
 | 2026-08-14 | feature | 上下文压缩 | [按工具类型选择性清除（`COMPACTABLE_TOOLS` 保护 Task/Skill 语义工具，只清 bulk I/O 工具结果）](./20260814-tool-type-aware-microcompact.md) | 待提交 | [参考源码移植路线图](../参考源码移植路线图.md) |
 | 2026-08-14 | feature | 权限系统 | [`dontAsk` 权限档（ask→deny）+ 权限模式配置优先级链（`--permission-mode`/env/settings）](./20260814-dontask-mode-precedence.md) | 待提交 | [参考源码移植路线图](../参考源码移植路线图.md) |
@@ -96,6 +97,8 @@ docs/更新日志/
 
 > 某个子功能再出问题时，先在这里找它涉及过哪些日志，再顺藤摸瓜到 commit 与设计决策。
 
+- **TUI 主题 / 帮助面板 / picker / diff 渲染**：`20260910-tui-batch1-batch2-fixes`（模块级 palette 快照导致 `/theme` 在 5 个组件失效；HelpPanel 改为 map `PERMISSION_MODE_CYCLE` 消除模式顺序双真源 + 全量入 i18n + 宽度自适应；diff 经 `metadata.diffLines` 补 4 列行号槽而模型侧输出不变；新增 `/copy`、`/release-notes`）。
+- **测试基建 / CI 抖动**：`20260910-tui-batch1-batch2-fixes`（根因是「固定 sleep 赌异步调度」，改用 `waitFor` 轮询正向断言 + `testTimeout` 提到 20s 兜底；此前 `PgUp` 与 `p0-tui-features` 的 Esc 用例单跑绿、全量红）。
 - **BashTool / 进程管理 / 命令验证**：`bash-deadlock-fix-20260626`（spawn + taskkill 进程树 + timedOut 标志 + 非并发安全）、`bash-deadlock-analysis`（根因）、`20260708-code-review-fixes`（`bashCommandIsReadOnly` 增加换行符检查，防 `ls\nrm -rf /` 绕过只读判定）、`20260708-three-week-security-architecture-fixes`（S-2：Team 子代理权限继承，`createSubAgentApprover()` 包装）。
 - **agent-loop 并行 / abort / usage 口径**：`bash-deadlock-fix-20260626`（并行路径加 abort 竞速）、`20260708-three-week-security-architecture-fixes`（S-4：统一 usage 口径，移除 `cache_creation_input_tokens` 双重计数）。
 - **permissions 危险命令拦截 / 权限模式**：`bash-deadlock-fix-20260626`（补充易致死命令静态拦截）、`20260702-m38-command-permission-mode`（M38）、`20260704-m38-mode-switch-ux`（Toast 反馈）。

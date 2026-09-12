@@ -11,7 +11,7 @@ import type { SlashCommand } from "./types.js";
 
 export const hooksCommand: SlashCommand = {
   name: "hooks",
-  description: "List registered PreToolUse / PostToolUse hooks",
+  description: "List registered tool and lifecycle hooks",
   run: (_args, ctx): undefined => {
     if (!ctx.hooks) {
       console.log(chalk.gray("  Hook registry is not available in this session."));
@@ -21,9 +21,7 @@ export const hooksCommand: SlashCommand = {
     console.log("");
     console.log(chalk.bold(`  Hooks (${entries.length} registered):`));
     if (entries.length === 0) {
-      console.log(
-        chalk.gray("    None. Register PreToolUse/PostToolUse hooks in cli.ts or project config."),
-      );
+      console.log(chalk.gray("    None. Register hooks in .claude/settings.json or cli.ts."));
       return;
     }
     for (const h of entries) {

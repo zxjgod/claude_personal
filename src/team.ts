@@ -74,6 +74,7 @@ export interface TeamRunContext {
    * already receive the return value.
    */
   notifyResults?: boolean;
+  hooks?: import("./types.js").HookRunner;
 }
 
 // sessionId -> (agentId -> agent)
@@ -312,6 +313,15 @@ export async function runAgentTurn(
       summary: `team agent ${agent.id} completed`,
       outputTail: (output || error || "").slice(-500) || undefined,
     });
+  }
+  if (agent.status === "done") {
+    await ctx.hooks
+      ?.runEvent?.("TeammateIdle", {
+        session_id: ctx.sessionId,
+        teammate_id: agent.id,
+        status: agent.status,
+      })
+      .catch(() => {});
   }
 
   return { output, toolCalls, error };

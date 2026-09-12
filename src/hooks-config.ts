@@ -31,6 +31,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { Hook, HookRegistry } from "./hooks.js";
+import { ccrPath } from "./workspace-config.js";
 
 export interface HookCommandSpec {
   type: "command";
@@ -48,9 +49,29 @@ export interface HooksConfig {
   PreToolUse?: HookConfigEntry[];
   PostToolUse?: HookConfigEntry[];
   Stop?: HookConfigEntry[];
+  UserPromptSubmit?: HookConfigEntry[];
+  Notification?: HookConfigEntry[];
+  SubagentStop?: HookConfigEntry[];
+  PreCompact?: HookConfigEntry[];
+  PostCompact?: HookConfigEntry[];
+  SessionStart?: HookConfigEntry[];
+  SessionEnd?: HookConfigEntry[];
+  TeammateIdle?: HookConfigEntry[];
 }
 
-const PHASES = ["PreToolUse", "PostToolUse", "Stop"] as const;
+const PHASES = [
+  "PreToolUse",
+  "PostToolUse",
+  "Stop",
+  "UserPromptSubmit",
+  "Notification",
+  "SubagentStop",
+  "PreCompact",
+  "PostCompact",
+  "SessionStart",
+  "SessionEnd",
+  "TeammateIdle",
+] as const;
 
 const DEFAULT_HOOK_TIMEOUT_MS = 60_000;
 const MAX_STDOUT_BYTES = 100_000;
@@ -77,9 +98,32 @@ function readJsonFile(file: string): Record<string, unknown> | null {
  * when neither file exists or is parseable.
  */
 export function readSettings(workspaceRoot: string): Record<string, unknown> | null {
-  const base = readJsonFile(path.join(workspaceRoot, ".claude", "settings.json")) ?? {};
-  const local = readJsonFile(path.join(workspaceRoot, ".claude", "settings.local.json"));
+  const base = readJsonFile(ccrPath(workspaceRoot, "settings.json")) ?? {};
+  const local = readJsonFile(ccrPath(workspaceRoot, "settings.local.json"));
   return local ? { ...base, ...local } : base;
+}
+
+const KNOWN_SETTINGS_KEYS = new Set([
+  "hooks",
+  "permissionMode",
+  "permissions",
+  "telemetry",
+  "env",
+  "model",
+  "apiKeyHelper",
+  "additionalDirectories",
+  "cleanupPeriodDays",
+  "includeCoAuthoredBy",
+  "enableAllProjectMcpServers",
+  "statusLine",
+]);
+
+/** Emit diagnostics for settings keys that this replica does not consume. */
+export function warnUnknownSettings(settings: Record<string, unknown> | null): string[] {
+  if (!settings) return [];
+  const unknown = Object.keys(settings).filter((key) => !KNOWN_SETTINGS_KEYS.has(key));
+  for (const key of unknown) console.warn(`Warning: unsupported settings key ignored: ${key}`);
+  return unknown;
 }
 
 /** Parse the `hooks` block out of a settings object, dropping malformed entries. */
@@ -97,7 +141,10 @@ export function parseHooksConfig(
     for (const entry of raw) {
       if (typeof entry !== "object" || entry === null) continue;
       const { matcher, hooks: specs } = entry as Record<string, unknown>;
-      if (typeof matcher !== "string" || !matcher || !Array.isArray(specs)) continue;
+      const lifecycle = !["PreToolUse", "PostToolUse", "Stop"].includes(phase);
+      if ((typeof matcher !== "string" || !matcher) && !lifecycle) continue;
+      const effectiveMatcher = typeof matcher === "string" && matcher ? matcher : "*";
+      if (!Array.isArray(specs)) continue;
       const commands: HookCommandSpec[] = [];
       for (const spec of specs) {
         if (typeof spec !== "object" || spec === null) continue;
@@ -109,7 +156,7 @@ export function parseHooksConfig(
           timeout: typeof s.timeout === "number" && s.timeout > 0 ? s.timeout : undefined,
         });
       }
-      if (commands.length > 0) entries.push({ matcher, hooks: commands });
+      if (commands.length > 0) entries.push({ matcher: effectiveMatcher, hooks: commands });
     }
     if (entries.length > 0) config[phase] = entries;
   }
@@ -267,6 +314,14 @@ function buildPhaseHook(phase: (typeof PHASES)[number], entry: HookConfigEntry):
             return { blockingError: (out.reason as string) || "stop hook requested more work" };
           }
           return {};
+        },
+      };
+    default:
+      return {
+        matcher: entry.matcher,
+        event: async (payload) => {
+          if (payload.event !== phase) return;
+          await runSpecs(entry.hooks, payload, cwd);
         },
       };
   }

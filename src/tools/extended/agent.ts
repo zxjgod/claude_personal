@@ -249,6 +249,7 @@ export const AgentTool: Tool = buildTool({
           modelConfig: context.modelConfig,
           askUser: approver,
           onSubAgentProgress: context.onSubAgentProgress,
+          hooks: context.hooks,
         },
         askUser: approver,
       });
@@ -294,6 +295,12 @@ export const AgentTool: Tool = buildTool({
         phase: "done",
         reason: context.abortSignal?.aborted ? "aborted" : (terminal?.reason ?? "model_error"),
       });
+      await context.hooks
+        ?.runEvent?.("SubagentStop", {
+          subagent_name: subagentName,
+          reason: context.abortSignal?.aborted ? "aborted" : (terminal?.reason ?? "model_error"),
+        })
+        .catch(() => {});
 
       // Extract final output — the last assistant message the sub-agent itself
       // produced. Compaction keeps surviving messages by reference, so identity

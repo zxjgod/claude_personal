@@ -11,6 +11,7 @@ import { loadAgentsDir } from "./agents/loadAgentsDir.js";
 import { askYesNo } from "./cli-prompts.js";
 import { loadCommandsDir } from "./commands.js";
 import { discoverMCPConfigs, MCPManager } from "./mcp/index.js";
+import { pluginDirs } from "./plugins.js";
 import { loadSkillsDir } from "./skills/loadSkillsDir.js";
 import { setCoreToolsForSubagents } from "./subagents.js";
 import { createMcpResourceTools, createToolSearchTool } from "./tools/breadth/index.js";
@@ -52,6 +53,25 @@ export async function setupTools(deps: {
     }
   } catch {
     // Disk skills are optional; a malformed skills dir never blocks startup.
+  }
+  // Plugin manifests are workspace-local. Their declared component folders
+  // are copied into the same loaders, preserving one source of truth.
+  for (const dir of pluginDirs(workspaceRoot)) {
+    try {
+      loadSkillsDir(dir);
+    } catch {
+      /* malformed plugin is isolated */
+    }
+    try {
+      loadCommandsDir(dir);
+    } catch {
+      /* optional */
+    }
+    try {
+      loadAgentsDir(dir);
+    } catch {
+      /* optional */
+    }
   }
 
   // Custom slash commands (<root>/.claude/commands/<name>.md and the user-level

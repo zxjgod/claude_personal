@@ -72,6 +72,7 @@ export interface Hook {
    * — every registered stop hook runs.
    */
   stop?: (payload: StopPayload) => Promise<StopOutcome | undefined> | StopOutcome | undefined;
+  event?: (payload: Record<string, unknown>) => Promise<void> | void;
 }
 
 export class HookRegistry {
@@ -161,16 +162,25 @@ export class HookRegistry {
     return blockingError ? { blockingError, reason } : {};
   }
 
+  async runEvent(event: string, payload: Record<string, unknown>): Promise<void> {
+    for (const hook of this.hooks) {
+      if (!hook.event) continue;
+      if (hook.matcher !== "*" && hook.matcher !== event) continue;
+      await hook.event({ event, ...payload });
+    }
+  }
+
   /**
    * Describe registered hooks for inspection (/hooks). Returns one entry per
    * hook with its matcher and which phases it implements.
    */
-  list(): Array<{ matcher: string; pre: boolean; post: boolean; stop: boolean }> {
+  list(): Array<{ matcher: string; pre: boolean; post: boolean; stop: boolean; event: boolean }> {
     return this.hooks.map((h) => ({
       matcher: h.matcher,
       pre: Boolean(h.pre),
       post: Boolean(h.post),
       stop: Boolean(h.stop),
+      event: Boolean(h.event),
     }));
   }
 }

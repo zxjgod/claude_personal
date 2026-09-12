@@ -6,6 +6,36 @@ import { describe, expect, it } from "vitest";
 import { HookRegistry } from "../hooks.js";
 import type { ToolResult } from "../types.js";
 
+it("dispatches lifecycle events with event names and payloads", async () => {
+  const seen: Record<string, unknown>[] = [];
+  const reg = new HookRegistry();
+  reg.register({
+    matcher: "*",
+    event: (payload) => {
+      seen.push(payload);
+    },
+  });
+  await reg.runEvent("Notification", { id: "n1" });
+  await reg.runEvent("TeammateIdle", { teammate_id: "a" });
+  expect(seen).toEqual([
+    { event: "Notification", id: "n1" },
+    { event: "TeammateIdle", teammate_id: "a" },
+  ]);
+});
+
+it("filters lifecycle events by matcher", async () => {
+  const seen: Record<string, unknown>[] = [];
+  const reg = new HookRegistry();
+  reg.register({
+    matcher: "SessionStart",
+    event: (payload) => {
+      seen.push(payload);
+    },
+  });
+  await reg.runEvent("SessionEnd", {});
+  expect(seen).toEqual([]);
+});
+
 describe("HookRegistry — PreToolUse", () => {
   it("passes input through unchanged when no hooks match", async () => {
     const reg = new HookRegistry();

@@ -169,6 +169,15 @@ Options:
   --help, -h                 Print this help and exit
   --print-command            List built-in slash commands and exit (smoke tests)
   --session=<id>             Resume a saved session by id
+  -p, --print [prompt]       Run one headless prompt and exit
+  --output-format <format>   text, json, or stream-json
+  --input-format <format>    text or stream-json
+  --resume <id>              Resume a session (alias for --session)
+  --continue                 Continue the most recent session
+  --fork-session             Fork the resumed session
+  --session-id <id>          Use an explicit session id
+  --add-dir <path>           Add an additional workspace directory
+  --append-system-prompt <text> Append text to the system prompt
   --verbose                  Verbose startup + token accounting
   --quiet                    Suppress non-essential output (default)
   --show-tokens              Show per-turn token usage
@@ -181,7 +190,7 @@ Options:
 Configuration:
   .env                       LLM_PROVIDER, LLM_API_KEY, LLM_MODEL, LLM_BASE_URL
   .mcp.json                  MCP server definitions (optional)
-  .claude/settings.json      Permission mode, hooks, telemetry
+  .claude/settings.json      Workspace permission mode, hooks, telemetry
 
 In-session: type /help for slash commands.`;
 

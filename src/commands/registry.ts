@@ -6,6 +6,7 @@
 // keep working unchanged.
 // ============================================================
 
+import { addDirCommand } from "./add-dir.js";
 import { agentsCommand } from "./agents.js";
 // M18 new commands
 import { branchCommand } from "./branch.js";
@@ -15,6 +16,7 @@ import { commitCommand } from "./commit.js";
 import { compactCommand } from "./compact.js";
 import { configCommand } from "./config.js";
 import { contextCommand } from "./context.js";
+import { copyCommand } from "./copy.js";
 import { costCommand } from "./cost.js";
 import { diffCommand } from "./diff.js";
 import { doctorCommand } from "./doctor.js";
@@ -35,9 +37,11 @@ import { modelCommand } from "./model.js";
 import { onboardingCommand } from "./onboarding.js";
 import { outputStyleCommand } from "./output-style.js";
 import { permissionsCommand } from "./permissions.js";
+import { pluginCommand } from "./plugin.js";
 import { prCommand } from "./pr.js";
 import { providerCommand } from "./provider.js";
 import { recapCommand } from "./recap.js";
+import { releaseNotesCommand } from "./release-notes.js";
 import { resumeCommand } from "./resume.js";
 import { reviewCommand } from "./review.js";
 import { rewindCommand } from "./rewind.js";
@@ -47,9 +51,11 @@ import { shareCommand } from "./share.js";
 import { skillsCommand } from "./skills.js";
 import { statusCommand } from "./status.js";
 import { themeCommand } from "./theme.js";
+import { todosCommand } from "./todos.js";
 import { tokensCommand } from "./tokens.js";
 import { toolsCommand } from "./tools.js";
 import type { SlashCommand } from "./types.js";
+import { usageCommand } from "./usage.js";
 import { vimCommand } from "./vim.js";
 import { workflowsCommand } from "./workflows.js";
 
@@ -69,6 +75,9 @@ export const COMMANDS: SlashCommand[] = [
   cdCommand,
   costCommand,
   toolsCommand,
+  usageCommand,
+  addDirCommand,
+  todosCommand,
   contextCommand,
   configCommand,
   diffCommand,
@@ -78,6 +87,7 @@ export const COMMANDS: SlashCommand[] = [
   commitCommand,
   prCommand,
   providerCommand,
+  pluginCommand,
   agentsCommand,
   skillsCommand,
   exportCommand,
@@ -99,6 +109,8 @@ export const COMMANDS: SlashCommand[] = [
   vimCommand,
   outputStyleCommand,
   workflowsCommand,
+  copyCommand,
+  releaseNotesCommand,
 ];
 
 // /help iterates COMMANDS at run time; bind it now that the array exists.

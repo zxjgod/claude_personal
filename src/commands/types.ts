@@ -71,6 +71,8 @@ export interface CommandContext {
    * subsequent turns. Same `{ value }` holder pattern as `goal` / `editorMode`.
    */
   outputStyle?: { value: string };
+  /** Parsed durable permission policy for /permissions inspection. */
+  permissionPolicy?: import("../permission-policy.js").PermissionPolicy;
 }
 
 export interface CommandResult {
