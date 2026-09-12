@@ -215,6 +215,7 @@ export function ElicitationPrompt({
 }) {
   const [index, setIndex] = useState(0);
   const [values, setValues] = useState<Record<string, string>>({});
+  const [error, setError] = useState<string | null>(null);
   useInput((input, key) => {
     const field = overlay.fields[index];
     if (!field) return;
@@ -226,12 +227,33 @@ export function ElicitationPrompt({
         overlay.resolve({ action: "decline" });
         return;
       }
+      // Validate against the schema the server declared before submitting —
+      // an enum violation or a NaN reaching the server as "content" is worse
+      // than an inline error here.
       const content: Record<string, string | number | boolean | string[]> = {};
       for (const f of overlay.fields) {
-        const v = values[f.name] ?? "";
+        const v = (values[f.name] ?? "").trim();
         if (!v) continue;
-        if (f.type === "number" || f.type === "integer") content[f.name] = Number(v);
-        else if (f.type === "boolean") content[f.name] = /^(true|yes|y)$/i.test(v);
+        if (f.enum?.length && !f.enum.includes(v)) {
+          setError(`"${v}" — ${f.name} must be one of: ${f.enum.join(" / ")}`);
+          return;
+        }
+        if (f.type === "number" || f.type === "integer") {
+          const num = Number(v);
+          if (!Number.isFinite(num)) {
+            setError(`"${v}" — ${f.name} must be a number`);
+            return;
+          }
+          if (f.minimum !== undefined && num < f.minimum) {
+            setError(`${f.name} must be ≥ ${f.minimum}`);
+            return;
+          }
+          if (f.maximum !== undefined && num > f.maximum) {
+            setError(`${f.name} must be ≤ ${f.maximum}`);
+            return;
+          }
+          content[f.name] = num;
+        } else if (f.type === "boolean") content[f.name] = /^(true|yes|y)$/i.test(v);
         else if (f.type === "array")
           content[f.name] = v
             .split(",")
@@ -240,10 +262,20 @@ export function ElicitationPrompt({
         else content[f.name] = v;
       }
       overlay.resolve({ action: "accept", content });
-    } else if (input && input.length === 1 && !key.ctrl && !key.meta)
-      setValues((v) => ({ ...v, [field.name]: (v[field.name] ?? "") + input }));
-    else if (key.backspace || key.delete)
+    } else if (key.backspace || key.delete)
+      // MUST come before the printable-input branch: Ink delivers Backspace as
+      // the control char "\x7f" with key.backspace set, so a length-1
+      // printable check here would insert DEL instead of deleting.
       setValues((v) => ({ ...v, [field.name]: (v[field.name] ?? "").slice(0, -1) }));
+    else if (input && !key.ctrl && !key.meta) {
+      // A multi-char `input` with no special key is a paste (bracketed paste
+      // arrives as ONE event carrying the whole text) — accept all printable
+      // chars, not just length-1 keystrokes.
+      const chars = input.replace(/[\x00-\x1f\x7f]/g, "");
+      if (chars) setValues((v) => ({ ...v, [field.name]: (v[field.name] ?? "") + chars }));
+    } else return;
+    // Any edit past a failed submit clears the stale error line.
+    setError(null);
   });
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={accent()} paddingX={1}>
@@ -258,7 +290,8 @@ export function ElicitationPrompt({
           {f.enum?.length ? ` [${f.enum.join("/")}]` : ""}
         </Text>
       ))}
-      <Text dimColor>↑↓/Tab field · type · Enter submit · Esc cancel</Text>
+      {error ? <Text color={palette.error}>{error}</Text> : null}
+      <Text dimColor>↑↓/Tab field · type or paste · Enter submit · Esc cancel</Text>
     </Box>
   );
 }

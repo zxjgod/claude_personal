@@ -11,7 +11,10 @@ export function toolOutputLines(result: ToolExecutionResult, detail = ""): strin
   const diffLines = result.result?.metadata?.diffLines;
   if (diffLines && diffLines.length > 0) {
     const language = languageForPath(detail);
-    return diffLines.map((d) => renderNumberedDiffLine(d, language));
+    // Grows past 4 only beyond line 9999 — wide enough for the largest row
+    // number so every row keeps the same column count.
+    const gutter = Math.max(GUTTER, ...diffLines.map((d) => String(d.line).length));
+    return diffLines.map((d) => renderNumberedDiffLine(d, language, gutter));
   }
   const preview = result.result?.metadata?.codePreview;
   if (preview) {
@@ -56,13 +59,14 @@ const GUTTER = 4;
 export function renderNumberedDiffLine(
   d: { sign: "-" | "+"; text: string; line: number },
   language = "",
+  gutterWidth = GUTTER,
 ): string {
   const added = d.sign === "+";
   const foreground = added ? palette.success : palette.error;
   const background = added ? palette.diffAddedBg : palette.diffRemovedBg;
-  const gutter = chalk.hex(palette.muted)(String(d.line).padStart(GUTTER));
+  const gutter = chalk.hex(palette.muted)(String(d.line).padStart(gutterWidth));
   const rendered = `${gutter} ${chalk.hex(foreground)(d.sign)} ${highlightCode(stripAnsi(d.text), language)}`;
-  const width = Math.max(1, terminalColumns() - 5);
+  const width = Math.max(1, terminalColumns() - (gutterWidth + 1));
   return chalk.bgHex(background)(rendered + " ".repeat(Math.max(0, width - visualWidth(rendered))));
 }
 

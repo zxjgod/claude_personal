@@ -6,6 +6,9 @@
 // detection lives in utils/command.ts and permissions.ts respectively.
 
 import { spawn } from "node:child_process";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import chalk from "chalk";
 import { z } from "zod";
@@ -74,25 +77,59 @@ export const PowerShellTool: Tool = buildTool({
           content: "",
           error: "Native sandbox is unavailable on this platform; command refused.",
         };
-      const result = await runWindowsSandbox({
-        command: `powershell -NoProfile -NonInteractive -Command ${JSON.stringify(input.command)}`,
-        cwd,
-        timeoutMs: timeout,
-      });
-      if (result.code === null || result.code < 0)
+      // The command would otherwise pass through THREE parsers (cmd's `( )`
+      // group → powershell's argv → the script itself) that do not agree on
+      // quote escaping: JSON.stringify's `\"` is the MSVCRT argv idiom, but
+      // cmd treats the backslash as literal and the quote as a quote-state
+      // TOGGLE — `Write-Host "a & b"` broke the group and leaked `&` as a
+      // command separator (ParserError: string missing its terminator).
+      // Staging the script to a temp .ps1 removes the escaping problem: the
+      // only token any parser sees is one quoted file path.
+      const scriptDir = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-psx-"));
+      const scriptFile = path.join(scriptDir, "command.ps1");
+      try {
+        // BOM: Windows PowerShell 5.1 reads a .ps1 WITHOUT a BOM as ANSI
+        // (GBK on a cp936 machine), mangling non-ASCII string literals in the
+        // command. The OutputEncoding prefix mirrors the non-native path.
+        fs.writeFileSync(
+          scriptFile,
+          // BOM via char code — keeps this source free of escape-sequence
+          // fragility across the TS template / editor / formatter layers.
+          `${String.fromCharCode(0xfeff)}[Console]::OutputEncoding=[Text.Encoding]::UTF8; ${input.command}`,
+          "utf8",
+        );
+        const result = await runWindowsSandbox({
+          // -File, not -Command: no argv re-parsing of the payload. Bypass is
+          // required because -File (unlike -Command) honors the execution
+          // policy, and Restricted is the client default.
+          command: `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${scriptFile}"`,
+          cwd,
+          timeoutMs: timeout,
+          signal: abortSignal,
+        });
+        // Abort wins over every other branch (see bash.ts, same reasoning).
+        if (abortSignal?.aborted)
+          return { content: "Command aborted.", metadata: { exitCode: -1, aborted: true } };
+        // A timeout arrives with code null — exclude it from the refusal check
+        // so the partial output and the honest timeout error survive.
+        if (!result.timedOut && (result.code === null || result.code < 0))
+          return {
+            content: "",
+            // Forward the runner's own diagnostics (see bash.ts, same wiring).
+            error: `Native Windows sandbox could not be started; command refused.${result.stderr ? `\n${result.stderr}` : ""}`,
+          };
         return {
-          content: "",
-          error: "Native Windows sandbox could not be started; command refused.",
+          content: [result.stdout, result.stderr].filter(Boolean).join("\n") || "(no output)",
+          error: result.timedOut
+            ? `Command timed out (${Math.round(timeout / 1000)}s)`
+            : result.code !== 0
+              ? `Command failed (exit code: ${result.code})`
+              : undefined,
+          metadata: result.timedOut ? { exitCode: -1, timedOut: true } : { exitCode: result.code },
         };
-      return {
-        content: [result.stdout, result.stderr].filter(Boolean).join("\n") || "(no output)",
-        error: result.timedOut
-          ? `Command timed out (${Math.round(timeout / 1000)}s)`
-          : result.code !== 0
-            ? `Command failed (exit code: ${result.code})`
-            : undefined,
-        metadata: { exitCode: result.code },
-      };
+      } finally {
+        fs.rmSync(scriptDir, { recursive: true, force: true });
+      }
     }
 
     // Force UTF-8 output. powershell.exe on a Chinese/Japanese/Korean Windows

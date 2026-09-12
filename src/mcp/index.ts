@@ -8,7 +8,6 @@
 
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
@@ -555,11 +554,12 @@ export class MCPManager {
     action: "accept" | "decline" | "cancel";
     content?: Record<string, string | number | boolean | string[]>;
   }> {
-    if (params.mode === "url") {
-      return this.elicitationHandler ? this.elicitationHandler(params) : { action: "decline" };
-    }
-    if (!this.elicitationHandler) return { action: "decline" };
-    return this.elicitationHandler(params);
+    // No handler (headless run without a reader, or tests) → decline, so the
+    // server learns the user chose not to answer instead of hanging. The
+    // mode/url distinction is the HANDLER's business — the bridges in cli.ts
+    // branch on it; duplicating that here was a dead-code fork (both arms did
+    // the same thing).
+    return this.elicitationHandler ? this.elicitationHandler(params) : { action: "decline" };
   }
 
   /**

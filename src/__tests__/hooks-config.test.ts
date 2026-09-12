@@ -5,7 +5,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { HookRegistry } from "../hooks.js";
 import {
   hooksConfigFingerprint,
@@ -13,6 +13,7 @@ import {
   parseHooksConfig,
   readSettings,
   registerHooksFromConfig,
+  warnUnknownSettings,
 } from "../hooks-config.js";
 
 const node = JSON.stringify(process.execPath);
@@ -27,6 +28,48 @@ function tmp(): string {
 afterEach(() => {
   for (const d of tmpDirs) fs.rmSync(d, { recursive: true, force: true });
   tmpDirs = [];
+});
+
+describe("warnUnknownSettings", () => {
+  it("flags official-client keys this replica does NOT consume", () => {
+    // statusLine & co used to sit in KNOWN_SETTINGS_KEYS while nothing read
+    // them — the warning never fired and users believed their config worked.
+    // Consumed keys must stay silent; unconsumed ones must be reported.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const unknown = warnUnknownSettings({
+        hooks: {},
+        permissionMode: "default",
+        permissions: { allow: [] },
+        telemetry: {},
+        env: {},
+        model: {},
+        statusLine: { type: "command", command: "x" },
+        apiKeyHelper: "helper.sh",
+        cleanupPeriodDays: 30,
+        includeCoAuthoredBy: false,
+        enableAllProjectMcpServers: true,
+        additionalDirectories: ["../other"],
+      });
+      expect([...unknown].sort()).toEqual(
+        [
+          "additionalDirectories",
+          "apiKeyHelper",
+          "cleanupPeriodDays",
+          "enableAllProjectMcpServers",
+          "includeCoAuthoredBy",
+          "statusLine",
+        ].sort(),
+      );
+      expect(warn).toHaveBeenCalledTimes(6);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("stays silent for null settings", () => {
+    expect(warnUnknownSettings(null)).toEqual([]);
+  });
 });
 
 describe("parseHooksConfig", () => {

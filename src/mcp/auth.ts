@@ -23,6 +23,7 @@ import type {
   OAuthClientMetadata,
   OAuthTokens,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
+import { getWorkspaceRoot } from "../cli-config.js";
 import { ccrPath } from "../workspace-config.js";
 
 // --- Config (from .mcp.json `oauth` block) ---
@@ -50,7 +51,11 @@ interface StoredAuth {
 }
 
 function authDir(): string {
-  return ccrPath(process.cwd(), "mcp-auth");
+  // getWorkspaceRoot() (WORKSPACE_ROOT env, else the startup cwd) — the same
+  // source of truth the rest of the config layer uses. A bare process.cwd()
+  // here drifts from the logical workspace whenever the two disagree, and the
+  // stored OAuth tokens would "move" (forcing re-auth) between launches.
+  return ccrPath(getWorkspaceRoot(), "mcp-auth");
 }
 
 function safeName(serverName: string): string {

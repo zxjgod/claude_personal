@@ -42,6 +42,24 @@ export function nativeSandboxSupported(): boolean {
   return process.platform === "win32";
 }
 
+/**
+ * Normalize a command line for deny-matching. Quotes and the escape chars of
+ * the host shells (`^` for cmd, backtick for PowerShell, `'` for bash) are
+ * syntax noise that SPLIT a word for the parser — `c""url`, `c^u^rl`, `cu'rl'`
+ * all run curl but evade a literal substring/word-boundary match. Stripping
+ * them before matching closes that class of bypass at the cost of the odd
+ * false deny, which is the right way to fail for a deny list.
+ */
+function normalizeForMatching(command: string): string {
+  return command.replace(/["'^`]/g, "").toLowerCase();
+}
+
+/** Path-comparison normalizer: Windows paths are case-insensitive, POSIX ones
+ *  are not (see normalizeForContainment in tools/utils/path.ts, same rule). */
+function normalizePath(p: string): string {
+  return process.platform === "win32" ? p.toLowerCase() : p;
+}
+
 export function sandboxViolation(
   policy: SandboxPolicy,
   command: string,
@@ -49,16 +67,26 @@ export function sandboxViolation(
 ): string | undefined {
   if (!policy.enabled) return undefined;
   const roots = policy.allowedDirectories ?? [cwd];
-  if (!roots.some((root) => cwd === root || cwd.startsWith(`${root}${path.sep}`)))
-    return `Sandbox denied working directory: ${cwd}`;
+  const cwdN = normalizePath(path.resolve(cwd));
   if (
-    policy.deniedCommands?.some((pattern) => command.toLowerCase().includes(pattern.toLowerCase()))
+    !roots.some((root) => {
+      const rootN = normalizePath(root);
+      return cwdN === rootN || cwdN.startsWith(`${rootN}${path.sep}`);
+    })
   )
+    return `Sandbox denied working directory: ${cwd}`;
+  const normalized = normalizeForMatching(command);
+  if (policy.deniedCommands?.some((pattern) => normalized.includes(normalizeForMatching(pattern))))
     return "Sandbox denied command by policy.";
   if (
     policy.network === "deny" &&
-    /\b(curl|wget|Invoke-WebRequest|iwr|git\s+(clone|fetch|pull)|npm\s+(install|publish)|pip\s+install)\b/i.test(
-      command,
+    // The pattern list is a heuristic deny-list, not a capability boundary:
+    // only the native runner (restricted token + job) provides real
+    // enforcement, and it limits resources, not destinations. `irm` /
+    // Invoke-RestMethod join curl/wget/iwr — irm is the alias most PowerShell
+    // one-liners actually use.
+    /\b(curl|wget|Invoke-WebRequest|iwr|Invoke-RestMethod|irm|git\s+(clone|fetch|pull)|npm\s+(install|publish)|pip\s+install)\b/i.test(
+      normalized,
     )
   )
     return "Sandbox denied network access by policy.";

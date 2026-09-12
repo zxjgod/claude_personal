@@ -99,11 +99,26 @@ export const BashTool: Tool = buildTool({
           content: "",
           error: "Native sandbox is unavailable on this platform; command refused.",
         };
-      const result = await runWindowsSandbox({ command: input.command, cwd, timeoutMs: timeout });
-      if (result.code === null || result.code < 0)
+      const result = await runWindowsSandbox({
+        command: input.command,
+        cwd,
+        timeoutMs: timeout,
+        signal: context.abortSignal,
+      });
+      // Abort wins over every other branch: the runner killed the host on the
+      // signal, so code arrives null — without this check it would report
+      // "sandbox could not be started" for a plain user interrupt.
+      if (context.abortSignal?.aborted)
+        return { content: "Command aborted.", metadata: { exitCode: -1, aborted: true } };
+      // Timeout ALSO arrives with code null (the host was killed) — it must be
+      // excluded from the refusal check, or the misleading "could not be
+      // started" error shadows the timeout and the partial output is dropped.
+      if (!result.timedOut && (result.code === null || result.code < 0))
         return {
           content: "",
-          error: "Native Windows sandbox could not be started; command refused.",
+          // Forward the runner's own diagnostics (Add-Type compile errors,
+          // spawn win32 error codes) — without them a refusal is unexplainable.
+          error: `Native Windows sandbox could not be started; command refused.${result.stderr ? `\n${result.stderr}` : ""}`,
         };
       return {
         content: [result.stdout, result.stderr].filter(Boolean).join("\n") || "(no output)",
@@ -112,7 +127,7 @@ export const BashTool: Tool = buildTool({
           : result.code !== 0
             ? `Command failed (exit code: ${result.code})`
             : undefined,
-        metadata: { exitCode: result.code },
+        metadata: result.timedOut ? { exitCode: -1, timedOut: true } : { exitCode: result.code },
       };
     }
 

@@ -20,17 +20,23 @@
 import { Box, Text, useInput } from "ink";
 import type { ReactNode } from "react";
 import { t } from "./i18n.js";
-import { PERMISSION_MODE_CYCLE } from "./store.js";
+import { EXIT_DOUBLE_PRESS_MS, PERMISSION_MODE_CYCLE } from "./store.js";
 import { padAligned, terminalColumns, visualWidth } from "./terminal-width.js";
 import { palette } from "./theme.js";
 
-type Shortcut = { keys: string; descKey: string };
+/** Interpolation values for the description — keeps copy that quotes a
+ *  constant (the 800ms exit window) tied to the constant itself. */
+type Shortcut = { keys: string; descKey: string; descParams?: Record<string, string | number> };
 
 /** Only shortcuts that are actually wired — see invariant 1 above. */
 const SHORTCUTS: Shortcut[] = [
   { keys: "Shift+Tab / Alt+M", descKey: "ui.help.shortcut.modeCycle" },
   { keys: "Esc / Ctrl+C", descKey: "ui.help.shortcut.interrupt" },
-  { keys: "Ctrl+D", descKey: "ui.help.shortcut.exit" },
+  {
+    keys: "Ctrl+D",
+    descKey: "ui.help.shortcut.exit",
+    descParams: { ms: EXIT_DOUBLE_PRESS_MS },
+  },
   { keys: "Esc Esc", descKey: "ui.help.shortcut.rewind" },
   { keys: "Ctrl+O", descKey: "ui.help.shortcut.verbose" },
   { keys: "Ctrl+R", descKey: "ui.help.shortcut.history" },
@@ -137,7 +143,7 @@ export function HelpPanel({ currentMode, onClose }: { currentMode: string; onClo
 
         <Section title={t("ui.help.section.shortcuts")}>
           {SHORTCUTS.map((s) => (
-            <ShortcutRow key={s.keys} keys={s.keys} desc={t(s.descKey)} />
+            <ShortcutRow key={s.keys} keys={s.keys} desc={t(s.descKey, s.descParams)} />
           ))}
         </Section>
 

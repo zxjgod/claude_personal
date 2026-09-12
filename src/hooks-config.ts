@@ -103,6 +103,17 @@ export function readSettings(workspaceRoot: string): Record<string, unknown> | n
   return local ? { ...base, ...local } : base;
 }
 
+/**
+ * Keys this replica ACTUALLY consumes — hooks/permissionMode/permissions/
+ * telemetry/env/model are read by hooks-config, cli-config and
+ * permission-policy. Keys the official client supports but we do NOT implement
+ * (statusLine, apiKeyHelper, additionalDirectories, cleanupPeriodDays,
+ * includeCoAuthoredBy, enableAllProjectMcpServers) must stay OUT of this set:
+ * warnUnknownSettings exists precisely to tell users their setting won't take
+ * effect, and whitelisting an unconsumed key reintroduces the silent no-op
+ * the diagnostic was built to surface (a user-configured statusLine used to
+ * be "known" yet do nothing, with no warning).
+ */
 const KNOWN_SETTINGS_KEYS = new Set([
   "hooks",
   "permissionMode",
@@ -110,12 +121,6 @@ const KNOWN_SETTINGS_KEYS = new Set([
   "telemetry",
   "env",
   "model",
-  "apiKeyHelper",
-  "additionalDirectories",
-  "cleanupPeriodDays",
-  "includeCoAuthoredBy",
-  "enableAllProjectMcpServers",
-  "statusLine",
 ]);
 
 /** Emit diagnostics for settings keys that this replica does not consume. */

@@ -236,7 +236,7 @@ const translations: Record<Language, Record<string, string>> = {
       "Cycle permission mode (default → acceptEdits → plan → bypassPermissions)",
     "ui.help.shortcut.interrupt":
       "Interrupt the running turn · idle: Ctrl+C clears input, twice exits",
-    "ui.help.shortcut.exit": "Exit (double press within 800ms)",
+    "ui.help.shortcut.exit": "Exit (double press within {ms}ms)",
     "ui.help.shortcut.rewind": "Rewind to an earlier message and restore files (idle, empty input)",
     "ui.help.shortcut.verbose":
       "Toggle the verbose transcript viewer (full tool output + thinking)",
@@ -473,7 +473,7 @@ const translations: Record<Language, Record<string, string>> = {
     "ui.help.shortcut.modeCycle":
       "循环切换权限模式（default → acceptEdits → plan → bypassPermissions）",
     "ui.help.shortcut.interrupt": "中断当前回合 · 空闲时：Ctrl+C 清空输入，连按两次退出",
-    "ui.help.shortcut.exit": "退出（800ms 内连按两次）",
+    "ui.help.shortcut.exit": "退出（{ms}ms 内连按两次）",
     "ui.help.shortcut.rewind": "回退到之前的消息并还原文件（空闲且输入为空时）",
     "ui.help.shortcut.verbose": "切换完整会话记录查看器（工具输出全文 + 思考）",
     "ui.help.shortcut.history": "搜索输入历史（反向搜索 · Enter 直接执行匹配项）",
