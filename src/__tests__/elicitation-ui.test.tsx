@@ -74,6 +74,29 @@ describe("ElicitationPrompt", () => {
     expect(lastFrame()).toContain("must be a number");
   });
 
+  it("rejects a fractional value for an integer field (3.7 is finite, not whole)", async () => {
+    const resolve = vi.fn();
+    const { stdin, lastFrame } = render(
+      <ElicitationPrompt overlay={overlay([{ name: "count", type: "integer" }], resolve)} />,
+    );
+    await flush();
+    stdin.write("3.7");
+    await flush();
+    stdin.write("\r");
+    await flush(30);
+    expect(resolve).not.toHaveBeenCalled();
+    expect(lastFrame()).toContain("must be a whole number");
+    // Editing clears the stale error; a valid integer submits as a number.
+    stdin.write("\x7f\x7f\x7f");
+    await flush();
+    expect(lastFrame()).not.toContain("must be a whole number");
+    stdin.write("7");
+    await flush();
+    stdin.write("\r");
+    await waitFor(() => resolve.mock.calls.length > 0);
+    expect(resolve).toHaveBeenCalledWith({ action: "accept", content: { count: 7 } });
+  });
+
   it("enforces enum membership", async () => {
     const resolve = vi.fn();
     const { stdin, lastFrame } = render(

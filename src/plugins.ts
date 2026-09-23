@@ -93,6 +93,10 @@ export function installPlugin(workspaceRoot: string, sourceDir: string): PluginM
  */
 /** Per-entry uncompressed cap (declared AND actual — headers can lie). */
 const MAX_ZIP_ENTRY_BYTES = 64 * 1024 * 1024;
+/** Whole-archive budget and entry-count ceiling: per-entry caps alone still
+ *  let a thousand 63MB entries (or a million empty ones) fill the disk. */
+const MAX_ZIP_TOTAL_BYTES = 256 * 1024 * 1024;
+const MAX_ZIP_ENTRIES = 20_000;
 
 export function extractZip(bytes: Buffer, destDir: string): void {
   let eocd = -1;
@@ -105,6 +109,9 @@ export function extractZip(bytes: Buffer, destDir: string): void {
   }
   if (eocd < 0) throw new Error("Not a valid ZIP archive (no end-of-central-directory)");
   const count = bytes.readUInt16LE(eocd + 10);
+  if (count > MAX_ZIP_ENTRIES)
+    throw new Error(`ZIP archive declares ${count} entries (cap ${MAX_ZIP_ENTRIES})`);
+  let totalBytes = 0;
   let off = bytes.readUInt32LE(eocd + 16);
   for (let n = 0; n < count; n++) {
     if (off + 46 > bytes.length || bytes.readUInt32LE(off) !== 0x02014b50)
@@ -144,6 +151,11 @@ export function extractZip(bytes: Buffer, destDir: string): void {
     if (method === 0) {
       if (data.length > MAX_ZIP_ENTRY_BYTES)
         throw new Error(`ZIP entry exceeds ${MAX_ZIP_ENTRY_BYTES} bytes: ${name}`);
+      totalBytes += data.length;
+      if (totalBytes > MAX_ZIP_TOTAL_BYTES)
+        throw new Error(
+          `ZIP archive exceeds the ${MAX_ZIP_TOTAL_BYTES} byte total budget at entry: ${name}`,
+        );
       fs.writeFileSync(target, data);
     } else if (method === 8) {
       let inflated: Buffer;
@@ -156,6 +168,11 @@ export function extractZip(bytes: Buffer, destDir: string): void {
           throw new Error(`ZIP entry inflates beyond ${MAX_ZIP_ENTRY_BYTES} bytes: ${name}`);
         throw e;
       }
+      totalBytes += inflated.length;
+      if (totalBytes > MAX_ZIP_TOTAL_BYTES)
+        throw new Error(
+          `ZIP archive exceeds the ${MAX_ZIP_TOTAL_BYTES} byte total budget at entry: ${name}`,
+        );
       fs.writeFileSync(target, inflated);
     } else throw new Error(`Unsupported ZIP compression method ${method} for ${name}`);
   }

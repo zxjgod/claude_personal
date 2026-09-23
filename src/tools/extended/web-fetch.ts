@@ -6,6 +6,8 @@
 // ============================================================
 
 import { z } from "zod";
+import { createModelCaller } from "../../llm-adapter.js";
+import { resolveFastModelConfig } from "../../provider-profiles.js";
 import type { Tool, ToolResult } from "../../types.js";
 import { InputValidator } from "../../utils/input-validator.js";
 import { buildTool } from "../registry.js";
@@ -16,6 +18,9 @@ import { publicHttpGet } from "../utils/public-http.js";
 const MAX_CONTENT_LENGTH = 100_000; // 100KB output
 const MAX_RESPONSE_SIZE = 5 * 1024 * 1024; // 5MB max download
 const TIMEOUT_MS = 15_000; // 15 seconds
+/** S6: fetchInfo extraction input cap and its own model-call timeout. */
+const EXTRACT_INPUT_CHARS = 20_000;
+const EXTRACT_TIMEOUT_MS = 15_000;
 
 // --- Schema ---
 
@@ -82,7 +87,7 @@ export const WebFetchTool: Tool = buildTool({
   searchHint: "fetch web page scrape extract URL",
   aliases: ["fetch", "scrape"],
 
-  async call(input, _context): Promise<ToolResult> {
+  async call(input, context): Promise<ToolResult> {
     // P1-1: Use InputValidator for consistent URL validation (SSRF prevention)
 
     const validation = InputValidator.validateUrl(input.url);
@@ -163,6 +168,49 @@ export const WebFetchTool: Tool = buildTool({
         content = content.slice(0, MAX_CONTENT_LENGTH);
       }
 
+      // S6: actually execute the fetchInfo instruction — a bounded model pass
+      // over the page text (fast model when configured, M5). Success replaces
+      // the raw dump with a focused extract plus a short raw preview; any
+      // failure (or no modelConfig — tests/sub-agents) degrades to the raw
+      // content, exactly the old behavior.
+      let extracted: string | undefined;
+      if (context.modelConfig) {
+        const fastConfig = resolveFastModelConfig(context.modelConfig) ?? context.modelConfig;
+        const caller = createModelCaller(fastConfig);
+        const extractController = new AbortController();
+        const extractTimer = setTimeout(() => extractController.abort(), EXTRACT_TIMEOUT_MS);
+        try {
+          let text = "";
+          for await (const event of caller(
+            [
+              {
+                role: "user",
+                content: [
+                  {
+                    type: "text",
+                    text:
+                      `From the page content below, extract: ${input.fetchInfo}\n\n` +
+                      `Answer concisely using only the page. If the page does not contain ` +
+                      `the answer, say so explicitly.\n\n<page>\n${content.slice(0, EXTRACT_INPUT_CHARS)}\n</page>`,
+                  },
+                ],
+              },
+            ],
+            [],
+            "",
+            fastConfig,
+            extractController.signal,
+          )) {
+            if (event.type === "text_delta") text += event.delta;
+          }
+          if (text.trim()) extracted = text.trim();
+        } catch {
+          /* degrade to raw content */
+        } finally {
+          clearTimeout(extractTimer);
+        }
+      }
+
       const header = [
         `URL: ${input.url}`,
         `Status: ${response.status} ${response.statusText}`,
@@ -172,6 +220,20 @@ export const WebFetchTool: Tool = buildTool({
         `--- Content (extract "${input.fetchInfo}") ---`,
         ``,
       ].join("\n");
+
+      if (extracted) {
+        const preview = content.slice(0, 1500);
+        return {
+          content:
+            `${header}${extracted}\n\n` +
+            `--- Raw preview (first ${preview.length} of ${content.length} chars) ---\n${preview}`,
+          truncated,
+          metadata: {
+            linesRead: extracted.split("\n").length,
+            summary: "Extracted per fetchInfo",
+          },
+        };
+      }
 
       return {
         content: header + content,

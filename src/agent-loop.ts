@@ -14,6 +14,7 @@ import {
   handleModelError,
   isContextLengthError,
   isFallbackableModelError,
+  type ModelErrorRecovery,
 } from "./error-recovery.js";
 import {
   buildContinuationNudge,
@@ -151,14 +152,30 @@ export async function* agentLoop(
     }
   };
 
-  // P0-3: every SYNTHETIC user-turn injection below (stop-hook errors, length
-  // continuations, tool-result images, queued input, notifications) opens a
-  // checkpoint boundary and tags its message, so rewind maps message →
+  // P0-3: queued type-ahead input is REAL user input — each drained message
+  // opens a checkpoint boundary and gets tagged, so rewind maps message →
   // boundary 1:1. No-op when the caller passed no sessionId (tests).
   const openTurnBoundary = (msg: Message): void => {
     const sid = toolContext?.sessionId;
     if (sid) beginUserTurn(sid, msg);
   };
+
+  // M4: synthetic injections (stop-hook errors, length continuations,
+  // tool-result images, notifications) are continuations of the CURRENT turn,
+  // not new user turns — they must NOT consume a checkpoint boundary. A
+  // boundary costs a turn number + a statSync per tracked file + a slot in the
+  // 100-snapshot rewind window, and multi-continuation tasks were burning
+  // that window on boundaries the rewind UI can't meaningfully target. These
+  // messages stay untagged, which rewind already maps to conversation-only
+  // truncation — the honest semantics for an injected nudge.
+  const noTurnBoundary = (_msg: Message): void => {
+    /* synthetic injection — deliberately no checkpoint boundary */
+  };
+
+  // Recoverable stash for content the cheap layers trim/evict (layer 4). On
+  // the ToolContext so the RestoreContext tool can hand evicted originals
+  // back to the model on demand (F2) instead of forcing a tool re-run.
+  const collapseStore = new CollapseStore();
 
   // Build the full ToolContext from caller-provided values.
   const baseContext: ToolContext = {
@@ -183,6 +200,7 @@ export async function* agentLoop(
     getParentMessages: () => messages.slice(),
     parentSystemPrompt: effectiveSystemPrompt,
     subagentDepth: toolContext?.subagentDepth,
+    collapseStore,
   };
 
   const MAX_RATE_LIMIT_RETRIES = 3;
@@ -205,7 +223,6 @@ export async function* agentLoop(
   const budgetConfig = { ...DEFAULT_TOKEN_BUDGET, maxOutputTokens: turnOutputBudget };
   const specCache = new SpeculationCache(effectiveSpeculation);
   const readFiles = new Set<string>();
-  const collapseStore = new CollapseStore();
 
   const streamExecutor = new StreamingToolExecutor(
     effectiveSpeculation,
@@ -275,7 +292,9 @@ export async function* agentLoop(
         yield { type: "compacting" };
         try {
           const messagesBefore = messages.length;
-          replaceMessages(await autoCompact(messages, safeCallModel, modelConfig, abortSignal));
+          replaceMessages(
+            await autoCompact(messages, safeCallModel, modelConfig, abortSignal, options.fastModel),
+          );
           await baseContext.hooks
             ?.runEvent?.("PostCompact", {
               session_id: baseContext.sessionId,
@@ -319,15 +338,17 @@ export async function* agentLoop(
         prefetchInjected = true;
         const attachment = await prefetchPromise;
         if (attachment) {
+          // Append-only: the usage baseline survives — estimateContextTokens
+          // adds whatever was appended past baseline.messageCount, so dropping
+          // the baseline here would just force a full re-estimate for nothing.
           messages.push({ role: "system", content: attachment });
-          state = { ...state, usageBaseline: undefined };
         }
       }
 
       if (readyToolSummary) {
+        // Append-only, same as the prefetch attachment above.
         messages.push({ role: "system", content: readyToolSummary });
         readyToolSummary = null;
-        state = { ...state, usageBaseline: undefined };
       }
 
       let textBuffer = "";
@@ -339,6 +360,9 @@ export async function* agentLoop(
       let usage: { input_tokens: number; output_tokens: number } | null = null;
       const windowAtCall = messages.length;
       let nextAction: "proceed" | "retry" | "abort" = "proceed";
+      // M1: the recovery decision behind a retry, consumed at the retry
+      // boundary to decide continuation-vs-regeneration.
+      let lastRecovery: ModelErrorRecovery | undefined;
       let abortError: unknown = null;
       let streamEnded = false;
       let modelFinishReason = "stop";
@@ -422,12 +446,14 @@ export async function* agentLoop(
               );
               if (recovery === "retry") {
                 state = { ...state, rateLimitRetries: state.rateLimitRetries + 1 };
+                lastRecovery = recovery;
                 nextAction = "retry";
                 streamEnded = true;
                 break;
               }
               if (recovery === "retry_transient") {
                 state = { ...state, transientRetries: state.transientRetries + 1 };
+                lastRecovery = recovery;
                 nextAction = "retry";
                 streamEnded = true;
                 break;
@@ -449,6 +475,7 @@ export async function* agentLoop(
                         safeCallModel,
                         modelConfig,
                         abortSignal,
+                        options.fastModel,
                       );
                       await baseContext.hooks
                         ?.runEvent?.("PostCompact", {
@@ -535,7 +562,34 @@ export async function* agentLoop(
         // model history, so consumers must DISCARD (not commit) any buffered
         // streaming text — otherwise the retry's output appends to a dead
         // fragment and the transcript forks from the real conversation.
-        yield { type: "model_retry" };
+        //
+        // M1 exception (CCR_RETRY_CONTINUE=1): when the failed stream had
+        // already produced a lot of TEXT and no tool calls, and the provider
+        // is OpenAI-compatible (Anthropic's signed thinking blocks cannot be
+        // resumed mid-turn), commit the partial text and nudge the model to
+        // continue from where it stopped — the already-generated output
+        // tokens are kept instead of being paid for twice.
+        const continueFromPartial =
+          process.env.CCR_RETRY_CONTINUE === "1" &&
+          (lastRecovery === "retry" || lastRecovery === "retry_transient") &&
+          toolCalls.length === 0 &&
+          textBuffer.trim().length >= 1000 &&
+          modelConfig.provider !== "anthropic";
+        if (continueFromPartial) {
+          messages.push({ role: "assistant", content: textBuffer });
+          messages.push({
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: "Your previous response was interrupted by a transient network error right after the text above. Continue EXACTLY from where you stopped — do not repeat text already written, do not restart the answer.",
+              },
+            ],
+          });
+          yield { type: "model_retry", continuation: textBuffer.length };
+        } else {
+          yield { type: "model_retry" };
+        }
         state = { ...state, transition: { reason: "model_retry" } };
         continue;
       }
@@ -569,7 +623,6 @@ export async function* agentLoop(
               role: "user",
               content: [{ type: "text", text: stop.blockingError }],
             };
-            openTurnBoundary(stopMsg);
             messages.push(stopMsg);
             state = {
               ...state,
@@ -615,7 +668,6 @@ export async function* agentLoop(
             role: "user",
             content: [{ type: "text", text: buildContinuationNudge(state.budget) }],
           };
-          openTurnBoundary(nudgeMsg);
           messages.push(nudgeMsg);
           state = {
             ...state,
@@ -636,7 +688,7 @@ export async function* agentLoop(
             drainNotifications,
             state,
             MAX_NOTIFICATION_CONTINUATIONS,
-            openTurnBoundary,
+            noTurnBoundary,
           )
         ) {
           state = {
@@ -765,7 +817,7 @@ export async function* agentLoop(
         return terminal(isInterrupt(abortSignal) ? "aborted_interrupt" : "aborted_tools");
       }
 
-      // Tool results may carry images.
+      // Tool results may carry images. Synthetic attachment — no boundary.
       const images = toolResults.flatMap((r) => r.result?.images ?? []);
       if (images.length > 0) {
         const imageMsg: Message = {
@@ -775,7 +827,6 @@ export async function* agentLoop(
             ...images,
           ],
         };
-        openTurnBoundary(imageMsg);
         messages.push(imageMsg);
       }
 
@@ -790,7 +841,7 @@ export async function* agentLoop(
         drainNotifications,
         state,
         Number.POSITIVE_INFINITY,
-        openTurnBoundary,
+        noTurnBoundary,
       );
 
       state = { ...state, turnCount: turnCount + 1, transition: { reason: "tools_done" } };

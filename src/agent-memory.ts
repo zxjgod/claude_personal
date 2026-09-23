@@ -136,3 +136,42 @@ export function saveAgentMemory(
     return false;
   }
 }
+
+/**
+ * Append one line of memory to an agentType's MEMORY.md (F1 write path).
+ * saveAgentMemory overwrites the whole file, so callers appending must merge:
+ * read the current content, add the line under a "## Auto-saved" heading (or
+ * the existing one), write back. Idempotent per line. Best-effort like every
+ * memory write — returns false instead of throwing.
+ */
+export function appendAgentMemory(
+  scope: MemoryScope,
+  agentType: string,
+  workspaceRoot: string,
+  line: string,
+): boolean {
+  const trimmed = line.trim();
+  if (!trimmed) return false;
+  let existing = "";
+  try {
+    existing = fs.readFileSync(agentMemoryFile(scope, agentType, workspaceRoot), "utf-8");
+  } catch {
+    existing = ""; // no file yet
+  }
+  const bullet = `- ${trimmed.replace(/\s+/g, " ")}`;
+  // Windows editors save MEMORY.md with CRLF, which defeats the line-based
+  // dedupe (`bullet\n` never matches `bullet\r\n`) and re-accumulates the same
+  // lesson on every save. Compare — and rebuild — against an LF-normalized
+  // copy so the file converges to one newline style.
+  const normalized = existing.replace(/\r\n/g, "\n");
+  if (normalized.includes(`${bullet}\n`) || normalized.endsWith(bullet)) return true; // dedupe
+  const HEADING = "## Auto-saved";
+  let next: string;
+  if (normalized.includes(HEADING)) {
+    next = `${normalized.replace(/\s*$/, "\n")}${bullet}\n`;
+  } else {
+    const prefix = normalized.trim() ? `${normalized.replace(/\s*$/, "\n\n")}` : "";
+    next = `${prefix}${HEADING}\n${bullet}\n`;
+  }
+  return saveAgentMemory(scope, agentType, workspaceRoot, next);
+}

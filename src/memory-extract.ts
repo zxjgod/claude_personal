@@ -42,8 +42,17 @@ export interface MemoryInput {
 }
 
 // Durable-intent prefixes: lines that read like a standing instruction or fact
-// worth remembering across sessions.
-const INTENT_RE = /^(remember|always|never|prefer|from now on|note that|keep in mind|make sure)\b/i;
+// worth remembering across sessions. English verbs use a word boundary; Chinese
+// prefixes can't rely on \b (CJK chars are non-word chars to JS regex), so they
+// get their own anchored alternation instead.
+const INTENT_RE_EN =
+  /^(remember|always|never|prefer|from now on|note that|keep in mind|make sure)\b/i;
+const INTENT_RE_ZH = /^(请记住|记住|以后|今后|始终|永远|不要|别忘了|别|必须|偏好|注意)/;
+
+/** True when a user line reads like a durable intent worth remembering. */
+function isIntentLine(line: string): boolean {
+  return INTENT_RE_EN.test(line) || INTENT_RE_ZH.test(line);
+}
 
 /** Extract the plain text of a user message (concatenated text blocks). */
 function userText(message: Message): string {
@@ -91,7 +100,7 @@ export function extractMemoriesHeuristic(
     if (!text) continue;
     for (const rawLine of text.split("\n")) {
       const line = rawLine.trim();
-      if (INTENT_RE.test(line)) push(line, ["preference"]);
+      if (isIntentLine(line)) push(line, ["preference"]);
     }
   }
 
@@ -243,5 +252,42 @@ export class MemoryStore {
     const lines = toWrite.map((m) => JSON.stringify(m)).join("\n");
     fs.appendFileSync(this.filePath, `${lines}\n`, "utf-8");
     return toWrite;
+  }
+}
+
+/**
+ * Session-exit auto-extraction (F1): heuristically pull durable intents out of
+ * the ending session and persist them. The model-assisted pass runs only when
+ * the caller enables it (CCR_AUTO_MEMORY_EXTRACT=1) since it costs one model
+ * call. Session-scoped bookkeeping (the files-changed summary) is deliberately
+ * EXCLUDED here — it is not durable knowledge, and auto-running every session
+ * would pile per-session noise into the retrieval store. Returns the memories
+ * actually written (post-dedupe); never throws.
+ */
+export async function autoExtractMemoriesOnExit(options: {
+  workspaceRoot: string;
+  messages: Message[];
+  changes?: FileChange[];
+  useModel?: boolean;
+  callModel?: ModelCaller;
+  modelConfig?: ModelConfig;
+}): Promise<ExtractedMemory[]> {
+  try {
+    const candidates = extractMemoriesHeuristic(options.messages, options.changes ?? []).filter(
+      (m) => m.tags?.includes("preference"),
+    );
+    if (options.useModel && options.callModel && options.modelConfig) {
+      candidates.push(
+        ...(await extractMemoriesWithModel(
+          options.messages,
+          options.callModel,
+          options.modelConfig,
+        )),
+      );
+    }
+    if (candidates.length === 0) return [];
+    return new MemoryStore(options.workspaceRoot).append(candidates);
+  } catch {
+    return []; // auto-extraction is best-effort by contract
   }
 }

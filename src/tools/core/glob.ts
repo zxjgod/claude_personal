@@ -6,6 +6,7 @@ import * as path from "node:path";
 import fg from "fast-glob";
 import { z } from "zod";
 import type { Tool, ToolResult } from "../../types.js";
+import { cachedFileListing } from "../../utils/fs-cache.js";
 import { buildTool } from "../registry.js";
 import { resolveInWorkspace } from "../utils/path.js";
 
@@ -55,14 +56,19 @@ export const GlobTool: Tool = buildTool({
       ) {
         return { content: "", error: "Glob pattern must stay inside the workspace." };
       }
-      const files = await fg(input.pattern, {
-        cwd: searchDir,
-        ignore: ["**/node_modules/**", "**/.git/**"],
-        absolute: false,
-        dot: false,
-        // Align with the official Glob tool: match FILES only, never dirs.
-        onlyFiles: true,
-      });
+      // M3: TTL-cached per (dir, pattern) — a repeat glob within the TTL
+      // window (or within a turn) skips the tree walk. Invalidated on every
+      // tool-mediated write, with the TTL as the backstop.
+      const files = await cachedFileListing(searchDir, `glob|${input.pattern}`, () =>
+        fg(input.pattern, {
+          cwd: searchDir,
+          ignore: ["**/node_modules/**", "**/.git/**"],
+          absolute: false,
+          dot: false,
+          // Align with the official Glob tool: match FILES only, never dirs.
+          onlyFiles: true,
+        }),
+      );
 
       const MAX_RESULTS = 500;
       // Sort before truncating so the bounded result is deterministic and

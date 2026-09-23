@@ -20,6 +20,7 @@ import {
   sandboxViolation,
 } from "../../sandbox-policy.js";
 import type { Tool, ToolResult } from "../../types.js";
+import { invalidateToolWritableScopes } from "../../utils/fs-cache.js";
 import { InputValidator } from "../../utils/input-validator.js";
 import { buildTool } from "../registry.js";
 import { getCwd, rememberCd } from "../session-cwd.js";
@@ -118,8 +119,14 @@ export const PowerShellTool: Tool = buildTool({
             // Forward the runner's own diagnostics (see bash.ts, same wiring).
             error: `Native Windows sandbox could not be started; command refused.${result.stderr ? `\n${result.stderr}` : ""}`,
           };
+        // M39 parity with the non-native path: a successful `cd <dir>` sticks.
+        if (!result.timedOut && result.code === 0)
+          rememberCd(context.sessionId, cwd, input.command);
+        // M3: a shell command may touch the fs — drop cached listings.
+        invalidateToolWritableScopes(context);
         return {
           content: [result.stdout, result.stderr].filter(Boolean).join("\n") || "(no output)",
+          truncated: result.truncated,
           error: result.timedOut
             ? `Command timed out (${Math.round(timeout / 1000)}s)`
             : result.code !== 0
@@ -221,6 +228,11 @@ export const PowerShellTool: Tool = buildTool({
 
     if (timer) clearTimeout(timer);
     if (abortSignal) abortSignal.removeEventListener("abort", onAbort);
+
+    // M3: a shell command may touch the fs — drop cached listings. Placed
+    // BEFORE the abort/timeout/error returns so a killed command that already
+    // wrote files still invalidates (parity with the native path and bash).
+    invalidateToolWritableScopes(context);
 
     if (aborted) {
       return { content: "Command aborted.", metadata: { exitCode: -1, aborted: true } };

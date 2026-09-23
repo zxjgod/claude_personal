@@ -5,7 +5,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createModelCaller } from "../llm-adapter.js";
 import {
   applyProfile,
@@ -13,6 +13,7 @@ import {
   loadProviderProfiles,
   type ProviderProfile,
   providersFilePath,
+  resolveFastModelConfig,
 } from "../provider-profiles.js";
 import type { ModelConfig } from "../types.js";
 
@@ -182,5 +183,72 @@ describe("applyProfile", () => {
     applyProfile(cfg, { name: "claude", provider: "anthropic", apiKey: "sk-ant" });
     const anthropicCaller = createModelCaller(cfg);
     expect(anthropicCaller).not.toBe(openaiCaller);
+  });
+});
+
+describe("resolveFastModelConfig (M5)", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("returns null when CCR_FAST_MODEL is unset", () => {
+    vi.stubEnv("CCR_FAST_MODEL", "");
+    expect(resolveFastModelConfig(baseConfig())).toBeNull();
+  });
+
+  it("inherits apiKey/baseURL/options for a bare model (same endpoint)", () => {
+    vi.stubEnv("CCR_FAST_MODEL", "gpt-4o-mini");
+    const fast = resolveFastModelConfig(baseConfig())!;
+    expect(fast.model).toBe("gpt-4o-mini");
+    expect(fast.provider).toBe("openai");
+    expect(fast.apiKey).toBe("key-original");
+    expect(fast.baseURL).toBe("https://api.openai.com/v1");
+    expect(fast.options).toMatchObject({ effort: "high" });
+  });
+
+  it("inherits for an explicit SAME-provider 'provider/model' form", () => {
+    vi.stubEnv("CCR_FAST_MODEL", "openai/gpt-4o-mini");
+    const fast = resolveFastModelConfig(baseConfig())!;
+    expect(fast.model).toBe("gpt-4o-mini");
+    expect(fast.apiKey).toBe("key-original");
+  });
+
+  it("returns null for a CROSS provider without its own key", () => {
+    // The main config's baseURL/apiKey belong to the main provider's
+    // endpoint — inheriting them would hit the wrong host with the wrong key.
+    vi.stubEnv("CCR_FAST_MODEL", "deepseek/deepseek-chat");
+    vi.stubEnv("CCR_FAST_MODEL_API_KEY", "");
+    expect(resolveFastModelConfig(baseConfig())).toBeNull();
+  });
+
+  it("resolves provider defaults for a CROSS provider with its own key", () => {
+    vi.stubEnv("CCR_FAST_MODEL", "deepseek/deepseek-chat");
+    vi.stubEnv("CCR_FAST_MODEL_API_KEY", "fast-key");
+    const fast = resolveFastModelConfig(baseConfig())!;
+    expect(fast.provider).toBe("deepseek");
+    expect(fast.model).toBe("deepseek-chat");
+    expect(fast.apiKey).toBe("fast-key");
+    expect(fast.baseURL).toContain("deepseek");
+    // Gateway/options of the main endpoint must not leak across providers.
+    expect(fast.options).toBeUndefined();
+    expect(fast.maxTokens).toBe(4096);
+  });
+
+  it("honors CCR_FAST_MODEL_BASE_URL for private/relay endpoints", () => {
+    vi.stubEnv("CCR_FAST_MODEL", "deepseek/deepseek-chat");
+    vi.stubEnv("CCR_FAST_MODEL_API_KEY", "fast-key");
+    vi.stubEnv("CCR_FAST_MODEL_BASE_URL", "https://relay.example.com/v1");
+    const fast = resolveFastModelConfig(baseConfig())!;
+    expect(fast.baseURL).toBe("https://relay.example.com/v1");
+  });
+
+  it("rejects malformed values: leading slash, unknown provider, empty model", () => {
+    const cfg = baseConfig();
+    vi.stubEnv("CCR_FAST_MODEL", "/gpt-4o-mini");
+    expect(resolveFastModelConfig(cfg)).toBeNull();
+    vi.stubEnv("CCR_FAST_MODEL", "nosuchprovider/model");
+    expect(resolveFastModelConfig(cfg)).toBeNull();
+    vi.stubEnv("CCR_FAST_MODEL", "openai/");
+    expect(resolveFastModelConfig(cfg)).toBeNull();
   });
 });

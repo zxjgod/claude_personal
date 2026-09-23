@@ -97,7 +97,7 @@ const SUBAGENT_TYPES = new Map<string, SubagentType>([
       description: "Read/write worker: complete a multi-step task end to end",
       whenToUse:
         "When you need a multi-step task carried out end to end (including file edits) and only need a summary of what changed back.",
-      toolNames: ["read", "glob", "grep", "bash", "write", "edit"],
+      toolNames: ["read", "glob", "grep", "bash", "write", "edit", "mcp__*"],
       systemPrompt: GENERAL_PROMPT,
       maxTurns: 20,
     },
@@ -129,11 +129,27 @@ export function listSubagentSelectionHints(): Array<{ name: string; whenToUse: s
   }));
 }
 
-/** Resolve a sub-agent's tool set from the full available tool list. */
+/**
+ * Resolve a sub-agent's tool set from the full available tool list.
+ * S3: an entry ending in `*` matches by prefix — `mcp__*` grants every MCP
+ * tool, `mcp__github__*` every tool of one server. This is also how disk
+ * agents (.claude/agents/*.md `tools:` frontmatter) reach MCP tools.
+ */
 export function resolveSubagentTools(type: SubagentType, available: Tool[]): Tool[] {
-  return type.toolNames
-    .map((name) => available.find((t) => t.name === name))
-    .filter((t): t is Tool => t !== undefined);
+  const byName = new Map(available.map((t) => [t.name, t]));
+  const resolved = new Set<Tool>();
+  for (const name of type.toolNames) {
+    if (name.endsWith("*")) {
+      const prefix = name.slice(0, -1);
+      for (const tool of available) {
+        if (tool.name.startsWith(prefix)) resolved.add(tool);
+      }
+      continue;
+    }
+    const tool = byName.get(name);
+    if (tool) resolved.add(tool);
+  }
+  return [...resolved];
 }
 
 // --- Core-tool injection (16.9) ---

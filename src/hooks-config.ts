@@ -17,10 +17,16 @@
 //       "Stop":        [ … ]
 //   } }
 //
-// Protocol (stdin JSON → stdout JSON):
-//   PreToolUse  stdin  { tool_name, tool_input }          → { decision: "block"|"allow", reason }
-//   PostToolUse stdin  { tool_name, tool_input, tool_response } → { decision: "block"|"continue", reason }
-//   Stop        stdin  { stop_hook_active }               → { decision: "block", reason }
+// Protocol (stdin JSON → stdout JSON / exit code):
+//   Every hook's stdin carries the official envelope — session_id,
+//   transcript_path, cwd, hook_event_name — plus the event-specific fields.
+//   PreToolUse  stdin  { …, tool_name, tool_input }              → { decision: "block", reason }
+//   PostToolUse stdin  { …, tool_name, tool_input, tool_response } → { decision: "block", reason }
+//   Stop        stdin  { …, stop_hook_active }                    → { decision: "block", reason }
+//   Exit code 2 is the official no-JSON blocking path: stderr is the reason
+//   fed back to the model (`echo reason >&2; exit 2`), taking precedence
+//   over stdout JSON. CLAUDE_PROJECT_DIR is exported pointing at the
+//   workspace root, and the command runs there (not the process startup cwd).
 //
 // Fail-safe: a hook that errors, times out, or emits non-JSON is treated as a
 // no-op (allow / continue). A broken hook never blocks the user's work.
@@ -57,6 +63,16 @@ export interface HooksConfig {
   SessionStart?: HookConfigEntry[];
   SessionEnd?: HookConfigEntry[];
   TeammateIdle?: HookConfigEntry[];
+}
+
+/**
+ * Session context threaded into every spawned hook command: the official
+ * stdin envelope (session_id / transcript_path / cwd) and the directory the
+ * command runs in. Optional so programmatic registrations keep working.
+ */
+export interface HookRunContext {
+  sessionId: string;
+  workspaceRoot: string;
 }
 
 const PHASES = [
@@ -146,8 +162,9 @@ export function parseHooksConfig(
     for (const entry of raw) {
       if (typeof entry !== "object" || entry === null) continue;
       const { matcher, hooks: specs } = entry as Record<string, unknown>;
-      const lifecycle = !["PreToolUse", "PostToolUse", "Stop"].includes(phase);
-      if ((typeof matcher !== "string" || !matcher) && !lifecycle) continue;
+      // Official semantics: an omitted (or empty) matcher means the hook
+      // applies to ALL tools/events — dropping the entry used to silently
+      // kill a matcher-less PreToolUse hook.
       const effectiveMatcher = typeof matcher === "string" && matcher ? matcher : "*";
       if (!Array.isArray(specs)) continue;
       const commands: HookCommandSpec[] = [];
@@ -202,10 +219,13 @@ function runCommandHook(
     // when a command embeds a quoted path (e.g. `node "C:\Program Files\…"`).
     const child = spawn(command, {
       cwd,
+      // Official hooks see CLAUDE_PROJECT_DIR pointing at the project —
+      // scripts routinely use it to locate repo-relative helpers.
+      env: { ...process.env, CLAUDE_PROJECT_DIR: cwd },
       shell: true,
       windowsHide: true,
       detached: process.platform !== "win32",
-      stdio: ["pipe", "pipe", "ignore"],
+      stdio: ["pipe", "pipe", "pipe"],
     });
     const killTree = (): void => {
       if (child.pid === undefined) return;
@@ -223,6 +243,7 @@ function runCommandHook(
       }
     };
     let stdout = "";
+    let stderrText = "";
     let settled = false;
     const finish = (value: Record<string, unknown>): void => {
       if (settled) return;
@@ -245,8 +266,27 @@ function runCommandHook(
         finish({});
       }
     });
+    // stderr carries the exit-2 block reason; capture it, bounded like stdout.
+    child.stderr?.on("data", (chunk: Buffer) => {
+      if (stderrText.length >= MAX_STDOUT_BYTES) return;
+      const text = chunk.toString();
+      stderrText += text.slice(0, MAX_STDOUT_BYTES - stderrText.length);
+    });
     child.on("error", () => finish({}));
-    child.on("close", () => finish(parseJson(stdout) ?? {}));
+    child.on("close", (code) => {
+      const parsed = parseJson(stdout);
+      // Exit code 2 is the official no-JSON blocking path: stderr is the
+      // reason fed back to the model and takes precedence over stdout JSON
+      // (a JSON `reason` is the fallback when stderr is empty). Other exit
+      // codes ignore stderr entirely.
+      if (code === 2) {
+        const reason =
+          stderrText.trim() || (typeof parsed?.reason === "string" ? parsed.reason : "");
+        finish(reason ? { decision: "block", reason } : { decision: "block" });
+        return;
+      }
+      finish(parsed ?? {});
+    });
 
     child.stdin.on("error", () => finish({}));
     child.stdin.write(JSON.stringify(stdin));
@@ -276,14 +316,38 @@ async function runSpecs(
 // Hook construction
 // ============================================================
 
-function buildPhaseHook(phase: (typeof PHASES)[number], entry: HookConfigEntry): Hook {
-  const cwd = process.cwd();
+function buildPhaseHook(
+  phase: (typeof PHASES)[number],
+  entry: HookConfigEntry,
+  ctx?: HookRunContext,
+): Hook {
+  // Hooks run in the WORKSPACE root (official behavior), not the process's
+  // startup cwd — the two diverge under WORKSPACE_ROOT, and a relative script
+  // path would then resolve in the wrong directory (same drift class as the
+  // mcp authDir bug fixed in a9e50bc).
+  const cwd = ctx?.workspaceRoot ?? process.cwd();
+  // Official stdin envelope: every hook receives session/transcript/cwd
+  // context plus hook_event_name, so scripts written for the official client
+  // can orient themselves without parsing tool-specific fields. Undefined
+  // values are dropped by JSON.stringify.
+  const envelope = {
+    session_id: ctx?.sessionId,
+    transcript_path: ctx
+      ? ccrPath(ctx.workspaceRoot, "sessions", `${ctx.sessionId}.json`)
+      : undefined,
+    cwd,
+    hook_event_name: phase,
+  };
   switch (phase) {
     case "PreToolUse":
       return {
         matcher: entry.matcher,
         pre: async ({ toolName, input }) => {
-          const out = await runSpecs(entry.hooks, { tool_name: toolName, tool_input: input }, cwd);
+          const out = await runSpecs(
+            entry.hooks,
+            { ...envelope, tool_name: toolName, tool_input: input },
+            cwd,
+          );
           if (out.decision === "block") {
             return { block: true, reason: (out.reason as string) || "blocked by PreToolUse hook" };
           }
@@ -296,7 +360,12 @@ function buildPhaseHook(phase: (typeof PHASES)[number], entry: HookConfigEntry):
         post: async ({ toolName, input, result }) => {
           const out = await runSpecs(
             entry.hooks,
-            { tool_name: toolName, tool_input: input, tool_response: result },
+            {
+              ...envelope,
+              tool_name: toolName,
+              tool_input: input,
+              tool_response: result,
+            },
             cwd,
           );
           if (out.decision === "block") {
@@ -314,7 +383,11 @@ function buildPhaseHook(phase: (typeof PHASES)[number], entry: HookConfigEntry):
       return {
         matcher: entry.matcher,
         stop: async ({ stopHookActive }) => {
-          const out = await runSpecs(entry.hooks, { stop_hook_active: stopHookActive }, cwd);
+          const out = await runSpecs(
+            entry.hooks,
+            { ...envelope, stop_hook_active: stopHookActive },
+            cwd,
+          );
           if (out.decision === "block") {
             return { blockingError: (out.reason as string) || "stop hook requested more work" };
           }
@@ -326,7 +399,7 @@ function buildPhaseHook(phase: (typeof PHASES)[number], entry: HookConfigEntry):
         matcher: entry.matcher,
         event: async (payload) => {
           if (payload.event !== phase) return;
-          await runSpecs(entry.hooks, payload, cwd);
+          await runSpecs(entry.hooks, { ...envelope, ...payload }, cwd);
         },
       };
   }
@@ -337,11 +410,15 @@ function buildPhaseHook(phase: (typeof PHASES)[number], entry: HookConfigEntry):
  * of hooks registered. Matching is done by the registry's own matcher logic
  * (a matcher may be a plain tool name, "*", or a regex such as "Edit|Write").
  */
-export function registerHooksFromConfig(registry: HookRegistry, config: HooksConfig): number {
+export function registerHooksFromConfig(
+  registry: HookRegistry,
+  config: HooksConfig,
+  ctx?: HookRunContext,
+): number {
   let count = 0;
   for (const phase of PHASES) {
     for (const entry of config[phase] ?? []) {
-      registry.register(buildPhaseHook(phase, entry));
+      registry.register(buildPhaseHook(phase, entry, ctx));
       count++;
     }
   }
@@ -356,10 +433,14 @@ export function registerHooksFromConfig(registry: HookRegistry, config: HooksCon
  * repository should go through loadHooksFromSettingsTrusted instead — project
  * hooks execute arbitrary shell commands with the user's environment.
  */
-export function loadHooksFromSettings(workspaceRoot: string, registry: HookRegistry): number {
+export function loadHooksFromSettings(
+  workspaceRoot: string,
+  registry: HookRegistry,
+  ctx?: HookRunContext,
+): number {
   const settings = readSettings(workspaceRoot);
   const config = parseHooksConfig(settings);
-  return registerHooksFromConfig(registry, config);
+  return registerHooksFromConfig(registry, config, ctx);
 }
 
 // --- Project-hook trust gate ------------------------------------------------
@@ -450,6 +531,7 @@ export async function loadHooksFromSettingsTrusted(
   workspaceRoot: string,
   registry: HookRegistry,
   confirm: ((descriptions: string[]) => Promise<boolean>) | null,
+  ctx?: HookRunContext,
 ): Promise<TrustedHooksResult> {
   const settings = readSettings(workspaceRoot);
   const config = parseHooksConfig(settings);
@@ -458,11 +540,11 @@ export async function loadHooksFromSettingsTrusted(
 
   const fingerprint = hooksConfigFingerprint(config);
   if (isHooksConfigTrusted(workspaceRoot, fingerprint)) {
-    return { loaded: registerHooksFromConfig(registry, config), skippedUntrusted: false };
+    return { loaded: registerHooksFromConfig(registry, config, ctx), skippedUntrusted: false };
   }
   if (confirm && (await confirm(descriptions))) {
     trustHooksConfig(workspaceRoot, fingerprint);
-    return { loaded: registerHooksFromConfig(registry, config), skippedUntrusted: false };
+    return { loaded: registerHooksFromConfig(registry, config, ctx), skippedUntrusted: false };
   }
   return { loaded: 0, skippedUntrusted: true };
 }

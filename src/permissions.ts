@@ -330,6 +330,16 @@ export async function classifyPermissionRisk(
   if (!modelConfig.apiKey) return { block: false, unavailable: true };
 
   const action = formatActionForClassifier(toolName, input);
+
+  // Session-level verdict cache: identical flagged calls (tool + formatted
+  // action) reuse the earlier classification. The classifier is a serial model
+  // call on the tool-execution critical path, so a repeat of a similar command
+  // within a session must not re-pay the latency. BLOCK verdicts cache too —
+  // a repeated dangerous command must stay consistently blocked.
+  const cacheKey = `${toolName}|${action}`;
+  const cached = classifier.cache?.get(cacheKey);
+  if (cached) return cached;
+
   const messages = [
     {
       role: "user" as const,
@@ -359,7 +369,15 @@ export async function classifyPermissionRisk(
     if (timeoutController.signal.aborted && !text) {
       return { block: false, unavailable: true };
     }
-    return parseClassifierVerdict(text);
+    const verdict = parseClassifierVerdict(text);
+    // Cache only definitive verdicts. An "unavailable" result means the
+    // classifier couldn't answer (timeout/outage) — that is not a
+    // classification, and caching it would pin a transient failure for the
+    // whole session.
+    if (classifier.cache && !verdict.unavailable) {
+      classifier.cache.set(cacheKey, verdict);
+    }
+    return verdict;
   } catch {
     // API error, network failure, etc. — never block the tool on a classifier
     // outage; defer to the existing regex + interactive prompt.

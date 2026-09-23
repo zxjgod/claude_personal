@@ -22,6 +22,7 @@ import {
   resetScheduledJobs,
   validateCron,
 } from "../tools/extended/cron-shared.js";
+import { getCwd } from "../tools/session-cwd.js";
 import type { ToolContext } from "../types.js";
 
 let repo: string;
@@ -78,7 +79,33 @@ describe("EnterWorktree / ExitWorktree", () => {
     expect(r.error).toBeUndefined();
     expect(r.content).toContain("feat-1");
     expect(r.content).toContain("Path:");
+    expect(r.content).toContain("Session cwd switched");
     expect(fs.existsSync(path.join(repo, ".claude", "worktrees", "feat-1"))).toBe(true);
+  });
+
+  it("switches the session cwd on enter and restores it on exit (S5)", async () => {
+    if (!hasGit) return;
+    const sid = "sess-s5";
+    await EnterWorktreeTool.call({ name: "cwd-1", baseRef: "head" }, ctx({ sessionId: sid }));
+    const wt = path.join(repo, ".claude", "worktrees", "cwd-1");
+    expect(getCwd(sid)).toBe(wt);
+    const r = await ExitWorktreeTool.call({ action: "keep" }, ctx({ sessionId: sid }));
+    expect(r.error).toBeUndefined();
+    expect(getCwd(sid)).toBeUndefined(); // cleared → falls back to workspace root
+  });
+
+  it("restores the enclosing worktree's cwd when exiting a nested worktree", async () => {
+    if (!hasGit) return;
+    const sid = "sess-s5-nested";
+    await EnterWorktreeTool.call({ name: "outer-1", baseRef: "head" }, ctx({ sessionId: sid }));
+    await EnterWorktreeTool.call({ name: "inner-1", baseRef: "head" }, ctx({ sessionId: sid }));
+    const outer = path.join(repo, ".claude", "worktrees", "outer-1");
+    const inner = path.join(repo, ".claude", "worktrees", "inner-1");
+    expect(getCwd(sid)).toBe(inner);
+    await ExitWorktreeTool.call({ action: "keep" }, ctx({ sessionId: sid }));
+    expect(getCwd(sid)).toBe(outer);
+    await ExitWorktreeTool.call({ action: "keep" }, ctx({ sessionId: sid }));
+    expect(getCwd(sid)).toBeUndefined();
   });
 
   it("refuses to exit_worktree with remove when there are uncommitted changes", async () => {

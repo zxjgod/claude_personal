@@ -14,12 +14,14 @@ import { buildTool } from "../registry.js";
 
 const TIMEOUT_MS = 15_000;
 const MAX_RESULTS = 10;
+const HARD_MAX_RESULTS = 20;
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
-// Configurable search endpoint so users behind a firewall can point at a
-// DuckDuckGo-compatible mirror/proxy (the HTML format parser is DDG-specific).
+// Configurable search endpoints so users behind a firewall can point at a
+// DuckDuckGo-compatible mirror/proxy (the HTML format parsers are DDG-specific).
+const DDG_LITE_ENDPOINT = process.env.WEB_SEARCH_ENDPOINT || "https://lite.duckduckgo.com/lite/";
 const DDG_ENDPOINT = process.env.WEB_SEARCH_ENDPOINT || "https://html.duckduckgo.com/html/";
 const BING_ENDPOINT = process.env.WEB_SEARCH_BING_ENDPOINT || "https://www.bing.com/search";
-// "auto" (DDG → Bing fallback) | "duckduckgo" | "bing"
+// "auto" (DDG lite → DDG html → Bing fallback) | "duckduckgo" | "bing"
 const ENGINE_PREF = (process.env.WEB_SEARCH_ENGINE || "auto").toLowerCase();
 // Bing only serves the parseable result markup to browser-like clients.
 const BROWSER_UA =
@@ -30,8 +32,27 @@ const BROWSER_UA =
 // for the rest of the session instead of paying a 15s timeout per query.
 let ddgUnavailable = false;
 
+/** freshness enum → DDG's `df` POST parameter. */
+const FRESHNESS_DF: Record<string, string> = { week: "w", month: "m", year: "y" };
+
 const WebSearchSchema = z.strictObject({
   query: z.string().min(1).describe("The search query"),
+  max_results: z
+    .number()
+    .int()
+    .min(1)
+    .max(HARD_MAX_RESULTS)
+    .optional()
+    .describe(`Maximum number of results to return (1-${HARD_MAX_RESULTS}, default 10)`),
+  domains: z
+    .array(z.string().min(1))
+    .max(5)
+    .optional()
+    .describe('Restrict results to these domains (e.g. ["docs.python.org"])'),
+  freshness: z
+    .enum(["week", "month", "year"])
+    .optional()
+    .describe("Recency filter: results newer than this window"),
 });
 
 interface SearchResult {
@@ -67,6 +88,31 @@ function unwrapUrl(href: string): string {
   } catch {
     return href;
   }
+}
+
+/**
+ * Parse DuckDuckGo LITE results (table layout — markedly more stable than the
+ * html endpoint's class soup, and what the mobile/no-JS page serves). Each
+ * result is an <a class="result-link">Title</a> with a
+ * <td class="result-snippet"> after it. Exported for testing.
+ */
+export function parseDdgLiteResults(html: string, limit = MAX_RESULTS): SearchResult[] {
+  const results: SearchResult[] = [];
+  // Whole-anchor regex: the href can sit before OR after the class attribute.
+  const anchorRe = /<a\b([^>]*\bclass="result-link"[^>]*)>([\s\S]*?)<\/a>/gi;
+  const anchors = [...html.matchAll(anchorRe)];
+  for (let i = 0; i < anchors.length && results.length < limit; i++) {
+    const m = anchors[i];
+    const href = /href="([^"]+)"/.exec(m[1])?.[1];
+    const title = decodeEntities(m[2]);
+    if (!href || !title) continue;
+    // The snippet lives between this anchor and the next result's anchor.
+    const from = (m.index ?? 0) + m[0].length;
+    const to = anchors[i + 1]?.index ?? html.length;
+    const snippet = /class="result-snippet"[^>]*>([\s\S]*?)<\/td>/.exec(html.slice(from, to))?.[1];
+    results.push({ title, url: unwrapUrl(href), snippet: snippet ? decodeEntities(snippet) : "" });
+  }
+  return results;
 }
 
 /** Parse DuckDuckGo HTML results. Exported for testing. */
@@ -134,19 +180,24 @@ async function readLimitedBody(response: Response): Promise<{ html?: string; err
   return { html: Buffer.concat(chunks).toString("utf8") };
 }
 
-async function searchDuckDuckGo(query: string): Promise<SearchOutcome> {
+async function searchDuckDuckGoLite(
+  query: string,
+  limit: number,
+  df?: string,
+): Promise<SearchOutcome> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
-    const response = await fetch(DDG_ENDPOINT, {
+    const params: Record<string, string> = { q: query };
+    if (df) params.df = df;
+    const response = await fetch(DDG_LITE_ENDPOINT, {
       method: "POST",
       headers: {
-        "User-Agent":
-          "ClaudeCodeReplica/1.0 (AI coding assistant; +https://github.com/claude-code-replica)",
+        "User-Agent": BROWSER_UA,
         "Content-Type": "application/x-www-form-urlencoded",
         Accept: "text/html",
       },
-      body: new URLSearchParams({ q: query }).toString(),
+      body: new URLSearchParams(params).toString(),
       signal: controller.signal,
     });
     if (!response.ok) {
@@ -154,7 +205,7 @@ async function searchDuckDuckGo(query: string): Promise<SearchOutcome> {
     }
     const body = await readLimitedBody(response);
     if (body.error) return { ok: false, error: body.error };
-    return { ok: true, results: parseSearchResults(body.html!) };
+    return { ok: true, results: parseDdgLiteResults(body.html!, limit) };
   } catch (err) {
     if ((err as Error).name === "AbortError")
       return { ok: false, error: `timed out after ${TIMEOUT_MS / 1000}s` };
@@ -164,11 +215,43 @@ async function searchDuckDuckGo(query: string): Promise<SearchOutcome> {
   }
 }
 
-async function searchBing(query: string): Promise<SearchOutcome> {
+async function searchDuckDuckGo(query: string, limit: number, df?: string): Promise<SearchOutcome> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
-    const url = `${BING_ENDPOINT}?${new URLSearchParams({ q: query })}`;
+    const params: Record<string, string> = { q: query };
+    if (df) params.df = df;
+    const response = await fetch(DDG_ENDPOINT, {
+      method: "POST",
+      headers: {
+        "User-Agent":
+          "ClaudeCodeReplica/1.0 (AI coding assistant; +https://github.com/claude-code-replica)",
+        "Content-Type": "application/x-www-form-urlencoded",
+        Accept: "text/html",
+      },
+      body: new URLSearchParams(params).toString(),
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      return { ok: false, error: `${response.status} ${response.statusText}` };
+    }
+    const body = await readLimitedBody(response);
+    if (body.error) return { ok: false, error: body.error };
+    return { ok: true, results: parseSearchResults(body.html!, limit) };
+  } catch (err) {
+    if ((err as Error).name === "AbortError")
+      return { ok: false, error: `timed out after ${TIMEOUT_MS / 1000}s` };
+    return { ok: false, error: (err as Error).message };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function searchBing(query: string, limit: number): Promise<SearchOutcome> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  try {
+    const url = `${BING_ENDPOINT}?${new URLSearchParams({ q: query, count: String(limit) })}`;
     const response = await fetch(url, {
       headers: { "User-Agent": BROWSER_UA, Accept: "text/html" },
       signal: controller.signal,
@@ -178,7 +261,7 @@ async function searchBing(query: string): Promise<SearchOutcome> {
     }
     const body = await readLimitedBody(response);
     if (body.error) return { ok: false, error: body.error };
-    return { ok: true, results: parseBingResults(body.html!) };
+    return { ok: true, results: parseBingResults(body.html!, limit) };
   } catch (err) {
     if ((err as Error).name === "AbortError")
       return { ok: false, error: `timed out after ${TIMEOUT_MS / 1000}s` };
@@ -206,12 +289,14 @@ export const WebSearchTool: Tool = buildTool({
   description: "Search the web and return result snippets",
   promptDescription:
     "Search the web for current information. " +
-    "Parameters: query (required, the search terms). " +
-    "Returns up to 10 ranked results with titles, URLs, and snippets. " +
+    "Parameters: query (required, the search terms); max_results (1-20, default 10); " +
+    "domains (restrict to specific domains, e.g. docs.python.org); freshness " +
+    "(week|month|year recency filter). " +
+    "Returns ranked results with titles, URLs, and snippets. " +
     "Use this to find documentation, recent events, or facts beyond your training data, " +
     "then optionally follow up with web_fetch to read a specific result in full. " +
-    "No API key required — queries DuckDuckGo with automatic fallback to Bing " +
-    "(set WEB_SEARCH_ENGINE=duckduckgo|bing|auto to control this).",
+    "No API key required — queries DuckDuckGo (lite endpoint first) with automatic " +
+    "fallback to Bing (set WEB_SEARCH_ENGINE=duckduckgo|bing|auto to control this).",
   schema: WebSearchSchema,
   isReadOnly: true,
   isConcurrencySafe: true,
@@ -220,21 +305,40 @@ export const WebSearchTool: Tool = buildTool({
 
   async call(input): Promise<ToolResult> {
     const errors: string[] = [];
+    const limit = input.max_results ?? MAX_RESULTS;
+    // S7: domain restriction rides DDG's site: operator; freshness maps to df.
+    const effectiveQuery = input.domains?.length
+      ? `${input.query} ${input.domains.map((d) => `site:${d}`).join(" OR ")}`
+      : input.query;
+    const df = input.freshness ? FRESHNESS_DF[input.freshness] : undefined;
 
-    // DuckDuckGo first, unless disabled or already known to be unreachable.
+    // DuckDuckGo lite first (stable table markup), then the html endpoint,
+    // unless disabled or already known unreachable at the network level.
     if (ENGINE_PREF !== "bing" && !ddgUnavailable) {
-      const ddg = await searchDuckDuckGo(input.query);
-      if (!ddg.ok) {
-        ddgUnavailable = true; // blocked/down — don't keep timing out per query
-        errors.push(`DuckDuckGo: ${ddg.error}`);
-      } else if (ddg.results.length > 0 || ENGINE_PREF === "duckduckgo") {
-        return formatResults(input.query, ddg.results);
+      const lite = await searchDuckDuckGoLite(effectiveQuery, limit, df);
+      if (!lite.ok) {
+        errors.push(`DuckDuckGo(lite): ${lite.error}`);
+      } else if (lite.results.length > 0 || ENGINE_PREF === "duckduckgo") {
+        return formatResults(input.query, lite.results);
       }
-      // auto mode + empty DDG page (anomaly challenge etc.) → try Bing below
+      // Empty lite page → try the html endpoint before giving up on DDG.
+      if (lite.ok && lite.results.length === 0) {
+        const html = await searchDuckDuckGo(effectiveQuery, limit, df);
+        if (!html.ok) {
+          errors.push(`DuckDuckGo(html): ${html.error}`);
+        } else if (html.results.length > 0 || ENGINE_PREF === "duckduckgo") {
+          return formatResults(input.query, html.results);
+        }
+      }
+      // A NETWORK-level failure latches; an empty-but-valid page does not.
+      if (!lite.ok && /timed out|fetch failed|ENOTFOUND|ECONNREFUSED|ECONNRESET/.test(lite.error)) {
+        ddgUnavailable = true;
+      }
+      // auto mode + empty DDG pages (anomaly challenge etc.) → try Bing below
     }
 
     if (ENGINE_PREF !== "duckduckgo") {
-      const bing = await searchBing(input.query);
+      const bing = await searchBing(effectiveQuery, limit);
       if (!bing.ok) {
         errors.push(`Bing: ${bing.error}`);
       } else {

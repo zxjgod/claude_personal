@@ -11,6 +11,7 @@ import fg from "fast-glob";
 import { z } from "zod";
 import { isBlockedPath } from "../../permissions.js";
 import type { Tool, ToolResult } from "../../types.js";
+import { cachedFileListing } from "../../utils/fs-cache.js";
 import { buildTool } from "../registry.js";
 import { resolveInWorkspace } from "../utils/path.js";
 
@@ -179,6 +180,36 @@ export const GrepTool: Tool = buildTool({
   },
 });
 
+function makeAbortError(): Error {
+  const err = new Error("The operation was aborted");
+  err.name = "AbortError";
+  return err;
+}
+
+/**
+ * Await `promise`, but reject with the CALLER'S OWN AbortError as soon as its
+ * signal fires. The shared promise itself is left running — other callers
+ * racing the same promise still receive its result (or its genuine error).
+ */
+function raceAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(makeAbortError());
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(makeAbortError());
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
 async function runRipgrep(
   input: GrepInput,
   searchDir: string,
@@ -252,24 +283,37 @@ async function runRipgrep(
   if (fs.statSync(searchDir).isFile()) {
     candidates = [searchDir];
   } else {
-    const listArgs = [
-      "--no-config",
-      "--files",
-      "--null",
-      "--glob",
-      "!node_modules",
-      "--glob",
-      "!.git",
-    ];
-    if (input.type) listArgs.push("--type", input.type);
-    if (fileFilter) listArgs.push("--glob", fileFilter);
-    listArgs.push("--", searchDir);
-    const listed = await execFileAsync(rgPath, listArgs, {
-      timeout: 30_000,
-      maxBuffer: 10 * 1024 * 1024,
-      signal: abortSignal,
-    });
-    candidates = listed.stdout.split("\0").filter(Boolean);
+    // M3: the candidate listing is TTL-cached (shared with Glob, invalidated
+    // by tool-mediated writes). The search over the files is NOT cached.
+    // The producer must NOT capture this caller's abortSignal: the promise is
+    // SHARED with concurrent callers, and one caller's abort would reject the
+    // shared listing for everyone else (who then misreport "Search aborted"
+    // without ever being aborted). The listing runs under its own 30s
+    // timeout; each caller races its OWN abort against the shared promise.
+    const listing = cachedFileListing(
+      searchDir,
+      `rgfiles|${input.type ?? ""}|${fileFilter ?? ""}`,
+      async () => {
+        const listArgs = [
+          "--no-config",
+          "--files",
+          "--null",
+          "--glob",
+          "!node_modules",
+          "--glob",
+          "!.git",
+        ];
+        if (input.type) listArgs.push("--type", input.type);
+        if (fileFilter) listArgs.push("--glob", fileFilter);
+        listArgs.push("--", searchDir);
+        const listed = await execFileAsync(rgPath, listArgs, {
+          timeout: 30_000,
+          maxBuffer: 10 * 1024 * 1024,
+        });
+        return listed.stdout.split("\0").filter(Boolean);
+      },
+    );
+    candidates = await raceAbort(listing, abortSignal);
   }
   const files = [
     ...new Set(

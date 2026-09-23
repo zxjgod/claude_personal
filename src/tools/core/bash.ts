@@ -14,6 +14,7 @@ import {
   sandboxViolation,
 } from "../../sandbox-policy.js";
 import type { Tool, ToolContext, ToolResult } from "../../types.js";
+import { invalidateToolWritableScopes } from "../../utils/fs-cache.js";
 import { InputValidator } from "../../utils/input-validator.js";
 import { createJob, settleJob } from "../job-store.js";
 import { buildTool } from "../registry.js";
@@ -88,7 +89,7 @@ export const BashTool: Tool = buildTool({
         return {
           content: "",
           error:
-            "Native sandbox background execution requires the native runner; use a supported Windows environment.",
+            "Background execution is not supported under the native sandbox; run the command in the foreground instead.",
         };
       return runInBackground(input, context, cwd);
     }
@@ -98,6 +99,17 @@ export const BashTool: Tool = buildTool({
         return {
           content: "",
           error: "Native sandbox is unavailable on this platform; command refused.",
+        };
+      // cmd toggles quote state on every bare double quote. An odd count at
+      // the end of the command leaves the runner's appended redirection
+      // paths INSIDE a quoted region — stdout is silently swallowed instead
+      // of failing. Refuse up front with an error the caller can act on
+      // (a caret-escaped quote does not toggle, so echo ^"x still works).
+      if (cmdQuoteToggles(input.command) % 2 === 1)
+        return {
+          content: "",
+          error:
+            "Command contains an unbalanced double quote, which breaks output capture under the native sandbox; match or remove the stray quote.",
         };
       const result = await runWindowsSandbox({
         command: input.command,
@@ -120,8 +132,13 @@ export const BashTool: Tool = buildTool({
           // spawn win32 error codes) — without them a refusal is unexplainable.
           error: `Native Windows sandbox could not be started; command refused.${result.stderr ? `\n${result.stderr}` : ""}`,
         };
+      // M39 parity with the non-native path: a successful `cd <dir>` sticks.
+      if (!result.timedOut && result.code === 0) rememberCd(context.sessionId, cwd, input.command);
+      // M3: a shell command may touch the fs — drop cached listings.
+      invalidateToolWritableScopes(context);
       return {
         content: [result.stdout, result.stderr].filter(Boolean).join("\n") || "(no output)",
+        truncated: result.truncated,
         error: result.timedOut
           ? `Command timed out (${Math.round(timeout / 1000)}s)`
           : result.code !== 0
@@ -229,6 +246,8 @@ export const BashTool: Tool = buildTool({
     // full text). `outTruncated` now reflects only the 10MB in-memory guard
     // above, which is genuine data loss the formatter should flag.
     const outTruncated = truncated;
+    // M3: a shell command may touch the fs — drop cached listings.
+    invalidateToolWritableScopes(context);
 
     // timedOut is set by our killTree timer. We cannot rely on exitCode === null
     // here: on Windows `taskkill /T /F` makes the shell exit with code 1 (a real
@@ -286,6 +305,28 @@ export const BashTool: Tool = buildTool({
 /** The shell the command runs through (cmd.exe on Windows, bash elsewhere). */
 function shellName(): string {
   return process.env.ComSpec || (process.platform === "win32" ? "cmd.exe" : "/bin/bash");
+}
+
+/**
+ * Count cmd.exe quote-state toggles the way cmd itself does: every bare
+ * double quote flips in/out of a quoted region, and a caret OUTSIDE quotes
+ * eats the next character (so `^"` does not toggle; inside quotes a caret is
+ * literal). The native runner appends its output redirections after the
+ * command, so an odd toggle count would leave those paths inside a quoted
+ * region and silently swallow stdout.
+ */
+export function cmdQuoteToggles(command: string): number {
+  let toggles = 0;
+  let inQuote = false;
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i];
+    if (!inQuote && c === "^") i++;
+    else if (c === '"') {
+      toggles++;
+      inQuote = !inQuote;
+    }
+  }
+  return toggles;
 }
 
 /**

@@ -8,12 +8,17 @@ export interface NativeSandboxOptions {
   cwd: string;
   timeoutMs: number;
   signal?: AbortSignal;
+  /** Capture cap per redirected stream (default 10MB, matching the tools'
+   *  in-memory guard). Exposed for tests; callers never need to shrink it. */
+  maxCaptureBytes?: number;
 }
 export interface NativeSandboxResult {
   code: number | null;
   stdout: string;
   stderr: string;
   timedOut: boolean;
+  /** A redirected stream exceeded the capture cap and its text was cut. */
+  truncated: boolean;
 }
 
 /**
@@ -36,6 +41,27 @@ function decodeCapturedOutput(buf: Buffer): string {
     /* small-ICU runtime without GBK */
   }
   return buf.toString("utf8");
+}
+
+/**
+ * Back `end` off to a UTF-8 character boundary (drop an incomplete trailing
+ * sequence, at most 3 bytes). A capped read can cut a multibyte character in
+ * half; without this the strict UTF-8 decode of the WHOLE buffer fails and
+ * the GBK fallback garbles every byte of valid UTF-8 output, not just the
+ * cut. Genuine GBK content loses nothing: strict UTF-8 already fails on it,
+ * and dropping ≤3 trailing bytes costs at most one partial GBK character.
+ */
+export function trimToUtf8Boundary(buf: Buffer, end: number): number {
+  for (let k = 1; k <= 3 && k <= end; k++) {
+    const b = buf[end - k];
+    if ((b & 0xc0) === 0x80) continue; // continuation byte — keep scanning
+    if ((b & 0xc0) === 0xc0) {
+      const need = b >= 0xf0 ? 4 : b >= 0xe0 ? 3 : 2;
+      if (k < need) end -= k; // lead byte without its full sequence
+    }
+    break; // ASCII or a complete sequence — the cut is already clean
+  }
+  return end;
 }
 
 /**
@@ -63,9 +89,27 @@ function decodeCapturedOutput(buf: Buffer): string {
  * Known limitation (inherent to the `( )` grouping that keeps a user-side
  * `1>&2` from stealing our redirections): an UNQUOTED, unbalanced `)` in the
  * command closes the group early — `echo )` fails with a cmd syntax error.
- * Quoted or balanced parens are safe. Do not "fix" this by dropping the
- * group; the stderr-swap bug it prevents is worse than this edge.
+ * Quoted or balanced parens are safe. An unbalanced DOUBLE QUOTE is the
+ * quieter sibling (quote-state toggling folds our redirection paths into
+ * the user's string, so stdout is silently lost) — bash.ts refuses odd
+ * quote parity up front rather than let capture corrupt. Do not "fix" this
+ * by dropping the group; the stderr-swap bug it prevents is worse than
+ * these edges.
+ *
+ * Init-failure sentinels: the C# returns 0x4CC0000n, a band chosen OUTSIDE
+ * both the 0-255 cmd range and the 0xC0000000 NTSTATUS range, so nothing a
+ * sandboxed command can exit with collides with "the sandbox itself failed
+ * to start". The old small-negative band (0xFFFFFFF0..) collided with a
+ * user `exit /b -12`, which was then misreported as a sandbox refusal.
  */
+/**
+ * Per-stream capture cap, matching the tools' 10MB in-memory guard: the
+ * redirected files on disk are unbounded (only the timeout bounds how long a
+ * command may write), so loading them must be capped or a single command can
+ * OOM the agent process.
+ */
+const MAX_CAPTURE_BYTES = 10 * 1024 * 1024;
+
 export function runWindowsSandbox(options: NativeSandboxOptions): Promise<NativeSandboxResult> {
   if (process.platform !== "win32")
     return Promise.resolve({
@@ -73,6 +117,7 @@ export function runWindowsSandbox(options: NativeSandboxOptions): Promise<Native
       stdout: "",
       stderr: "unsupported platform",
       timedOut: false,
+      truncated: false,
     });
   const q = (value: string) => value.replace(/'/g, "''");
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-sandbox-"));
@@ -92,7 +137,8 @@ public static class CcrSandbox {
  [DllImport("kernel32.dll",SetLastError=true)] static extern uint WaitForSingleObject(IntPtr h,uint ms);
  [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetExitCodeProcess(IntPtr h,out uint code);
  [DllImport("kernel32.dll",SetLastError=true)] static extern bool CloseHandle(IntPtr h);
- const uint TOKEN_QUERY=8,TOKEN_DUPLICATE=2,TOKEN_ASSIGN_PRIMARY=1,TOKEN_ADJUST_DEFAULT=128,TOKEN_ADJUST_SESSIONID=256,CREATE_SUSPENDED=4,DISABLE_MAX_PRIVILEGE=1; const int JobObjectExtendedLimitInformation=9; const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE=0x2000;
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool TerminateProcess(IntPtr p,uint c);
+ const uint TOKEN_QUERY=8,TOKEN_DUPLICATE=2,TOKEN_ASSIGN_PRIMARY=1,TOKEN_ADJUST_DEFAULT=128,TOKEN_ADJUST_SESSIONID=256,CREATE_SUSPENDED=4,DISABLE_MAX_PRIVILEGE=1; const int JobObjectExtendedLimitInformation=9; const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE=0x2000; const uint SB=0x4CC00000;
  [StructLayout(LayoutKind.Sequential)] struct STARTUPINFO { public int cb; public string reserved,desktop,title; public int x,y,xsize,ysize,xcount,ycount,fill; public int flags; public short show,cb2; public IntPtr reserved2,stdin,stdout,stderr; }
  [StructLayout(LayoutKind.Sequential)] struct PROCESS_INFORMATION { public IntPtr process,thread; public uint pid,tid; }
  [StructLayout(LayoutKind.Sequential)] struct BASIC { public long perProcess,perJob; public uint flags; public UIntPtr min,max; public uint active; public IntPtr affinity; public uint priority,sched; }
@@ -124,21 +170,27 @@ public static class CcrSandbox {
   bool ok=restricted!=IntPtr.Zero && CreateProcessAsUser(restricted,null,line,IntPtr.Zero,IntPtr.Zero,false,CREATE_SUSPENDED,IntPtr.Zero,cwd,ref si,out pi);
   // Restricted-token launch needs privileges a plain user lacks; fall back to a same-job unsandboxed-token spawn rather than hard-failing.
   if(!ok) ok=CreateProcess(null,line,IntPtr.Zero,IntPtr.Zero,false,CREATE_SUSPENDED,IntPtr.Zero,cwd,ref si,out pi);
-  if(!ok){ Fail("spawn"); return -12; }
+  if(!ok){ Fail("spawn"); return (int)(SB+1); }
   var job=CreateJobObject(IntPtr.Zero,null);
-  if(job==IntPtr.Zero){ Fail("CreateJobObject"); return -13; }
+  // Every early return below MUST TerminateProcess: the child is CREATE_SUSPENDED and
+  // not yet in any job (or in a job without kill-on-close), so nothing else would
+  // ever reap it — it would sit suspended forever after the host exits.
+  if(job==IntPtr.Zero){ Fail("CreateJobObject"); TerminateProcess(pi.process,1); return (int)(SB+2); }
   var lim=new LIMITS(); lim.basic.flags=JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
   var mem=Marshal.AllocHGlobal(Marshal.SizeOf(lim)); Marshal.StructureToPtr(lim,mem,false);
-  if(!SetInformationJobObject(job,JobObjectExtendedLimitInformation,mem,(uint)Marshal.SizeOf(lim))) Fail("SetInformationJobObject");
+  bool limOk=SetInformationJobObject(job,JobObjectExtendedLimitInformation,mem,(uint)Marshal.SizeOf(lim));
   Marshal.FreeHGlobal(mem);
-  if(!AssignProcessToJobObject(job,pi.process)){ Fail("AssignProcessToJobObject"); return -15; }
+  // Hard-fail, not log-and-continue: without kill-on-close a later timeout kill of
+  // this host leaves the whole sandboxed tree RUNNING (orphaned teardown no-op).
+  if(!limOk){ Fail("SetInformationJobObject"); TerminateProcess(pi.process,1); return (int)(SB+3); }
+  if(!AssignProcessToJobObject(job,pi.process)){ Fail("AssignProcessToJobObject"); TerminateProcess(pi.process,1); return (int)(SB+4); }
   ResumeThread(pi.thread);
   // Wait on the PROCESS HANDLE, not Process.GetProcessById: a fast command
   // (a plain echo) can finish before the pid lookup runs, and GetProcessById
   // then throws "process is not running" even though the job completed.
   WaitForSingleObject(pi.process,0xFFFFFFFF);
   uint rc;
-  if(!GetExitCodeProcess(pi.process,out rc)){ Fail("GetExitCodeProcess"); return -16; }
+  if(!GetExitCodeProcess(pi.process,out rc)){ Fail("GetExitCodeProcess"); return (int)(SB+5); }
   CloseHandle(job); CloseHandle(pi.thread); CloseHandle(pi.process);
   if(restricted!=IntPtr.Zero) CloseHandle(restricted);
   if(orig!=IntPtr.Zero) CloseHandle(orig);
@@ -152,8 +204,7 @@ public static class CcrSandbox {
       ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
       { windowsHide: true },
     );
-    let stderr = "",
-      timedOut = false;
+    let timedOut = false;
     // Raw bytes, not strings: the host powershell writes diagnostics in the
     // OEM codepage on CJK Windows, so decoding per-chunk would garble the
     // very errors we added the handler to surface.
@@ -179,28 +230,49 @@ public static class CcrSandbox {
     const finish = (rawCode: number | null) => {
       clearTimeout(timer);
       options.signal?.removeEventListener("abort", abort);
-      // PowerShell maps our negative init-failure sentinels (-10..-16) into
-      // the uint32 exit-code space; restore EXACTLY that band so callers can
-      // tell "sandbox refused to start" from "command failed with code N".
-      // Other negatives (a command's own `exit /b -1`) and NTSTATUS failures
-      // (0xC0000005 and friends) deliberately stay unsigned as before.
+      // Init-failure sentinels arrive as 0x4CC0000n (see the file doc-comment):
+      // a band no cmd/PowerShell/NTSTATUS exit code occupies. Restore them to
+      // small negatives so callers can tell "sandbox refused to start" from
+      // "command failed with code N". Everything else — including a user
+      // `exit /b -12` (0xFFFFFFF4) and NTSTATUS crashes (0xC0000005...) —
+      // passes through unchanged.
       let code = rawCode;
-      if (code !== null && code >= 0xfffffff0 && code <= 0xfffffff6) code -= 0x1_0000_0000;
+      if (code !== null && code >= 0x4cc00001 && code <= 0x4cc0000f)
+        code = -(code - 0x4cc00000 + 100);
+      const cap = options.maxCaptureBytes ?? MAX_CAPTURE_BYTES;
+      // Read each redirected file capped: a command can write gigabytes to
+      // its redirect within the timeout window, and readFileSync would load
+      // every byte. The +16 slack lets trimToUtf8Boundary drop the partial
+      // character WITHOUT eating into the caller's cap budget.
+      const readCapped = (file: string): { text: string; truncated: boolean } => {
+        try {
+          const size = fs.statSync(file).size;
+          const len = Math.min(size, cap + 16);
+          const fh = fs.openSync(file, "r");
+          try {
+            const buf = Buffer.alloc(len);
+            const got = fs.readSync(fh, buf, 0, len, 0);
+            const end = trimToUtf8Boundary(buf, got);
+            return { text: decodeCapturedOutput(buf.subarray(0, end)), truncated: size > cap };
+          } finally {
+            fs.closeSync(fh);
+          }
+        } catch {
+          return { text: "", truncated: false };
+        }
+      };
       const host = decodeCapturedOutput(Buffer.concat(hostErr));
-      let stdout = "";
-      try {
-        stdout = decodeCapturedOutput(fs.readFileSync(outFile));
-      } catch {}
-      try {
-        const commandStderr = decodeCapturedOutput(fs.readFileSync(errFile));
-        stderr = commandStderr ? (host ? `${commandStderr}\n${host}` : commandStderr) : host;
-      } catch {
-        stderr = host;
-      }
+      const out = readCapped(outFile);
+      const err = readCapped(errFile);
+      const truncated = out.truncated || err.truncated;
+      const stdout = out.text;
+      const base = err.text ? (host ? `${err.text}\n${host}` : err.text) : host;
+      const note = "ccr-sandbox: output exceeded the capture cap and was truncated";
+      const stderr = truncated ? (base ? `${base}\n${note}` : note) : base;
       try {
         fs.rmSync(temp, { recursive: true, force: true });
       } catch {}
-      resolve({ code, stdout, stderr, timedOut });
+      resolve({ code, stdout, stderr, timedOut, truncated });
     };
     child.on("close", finish);
     child.on("error", (e) => {

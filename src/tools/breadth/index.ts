@@ -231,6 +231,23 @@ export const LspDiagnosticsTool: Tool = buildTool({
       }
     }
 
+    // --- S4: whole-project diagnostics over the persistent tsserver ----------
+    // geterrForProject sweeps the project on the warm connection (first sweep builds
+    // the graph; later ones are incremental) — far cheaper than the cold
+    // `npx tsc` below, which stays as the fallback when tsserver is missing
+    // or the sweep fails/times out.
+    if (typeof input.filePath !== "string" || !input.filePath) {
+      const client = getLspClient(cwd);
+      if (client) {
+        try {
+          const diags = await client.getProjectDiagnostics();
+          return { content: lspFormatDiagnostics(diags) };
+        } catch {
+          // Fall through to tsc on any LSP failure.
+        }
+      }
+    }
+
     // --- tsc fallback ----------------------------------------------------------
     let output = "";
     try {

@@ -23,6 +23,7 @@ import {
 } from "../../subagents.js";
 import type { Message, Tool, ToolResult } from "../../types.js";
 import { CancellationScope } from "../../utils/cancellation.js";
+import { Semaphore } from "../../utils/semaphore.js";
 import { createSubAgentApprover } from "../../utils/subagent-security.js";
 import { buildTool } from "../registry.js";
 import { collectPartialReport } from "./subagent-report.js";
@@ -67,52 +68,12 @@ const TaskSchema = z.strictObject({
 
 // --- Concurrency semaphore ---
 
-interface SlotWaiter {
-  resolve: () => void;
-  reject: (error: Error) => void;
-  signal?: AbortSignal;
-  onAbort?: () => void;
-}
+// Module-level (session-wide) semaphore over concurrent sub-agent loops.
+// The label keeps the historical error strings ("Sub-agent aborted …").
+const slots = new Semaphore(MAX_CONCURRENCY, "Sub-agent");
 
-let activeCount = 0;
-const waitQueue: SlotWaiter[] = [];
-
-async function acquireSlot(signal?: AbortSignal): Promise<void> {
-  if (signal?.aborted) throw new Error("Sub-agent aborted before acquiring a slot");
-  if (activeCount < MAX_CONCURRENCY) {
-    activeCount++;
-    return;
-  }
-
-  await new Promise<void>((resolve, reject) => {
-    const waiter: SlotWaiter = { resolve, reject, signal };
-    if (signal) {
-      waiter.onAbort = () => {
-        const index = waitQueue.indexOf(waiter);
-        if (index >= 0) waitQueue.splice(index, 1);
-        reject(new Error("Sub-agent aborted while waiting for a slot"));
-      };
-      signal.addEventListener("abort", waiter.onAbort, { once: true });
-    }
-    waitQueue.push(waiter);
-  });
-  // releaseSlot transfers its existing reservation to this waiter.
-}
-
-function releaseSlot(): void {
-  while (waitQueue.length > 0) {
-    const next = waitQueue.shift()!;
-    if (next.signal?.aborted) {
-      if (next.onAbort && next.signal) next.signal.removeEventListener("abort", next.onAbort);
-      next.reject(new Error("Sub-agent aborted while waiting for a slot"));
-      continue;
-    }
-    if (next.onAbort && next.signal) next.signal.removeEventListener("abort", next.onAbort);
-    next.resolve();
-    return;
-  }
-  activeCount--;
-}
+const acquireSlot = (signal?: AbortSignal): Promise<void> => slots.acquire(signal);
+const releaseSlot = (): void => slots.release();
 
 // --- Tool ---
 

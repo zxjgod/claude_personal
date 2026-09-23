@@ -18,6 +18,12 @@ export interface CommandContext {
   messages: Message[];
   modelConfig: ModelConfig;
   callModel: ModelCaller;
+  /**
+   * M5 fast-model side channel (CCR_FAST_MODEL), resolved lazily per call so
+   * mid-session /provider and /model switches are picked up. Null when unset —
+   * callers then use the main callModel/modelConfig pair.
+   */
+  fastModelFactory?: () => { callModel: ModelCaller; modelConfig: ModelConfig } | null;
   workspaceRoot: string;
   sessionId: string;
   persistence?: PersistenceManager;

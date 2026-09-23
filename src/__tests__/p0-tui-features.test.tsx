@@ -235,7 +235,7 @@ describe("handleModelError onRetry (P0-4)", () => {
     }
   });
 
-  it("reports transient retries with a 2s delay", async () => {
+  it("reports transient retries with exponential backoff (base 1s ± 20%)", async () => {
     vi.useFakeTimers();
     try {
       const notices: Array<{ kind: string; delayMs: number }> = [];
@@ -244,10 +244,33 @@ describe("handleModelError onRetry (P0-4)", () => {
         state(),
         (n) => notices.push(n),
       );
-      await vi.advanceTimersByTimeAsync(3000);
+      await vi.advanceTimersByTimeAsync(65_000);
       const recovery = await p;
       expect(recovery).toBe("retry_transient");
-      expect(notices).toEqual([{ kind: "transient", delayMs: 2000 }]);
+      expect(notices).toHaveLength(1);
+      expect(notices[0]!.kind).toBe("transient");
+      // 1000 × 2^0 ± 20% jitter — no longer the old fixed 2000ms.
+      expect(notices[0]!.delayMs).toBeGreaterThanOrEqual(800);
+      expect(notices[0]!.delayMs).toBeLessThanOrEqual(1200);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("grows the transient backoff exponentially with the retry count", async () => {
+    vi.useFakeTimers();
+    try {
+      const notices: Array<{ kind: string; delayMs: number }> = [];
+      const p = handleModelError(
+        Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }),
+        { ...state(), transientRetries: 2 },
+        (n) => notices.push(n),
+      );
+      await vi.advanceTimersByTimeAsync(65_000);
+      await p;
+      // 1000 × 2² = 4000 ± 20%
+      expect(notices[0]!.delayMs).toBeGreaterThanOrEqual(3200);
+      expect(notices[0]!.delayMs).toBeLessThanOrEqual(4800);
     } finally {
       vi.useRealTimers();
     }

@@ -7,6 +7,7 @@ import {
   applyToolResultBudget,
   COMPACT_BOUNDARY_MARKER,
   CollapseStore,
+  dedupeToolResults,
   getMessagesAfterCompactBoundary,
   microcompact,
   prepareCheapLayers,
@@ -221,5 +222,103 @@ describe("CollapseStore (M31 layer 4)", () => {
     expect(store.restore("a")).toBe("original");
     expect(store.restore("missing")).toBeUndefined();
     expect(store.size).toBe(1);
+  });
+});
+
+describe("dedupeToolResults (M2 layer 1.5)", () => {
+  it("folds byte-identical old results onto their first occurrence", () => {
+    const content = "same file content\n".repeat(50);
+    const msgs: Message[] = [
+      ...pair("call_1", 1).slice(0, 1),
+      { role: "tool", tool_call_id: "call_1", name: "read", content },
+      ...pair("call_2", 1).slice(0, 1),
+      { role: "tool", tool_call_id: "call_2", name: "read", content },
+      ...pair("call_3", 1).slice(0, 1),
+      { role: "tool", tool_call_id: "call_3", name: "read", content: "different".repeat(50) },
+      ...pair("call_4", 1).slice(0, 1),
+      { role: "tool", tool_call_id: "call_4", name: "read", content },
+      ...pair("call_5", 1).slice(0, 1),
+      { role: "tool", tool_call_id: "call_5", name: "read", content },
+      ...pair("call_6", 1).slice(0, 1),
+      { role: "tool", tool_call_id: "call_6", name: "read", content },
+    ];
+    // keepRecent default 4 → call_5/call_6 (last 2... keep 4) protected.
+    const r = dedupeToolResults(msgs, { keepRecent: 2 });
+    expect(r.changed).toBe(2); // call_2 and call_4 folded; call_3 differs
+    const toolMsgs = r.messages.filter((m) => m.role === "tool");
+    expect(toolMsgs[0]!.content).toBe(content); // first occurrence kept whole
+    expect(toolMsgs[1]!.content).toBe("[duplicate of earlier tool result call_1]");
+    expect(toolMsgs[2]!.content).toContain("different"); // unique content untouched
+    expect(toolMsgs[3]!.content).toBe("[duplicate of earlier tool result call_1]");
+    expect(r.charsSaved).toBeGreaterThan(0);
+  });
+
+  it("never folds semantic tools or results under minChars", () => {
+    const small = "tiny";
+    const msgs: Message[] = [
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          { id: "t1", type: "function", function: { name: "task", arguments: "{}" } },
+          { id: "t2", type: "function", function: { name: "read", arguments: "{}" } },
+        ],
+      },
+      { role: "tool", tool_call_id: "t1", name: "task", content: "report".repeat(100) },
+      {
+        role: "tool",
+        tool_call_id: "t2",
+        name: "read",
+        content: small.repeat(100) === "" ? "" : small,
+      },
+    ];
+    const r = dedupeToolResults(msgs);
+    expect(r.changed).toBe(0);
+    expect(r.messages).toBe(msgs);
+  });
+
+  it("is idempotent — a folded stub is not re-processed", () => {
+    const content = "d".repeat(500);
+    const msgs: Message[] = [
+      ...pair("a", 1).slice(0, 1),
+      { role: "tool", tool_call_id: "a", name: "read", content },
+      ...pair("b", 1).slice(0, 1),
+      { role: "tool", tool_call_id: "b", name: "read", content },
+    ];
+    const once = dedupeToolResults(msgs, { keepRecent: 0 });
+    expect(once.changed).toBe(1);
+    const twice = dedupeToolResults(once.messages, { keepRecent: 0 });
+    expect(twice.changed).toBe(0);
+    expect(twice.messages).toBe(once.messages);
+  });
+
+  it("runs inside prepareCheapLayers only over threshold", () => {
+    const content = "z".repeat(5000);
+    const dupPair = (id: string): Message[] => [
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id, type: "function", function: { name: "read", arguments: "{}" } }],
+      },
+      { role: "tool", tool_call_id: id, name: "read", content },
+    ];
+    // 6 identical results: default keepRecent=4 protects the last 4, the
+    // FIRST stays whole and the second folds — enough to prove the layer ran.
+    const dupHistory: Message[] = [
+      ...dupPair("d1"),
+      ...dupPair("d2"),
+      ...dupPair("d3"),
+      ...dupPair("d4"),
+      ...dupPair("d5"),
+      ...dupPair("d6"),
+    ];
+    // Under threshold: byte-stable, nothing runs.
+    const under = prepareCheapLayers(dupHistory, { estimateTokens: estTokens, threshold: 100_000 });
+    expect(under.messages).toBe(dupHistory);
+    // Over threshold: the duplicate is folded (note recorded).
+    const over = prepareCheapLayers(dupHistory, { estimateTokens: estTokens, threshold: 500 });
+    expect(over.notes.some((n) => n.includes("duplicate"))).toBe(true);
+    const tools = over.messages.filter((m) => m.role === "tool");
+    expect(tools[1]!.content).toContain("[duplicate of earlier tool result d1]");
   });
 });

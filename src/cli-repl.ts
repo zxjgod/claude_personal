@@ -58,6 +58,8 @@ export interface ReplDeps {
   allowedDirectories?: string[];
   prefetch: (latestUserText: string) => Promise<string | null>;
   summarizeToolBatch: ((prompt: string) => Promise<string | null>) | undefined;
+  /** M5: optional fast-model factory (resolved per turn; null = use main). */
+  fastModelFactory?: () => import("./auto-compact.js").FastModelOption | null;
   hooks: HookRegistry;
   mcpManager: MCPManager;
   state: SessionState;
@@ -89,6 +91,7 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
     allowedDirectories,
     prefetch,
     summarizeToolBatch,
+    fastModelFactory,
     hooks,
     mcpManager,
     askUser,
@@ -344,6 +347,7 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
         // M36: background memory/skill prefetch + (opt-in) tool-batch digest.
         prefetch,
         summarizeToolBatch,
+        fastModel: fastModelFactory?.() ?? undefined,
         // M41: mid-turn background completions are injected at the
         // tool_results boundary (budget-free) and gate end_turn continuations.
         drainNotifications: () => drainNotifications(session.id),

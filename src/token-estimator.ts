@@ -151,12 +151,26 @@ function estimateBlockTokens(block: ContentBlock, sourceFile?: string): number {
 }
 
 /**
- * Estimate tokens in a full message.
+ * Per-message memoization. Messages are treated as immutable across the loop —
+ * pipeline layers and compaction replace messages with new objects (spread),
+ * never mutating in place — so caching by object identity is safe. This keeps
+ * a full re-estimate (the path taken whenever the usage baseline is missing)
+ * from re-running the ~10 content-type regexes over every message, every turn,
+ * synchronously on the event loop.
  */
-function estimateMessageTokens(msg: Message): number {
+const messageTokenCache = new WeakMap<Message, number>();
+
+/**
+ * Estimate tokens in a full message (memoized by message identity).
+ */
+export function estimateMessageTokens(msg: Message): number {
+  const cached = messageTokenCache.get(msg);
+  if (cached !== undefined) return cached;
+  let value: number;
   switch (msg.role) {
     case "user":
-      return msg.content.reduce((sum, block) => sum + estimateBlockTokens(block), 0);
+      value = msg.content.reduce((sum, block) => sum + estimateBlockTokens(block), 0);
+      break;
 
     case "assistant": {
       let total = 0;
@@ -177,24 +191,31 @@ function estimateMessageTokens(msg: Message): number {
           total += estimateMixedTextTokens(tc.function.arguments, 2.5);
         }
       }
-      return total;
+      value = total;
+      break;
     }
 
     case "tool": {
       // Tool results often contain mixed content (text + code)
       const text = msg.content || "";
       if (isLikelyCode(text)) {
-        return estimateMixedTextTokens(text, 3.0);
+        value = estimateMixedTextTokens(text, 3.0);
+      } else {
+        value = estimateMixedTextTokens(text, 3.5);
       }
-      return estimateMixedTextTokens(text, 3.5);
+      break;
     }
 
     case "system":
-      return estimateMixedTextTokens(msg.content, 3.5);
+      value = estimateMixedTextTokens(msg.content, 3.5);
+      break;
 
     default:
-      return 0;
+      value = 0;
+      break;
   }
+  messageTokenCache.set(msg, value);
+  return value;
 }
 
 /**
@@ -202,7 +223,9 @@ function estimateMessageTokens(msg: Message): number {
  * This is the main export for use in agent-loop.ts and context-pipeline.ts.
  */
 export function estimateTokens(messages: Message[]): number {
-  return messages.reduce((sum, msg) => sum + estimateMessageTokens(msg), 0);
+  let sum = 0;
+  for (const msg of messages) sum += estimateMessageTokens(msg);
+  return sum;
 }
 
 /**

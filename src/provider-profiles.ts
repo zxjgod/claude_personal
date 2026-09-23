@@ -129,3 +129,52 @@ export function applyProfile(modelConfig: ModelConfig, profile: ProviderProfile)
   });
   Object.assign(modelConfig, resolved);
 }
+
+/**
+ * Resolve the optional FAST model config (M5) — the cheap side-channel for
+ * high-volume, judgement-light model work (tool-batch digests, compaction
+ * summaries, web extraction, memory extraction).
+ *
+ * Source: CCR_FAST_MODEL, formatted "provider/model" (e.g. "deepseek/deepseek-chat")
+ * or just "model" (current provider/endpoint). Returns null when unset or
+ * unparseable — callers then use their normal (main) model config.
+ *
+ * SAME provider (or bare model): inherits apiKey/baseURL/options from the
+ * main config, so a cheap model hosted on the same (possibly relay) endpoint
+ * needs no extra setup.
+ *
+ * CROSS provider: the main config's baseURL/apiKey point at the MAIN
+ * provider's endpoint — inheriting them would send fast-model requests to
+ * the wrong host with the wrong key. The target provider's defaults are
+ * resolved instead, requiring its own credentials via
+ * CCR_FAST_MODEL_API_KEY (optional CCR_FAST_MODEL_BASE_URL override for
+ * private/relay endpoints). Without a key this returns null (main-model
+ * fallback) rather than building a config that can only 401.
+ */
+export function resolveFastModelConfig(modelConfig: ModelConfig): ModelConfig | null {
+  const raw = process.env.CCR_FAST_MODEL?.trim();
+  if (!raw) return null;
+  const slash = raw.indexOf("/");
+  if (slash === 0) return null; // "/model" — missing provider segment
+  const provider = (
+    slash > 0 ? raw.slice(0, slash) : modelConfig.provider
+  ) as ModelConfig["provider"];
+  const model = slash > 0 ? raw.slice(slash + 1) : raw;
+  if (!model) return null;
+  if (slash > 0 && !VALID_PROVIDERS.includes(provider)) return null;
+  if (provider === modelConfig.provider) {
+    return { ...modelConfig, provider, model };
+  }
+  const apiKey = process.env.CCR_FAST_MODEL_API_KEY?.trim();
+  if (!apiKey) return null;
+  return resolveProviderConfig({
+    provider,
+    apiKey,
+    model,
+    baseURL: process.env.CCR_FAST_MODEL_BASE_URL?.trim() || undefined,
+    maxTokens: modelConfig.maxTokens,
+    temperature: modelConfig.temperature,
+    // options deliberately NOT inherited: gateway routing belongs to the
+    // main provider's endpoint.
+  });
+}

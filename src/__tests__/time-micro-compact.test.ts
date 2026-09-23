@@ -3,10 +3,10 @@
 // ============================================================
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CLEARED_MESSAGE, microCompact } from "../services/micro-compact.js";
+import { CLEARED_MESSAGE, microCompactByTime } from "../services/time-micro-compact.js";
 import type { Message } from "../types.js";
 
-describe("microCompact", () => {
+describe("microCompactByTime", () => {
   // Save and restore env vars
   let originalEnv: Record<string, string | undefined>;
 
@@ -54,14 +54,14 @@ describe("microCompact", () => {
     const messages: Message[] = [
       createAssistant(30), // 30 min ago, under default 60min threshold
     ];
-    const result = microCompact(messages);
+    const result = microCompactByTime(messages);
     expect(result.cleared).toBe(0);
     expect(result.messages).toBe(messages); // Same reference = no change
   });
 
   it("should not trigger when no assistant message has timestamp", () => {
     const messages: Message[] = [{ role: "assistant", content: "no timestamp" } as Message];
-    const result = microCompact(messages);
+    const result = microCompactByTime(messages);
     expect(result.cleared).toBe(0);
   });
 
@@ -80,7 +80,7 @@ describe("microCompact", () => {
       createTool("call_3", "z".repeat(5000)), // recent, kept
     ];
 
-    const result = microCompact(messages);
+    const result = microCompactByTime(messages);
 
     expect(result.cleared).toBe(1); // call_1 cleared
     expect(result.tokensSaved).toBeGreaterThan(2000); // ~10000/4 = 2500 tokens
@@ -97,7 +97,7 @@ describe("microCompact", () => {
       createTool("call_1", CLEARED_MESSAGE), // Already cleared
     ];
 
-    const result = microCompact(messages);
+    const result = microCompactByTime(messages);
     expect(result.cleared).toBe(0); // No additional clearing
     expect(result.tokensSaved).toBe(0);
   });
@@ -111,7 +111,7 @@ describe("microCompact", () => {
       createTool("call_1", "content to clear"),
     ];
 
-    const result = microCompact(messages);
+    const result = microCompactByTime(messages);
     expect(result.cleared).toBe(0); // Disabled
   });
 
@@ -130,7 +130,7 @@ describe("microCompact", () => {
       createTool("call_3", "should keep as recent"),
     ];
 
-    const result = microCompact(messages);
+    const result = microCompactByTime(messages);
     expect(result.cleared).toBe(1); // Only call_1 cleared (call_3 is kept as recent)
     expect(result.messages[1].content).toBe(CLEARED_MESSAGE);
     expect(result.messages[2].content).toBe("should keep"); // task not compactable
@@ -150,14 +150,14 @@ describe("microCompact", () => {
       createTool("call_2", "recent"),
     ];
 
-    const result = microCompact(messages);
+    const result = microCompactByTime(messages);
     expect(result.cleared).toBe(1); // Only call_1 cleared, call_2 kept (floor at 1)
     expect(result.messages[1].content).toBe(CLEARED_MESSAGE);
     expect(result.messages[2].content).toBe("recent");
   });
 
   it("should handle empty messages gracefully", () => {
-    const result = microCompact([]);
+    const result = microCompactByTime([]);
     expect(result.cleared).toBe(0);
     expect(result.messages).toEqual([]);
   });
@@ -166,7 +166,7 @@ describe("microCompact", () => {
     const messages: Message[] = [
       createAssistant(90), // No tool calls
     ];
-    const result = microCompact(messages);
+    const result = microCompactByTime(messages);
     expect(result.cleared).toBe(0);
   });
 
@@ -183,9 +183,47 @@ describe("microCompact", () => {
       createTool("call_2", "recent result"),
     ];
 
-    const result = microCompact(messages);
+    const result = microCompactByTime(messages);
     expect(result.cleared).toBe(1); // call_1 cleared, call_2 kept (floor at 1)
     expect(result.messages[1].content).toBe(CLEARED_MESSAGE);
     expect(result.messages[2].content).toBe("recent result");
+  });
+
+  it("drives the trigger from an explicit lastActivityMs (session updatedAt)", () => {
+    process.env.CCR_MICROCOMPACT_KEEP_RECENT = "1";
+    // No message timestamps at all — the wiring at session load passes the
+    // session's updatedAt, which must be enough to fire.
+    const messages: Message[] = [
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          { id: "call_1", type: "function", function: { name: "read", arguments: "{}" } },
+          { id: "call_2", type: "function", function: { name: "bash", arguments: "{}" } },
+        ],
+      },
+      createTool("call_1", "stale dump"),
+      createTool("call_2", "recent dump"),
+    ];
+    // 90 minutes idle — over the default 60min threshold.
+    const idle = microCompactByTime(messages, Date.now() - 90 * 60 * 1000);
+    expect(idle.cleared).toBe(1);
+    expect(idle.messages[1].content).toBe(CLEARED_MESSAGE);
+
+    // 5 minutes idle — under threshold, same reference back.
+    const fresh = microCompactByTime(messages, Date.now() - 5 * 60 * 1000);
+    expect(fresh.cleared).toBe(0);
+    expect(fresh.messages).toBe(messages);
+  });
+
+  it("explicit lastActivityMs overrides stale message timestamps", () => {
+    // Message says 90min ago (would fire), but the session was actually
+    // saved 5 minutes ago — the explicit value wins and nothing clears.
+    const messages: Message[] = [
+      createAssistant(90, [{ id: "call_1", name: "read" }]),
+      createTool("call_1", "keep me"),
+    ];
+    const result = microCompactByTime(messages, Date.now() - 5 * 60 * 1000);
+    expect(result.cleared).toBe(0);
   });
 });

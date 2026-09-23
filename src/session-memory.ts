@@ -181,6 +181,17 @@ export class SessionMemory {
    * read-modify-write critical section effectively atomic.
    */
   private saveChain: Promise<void> = Promise.resolve();
+  /**
+   * P2 step 1: last-written SessionData per session. saveSerialized
+   * previously re-loaded and JSON.parsed the ENTIRE session file on every
+   * save just to preserve createdAt — O(messages) disk+parse work per turn.
+   * The cache holds the last data object written (identity fields intact);
+   * the first save of a session still loads from disk once. Messages are
+   * kept by reference — the caller's own array, so no extra copies.
+   */
+  private lastSaved = new Map<string, SessionData>();
+  /** Last preview string actually written to the catalog for a session. */
+  private lastPreviewWritten = new Map<string, string>();
 
   constructor(workspaceRoot: string) {
     this.sessionsDir = ccrPath(workspaceRoot, "sessions");
@@ -280,6 +291,10 @@ export class SessionMemory {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
+    // A deleted session's cached last-written object must go too, or a later
+    // save would resurrect its createdAt/version from the stale cache.
+    this.lastSaved.delete(sessionId);
+    this.lastPreviewWritten.delete(sessionId);
     const catalog = await this.readCatalog();
     if (catalog[sessionId]) {
       delete catalog[sessionId];
@@ -396,8 +411,11 @@ export class SessionMemory {
 
     let data: SessionData;
 
-    // Try to load existing session to preserve createdAt
-    const existing = await this.load(sessionId);
+    // P2: prefer the in-memory last-written object over re-loading (and
+    // re-parsing) the whole session file — the read-modify-write was the
+    // dominant cost of every save on a long session.
+    const cached = this.lastSaved.get(sessionId);
+    const existing = cached ?? (await this.load(sessionId));
     if (existing) {
       data = {
         ...existing,
@@ -422,8 +440,10 @@ export class SessionMemory {
         lastTerminalReason: options?.lastTerminalReason,
       };
     }
+    this.lastSaved.set(sessionId, data);
 
-    const json = JSON.stringify(data, null, 2);
+    // No pretty-print: halves the serialized size of a message-heavy session.
+    const json = JSON.stringify(data);
 
     // Atomic write: temp file + rename. A direct writeFile can leave a
     // truncated file if the process is killed (Ctrl+C / OOM) mid-write;
@@ -433,13 +453,16 @@ export class SessionMemory {
     await fsPromises.writeFile(tmpPath, json, "utf-8");
     await fsPromises.rename(tmpPath, filePath);
 
-    // Update catalog with preview for faster searchSessions
+    // Update catalog with preview for faster searchSessions — throttled to
+    // saves whose preview CHANGED (the preview is the first user message; it
+    // is stable for almost the whole session, so most saves skipped this I/O).
     try {
       const preview = firstUserPreview(messages);
-      if (preview) {
+      if (preview && this.lastPreviewWritten.get(sessionId) !== preview) {
         const catalog = await this.readCatalog();
         catalog[sessionId] = { ...(catalog[sessionId] ?? {}), preview };
         await this.writeCatalog(catalog);
+        this.lastPreviewWritten.set(sessionId, preview);
       }
     } catch (error) {
       // Catalog update is best-effort; don't fail the save if it errors

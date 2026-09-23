@@ -2,7 +2,7 @@
 // Tests: Background Prefetch (M36, kernel §9)
 // ============================================================
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ExtractedMemory } from "../memory-extract.js";
 import {
   keywords,
@@ -56,6 +56,46 @@ describe("rankMemories", () => {
   it("respects the limit", () => {
     const many = Array.from({ length: 10 }, (_, i) => mem(`security note ${i}`));
     expect(rankMemories("security", many, 2)).toHaveLength(2);
+  });
+
+  it("ranks Chinese queries against Chinese memories", () => {
+    // Before the CJK tokenizer, every Chinese char was a separator and this
+    // returned [] — silently disabling memory injection for CJK sessions.
+    const memories = [mem("数据库查询要走索引"), mem("部署前要先跑集成测试")];
+    const ranked = rankMemories("数据库查询很慢怎么优化", memories);
+    expect(ranked.length).toBeGreaterThan(0);
+    expect(ranked[0]!.memory.text).toBe("数据库查询要走索引");
+  });
+});
+
+describe("keywords (CJK)", () => {
+  it("produces non-empty term sets for pure-Chinese text", () => {
+    const k = keywords("数据库查询");
+    expect(k.size).toBeGreaterThan(0);
+  });
+
+  it("handles mixed Chinese/English text", () => {
+    const k = keywords("用 vitest 跑测试");
+    expect(k.has("vitest")).toBe(true);
+    expect(k.size).toBeGreaterThanOrEqual(2);
+  });
+
+  it("falls back to bigrams when Intl.Segmenter is unavailable", async () => {
+    const shim = Intl as unknown as { Segmenter?: unknown };
+    const orig = shim.Segmenter;
+    shim.Segmenter = undefined;
+    try {
+      vi.resetModules();
+      const fresh = await import("../prefetch.js");
+      const k = fresh.keywords("数据库查询很慢");
+      expect(k.size).toBeGreaterThan(0);
+      // Bigram degradation must still match against another bigram set.
+      const ranked = fresh.rankMemories("数据库查询很慢", [mem("数据库查询要走索引")]);
+      expect(ranked.length).toBeGreaterThan(0);
+    } finally {
+      shim.Segmenter = orig;
+      vi.resetModules();
+    }
   });
 });
 

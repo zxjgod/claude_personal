@@ -166,7 +166,9 @@ export class HookRegistry {
     for (const hook of this.hooks) {
       if (!hook.event) continue;
       if (hook.matcher !== "*" && hook.matcher !== event) continue;
-      await hook.event({ event, ...payload });
+      // event LAST: a payload field of the same name must not shadow the
+      // actual event name — config-built lifecycle hooks branch on it.
+      await hook.event({ ...payload, event });
     }
   }
 

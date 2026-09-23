@@ -1,10 +1,11 @@
-// /hooks — list registered PreToolUse / PostToolUse hooks (M18.13)
+// /hooks — list registered tool and lifecycle hooks (M18.13)
 // ============================================================
-// Hooks intercept, block, or rewrite tool calls (see hooks.ts). They are
-// registered programmatically in cli.ts; this command surfaces what's active
-// so the user can see why a tool call might be blocked or rewritten. It is
-// read-only — enabling/disabling specific hooks is left to config, matching
-// the lightweight "inspect, don't micromanage" stance.
+// Hooks intercept, block, or rewrite tool calls and observe lifecycle
+// events (see hooks.ts). They are registered programmatically in cli.ts;
+// this command surfaces what's active so the user can see why a tool call
+// might be blocked or rewritten. It is read-only — enabling/disabling
+// specific hooks is left to config, matching the lightweight "inspect,
+// don't micromanage" stance.
 // ============================================================
 import chalk from "chalk";
 import type { SlashCommand } from "./types.js";
@@ -25,7 +26,12 @@ export const hooksCommand: SlashCommand = {
       return;
     }
     for (const h of entries) {
-      const phases = [h.pre ? "PreToolUse" : null, h.post ? "PostToolUse" : null]
+      const phases = [
+        h.pre ? "PreToolUse" : null,
+        h.post ? "PostToolUse" : null,
+        h.stop ? "Stop" : null,
+        h.event ? "Event" : null,
+      ]
         .filter(Boolean)
         .join(" + ");
       const matcher = h.matcher === "*" ? chalk.yellow("* (all tools)") : chalk.cyan(h.matcher);

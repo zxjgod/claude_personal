@@ -107,6 +107,8 @@ export interface TuiDeps {
   prefetch?: (latestUserText: string) => Promise<string | null>;
   /** M36: opt-in tool-batch digest (undefined = disabled). */
   summarizeToolBatch?: (prompt: string) => Promise<string | null>;
+  /** M5: optional fast-model factory (resolved per turn; null = use main). */
+  fastModelFactory?: () => import("../auto-compact.js").FastModelOption | null;
   /** M25.2: opt-in full-screen alt-screen layout (default off). */
   fullscreen?: boolean;
   onSave: (taskState?: TaskState, lastTerminalReason?: string) => void;
@@ -191,6 +193,8 @@ export async function runTurn(
     // M36: background memory/skill prefetch + (opt-in) tool-batch digest.
     prefetch: deps.prefetch,
     summarizeToolBatch: deps.summarizeToolBatch,
+    // M5: resolved per turn so /provider switches are picked up.
+    fastModel: deps.fastModelFactory?.() ?? undefined,
     // M36: type-ahead. The loop drains queued input at each turn boundary and
     // continues the SAME turn with it (kernel §9), so a message typed while the
     // agent works is picked up without waiting for the turn to end. Each line
@@ -310,12 +314,24 @@ export async function runTurn(
           break;
         }
         case "model_retry":
-          // Attempt boundary: the failed call's partial stream never entered
-          // model history. Discard it (buffered deltas AND store state) so the
-          // retry's text starts clean instead of appending to a dead fragment,
-          // and reset the live token estimate that counted the dead chars.
-          streamBuffer.discard();
-          store.discardStreaming();
+          // Attempt boundary. PLAIN retry: the failed call's partial stream
+          // never entered model history — discard it (buffered deltas AND
+          // store state) so the retry's text starts clean instead of
+          // appending to a dead fragment, and reset the live token estimate
+          // that counted the dead chars.
+          // M1 CONTINUATION retry (CCR_RETRY_CONTINUE=1): the agent loop
+          // COMMITTED the partial text to history as an assistant message —
+          // discarding it here would fork the visible transcript from the
+          // real session, so flush+commit instead and let the continuation
+          // land as the next transcript segment.
+          if (event.continuation) {
+            streamBuffer.flush();
+            settleThinking();
+            store.commitStreaming();
+          } else {
+            streamBuffer.discard();
+            store.discardStreaming();
+          }
           streamedCharsThisCall = 0;
           thinkingStart = Date.now();
           thoughtReported = false;

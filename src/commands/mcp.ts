@@ -4,11 +4,31 @@ import type { SlashCommand } from "./types.js";
 
 export const mcpCommand: SlashCommand = {
   name: "mcp",
-  description: "Show MCP server, tool, and auth status",
-  run: (_args, ctx): undefined => {
+  description: "Show MCP server, tool, and auth status (/mcp refresh <server>)",
+  run: (args, ctx): Promise<undefined> | undefined => {
     if (!ctx.mcpManager) {
       console.log(chalk.gray("  MCP manager is not available in this session."));
       return;
+    }
+
+    // /mcp refresh <server> — manually re-list a server's tools (S2). Mirrors
+    // what the toolsListChanged notification does automatically.
+    const trimmed = args.trim();
+    if (trimmed.toLowerCase().startsWith("refresh")) {
+      const server = trimmed.slice(7).trim();
+      const refresh = async (): Promise<void> => {
+        try {
+          const count = await ctx.mcpManager!.refreshServerTools(server);
+          console.log(chalk.gray(`  Refreshed "${server}" — ${count} tool(s).`));
+        } catch (e) {
+          console.log(chalk.red(`  Refresh failed: ${e instanceof Error ? e.message : String(e)}`));
+        }
+      };
+      if (!server) {
+        console.log(chalk.yellow("  Usage: /mcp refresh <server>"));
+        return;
+      }
+      return refresh().then(() => undefined);
     }
     const tools = ctx.mcpManager.getAllTools();
     const count = ctx.mcpManager.serverCount;
@@ -36,6 +56,7 @@ export const mcpCommand: SlashCommand = {
         console.log(chalk.gray(`        … +${toolNames.length - 12} more`));
     }
     console.log(chalk.gray("  Auth: tokens are persisted per-server via the OAuth provider."));
+    return;
   },
 };
 

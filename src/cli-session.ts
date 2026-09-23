@@ -10,6 +10,7 @@ import chalk from "chalk";
 import { parseCliArgs } from "./cli-args.js";
 import { formatCliError } from "./cli-errors.js";
 import { PersistenceManager } from "./persistence.js";
+import { microCompactByTime } from "./services/time-micro-compact.js";
 import { Telemetry } from "./telemetry.js";
 import { SessionStats } from "./tui/session-stats.js";
 import { SessionTranscript } from "./tui/session-transcript.js";
@@ -82,7 +83,11 @@ export async function initSession(deps: {
   if (sessionId) {
     const existing = await persistence.load(sessionId);
     if (existing) {
-      messages.push(...existing.messages);
+      // F5: a session resumed after a long idle starts cheaper — old
+      // compactable tool results are cleared (config-gated, idempotent).
+      messages.push(
+        ...microCompactByTime(existing.messages, Date.parse(existing.updatedAt)).messages,
+      );
       if (cliArgs.forkSession) {
         const sourceId = sessionId;
         sessionId = persistence.generateId();
@@ -134,7 +139,10 @@ export function createResumeSession(deps: {
     if (!existing) return false;
     session.id = existing.sessionId;
     messages.length = 0;
-    messages.push(...existing.messages);
+    // F5: same idle-time clearing as startup resume.
+    messages.push(
+      ...microCompactByTime(existing.messages, Date.parse(existing.updatedAt)).messages,
+    );
     console.log(
       chalk.gray(`  Resumed session ${session.id.slice(0, 8)}... (${messages.length} messages)`),
     );

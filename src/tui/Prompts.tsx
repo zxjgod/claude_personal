@@ -244,6 +244,12 @@ export function ElicitationPrompt({
             setError(`"${v}" — ${f.name} must be a number`);
             return;
           }
+          // "3.7" is a finite number but not an integer — the server declared
+          // the field type, honor it before the value leaves the client.
+          if (f.type === "integer" && !Number.isInteger(num)) {
+            setError(`"${v}" — ${f.name} must be a whole number`);
+            return;
+          }
           if (f.minimum !== undefined && num < f.minimum) {
             setError(`${f.name} must be ≥ ${f.minimum}`);
             return;

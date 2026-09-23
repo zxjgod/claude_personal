@@ -18,7 +18,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { BashTool } from "../tools/core/bash.js";
+import { BashTool, cmdQuoteToggles } from "../tools/core/bash.js";
 import { PowerShellTool } from "../tools/core/powershell.js";
 import type { ToolContext } from "../types.js";
 
@@ -52,7 +52,41 @@ afterAll(() => {
 
 const win32 = it.runIf(process.platform === "win32");
 
+// Pure cmd quoting semantics — the guard the e2e below exercises relies on
+// this toggle count being odd exactly when cmd would leave the runner's
+// appended redirections inside a quoted region.
+describe("cmdQuoteToggles", () => {
+  it("counts balanced quotes and rejects odd parity", () => {
+    expect(cmdQuoteToggles('echo he said "hi"')).toBe(2);
+    expect(cmdQuoteToggles('dir "a" "b"')).toBe(4);
+    expect(cmdQuoteToggles('echo "unclosed')).toBe(1);
+  });
+  it("treats a caret-escaped quote as a non-toggle, and in-quote carets as literal", () => {
+    expect(cmdQuoteToggles('echo ^"x')).toBe(0);
+    expect(cmdQuoteToggles('echo "a^"')).toBe(2); // caret inside quotes is literal
+  });
+});
+
 describe("native sandbox tool exit layer (win32 e2e)", () => {
+  win32("Bash refuses an unbalanced double quote before spawning", async () => {
+    const root = nativeWorkspace();
+    const res = await BashTool.call(
+      { command: 'echo "unclosed', description: "quote guard e2e" },
+      ctx(root),
+    );
+    expect(res.error).toContain("unbalanced");
+    expect(res.metadata).toBeUndefined(); // refused up front, never ran
+  });
+
+  win32("Bash still runs a command whose quote is caret-escaped (parity 0)", async () => {
+    const root = nativeWorkspace();
+    const res = await BashTool.call(
+      { command: 'echo ^"quoted', description: "caret quote e2e" },
+      ctx(root),
+    );
+    expect(res.error).toBeUndefined();
+    expect(res.content).toContain('"quoted');
+  });
   win32(
     "Bash reports a timeout AS a timeout, keeping partial output",
     async () => {

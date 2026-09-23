@@ -344,18 +344,72 @@ export const anthropicCaller: ModelCaller = async function* (
       void text;
     });
 
+    // P1 early-start: a tool_use block's arguments stream as input_json_delta
+    // and are COMPLETE at that block's content_block_stop — no need to wait
+    // for finalMessage(). Emitting tool_use at the block boundary lets the
+    // agent loop's StreamingToolExecutor start safe tools (Read/Grep/…) while
+    // the model is still generating the rest of the turn. Blocks are tracked
+    // by stream index (interleaved thinking can open blocks out of order).
+    const pendingToolUseByIndex = new Map<
+      number,
+      { id: string; name: string; jsonBuf: string; startInput: unknown }
+    >();
+    const emittedToolUseIds = new Set<string>();
+
     for await (const event of stream) {
       if (abortSignal?.aborted) break;
-      if (event.type === "content_block_delta") {
+      if (event.type === "content_block_start") {
+        if (event.content_block.type === "tool_use") {
+          pendingToolUseByIndex.set(event.index, {
+            id: event.content_block.id,
+            name: event.content_block.name,
+            jsonBuf: "",
+            // The official API always sends input:{} here and streams the
+            // arguments as input_json_delta. Buffered Anthropic-COMPATIBLE
+            // relays may instead put the COMPLETE arguments in the start
+            // block and emit no deltas — keep it as the boundary fallback so
+            // such a stream doesn't execute the tool with empty input.
+            startInput: event.content_block.input,
+          });
+        }
+      } else if (event.type === "content_block_delta") {
         if (event.delta.type === "text_delta") {
           yield { type: "text_delta", delta: event.delta.text };
         } else if (event.delta.type === "thinking_delta") {
           // Live reasoning content for the UI. `signature_delta` has no live
           // consumer — finalMessage() carries the complete signed block.
           yield { type: "thinking", delta: event.delta.thinking };
+        } else if (event.delta.type === "input_json_delta") {
+          // Accumulated here for boundary emission; the SDK's finalMessage
+          // helper keeps its own copy for the fallback path below.
+          const pending = pendingToolUseByIndex.get(event.index);
+          if (pending) pending.jsonBuf += event.delta.partial_json;
         }
-        // `input_json_delta` is accumulated by the SDK finalMessage helper;
-        // no partial tool input event is needed by the current agent loop.
+      } else if (event.type === "content_block_stop") {
+        const pending = pendingToolUseByIndex.get(event.index);
+        if (pending) {
+          pendingToolUseByIndex.delete(event.index);
+          let input: Record<string, unknown>;
+          const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+            !!v && typeof v === "object" && !Array.isArray(v);
+          if (!pending.jsonBuf) {
+            // No deltas arrived for this block: fall back to the start
+            // block's complete input (relay case) instead of parsing an
+            // empty buffer into {}.
+            input = isPlainObject(pending.startInput) ? pending.startInput : {};
+          } else {
+            try {
+              const parsed = JSON.parse(pending.jsonBuf);
+              input = isPlainObject(parsed) ? parsed : {};
+            } catch {
+              // Malformed/fragmented stream — skip; finalMessage() below is
+              // the authoritative fallback and still emits this block.
+              continue;
+            }
+          }
+          emittedToolUseIds.add(pending.id);
+          yield { type: "tool_use", id: pending.id, name: pending.name, input };
+        }
       }
     }
 
@@ -376,6 +430,11 @@ export const anthropicCaller: ModelCaller = async function* (
     const thinkingBlocks: Array<ThinkingBlock | RedactedThinkingBlock> = [];
     for (const block of final.content) {
       if (block.type === "tool_use") {
+        // Blocks already emitted at their content_block_stop boundary are
+        // skipped — re-emitting would double-fire the loop's early-start
+        // executor. Blocks that only exist here (malformed stream, or the
+        // loop broke early on a boundary parse failure) still emit.
+        if (emittedToolUseIds.has(block.id)) continue;
         yield {
           type: "tool_use",
           id: block.id,

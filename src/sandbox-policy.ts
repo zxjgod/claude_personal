@@ -82,10 +82,13 @@ export function sandboxViolation(
     policy.network === "deny" &&
     // The pattern list is a heuristic deny-list, not a capability boundary:
     // only the native runner (restricted token + job) provides real
-    // enforcement, and it limits resources, not destinations. `irm` /
-    // Invoke-RestMethod join curl/wget/iwr — irm is the alias most PowerShell
-    // one-liners actually use.
-    /\b(curl|wget|Invoke-WebRequest|iwr|Invoke-RestMethod|irm|git\s+(clone|fetch|pull)|npm\s+(install|publish)|pip\s+install)\b/i.test(
+    // enforcement, and it limits resources, not destinations. Beyond
+    // curl/wget and the PowerShell web cmdlets, the list covers the package
+    // managers whose install runs arbitrary code (npm i/ci — `i` is the
+    // alias most one-liners use; pip3 is a separate word from pip and needs
+    // its own `3?`; pnpm/yarn) and the classic certutil/bitsadmin download
+    // vectors. Word boundaries keep `npm init` (i followed by n) passing.
+    /\b(curl|wget|Invoke-WebRequest|iwr|Invoke-RestMethod|irm|scp|ftp|git\s+(clone|fetch|pull)|npm\s+(i|ci|install|publish)|pnpm\s+(i|add|install)|yarn\s+(add|install)|pip3?\s+install|certutil\s+[-/]urlcache|bitsadmin\s+[-/]transfer|Start-BitsTransfer)\b/i.test(
       normalized,
     )
   )

@@ -36,6 +36,21 @@ it("filters lifecycle events by matcher", async () => {
   expect(seen).toEqual([]);
 });
 
+it("an event-shaped payload key cannot shadow the event name", async () => {
+  // config-built lifecycle hooks branch on payload.event — a payload that
+  // carries its own `event` field must not reroute them.
+  const seen: Record<string, unknown>[] = [];
+  const reg = new HookRegistry();
+  reg.register({
+    matcher: "*",
+    event: (payload) => {
+      seen.push(payload);
+    },
+  });
+  await reg.runEvent("Notification", { event: "bogus", id: "n2" });
+  expect(seen).toEqual([{ event: "Notification", id: "n2" }]);
+});
+
 describe("HookRegistry — PreToolUse", () => {
   it("passes input through unchanged when no hooks match", async () => {
     const reg = new HookRegistry();

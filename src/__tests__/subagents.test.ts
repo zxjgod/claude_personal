@@ -61,6 +61,56 @@ describe("subagent registry", () => {
     expect(resolved.map((t) => t.name)).toEqual(["read", "grep"]);
   });
 
+  it("resolves the mcp__* wildcard to every MCP tool (S3)", () => {
+    registerSubagentType({
+      name: "mcp-worker",
+      description: "uses mcp",
+      toolNames: ["read", "mcp__*"],
+      systemPrompt: "You use MCP tools.",
+    });
+    const available = [
+      fakeTool("read"),
+      fakeTool("mcp__github__create_issue"),
+      fakeTool("mcp__db__query"),
+      fakeTool("write"), // not declared → excluded
+    ];
+    const resolved = resolveSubagentTools(getSubagentType("mcp-worker")!, available);
+    expect(resolved.map((t) => t.name).sort()).toEqual([
+      "mcp__db__query",
+      "mcp__github__create_issue",
+      "read",
+    ]);
+  });
+
+  it("resolves a server-scoped wildcard (mcp__github__*)", () => {
+    registerSubagentType({
+      name: "gh-worker",
+      description: "uses github mcp only",
+      toolNames: ["mcp__github__*"],
+      systemPrompt: "GitHub only.",
+    });
+    const available = [
+      fakeTool("mcp__github__create_issue"),
+      fakeTool("mcp__github__list_prs"),
+      fakeTool("mcp__db__query"),
+    ];
+    const resolved = resolveSubagentTools(getSubagentType("gh-worker")!, available);
+    expect(resolved.map((t) => t.name).sort()).toEqual([
+      "mcp__github__create_issue",
+      "mcp__github__list_prs",
+    ]);
+  });
+
+  it("a wildcard with no matches resolves to an empty set without error", () => {
+    registerSubagentType({
+      name: "mcp-none",
+      description: "no mcp present",
+      toolNames: ["mcp__*"],
+      systemPrompt: "Empty.",
+    });
+    expect(resolveSubagentTools(getSubagentType("mcp-none")!, [fakeTool("read")])).toEqual([]);
+  });
+
   it("supports registering a custom type", () => {
     registerSubagentType({
       name: "tester",

@@ -1,18 +1,20 @@
 // ============================================================
-// Time-Based Micro-Compact
+// Time-Based Micro-Compact (F5 wiring)
 // ============================================================
-// Clears old tool result content when the conversation has been idle for a
-// configured threshold (default 60 minutes). This reclaims context space
-// without summarization, and runs BEFORE autoCompact is triggered.
+// Clears old tool-result content when the conversation has been idle beyond
+// a configured threshold (default 60 minutes). Orthogonal to the context
+// pipeline's COUNT-based microcompact (context-pipeline.ts Layer 3): this one
+// fires on WALL-CLOCK idleness, at session load — a resumed stale session
+// starts cheaper without any in-loop cost.
 //
-// Design:
-// - Triggers on time gap, not token count (orthogonal to autoCompact threshold)
-// - Only clears compactable tools (read/bash/grep/glob/web_*/edit/write)
-// - Keeps the most recent N results untouched
-// - Replaces content with a short cleared marker
-// - Idempotent: won't re-clear already-cleared results
+// Trigger input priority:
+//   1. explicit lastActivityMs (the caller passes the session's updatedAt —
+//      production messages carry no reliable timestamp field)
+//   2. a `timestamp` field stamped on the last assistant message (kept for
+//      compatibility with older callers/tests)
 //
-// Integrates into context-pipeline.ts as Layer 3 (after budget, before autoCompact).
+// Config: getMicroCompactConfig() (env: CCR_MICROCOMPACT_ENABLED,
+// CCR_MICROCOMPACT_GAP_MINUTES, CCR_MICROCOMPACT_KEEP_RECENT).
 // ============================================================
 
 import type { Message } from "../types.js";
@@ -36,37 +38,43 @@ export interface MicroCompactResult {
 type TimestampedMessage = Message & { timestamp?: number | string };
 
 /**
- * Check if the time-based trigger should fire: gap since last assistant
- * message exceeds the configured threshold.
+ * Check if the time-based trigger should fire. An explicit `lastActivityMs`
+ * (epoch) overrides per-message timestamps — the wiring at session load
+ * passes the session's updatedAt, which is always present.
  */
-function shouldTrigger(messages: Message[], config: MicroCompactConfig): boolean {
+function shouldTrigger(
+  messages: Message[],
+  lastActivityMs: number | undefined,
+  config: MicroCompactConfig,
+): boolean {
   if (!config.enabled) return false;
 
-  // Find the most recent assistant message with a timestamp (iterate backwards for compat)
-  let lastAssistant: Message | undefined;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (m.role === "assistant" && (m as TimestampedMessage).timestamp !== undefined) {
-      lastAssistant = m;
-      break;
+  let lastTime: number | undefined;
+  if (typeof lastActivityMs === "number" && Number.isFinite(lastActivityMs)) {
+    lastTime = lastActivityMs;
+  } else {
+    // Fall back to the most recent assistant message carrying a timestamp.
+    let lastAssistant: Message | undefined;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.role === "assistant" && (m as TimestampedMessage).timestamp !== undefined) {
+        lastAssistant = m;
+        break;
+      }
+    }
+    if (!lastAssistant) return false;
+    try {
+      lastTime = new Date(
+        (lastAssistant as TimestampedMessage).timestamp as number | string,
+      ).getTime();
+    } catch {
+      return false;
     }
   }
+  if (!lastTime || !Number.isFinite(lastTime)) return false;
 
-  if (!lastAssistant) return false;
-
-  const timestamp = (lastAssistant as TimestampedMessage).timestamp;
-  if (!timestamp) return false;
-
-  try {
-    const lastTime = new Date(timestamp).getTime();
-    if (!Number.isFinite(lastTime)) return false;
-
-    const gapMinutes = (Date.now() - lastTime) / 60_000;
-    return gapMinutes >= config.gapThresholdMinutes;
-  } catch {
-    // Invalid timestamp format
-    return false;
-  }
+  const gapMinutes = (Date.now() - lastTime) / 60_000;
+  return gapMinutes >= config.gapThresholdMinutes;
 }
 
 /**
@@ -95,16 +103,19 @@ function estimateTokens(content: string): number {
 }
 
 /**
- * Time-based micro-compact: clear old tool result content when the
+ * Time-based micro-compact: clear old tool-result content when the
  * conversation has been idle beyond the configured threshold.
  *
  * Returns the original messages array (same reference) when no clearing
  * happens, so callers can cheaply detect "no change".
  */
-export function microCompact(messages: Message[]): MicroCompactResult {
+export function microCompactByTime(
+  messages: Message[],
+  lastActivityMs?: number,
+): MicroCompactResult {
   const config = getMicroCompactConfig();
 
-  if (!shouldTrigger(messages, config)) {
+  if (!shouldTrigger(messages, lastActivityMs, config)) {
     return { messages, cleared: 0, tokensSaved: 0 };
   }
 

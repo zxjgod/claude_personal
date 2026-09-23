@@ -26,9 +26,20 @@ import type { Message } from "./types.js";
  */
 export const COMPACT_BOUNDARY_MARKER = "[CONVERSATION SUMMARY]";
 
-/** Short stub left in place of an evicted tool result (kept tiny, content-free). */
-export function evictionStub(toolName: string | undefined, chars: number): string {
-  return `[evicted: ${toolName ?? "tool"} result, ${chars} chars — older context trimmed to save space]`;
+/**
+ * Short stub left in place of an evicted tool result (kept tiny, content-free).
+ * Embeds the tool_call_id so the model can hand it to the RestoreContext tool.
+ * The wording is deliberately "may be recoverable": the CollapseStore lives
+ * for one agent-loop round, while the stub persists in history — recovery is
+ * only possible within the round that evicted the content.
+ */
+export function evictionStub(
+  toolName: string | undefined,
+  chars: number,
+  toolCallId?: string,
+): string {
+  const id = toolCallId ? ` (id: ${toolCallId})` : "";
+  return `[evicted: ${toolName ?? "tool"} result${id}, ${chars} chars — may be recoverable via RestoreContext with this id]`;
 }
 
 /**
@@ -110,6 +121,75 @@ export class CollapseStore {
 }
 
 // ============================================================
+// Layer 1.5 — duplicate tool-result folding (M2)
+// ============================================================
+
+export interface DedupeOptions {
+  /** Most-recent tool results never folded (they may be in active use). Default 4. */
+  keepRecent?: number;
+  /** Only fold results at least this many chars — tiny dupes aren't worth a stub. Default 200. */
+  minChars?: number;
+}
+
+/** FNV-1a — fast, no collision-safety requirement (a rare fold miss is harmless). */
+function hashContent(text: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16);
+}
+
+/**
+ * Layer 1.5: replace byte-identical COMPACTABLE tool results with a stub
+ * pointing at their first occurrence (`[duplicate of earlier tool result id]`).
+ * Re-reading the same file or re-running the same grep no longer pays full
+ * context for the same bytes. Like layers 2/3 it only runs over threshold —
+ * under it the prompt stays byte-stable for the cache — and never touches
+ * semantic (non-COMPACTABLE) results or the protected recent window.
+ */
+export function dedupeToolResults(
+  messages: Message[],
+  options: DedupeOptions = {},
+): PipelineLayerResult {
+  const keepRecent = options.keepRecent ?? 4;
+  const minChars = options.minChars ?? 200;
+
+  const toolIdx: number[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    if (messages[i].role === "tool") toolIdx.push(i);
+  }
+  // slice(-0) would return the WHOLE array — guard the zero case explicitly.
+  const protectedRecent = new Set(keepRecent > 0 ? toolIdx.slice(-keepRecent) : []);
+
+  const out = messages.slice();
+  const seen = new Map<string, string>(); // content hash → first tool_call_id
+  let changed = 0;
+  let charsSaved = 0;
+  for (let i = 0; i < messages.length; i++) {
+    if (protectedRecent.has(i)) continue;
+    const m = out[i];
+    if (m.role !== "tool" || typeof m.content !== "string") continue;
+    if (!COMPACTABLE_TOOLS.has(m.name ?? "")) continue;
+    if (m.content.length < minChars) continue;
+    if (m.content.startsWith("[evicted:") || m.content.startsWith("[duplicate of")) continue; // idempotent
+    const hash = hashContent(m.content);
+    const first = seen.get(hash);
+    if (first === undefined) {
+      seen.set(hash, m.tool_call_id);
+      continue;
+    }
+    const stub = `[duplicate of earlier tool result ${first}]`;
+    charsSaved += m.content.length - stub.length;
+    out[i] = { ...m, content: stub };
+    changed++;
+  }
+
+  return { messages: changed > 0 ? out : messages, changed, charsSaved };
+}
+
+// ============================================================
 // Layer 2 — tool-result byte budget
 // ============================================================
 
@@ -182,7 +262,7 @@ export function applyToolResultBudget(
     const head = content.slice(0, headChars);
     const tail = content.slice(content.length - tailChars);
     const removed = content.length - head.length - tail.length;
-    const trimmed = `${head}\n[... ${removed} chars trimmed to fit context budget ...]\n${tail}`;
+    const trimmed = `${head}\n[... ${removed} chars trimmed to fit context budget — RestoreContext id: ${m.tool_call_id} ...]\n${tail}`;
     out[i] = { ...m, content: trimmed };
     total -= content.length - trimmed.length;
     charsSaved += content.length - trimmed.length;
@@ -233,7 +313,7 @@ export function microcompact(
     const m = out[i];
     if (m.role !== "tool" || typeof m.content !== "string") continue;
     if (!COMPACTABLE_TOOLS.has(m.name ?? "")) continue; // protect semantic tools
-    const stub = evictionStub(m.name, m.content.length);
+    const stub = evictionStub(m.name, m.content.length, m.tool_call_id);
     // Already evicted (idempotent) or too small to bother.
     if (m.content.startsWith("[evicted:") || m.content.length < minEvictChars) continue;
     options.store?.collapse(m.tool_call_id, m.content);
@@ -298,6 +378,15 @@ export function prepareCheapLayers(
   // Only bother with the trimming layers if we're over threshold — under it,
   // keep the prompt byte-stable for the cache.
   if (opts.estimateTokens(msgs) > opts.threshold) {
+    // Layer 1.5: fold byte-identical old tool results (cheapest reclaim first).
+    const deduped = dedupeToolResults(msgs);
+    if (deduped.changed > 0) {
+      msgs = deduped.messages;
+      notes.push(
+        `Folded ${deduped.changed} duplicate tool result(s) (~${Math.ceil(deduped.charsSaved / 4)} tokens)`,
+      );
+    }
+
     // Layer 2: byte budget.
     const budgeted = applyToolResultBudget(msgs, { store: opts.store, ...opts.budget });
     if (budgeted.changed > 0) {
@@ -308,7 +397,10 @@ export function prepareCheapLayers(
     }
 
     // Layer 3: count-based microcompact (evict whole old tool-result blocks).
-    const countBased = microcompact(msgs);
+    // The store MUST be threaded here too — in production this path does most
+    // of the evicting; without it the stub's RestoreContext promise points at
+    // an empty stash (the second pass below only sees idempotent stubs).
+    const countBased = microcompact(msgs, { store: opts.store });
     if (countBased.changed > 0) {
       msgs = countBased.messages;
       notes.push(

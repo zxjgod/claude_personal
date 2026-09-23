@@ -61,6 +61,19 @@ describe("extractMemoriesHeuristic", () => {
     const out = extractMemoriesHeuristic(messages);
     expect(out).toHaveLength(1);
   });
+
+  it("captures Chinese durable-intent lines", () => {
+    const messages: Message[] = [
+      userMsg("记住这个项目始终用 pnpm 安装依赖"),
+      userMsg("以后每次提交前都要跑测试"),
+      userMsg("今天天气不错"),
+    ];
+    const out = extractMemoriesHeuristic(messages);
+    const texts = out.map((m) => m.text);
+    expect(texts).toContain("记住这个项目始终用 pnpm 安装依赖");
+    expect(texts).toContain("以后每次提交前都要跑测试");
+    expect(texts).not.toContain("今天天气不错");
+  });
 });
 
 describe("MemoryStore", () => {

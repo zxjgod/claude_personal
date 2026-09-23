@@ -127,6 +127,10 @@ export async function setupTools(deps: {
   for (const mcpTool of mcpManager.getAllTools()) {
     toolRegistry.register(mcpTool, "mcp");
   }
+  // S3: sub-agents resolve their toolNames against the injected set — re-set
+  // it now that MCP discovery has run, so a type declaring `mcp__*` (or an
+  // explicit mcp__server__tool name) actually receives those tools.
+  setCoreToolsForSubagents([...CORE_TOOLS, ...mcpManager.getAllTools()]);
 
   // MCP resource tools (8.6) — list/read resources from connected servers.
   for (const resTool of createMcpResourceTools(mcpManager)) {
@@ -136,6 +140,26 @@ export async function setupTools(deps: {
   // ToolSearch (8.5) registered last so it can see the full tool set.
   const toolSearchTool = createToolSearchTool(() => toolRegistry.getEnabledTools());
   toolRegistry.register(toolSearchTool, "core");
+
+  // The live tool array the session runs on. Built once here; S2 keeps its
+  // CONTENTS fresh on MCP tool-set changes while preserving the array identity
+  // the TUI/REPL/agent loop hold.
+  const tools = toolRegistry.getEnabledTools();
+  mcpManager.onToolsChanged(() => {
+    // Capture the full incoming set BEFORE touching the registry (getAllTools
+    // is deduped by name, so the re-register loop below cannot throw on a
+    // hostile/broken server listing) — a failure partway through must not
+    // leave registry, live array and sub-agent set diverged.
+    const incoming = mcpManager.getAllTools();
+    for (const { tool, source } of toolRegistry.listSources()) {
+      if (source === "mcp") toolRegistry.unregister(tool.name);
+    }
+    for (const mcpTool of incoming) toolRegistry.register(mcpTool, "mcp");
+    // Re-set the sub-agent injection set so `mcp__*` types follow the change.
+    setCoreToolsForSubagents([...CORE_TOOLS, ...incoming]);
+    tools.length = 0;
+    tools.push(...toolRegistry.getEnabledTools());
+  });
 
   if (verbose) {
     console.log(`Tools loaded: ${toolRegistry.enabledCount}`);
@@ -149,6 +173,6 @@ export async function setupTools(deps: {
     toolRegistry,
     mcpManager,
     toolSources: toolRegistry.listSources(),
-    tools: toolRegistry.getEnabledTools(),
+    tools,
   };
 }

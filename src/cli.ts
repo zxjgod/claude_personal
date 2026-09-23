@@ -19,6 +19,7 @@ import * as path from "node:path";
 import * as readline from "node:readline";
 import chalk from "chalk";
 import { agentLoop } from "./agent-loop.js";
+import { listChanges } from "./change-tracker.js";
 import {
   DEFAULT_CLASSIFIER_RULES,
   mergeClassifierRules,
@@ -45,10 +46,11 @@ import { formatGitContext, gatherGitContext } from "./git-context.js";
 import { HookRegistry } from "./hooks.js";
 import { loadHooksFromSettingsTrusted, readSettings, warnUnknownSettings } from "./hooks-config.js";
 import { createModelCaller } from "./llm-adapter.js";
-import { MemoryStore } from "./memory-extract.js";
+import { autoExtractMemoriesOnExit, MemoryStore } from "./memory-extract.js";
 import { savePersistentAlwaysAllow } from "./permission-policy.js";
 import { pluginDirs } from "./plugins.js";
 import { renderPrefetchAttachment, startPrefetch } from "./prefetch.js";
+import { resolveFastModelConfig } from "./provider-profiles.js";
 import { normalizeFinishReason } from "./session-memory.js";
 import { listSkills } from "./skills.js";
 import { buildSystemPrompt, renderSystemPrompt } from "./system-prompt.js";
@@ -56,7 +58,13 @@ import { loadDurableJobs } from "./tools/extended/cron-shared.js";
 import { registerNotificationHook } from "./tools/notifications.js";
 import { createRawInputReader } from "./tui/cli-interactive.js";
 import { detectLanguage } from "./tui/i18n.js";
-import type { Message, ModelCaller, PermissionClassifier, PermissionMode } from "./types.js";
+import type {
+  Message,
+  ModelCaller,
+  ModelConfig,
+  PermissionClassifier,
+  PermissionMode,
+} from "./types.js";
 
 // --- Main ---
 
@@ -224,19 +232,34 @@ async function main() {
       skills: () => listSkills(),
     }).then(renderPrefetchAttachment);
 
+  // M5: optional fast-model side channel (CCR_FAST_MODEL, "provider/model").
+  // Resolved lazily per call so /provider and /model switches mid-session are
+  // picked up. Null when unset — callers then use the main model.
+  const getFastModel = (): { callModel: ModelCaller; modelConfig: ModelConfig } | null => {
+    const fastConfig = resolveFastModelConfig(modelConfig);
+    return fastConfig
+      ? {
+          callModel: (m, t, s, c, a) => createModelCaller(c)(m, t, s, c, a),
+          modelConfig: fastConfig,
+        }
+      : null;
+  };
+
   // M36: fast-model digest of a finished tool batch (kernel §9). OFF by default
-  // — it fires a concurrent model call per large batch, and there's no separate
-  // fast-model config yet, so enable explicitly with CCR_TOOL_SUMMARY=1.
+  // — it fires a concurrent model call per large batch — so enable explicitly
+  // with CCR_TOOL_SUMMARY=1. When a fast model is configured (M5) the digest
+  // rides it instead of the main model.
   const summarizeToolBatch =
     process.env.CCR_TOOL_SUMMARY === "1"
       ? async (prompt: string): Promise<string | null> => {
           try {
+            const fast = getFastModel();
             let text = "";
-            for await (const event of callModel(
+            for await (const event of (fast?.callModel ?? callModel)(
               [{ role: "user", content: [{ type: "text", text: prompt }] }],
               [],
               "",
-              modelConfig,
+              fast?.modelConfig ?? modelConfig,
             )) {
               if (event.type === "text_delta") text += event.delta;
             }
@@ -274,6 +297,8 @@ async function main() {
           // approval flow; on timeout we defer to the regex reason.
           timeoutMs: 4000,
           rules: classifierRules,
+          // Session-level verdict cache: repeat flagged calls skip the model.
+          cache: new Map(),
         }
       : undefined;
 
@@ -291,21 +316,26 @@ async function main() {
   const unregisterNotificationHook = registerNotificationHook((payload) =>
     hooks.runEvent("Notification", payload),
   );
+  // Session context for the official hook stdin envelope (session_id /
+  // transcript_path / cwd) and the directory hook commands run in.
+  const hookCtx = { sessionId: session.id, workspaceRoot };
+  const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+  const confirmHooks = (label: string) => {
+    const ask = async (descriptions: string[]): Promise<boolean> => {
+      console.log(
+        chalk.yellow(`\n${label} defines hooks that execute shell commands on tool use:`),
+      );
+      for (const d of descriptions) console.log(chalk.gray(`   ${d}`));
+      return askYesNo("Trust and enable these hooks? [y/N] ");
+    };
+    return ask;
+  };
   try {
-    const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
     const hookResult = await loadHooksFromSettingsTrusted(
       workspaceRoot,
       hooks,
-      interactive
-        ? async (descriptions) => {
-            console.log(
-              chalk.yellow("\nThis project defines hooks that execute shell commands on tool use:"),
-            );
-            for (const d of descriptions) console.log(chalk.gray(`   ${d}`));
-            const answer = await askYesNo("Trust and enable these project hooks? [y/N] ");
-            return answer;
-          }
-        : null,
+      interactive ? confirmHooks("This project") : null,
+      hookCtx,
     );
     if (hookResult.loaded > 0 && verbose) {
       console.log(`Hooks loaded: ${hookResult.loaded} from .claude/settings.json`);
@@ -321,7 +351,23 @@ async function main() {
   }
   for (const pluginDir of pluginDirs(workspaceRoot)) {
     try {
-      await loadHooksFromSettingsTrusted(pluginDir, hooks, null);
+      // Plugin hooks get the SAME trust gate as project hooks. The confirm
+      // callback used to be null, so a plugin shipping hooks could never be
+      // trusted — silently dead config (same failure class as the inert
+      // remote-plugin manifest fixed in a9e50bc).
+      const name = path.basename(pluginDir);
+      const result = await loadHooksFromSettingsTrusted(
+        pluginDir,
+        hooks,
+        interactive ? confirmHooks(`Plugin ${name}`) : null,
+        hookCtx,
+      );
+      if (result.skippedUntrusted) {
+        console.error(
+          `Warning: hooks from plugin ${name} were NOT loaded (untrusted). ` +
+            "Run interactively to review and trust them.",
+        );
+      }
     } catch {
       /* isolated plugin */
     }
@@ -529,6 +575,7 @@ async function main() {
     messages,
     modelConfig,
     callModel,
+    fastModelFactory: getFastModel,
     workspaceRoot,
     setWorkspaceRoot,
     sessionId: session.id,
@@ -658,6 +705,7 @@ async function main() {
       // M36: background memory/skill prefetch + (opt-in) tool-batch digest.
       prefetch: prefetchMemories,
       summarizeToolBatch,
+      fastModelFactory: getFastModel,
       onSave: (taskState, lastTerminalReason) => {
         persistence
           .save(session.id, messages, {
@@ -670,6 +718,24 @@ async function main() {
       },
     });
     await mcpManager.disconnectAll();
+
+    // F1: session-exit auto-extraction. Heuristic pass is offline/cheap and on
+    // by default; the model-assisted pass costs one call and is opt-in via
+    // CCR_AUTO_MEMORY_EXTRACT=1 (=0 disables auto-extraction entirely).
+    if (process.env.CCR_AUTO_MEMORY_EXTRACT !== "0") {
+      const fast = getFastModel();
+      const written = await autoExtractMemoriesOnExit({
+        workspaceRoot,
+        messages,
+        changes: listChanges(session.id),
+        useModel: process.env.CCR_AUTO_MEMORY_EXTRACT === "1",
+        callModel: fast?.callModel ?? callModel,
+        modelConfig: fast?.modelConfig ?? modelConfig,
+      });
+      if (written.length > 0) {
+        console.log(`Remembered ${written.length} new memor${written.length === 1 ? "y" : "ies"}.`);
+      }
+    }
     return;
   }
 
@@ -687,6 +753,7 @@ async function main() {
     allowedDirectories,
     prefetch: prefetchMemories,
     summarizeToolBatch,
+    fastModelFactory: getFastModel,
     hooks,
     mcpManager,
     state,
@@ -701,6 +768,22 @@ async function main() {
     quiet,
     showTokens: uiState.showTokens,
   });
+
+  // F1: same session-exit auto-extraction for the line-based REPL path.
+  if (process.env.CCR_AUTO_MEMORY_EXTRACT !== "0") {
+    const fast = getFastModel();
+    const written = await autoExtractMemoriesOnExit({
+      workspaceRoot,
+      messages,
+      changes: listChanges(session.id),
+      useModel: process.env.CCR_AUTO_MEMORY_EXTRACT === "1",
+      callModel: fast?.callModel ?? callModel,
+      modelConfig: fast?.modelConfig ?? modelConfig,
+    });
+    if (written.length > 0) {
+      console.log(`Remembered ${written.length} new memor${written.length === 1 ? "y" : "ies"}.`);
+    }
+  }
 }
 
 main().catch(async (error) => {

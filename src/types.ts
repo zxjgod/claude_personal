@@ -243,6 +243,13 @@ export interface ToolContext {
    * unbounded (each fork inherits the full tool set, including Task itself).
    */
   subagentDepth?: number;
+  /**
+   * The loop's recoverable stash of tool-result content the context pipeline
+   * trimmed or evicted (F2). The RestoreContext tool reads it to hand an
+   * evicted original back to the model on demand, instead of the model having
+   * to re-run the tool. Each agent loop owns its own store; absent in tests.
+   */
+  collapseStore?: import("./context-pipeline.js").CollapseStore;
 }
 
 /** A structured question the model can pose to the user (AskUserQuestion). */
@@ -316,6 +323,15 @@ export interface PermissionClassifier {
   signal?: AbortSignal;
   /** Optional rule layer (allow/soft_deny/environment) driving the classifier. */
   rules?: ClassifierRules;
+  /**
+   * Session-level verdict cache. Repeated identical flagged calls (same tool +
+   * same formatted action) reuse the earlier classification instead of paying
+   * the model call again — the classifier sits on the tool-execution critical
+   * path, so a cache hit removes a serial multi-second wait. Only definitive
+   * verdicts are stored (see classifyPermissionRisk); "unavailable" results
+   * stay uncached so a timeout is retried rather than remembered.
+   */
+  cache?: Map<string, ClassifierResult>;
 }
 
 export interface Tool<T extends ToolInput = ToolInput> {
@@ -478,7 +494,10 @@ export type LoopEvent =
    * partial stream never entered model history, so UI consumers must DISCARD
    * buffered streaming text — appending the retry's output to it would fork
    * the transcript from the real conversation. */
-  | { type: "model_retry" }
+  | {
+      type: "model_retry" /** M1: when set, the retry CONTINUES from this many chars of committed partial text instead of regenerating. */;
+      continuation?: number;
+    }
   | { type: "compacting" }
   | {
       type: "compacted";
@@ -627,6 +646,13 @@ export interface LoopOptions {
    * Latency hiding must never add latency — the loop never awaits this inline.
    */
   summarizeToolBatch?: (prompt: string) => Promise<string | null>;
+  /**
+   * Optional cheap "fast model" side channel (M5) for high-volume,
+   * judgement-light model work on the loop's critical path — currently the
+   * autoCompact summary (with mandatory degrade-to-main on failure). Built by
+   * the CLI from CCR_FAST_MODEL; absent in tests/sub-agents.
+   */
+  fastModel?: import("./auto-compact.js").FastModelOption;
   /**
    * Queued user input provider (M36, kernel §9). Called at each turn boundary
    * (and before the loop would otherwise complete); any returned items are

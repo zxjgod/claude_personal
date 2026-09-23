@@ -18,6 +18,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import { createRequire } from "node:module";
 import * as path from "node:path";
+import fg from "fast-glob";
 import { resolveAllowedWorkspaceFile } from "./tools/utils/path.js";
 
 export interface Diagnostic {
@@ -61,6 +62,8 @@ interface TsServerMessage {
   success?: boolean;
   message?: string;
   body?: unknown;
+  /** Event messages only (type === "event"): the event name. */
+  event?: string;
 }
 
 interface TsDiagnostic {
@@ -227,6 +230,113 @@ export class LspClient {
     return out;
   }
 
+  // --- S4: project-wide diagnostics via tsserver's geterrForProject ---------
+  // geterrForProject asks tsserver to compute diagnostics for every file in
+  // the project (anchored at one file) and push them as syntaxDiag/
+  // semanticDiag EVENTS, closing with a requestCompleted event. It sends NO
+  // response frame (the server handler returns `notRequired`), so awaiting
+  // the request promise would block until the safety timeout even on success
+  // — completion is signaled by requestCompleted alone. The fields below
+  // collect exactly one in-flight sweep; sweeps are serialized on
+  // projectDiagChain so this shared state stays safe under the tool's
+  // isConcurrencySafe advertisement.
+  private projectDiagEvents: Diagnostic[] = [];
+  private projectDiagWaiter: { seq: number; resolve: () => void } | null = null;
+  private projectDiagChain: Promise<void> = Promise.resolve();
+
+  /**
+   * Whole-project diagnostics on the persistent tsserver connection (S4) —
+   * replaces a cold `npx tsc --noEmit` per tool call. Uses tsserver's
+   * `geterrForProject`: one request anchored at a file of the configured
+   * project sweeps the ENTIRE project (the server enumerates it), pushing
+   * syntaxDiag/semanticDiag events and closing with a requestCompleted
+   * event. The first sweep pays the project-graph build; later sweeps are
+   * incremental. A hard deadline returns whatever diagnostics landed by
+   * then; a request the server rejects THROWS so the caller can fall back
+   * to tsc instead of reporting a false "no diagnostics".
+   */
+  async getProjectDiagnostics(maxFiles = 500, timeoutMs = 60_000): Promise<Diagnostic[]> {
+    const run = this.projectDiagChain.then(
+      () => this.runProjectDiagnostics(maxFiles, timeoutMs),
+      () => this.runProjectDiagnostics(maxFiles, timeoutMs),
+    );
+    // Keep the chain alive regardless of this sweep's outcome.
+    this.projectDiagChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  private async runProjectDiagnostics(maxFiles: number, timeoutMs: number): Promise<Diagnostic[]> {
+    await this.ensureInitialized();
+    const files = listProjectScriptFiles(this.rootPath, maxFiles);
+    if (files.length === 0) return [];
+    // The anchor MUST belong to the configured project: tsserver resolves
+    // geterrForProject from the anchor, and a file outside every tsconfig
+    // lands in an *inferred* project — the real project would never be
+    // swept while the call still reports a clean result.
+    const anchor = pickProjectAnchor(this.rootPath, files);
+
+    // tsserver resolves the project from the anchor; opening it first makes
+    // the default-project inference deterministic.
+    const text = fs.existsSync(anchor) ? fs.readFileSync(anchor, "utf-8") : "";
+    const scriptKindName = anchor.endsWith(".tsx") ? "TSX" : anchor.endsWith(".ts") ? "TS" : "JS";
+    await this.request("open", { file: anchor, fileContent: text, scriptKindName }, 10_000).catch(
+      () => undefined,
+    );
+
+    this.projectDiagEvents = [];
+    // Holder object: TS narrowing cannot see assignments made inside the
+    // request callbacks below, so a plain `let` would be narrowed to null.
+    const sweep = { completed: false, error: null as Error | null };
+    let signalDone!: () => void;
+    const done = new Promise<void>((resolve) => {
+      signalDone = resolve;
+    });
+    const deadline = setTimeout(() => {
+      this.projectDiagWaiter = null;
+      signalDone();
+    }, timeoutMs);
+    try {
+      // Fire-and-track, NOT await: the request promise can only settle via
+      // an error response or the safety timeout (no success frame exists).
+      // requestCompleted resolving the waiter is the normal completion path.
+      this.request("geterrForProject", { file: anchor, delay: 0 }, timeoutMs, (seq) => {
+        this.projectDiagWaiter = {
+          seq,
+          resolve: () => {
+            sweep.completed = true;
+            signalDone();
+          },
+        };
+      }).then(
+        () => {
+          // A response frame is unexpected, but authoritative if it arrives.
+          sweep.completed = true;
+          signalDone();
+        },
+        (err: unknown) => {
+          sweep.error = err instanceof Error ? err : new Error(String(err));
+          signalDone();
+        },
+      );
+      await done;
+    } finally {
+      clearTimeout(deadline);
+      this.projectDiagWaiter = null;
+    }
+    if (!sweep.completed && sweep.error) {
+      // The sweep never ran (rejected/unknown command) — surface it so the
+      // tool falls through to the `npx tsc` fallback.
+      throw new Error(`tsserver project sweep failed: ${sweep.error.message}`);
+    }
+    const out = this.projectDiagEvents;
+    this.projectDiagEvents = [];
+    // Deadline path: return whatever landed (documented partial behavior).
+    return out;
+  }
+
   // --- TS-server JSON-RPC plumbing -----------------------------------------
 
   private onData(chunk: string): void {
@@ -279,13 +389,40 @@ export class LspClient {
       }
       return;
     }
-    // Events (type === "event") are ignored here; diagnostics are pulled
-    // synchronously via the *DiagnosticsSync requests, not pushed.
+    // Events (type === "event"). Diag events are only consumed while a
+    // getProjectDiagnostics sweep is in flight (see projectDiagWaiter); other
+    // events stay ignored — single-file diagnostics use the *Sync requests.
+    if (msg.type === "event") {
+      if (msg.event === "syntaxDiag" || msg.event === "semanticDiag") {
+        // Gate on the waiter: events arriving after the deadline (the
+        // server-side sweep keeps running) must not leak into the next
+        // sweep's collection.
+        const body = msg.body as { file?: string; diagnostics?: TsDiagnostic[] } | undefined;
+        if (body?.file && this.projectDiagWaiter) {
+          for (const d of asDiags(body.diagnostics ?? [])) {
+            this.projectDiagEvents.push(toDiagnostic(body.file, d));
+          }
+        }
+      } else if (msg.event === "requestCompleted") {
+        const seq = (msg.body as { request_seq?: number } | undefined)?.request_seq;
+        if (seq !== undefined && this.projectDiagWaiter?.seq === seq) {
+          const waiter = this.projectDiagWaiter;
+          this.projectDiagWaiter = null;
+          waiter.resolve();
+        }
+      }
+    }
   }
 
-  private request(command: string, argumentsObj: unknown, timeoutMs = 25000): Promise<unknown> {
+  private request(
+    command: string,
+    argumentsObj: unknown,
+    timeoutMs = 25000,
+    sent?: (seq: number) => void,
+  ): Promise<unknown> {
     return new Promise((resolve, reject) => {
       const seq = this.nextSeq++;
+      sent?.(seq);
       // Safety timeout so a hung request doesn't pin the caller forever.
       const timer = setTimeout(() => {
         if (this.pending.delete(seq)) {
@@ -342,6 +479,167 @@ export class LspClient {
     this.pending.clear();
     await closed;
   }
+}
+
+const SCRIPT_EXTS = new Set([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"]);
+
+/**
+ * Walk the workspace for script files for a project-wide diagnostics sweep.
+ * Skips dependency/build/VCS directories; sorted for determinism; capped.
+ */
+function listProjectScriptFiles(root: string, maxFiles: number): string[] {
+  const skip = new Set(["node_modules", ".git", "dist", "out", "build", ".claude", "coverage"]);
+  const exts = SCRIPT_EXTS;
+  const out: string[] = [];
+  const walk = (dir: string): void => {
+    if (out.length >= maxFiles) return;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (out.length >= maxFiles) return;
+      if (entry.name.startsWith(".") && entry.name !== ".") {
+        if (entry.isDirectory() && entry.name !== ".") continue;
+      }
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (!skip.has(entry.name)) walk(full);
+      } else if (exts.has(path.extname(entry.name).toLowerCase())) {
+        out.push(full);
+      }
+    }
+  };
+  walk(root);
+  out.sort();
+  return out;
+}
+
+/**
+ * Choose a geterrForProject anchor that belongs to the CONFIGURED project.
+ * Prefers tsconfig.json/jsconfig.json (`files[]`, then `include` globs — the
+ * common subset of real config semantics: JSONC tolerated, `extends` NOT
+ * resolved); falls back to the walked listing when no config is usable.
+ */
+function pickProjectAnchor(root: string, walked: string[]): string {
+  for (const name of ["tsconfig.json", "jsconfig.json"]) {
+    const anchor = anchorFromConfig(path.join(root, name), root);
+    if (anchor) return anchor;
+  }
+  return walked[0]!;
+}
+
+function anchorFromConfig(cfgPath: string, root: string): string | null {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(cfgPath, "utf-8");
+  } catch {
+    return null;
+  }
+  let cfg: { files?: unknown; include?: unknown; exclude?: unknown };
+  try {
+    cfg = JSON.parse(stripJsonComments(raw));
+  } catch {
+    return null;
+  }
+  const strArray = (v: unknown): string[] =>
+    Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  // `files` entries are exact paths — the cheapest reliable anchor.
+  for (const f of strArray(cfg.files)) {
+    const abs = path.resolve(root, f);
+    try {
+      if (fs.statSync(abs).isFile()) return abs;
+    } catch {
+      // missing entry — try the next one
+    }
+  }
+  const includes = strArray(cfg.include);
+  // tsconfig semantics: a non-glob include entry means "everything under it";
+  // a missing include means "**/*".
+  const patterns = (includes.length > 0 ? includes : ["**/*"]).map((p) =>
+    /[*?[]/.test(p) ? p : `${p.replace(/\/+$/, "")}/**/*`,
+  );
+  // tsconfig exclude entries are root-relative; a bare name means the whole
+  // directory, which fast-glob only honors as an explicit `dir/**` pattern.
+  const excludes = [
+    ...strArray(cfg.exclude).map((p) => (/[*?[]/.test(p) ? p : `${p.replace(/\/+$/, "")}/**`)),
+    "**/node_modules/**",
+    "**/bower_components/**",
+    "**/jspm_packages/**",
+  ];
+  let matches: string[];
+  try {
+    matches = fg.sync(patterns, {
+      cwd: root,
+      ignore: excludes,
+      absolute: true,
+      onlyFiles: true,
+      suppressErrors: true,
+      dot: false,
+    });
+  } catch {
+    return null;
+  }
+  const scripts = matches.filter((m) => SCRIPT_EXTS.has(path.extname(m).toLowerCase())).sort();
+  return scripts[0] ?? null;
+}
+
+/** Strip `//` and block comments plus trailing commas (tsconfig is JSONC). */
+function stripJsonComments(text: string): string {
+  let out = "";
+  let inString = false;
+  let inLine = false;
+  let inBlock = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    const next = text[i + 1];
+    if (inLine) {
+      if (c === "\n") {
+        inLine = false;
+        out += c;
+      }
+      continue;
+    }
+    if (inBlock) {
+      if (c === "*" && next === "/") {
+        inBlock = false;
+        i++;
+      }
+      continue;
+    }
+    if (inString) {
+      out += c;
+      if (c === "\\") {
+        // keep the escaped character verbatim
+        if (i + 1 < text.length) {
+          out += text[i + 1];
+          i++;
+        }
+      } else if (c === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (c === '"') {
+      inString = true;
+      out += c;
+      continue;
+    }
+    if (c === "/" && next === "/") {
+      inLine = true;
+      i++;
+      continue;
+    }
+    if (c === "/" && next === "*") {
+      inBlock = true;
+      i++;
+      continue;
+    }
+    out += c;
+  }
+  return out.replace(/,(\s*[}\]])/g, "$1");
 }
 
 function asDiags(body: unknown): TsDiagnostic[] {

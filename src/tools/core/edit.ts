@@ -10,6 +10,7 @@ import { shadowBeforeWrite } from "../../checkpoint.js";
 import { checkDangerousPattern, isBlockedPath } from "../../permissions.js";
 import { checkReadBeforeEdit, refreshRead } from "../../read-tracker.js";
 import type { Tool, ToolResult } from "../../types.js";
+import { invalidateToolWritableScopes } from "../../utils/fs-cache.js";
 import { buildTool } from "../registry.js";
 import {
   crlfTolerantPair,
@@ -140,6 +141,7 @@ export const EditTool: Tool = buildTool({
       }
       shadowBeforeWrite(context.sessionId, filePath); // P0-3: shadow for rewind
       fs.writeFileSync(filePath, newContent, "utf-8");
+      invalidateToolWritableScopes(context); // M3: listing cache
 
       // Keep the read tracker current so chained edits don't trip the gate.
       const after = statMtimeMs(filePath);
@@ -334,6 +336,7 @@ export const MultiEditTool: Tool = buildTool({
       // All edits succeeded — commit once.
       shadowBeforeWrite(context.sessionId, filePath); // P0-3: shadow for rewind
       fs.writeFileSync(filePath, working, "utf-8");
+      invalidateToolWritableScopes(context); // M3: listing cache
 
       const after = statMtimeMs(filePath);
       if (after !== undefined) refreshRead(context.sessionId, filePath, after);

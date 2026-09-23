@@ -3,7 +3,11 @@
 // ============================================================
 
 import { describe, expect, it } from "vitest";
-import { parseBingResults, parseSearchResults } from "../tools/extended/web-search.js";
+import {
+  parseBingResults,
+  parseDdgLiteResults,
+  parseSearchResults,
+} from "../tools/extended/web-search.js";
 
 const SAMPLE = `
 <div class="result results_links">
@@ -78,5 +82,31 @@ describe("parseBingResults", () => {
   it("skips blocks without an h2 link and respects the limit", () => {
     expect(parseBingResults(BING_SAMPLE, 1)).toHaveLength(1);
     expect(parseBingResults("<div>nothing here</div>")).toHaveLength(0);
+  });
+});
+
+const DDG_LITE_SAMPLE = `<html><body><table>
+<tr><td>1.</td><td><a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fnodejs.org%2Fen&r=abc" class="result-link">Node.js Official</a></td></tr>
+<tr><td class="result-snippet">Node.js&reg; is a free, open-source JavaScript runtime.</td></tr>
+<tr><td>2.</td><td><a rel="nofollow" href="https://example.com/docs" class="result-link">Example &amp; Docs</a></td></tr>
+<tr><td class="result-snippet">Read the &quot;carefully&quot; written guides.</td></tr>
+<tr><td>3.</td><td><a rel="nofollow" href="https://no-title.example" class="result-link"></a></td></tr>
+</table></body></html>
+`;
+
+describe("parseDdgLiteResults (S7)", () => {
+  it("extracts title, unwrapped url, and snippet from the lite table layout", () => {
+    const results = parseDdgLiteResults(DDG_LITE_SAMPLE);
+    expect(results).toHaveLength(2); // the empty-title row is skipped
+    expect(results[0].title).toBe("Node.js Official");
+    expect(results[0].url).toBe("https://nodejs.org/en");
+    expect(results[0].snippet).toContain("open-source JavaScript runtime");
+    expect(results[1].url).toBe("https://example.com/docs");
+    expect(results[1].title).toBe("Example & Docs");
+  });
+
+  it("decodes entities and respects the limit", () => {
+    expect(parseDdgLiteResults(DDG_LITE_SAMPLE, 1)).toHaveLength(1);
+    expect(parseDdgLiteResults("<html>nothing</html>")).toHaveLength(0);
   });
 });

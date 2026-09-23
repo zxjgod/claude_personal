@@ -56,11 +56,94 @@ const STOPWORDS = new Set([
   "your",
 ]);
 
-/** Tokenize into lowercased, de-stopworded terms of length ≥ 3. */
+/**
+ * Two-character Chinese function words that carry no retrieval signal. Only
+ * matters for the bigram fallback (the segmenter already emits whole words);
+ * kept conservative — content-bearing words like 问题/文件 are NOT here.
+ */
+const CJK_STOPWORDS = new Set([
+  "我们",
+  "你们",
+  "他们",
+  "它们",
+  "什么",
+  "怎么",
+  "怎样",
+  "如何",
+  "可以",
+  "一下",
+  "这个",
+  "那个",
+  "一个",
+  "一些",
+  "没有",
+  "不是",
+  "就是",
+  "还是",
+  "而且",
+  "然后",
+  "所以",
+  "但是",
+  "因为",
+  "如果",
+  "的话",
+  "现在",
+  "时候",
+]);
+
+/** Word segmenter for CJK runs. Feature-detected: older runtimes fall back. */
+let zhSegmenter: Intl.Segmenter | null = null;
+try {
+  zhSegmenter = new Intl.Segmenter("zh", { granularity: "word" });
+} catch {
+  zhSegmenter = null;
+}
+
+/**
+ * Split a run of CJK characters into word tokens of length ≥ 2. Prefers
+ * Intl.Segmenter word boundaries; when unavailable, falls back to bigrams —
+ * overlapping pairs still capture enough compound-word signal for overlap
+ * scoring because query and candidate text degrade the same way.
+ */
+function cjkTokens(run: string): string[] {
+  const out: string[] = [];
+  if (zhSegmenter) {
+    try {
+      for (const seg of zhSegmenter.segment(run)) {
+        const word = seg.segment.trim();
+        if (word.length >= 2 && !CJK_STOPWORDS.has(word)) out.push(word);
+      }
+      return out;
+    } catch {
+      // Segmenter misbehaving — degrade to bigrams rather than dropping the text.
+    }
+  }
+  for (let i = 0; i + 1 < run.length; i++) {
+    const bigram = run.slice(i, i + 2);
+    if (!CJK_STOPWORDS.has(bigram)) out.push(bigram);
+  }
+  return out;
+}
+
+/** ASCII terms and CJK ideograph runs (incl. Extension A), in one pass. */
+const TOKEN_RE = /[a-z0-9]+|[\u3400-\u9fff]+/g;
+
+/**
+ * Tokenize into lowercased, de-stopworded terms. ASCII terms keep the classic
+ * rule (length ≥ 3, English stopwords); CJK runs go through word segmentation
+ * (bigram fallback) — without this, `split(/[^a-z0-9]+/)` treats every Chinese
+ * character as a separator and Chinese queries produce an EMPTY term set,
+ * silently disabling memory/skill injection for CJK sessions.
+ */
 export function keywords(text: string): Set<string> {
   const out = new Set<string>();
-  for (const raw of text.toLowerCase().split(/[^a-z0-9]+/)) {
-    if (raw.length >= 3 && !STOPWORDS.has(raw)) out.add(raw);
+  for (const match of text.toLowerCase().matchAll(TOKEN_RE)) {
+    const raw = match[0];
+    if (raw.codePointAt(0)! >= 0x3400) {
+      for (const token of cjkTokens(raw)) out.add(token);
+    } else if (raw.length >= 3 && !STOPWORDS.has(raw)) {
+      out.add(raw);
+    }
   }
   return out;
 }

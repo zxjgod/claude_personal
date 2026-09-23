@@ -7,7 +7,7 @@
 // ============================================================
 
 import { describe, expect, it } from "vitest";
-import { estimateTokens } from "../token-estimator.js";
+import { estimateMessageTokens, estimateTokens } from "../token-estimator.js";
 import type { Message } from "../types.js";
 
 function userText(text: string): Message[] {
@@ -59,5 +59,53 @@ describe("estimateTokens CJK handling", () => {
     // ~900/3.5 ≈ 257; allow slack for content-type detection.
     expect(est).toBeGreaterThanOrEqual(200);
     expect(est).toBeLessThanOrEqual(320);
+  });
+});
+
+describe("per-message memoization (P3)", () => {
+  it("estimateTokens equals the sum of per-message estimates", () => {
+    const messages: Message[] = [
+      ...userText("hello world"),
+      {
+        role: "assistant",
+        content: "thinking out loud",
+        tool_calls: [
+          {
+            id: "c1",
+            type: "function",
+            function: { name: "read", arguments: '{"filePath":"a.ts"}' },
+          },
+        ],
+      },
+      { role: "tool", name: "read", tool_call_id: "c1", content: "const x = 1;\nconst y = 2;\n" },
+      { role: "system", content: "system prompt text" },
+    ];
+    const total = estimateTokens(messages);
+    const sum = messages.reduce((acc, m) => acc + estimateMessageTokens(m), 0);
+    expect(total).toBe(sum);
+    expect(total).toBeGreaterThan(0);
+  });
+
+  it("repeated estimates of the same message objects return identical values", () => {
+    // The WeakMap cache is keyed on message identity; the observable contract
+    // is that repeated calls are stable (and share the cached entry).
+    const msgs = userText("缓存一致性检查 some english words too");
+    const first = estimateTokens(msgs);
+    const second = estimateTokens(msgs);
+    const third = estimateTokens(msgs);
+    expect(second).toBe(first);
+    expect(third).toBe(first);
+  });
+
+  it("a message shared between two arrays is counted per array, identically", () => {
+    const shared: Message = { role: "system", content: "shared system reminder".repeat(50) };
+    const a: Message[] = [shared, ...userText("query a")];
+    const b: Message[] = [shared, ...userText("query b")];
+    const estA = estimateTokens(a);
+    const estB = estimateTokens(b);
+    // Same shared message contributes the same amount to both arrays.
+    const sharedEst = estimateMessageTokens(shared);
+    expect(estA - sharedEst).toBe(estimateTokens(userText("query a")));
+    expect(estB - sharedEst).toBe(estimateTokens(userText("query b")));
   });
 });

@@ -48,6 +48,53 @@ export function latestUserText(messages: Message[]): string {
 }
 
 /**
+ * Optional fast-model side channel for the summary call (M5). Compaction is
+ * on the critical path (the turn cannot proceed until it finishes), so the
+ * summary is exactly the kind of high-volume, judgement-light work a cheap
+ * fast model should absorb — with a mandatory degrade to the main model.
+ */
+export interface FastModelOption {
+  callModel: ModelCaller;
+  modelConfig: ModelConfig;
+}
+
+/**
+ * Run one summarization pass and return the text. Throws on mid-stream error
+ * or an empty summary — committing an empty summary would destroy the old
+ * messages permanently (see the caller's failure-handling note).
+ */
+async function summarizeForCompact(
+  summaryMessages: Message[],
+  callModel: ModelCaller,
+  modelConfig: ModelConfig,
+  abortSignal?: AbortSignal,
+): Promise<string> {
+  const chunks: string[] = [];
+  let streamError: Error | undefined;
+  for await (const event of callModel(
+    summaryMessages,
+    [],
+    "You are a helpful assistant that summarizes conversations.",
+    modelConfig,
+    abortSignal,
+  )) {
+    if (event.type === "text_delta") {
+      chunks.push(event.delta);
+    } else if (event.type === "error") {
+      streamError = event.error;
+    }
+  }
+  if (streamError) throw streamError;
+  const summary = chunks.join("");
+  if (summary.trim() === "") {
+    throw new Error(
+      "Auto-compaction failed: the model returned an empty summary; keeping original messages.",
+    );
+  }
+  return summary;
+}
+
+/**
  * Summarize old messages and rebuild the context window.
  * The summary is tagged with COMPACT_BOUNDARY_MARKER so the pipeline's
  * layer 1 (getMessagesAfterCompactBoundary) can physically drop everything
@@ -58,6 +105,7 @@ export async function autoCompact(
   callModel: ModelCaller,
   modelConfig: ModelConfig,
   abortSignal?: AbortSignal,
+  fast?: FastModelOption,
 ): Promise<Message[]> {
   const TAIL_SIZE = 20;
   // Find a safe split point. Slicing at a fixed offset can leave the tail
@@ -88,35 +136,24 @@ so the conversation can continue with a fresh context window.`;
     { role: "user", content: [{ type: "text", text: summaryPrompt }] },
   ];
 
-  // Call model without tools for summarization.
-  //
-  // Failure handling is load-bearing: adapters signal mid-stream failures by
-  // YIELDING an error event rather than throwing, so consume it explicitly.
-  // Committing an empty/partial summary would silently destroy all old
-  // messages — and the COMPACT_BOUNDARY_MARKER makes that destruction
-  // permanent on the next turn. Fail loudly instead and let the caller keep
-  // the original history.
-  const chunks: string[] = [];
-  let streamError: Error | undefined;
-  for await (const event of callModel(
-    summaryMessages,
-    [],
-    "You are a helpful assistant that summarizes conversations.",
-    modelConfig,
-    abortSignal,
-  )) {
-    if (event.type === "text_delta") {
-      chunks.push(event.delta);
-    } else if (event.type === "error") {
-      streamError = event.error;
+  // Failure handling is load-bearing (see summarizeForCompact): errors throw
+  // so the caller keeps the original history. A configured fast model absorbs
+  // the summary first and DEGRADES to the main model on any failure —
+  // compaction must not break because the cheap endpoint hiccuped.
+  let summary: string;
+  if (fast) {
+    try {
+      summary = await summarizeForCompact(
+        summaryMessages,
+        fast.callModel,
+        fast.modelConfig,
+        abortSignal,
+      );
+    } catch {
+      summary = await summarizeForCompact(summaryMessages, callModel, modelConfig, abortSignal);
     }
-  }
-  if (streamError) throw streamError;
-  const summary = chunks.join("");
-  if (summary.trim() === "") {
-    throw new Error(
-      "Auto-compaction failed: the model returned an empty summary; keeping original messages.",
-    );
+  } else {
+    summary = await summarizeForCompact(summaryMessages, callModel, modelConfig, abortSignal);
   }
 
   // Rebuild: system summary + tail. The summary is tagged with

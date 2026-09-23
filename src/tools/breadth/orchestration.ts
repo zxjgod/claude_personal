@@ -29,6 +29,7 @@ import { runForkSkill } from "../../skills/forkSkill.js";
 import { getSkill, listSkills, resolveSkillPrompt } from "../../skills.js";
 import type { Tool, ToolResult } from "../../types.js";
 import { buildTool } from "../registry.js";
+import { clearCwd, setCwd } from "../session-cwd.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -133,11 +134,18 @@ export const EnterWorktreeTool: Tool = buildTool({
     stack.push({ path: wtPath, branch });
     WORKTREES.set(context.sessionId, stack);
 
+    // S5: actually switch the session cwd — the same mechanism a successful
+    // `cd` uses — so subsequent bash/powershell commands run inside the
+    // worktree instead of silently operating on the main tree.
+    setCwd(context.sessionId, wtPath);
+
     return {
       content:
         `Created worktree on branch "${branch}" (from ${baseRef}).\n` +
         `Path: ${wtPath}\n` +
-        `Operate inside this path until you call exit_worktree.`,
+        `Session cwd switched to the worktree — shell commands now run there. ` +
+        `File tools still resolve against the workspace root, so pass paths under the worktree. ` +
+        `Call exit_worktree to return.`,
       metadata: {},
     };
   },
@@ -190,9 +198,15 @@ export const ExitWorktreeTool: Tool = buildTool({
     stack.pop();
     if (stack.length === 0) WORKTREES.delete(context.sessionId);
 
+    // S5: restore the session cwd — to the enclosing worktree when nested,
+    // otherwise clear it so spawns fall back to the workspace root.
+    const enclosing = stack[stack.length - 1];
+    if (enclosing) setCwd(context.sessionId, enclosing.path);
+    else clearCwd(context.sessionId);
+
     return {
       content:
-        `Exited worktree "${entry.branch}". ` +
+        `Exited worktree "${entry.branch}" — session cwd restored. ` +
         (action === "remove" ? "Worktree and branch deleted." : "Kept on disk at " + entry.path),
     };
   },

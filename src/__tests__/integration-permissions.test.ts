@@ -19,6 +19,7 @@ import { describe, expect, it, vi } from "vitest";
 import { checkPermission, classifyPermissionRisk } from "../permissions.js";
 import { createTool } from "../tools/registry.js";
 import type {
+  ClassifierResult,
   Message,
   ModelCaller,
   ModelConfig,
@@ -316,6 +317,55 @@ describe("classifier fail-safe paths", () => {
     );
     expect(res).toEqual({ block: false, unavailable: true });
     expect(calls.count).toBe(0);
+  });
+});
+
+// ============================================================
+// Classifier verdict cache (P4): repeat flagged calls skip the model
+// ============================================================
+
+describe("classifier verdict cache", () => {
+  it("a repeated identical flagged call hits the cache and skips the model", async () => {
+    const { caller, calls } = recordingCaller("BLOCK|dangerous");
+    const classifier = {
+      callModel: caller,
+      modelConfig: classifierConfig,
+      cache: new Map<string, ClassifierResult>(),
+    };
+    const first = await classifyPermissionRisk("bash", { command: "rm -rf /tmp/x" }, classifier);
+    const second = await classifyPermissionRisk("bash", { command: "rm -rf /tmp/x" }, classifier);
+    expect(calls.count).toBe(1);
+    expect(second).toEqual(first);
+    expect(first).toEqual({ block: true, reason: "dangerous", verdict: "BLOCK" });
+  });
+
+  it("a different command (or tool) misses the cache", async () => {
+    const { caller, calls } = recordingCaller("ALLOW|ok");
+    const classifier = { callModel: caller, modelConfig: classifierConfig, cache: new Map() };
+    await classifyPermissionRisk("bash", { command: "rm -rf /tmp/x" }, classifier);
+    await classifyPermissionRisk("bash", { command: "rm -rf /tmp/other" }, classifier);
+    await classifyPermissionRisk("write", { filePath: "/etc/passwd" }, classifier);
+    expect(calls.count).toBe(3);
+  });
+
+  it("unavailable verdicts are not cached — a later attempt can succeed", async () => {
+    let n = 0;
+    const flaky: ModelCaller = async function* () {
+      n++;
+      if (n === 1) {
+        yield { type: "text_delta", delta: "garbage with no verdict line" } as StreamEvent;
+      } else {
+        yield { type: "text_delta", delta: "BLOCK|second time" } as StreamEvent;
+      }
+      yield { type: "done", usage: { input_tokens: 1, output_tokens: 1 }, finish_reason: "stop" };
+    };
+    const classifier = { callModel: flaky, modelConfig: classifierConfig, cache: new Map() };
+    const first = await classifyPermissionRisk("bash", { command: "rm -rf /tmp/y" }, classifier);
+    expect(first).toEqual({ block: false, unavailable: true });
+    expect(classifier.cache.size).toBe(0);
+    const second = await classifyPermissionRisk("bash", { command: "rm -rf /tmp/y" }, classifier);
+    expect(second).toEqual({ block: true, reason: "second time", verdict: "BLOCK" });
+    expect(classifier.cache.size).toBe(1);
   });
 });
 

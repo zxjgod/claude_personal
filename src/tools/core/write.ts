@@ -10,6 +10,7 @@ import { shadowBeforeWrite } from "../../checkpoint.js";
 import { checkDangerousPattern, isBlockedPath } from "../../permissions.js";
 import { checkReadBeforeEdit, refreshRead } from "../../read-tracker.js";
 import type { Tool, ToolResult } from "../../types.js";
+import { invalidateToolWritableScopes } from "../../utils/fs-cache.js";
 import { InputValidator } from "../../utils/input-validator.js";
 import { buildTool } from "../registry.js";
 import { formatSize } from "../utils/file.js";
@@ -85,6 +86,7 @@ export const WriteTool: Tool = buildTool({
 
       shadowBeforeWrite(context.sessionId, filePath); // P0-3: shadow for rewind
       fs.writeFileSync(filePath, input.content, "utf-8");
+      invalidateToolWritableScopes(context); // M3: listing cache
 
       // Keep the read tracker current so a follow-up Edit sees fresh state.
       const after = statMtimeMs(filePath);

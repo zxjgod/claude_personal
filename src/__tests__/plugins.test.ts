@@ -134,6 +134,31 @@ describe("zip extraction", () => {
     const dest = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-zip-cap-"));
     expect(() => extractZip(zip, dest)).toThrow(/cap/);
   });
+
+  it("refuses an archive whose entries total past the whole-archive budget", () => {
+    // 27 deflated 10MB zero blocks = 270MB of small per-entry payloads —
+    // every entry individually passes the 64MB cap, only the running total
+    // catches it. (Deflate turns each 10MB block into ~10KB on disk.)
+    const zeros = Buffer.alloc(10 * 1024 * 1024);
+    const zip = buildZip(
+      Array.from({ length: 27 }, (_, i) => ({ name: `block${i}.bin`, data: zeros, deflate: true })),
+    );
+    expect(zip.length).toBeLessThan(2 * 1024 * 1024); // compressed, or the fixture itself is the bomb
+    const dest = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-zip-total-"));
+    try {
+      expect(() => extractZip(zip, dest)).toThrow(/total budget/);
+    } finally {
+      fs.rmSync(dest, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses an archive declaring an absurd entry count", () => {
+    const zip = buildZip([{ name: "plugin.json", data: Buffer.from("{}") }]);
+    // EOCD is the trailing 22 bytes; its entry count sits at +10.
+    zip.writeUInt16LE(20_001, zip.length - 22 + 10);
+    const dest = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-zip-count-"));
+    expect(() => extractZip(zip, dest)).toThrow(/declares/);
+  });
 });
 
 // ============================================================

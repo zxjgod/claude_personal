@@ -27,8 +27,10 @@ import { AgentTool } from "./extended/agent.js";
 import { CronCreateTool, CronDeleteTool, CronListTool } from "./extended/cron-tools.js";
 import { DesignSyncTool } from "./extended/design-sync.js";
 import { JobKillTool, JobListTool, JobOutputTool } from "./extended/jobs.js";
+import { MemorySaveTool } from "./extended/memory-save.js";
 import { ReplTool } from "./extended/repl.js";
 import { ReportFindingsTool } from "./extended/report-findings.js";
+import { RestoreContextTool } from "./extended/restore-context.js";
 import { ScheduleWakeupTool } from "./extended/schedule-wakeup.js";
 import {
   TaskCreateTool,
@@ -78,6 +80,10 @@ export const CORE_TOOLS: Tool[] = [
   CronListTool, // Aliases: cron_list
   // Dynamic loop scheduling
   ScheduleWakeupTool, // Aliases: schedule_wakeup
+  // Recover evicted tool-result content (F2)
+  RestoreContextTool, // Aliases: restore_context
+  // Durable cross-session memory write path (F1)
+  MemorySaveTool, // Aliases: memory_save
   // Code review
   ReportFindingsTool, // Aliases: report_findings
   // Design system integration

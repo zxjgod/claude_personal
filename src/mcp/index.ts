@@ -18,6 +18,7 @@ import {
   type CallToolResult,
   ElicitRequestSchema,
   type TextContent,
+  ToolListChangedNotificationSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { pluginDirs } from "../plugins.js";
 import type { PermissionResult, Tool, ToolContext, ToolResult } from "../types.js";
@@ -246,6 +247,20 @@ export class MCPManager {
    */
   private confirmedMcpTools: Set<string> = new Set();
   private elicitationHandler: ElicitationHandler | null = null;
+  /**
+   * S2: listeners fired after a server's tool set changes (toolsListChanged
+   * notification or a manual /mcp refresh). The CLI subscribes to keep the
+   * live tool array (and the sub-agent injection set) in sync.
+   */
+  private changeListeners: Array<(server: string) => void> = [];
+
+  /** Subscribe to tool-set changes. Returns an unsubscribe function. */
+  onToolsChanged(cb: (server: string) => void): () => void {
+    this.changeListeners.push(cb);
+    return () => {
+      this.changeListeners = this.changeListeners.filter((f) => f !== cb);
+    };
+  }
 
   setElicitationHandler(handler: typeof this.elicitationHandler): void {
     this.elicitationHandler = handler;
@@ -412,122 +427,8 @@ export class MCPManager {
       // --- Discover tools ---
       if (!client) throw new Error("MCP client was not initialized");
       const connectedClient = client;
-      const manager = this;
       const toolsResult = await withTimeout("listTools", client.listTools(), LIST_TOOLS_TIMEOUT_MS);
-      const mcpTools: Tool[] = toolsResult.tools
-        .map((remoteTool) => {
-          // P1-4: Build input schema with type-safe validation to prevent
-          // malicious schema injection. Reject non-object properties.
-          const rawSchema = remoteTool.inputSchema || {};
-          const rawProperties = rawSchema.properties;
-
-          // Validate properties is a plain object (not an array, function, etc.)
-          if (
-            rawProperties !== null &&
-            (typeof rawProperties !== "object" || Array.isArray(rawProperties))
-          ) {
-            console.warn(`MCP tool "${remoteTool.name}": invalid schema.properties type, skipping`);
-            return null;
-          }
-
-          const inputSchema: Tool["inputSchema"] = {
-            type: "object",
-            properties: (rawProperties ?? {}) as Tool["inputSchema"]["properties"],
-            required: Array.isArray(rawSchema.required) ? rawSchema.required : [],
-          };
-
-          const toolName = `mcp__${name}__${remoteTool.name}`;
-
-          return {
-            name: toolName,
-            description: `MCP tool: ${remoteTool.name} (from ${name} server)`,
-            promptDescription:
-              remoteTool.description || `MCP tool "${remoteTool.name}" from server "${name}"`,
-            inputSchema,
-            isEnabled: () => true,
-            isReadOnly: () => false, // Conservative — assume destructive
-            isConcurrencySafe: () => true, // Separate process, safe to run in parallel
-            // 16.10: MCP servers can execute arbitrary external actions (drop a
-            // DB, send mail), so trusting them sight-unseen is risky. We now
-            // require interactive approval in default mode for the FIRST call to
-            // each MCP tool, then remember the user's choice for the rest of the
-            // session. plan/bypass/acceptEdits still flow through the system-level
-            // checkPermission on top of this. The "always" choice is sticky so a
-            // confirmed tool stops prompting.
-            requiresApproval: () => true,
-
-            async call(input: Record<string, unknown>): Promise<ToolResult> {
-              try {
-                const result = await withTimeout(
-                  `callTool(${toolName})`,
-                  connectedClient.callTool({
-                    name: remoteTool.name,
-                    arguments: input,
-                  }),
-                  CALL_TOOL_TIMEOUT_MS,
-                );
-
-                // Extract text content from result
-                const content = (result.content as CallToolResult["content"])
-                  .filter((c): c is TextContent => c.type === "text")
-                  .map((c) => c.text)
-                  .join("\n");
-
-                return { content: content || "(no text output)" };
-              } catch (error) {
-                if (error instanceof TimeoutError) await manager.disconnectServer(name);
-                return {
-                  content: "",
-                  error: `MCP tool error (${toolName}): ${error instanceof Error ? error.message : String(error)}`,
-                };
-              }
-            },
-
-            formatResult: (r: ToolResult) => {
-              if (r.error) {
-                // call() always produces error messages without "Error:" prefix
-                // (e.g. "MCP tool error (name): ..."), so we add it here so the
-                // terminal renderer always shows a red "Error: ..." label.
-                return r.error.startsWith("Error:") ? r.error : `Error: ${r.error}`;
-              }
-              return r.content;
-            },
-
-            checkPermissions: async (
-              _input: Record<string, unknown>,
-              context: ToolContext,
-            ): Promise<PermissionResult> => {
-              // 16.10: prompt on the first call to each MCP tool per session,
-              // then honor the sticky "always" decision. In plan mode the
-              // system-level checkPermission hard-blocks anyway; here we only
-              // gate the default-mode first use. bypassPermissions/acceptEdits
-              // are likewise handled by the system level, so this returns
-              // allowed:true there and lets the loop proceed.
-              if (context.permissionMode === "bypassPermissions") {
-                return { allowed: true };
-              }
-              if (this.confirmedMcpTools.has(toolName)) {
-                return { allowed: true };
-              }
-              const allowed = context.askUser
-                ? await context.askUser(
-                    { name: toolName } as Tool,
-                    _input,
-                    `First call to MCP tool "${toolName}" — confirm to trust this server action`,
-                  )
-                : true;
-              if (allowed) {
-                this.confirmedMcpTools.add(toolName);
-                return { allowed: true };
-              }
-              return {
-                allowed: false,
-                reason: `MCP tool "${toolName}" not approved by user`,
-              };
-            },
-          } as Tool;
-        })
-        .filter((t): t is Tool => t !== null);
+      const mcpTools: Tool[] = this.wrapRemoteTools(name, toolsResult.tools, connectedClient);
 
       this.servers.set(name, {
         config,
@@ -535,6 +436,21 @@ export class MCPManager {
         transport: activeTransport,
         tools: mcpTools,
       });
+      // S2: subscribe to the server's toolsListChanged notification so a
+      // server that adds/removes tools mid-session is reflected without a
+      // restart. The handler re-lists and fires the change listeners.
+      try {
+        connectedClient.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+          void this.refreshServerTools(name).catch((error) => {
+            console.warn(
+              `MCP server "${name}": toolsListChanged refresh failed:`,
+              error instanceof Error ? error.message : String(error),
+            );
+          });
+        });
+      } catch {
+        /* SDK build without notification handlers — refresh stays manual. */
+      }
       console.log(`MCP server "${name}" connected (${config.type}) — ${mcpTools.length} tool(s)`);
     } catch (error) {
       console.error(
@@ -542,6 +458,182 @@ export class MCPManager {
       );
       await closeMcpConnection(`connect(${name})`, client, activeTransport);
       // Don't crash — MCP is optional
+    }
+  }
+
+  /**
+   * Wrap a server's remote tools as CCR Tool objects (S2: extracted so both
+   * connectServer and refreshServerTools share one wrapping implementation —
+   * approval stickiness, timeouts, schema validation and all).
+   */
+  private wrapRemoteTools(
+    name: string,
+    remoteTools: Awaited<ReturnType<Client["listTools"]>>["tools"],
+    connectedClient: Client,
+  ): Tool[] {
+    const manager = this;
+    // A server listing the same tool name twice violates the protocol, but a
+    // broken/hostile server can do it — and a duplicate would make the
+    // registry's register() throw mid-swap. First listing wins.
+    const seenNames = new Set<string>();
+    const mcpTools: Tool[] = remoteTools
+      .filter((remoteTool) => {
+        if (seenNames.has(remoteTool.name)) {
+          console.warn(
+            `MCP server "${name}": duplicate tool name "${remoteTool.name}" in list, skipping`,
+          );
+          return false;
+        }
+        seenNames.add(remoteTool.name);
+        return true;
+      })
+      .map((remoteTool) => {
+        // P1-4: Build input schema with type-safe validation to prevent
+        // malicious schema injection. Reject non-object properties.
+        const rawSchema = remoteTool.inputSchema || {};
+        const rawProperties = rawSchema.properties;
+
+        // Validate properties is a plain object (not an array, function, etc.)
+        if (
+          rawProperties !== null &&
+          (typeof rawProperties !== "object" || Array.isArray(rawProperties))
+        ) {
+          console.warn(`MCP tool "${remoteTool.name}": invalid schema.properties type, skipping`);
+          return null;
+        }
+
+        const inputSchema: Tool["inputSchema"] = {
+          type: "object",
+          properties: (rawProperties ?? {}) as Tool["inputSchema"]["properties"],
+          required: Array.isArray(rawSchema.required) ? rawSchema.required : [],
+        };
+
+        const toolName = `mcp__${name}__${remoteTool.name}`;
+
+        return {
+          name: toolName,
+          description: `MCP tool: ${remoteTool.name} (from ${name} server)`,
+          promptDescription:
+            remoteTool.description || `MCP tool "${remoteTool.name}" from server "${name}"`,
+          inputSchema,
+          isEnabled: () => true,
+          isReadOnly: () => false, // Conservative — assume destructive
+          isConcurrencySafe: () => true, // Separate process, safe to run in parallel
+          // 16.10: MCP servers can execute arbitrary external actions (drop a
+          // DB, send mail), so trusting them sight-unseen is risky. We now
+          // require interactive approval in default mode for the FIRST call to
+          // each MCP tool, then remember the user's choice for the rest of the
+          // session. plan/bypass/acceptEdits still flow through the system-level
+          // checkPermission on top of this. The "always" choice is sticky so a
+          // confirmed tool stops prompting.
+          requiresApproval: () => true,
+
+          async call(input: Record<string, unknown>): Promise<ToolResult> {
+            try {
+              const result = await withTimeout(
+                `callTool(${toolName})`,
+                connectedClient.callTool({
+                  name: remoteTool.name,
+                  arguments: input,
+                }),
+                CALL_TOOL_TIMEOUT_MS,
+              );
+
+              // Extract text content from result
+              const content = (result.content as CallToolResult["content"])
+                .filter((c): c is TextContent => c.type === "text")
+                .map((c) => c.text)
+                .join("\n");
+
+              return { content: content || "(no text output)" };
+            } catch (error) {
+              if (error instanceof TimeoutError) await manager.disconnectServer(name);
+              return {
+                content: "",
+                error: `MCP tool error (${toolName}): ${error instanceof Error ? error.message : String(error)}`,
+              };
+            }
+          },
+
+          formatResult: (r: ToolResult) => {
+            if (r.error) {
+              // call() always produces error messages without "Error:" prefix
+              // (e.g. "MCP tool error (name): ..."), so we add it here so the
+              // terminal renderer always shows a red "Error: ..." label.
+              return r.error.startsWith("Error:") ? r.error : `Error: ${r.error}`;
+            }
+            return r.content;
+          },
+
+          checkPermissions: async (
+            _input: Record<string, unknown>,
+            context: ToolContext,
+          ): Promise<PermissionResult> => {
+            // 16.10: prompt on the first call to each MCP tool per session,
+            // then honor the sticky "always" decision. In plan mode the
+            // system-level checkPermission hard-blocks anyway; here we only
+            // gate the default-mode first use. bypassPermissions/acceptEdits
+            // are likewise handled by the system level, so this returns
+            // allowed:true there and lets the loop proceed.
+            if (context.permissionMode === "bypassPermissions") {
+              return { allowed: true };
+            }
+            if (this.confirmedMcpTools.has(toolName)) {
+              return { allowed: true };
+            }
+            const allowed = context.askUser
+              ? await context.askUser(
+                  { name: toolName } as Tool,
+                  _input,
+                  `First call to MCP tool "${toolName}" — confirm to trust this server action`,
+                )
+              : true;
+            if (allowed) {
+              this.confirmedMcpTools.add(toolName);
+              return { allowed: true };
+            }
+            return {
+              allowed: false,
+              reason: `MCP tool "${toolName}" not approved by user`,
+            };
+          },
+        } as Tool;
+      })
+      .filter((t): t is Tool => t !== null);
+    return mcpTools;
+  }
+
+  /**
+   * S2: re-list a connected server's tools and swap them in, then fire the
+   * change listeners. Used by the toolsListChanged notification and a manual
+   * /mcp refresh. Throws on listTools failure (callers report); a server that
+   * went away stays untouched for disconnectServer to handle.
+   */
+  async refreshServerTools(name: string): Promise<number> {
+    const entry = this.servers.get(name);
+    if (!entry) throw new Error(`MCP server "${name}" is not connected`);
+    const toolsResult = await withTimeout(
+      "listTools(refresh)",
+      entry.client.listTools(),
+      LIST_TOOLS_TIMEOUT_MS,
+    );
+    entry.tools = this.wrapRemoteTools(name, toolsResult.tools, entry.client);
+    this.notifyToolsChanged(name);
+    return entry.tools.length;
+  }
+
+  /** Fire the tools-changed listeners; a broken one must not break the caller. */
+  private notifyToolsChanged(server: string): void {
+    for (const cb of this.changeListeners) {
+      try {
+        cb(server);
+      } catch (error) {
+        // Silent swallowing left the UI/registry out of sync with no trace —
+        // leave one.
+        console.error(
+          `MCP tools-changed listener failed (${server}): ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     }
   }
 
@@ -610,12 +702,20 @@ export class MCPManager {
   }
 
   /**
-   * Get all tools from connected MCP servers
+   * Get all tools from connected MCP servers. Deduped by wrapped name:
+   * server names containing `__` can produce cross-server collisions
+   * (mcp__a__b__c), and a duplicate makes registry.register() throw —
+   * first server (insertion order) wins.
    */
   getAllTools(): Tool[] {
     const allTools: Tool[] = [];
+    const seen = new Set<string>();
     for (const server of this.servers.values()) {
-      allTools.push(...server.tools);
+      for (const tool of server.tools) {
+        if (seen.has(tool.name)) continue;
+        seen.add(tool.name);
+        allTools.push(tool);
+      }
     }
     return allTools;
   }
@@ -753,6 +853,10 @@ export class MCPManager {
       await closeMcpConnection(`disconnect(${name})`, server.client, server.transport);
     } finally {
       this.servers.delete(name);
+      // S2 covers list CHANGES; a server vanishing is one too — without this
+      // the dead server's wrapped tools linger in the live tools array and
+      // registry (and keep being advertised to the model) until restart.
+      this.notifyToolsChanged(name);
     }
   }
 

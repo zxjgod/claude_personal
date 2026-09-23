@@ -131,8 +131,14 @@ export async function handleModelError(
     if (state.transientRetries >= state.maxTransientRetries) {
       return "abort";
     }
-    onRetry?.({ kind: "transient", delayMs: 2000 });
-    await sleep(2000);
+    // Exponential backoff with jitter, mirroring the 429 path: base 1s, cap
+    // 30s. A fixed 2s retry on a flaky connection just hammers it in lockstep.
+    const exponentialDelay = 1000 * 2 ** state.transientRetries;
+    const cappedDelay = Math.min(exponentialDelay, 30_000);
+    const jitter = cappedDelay * 0.2 * (Math.random() * 2 - 1);
+    const finalDelay = Math.round(cappedDelay + jitter);
+    onRetry?.({ kind: "transient", delayMs: finalDelay });
+    await sleep(finalDelay);
     return "retry_transient";
   }
 

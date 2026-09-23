@@ -141,3 +141,53 @@ describe("LspClient (real tsserver)", () => {
     }
   }, 40000);
 });
+
+describe("LspClient.getProjectDiagnostics (S4, real tsserver)", () => {
+  it("sweeps the whole project and reports per-file errors", async () => {
+    if (!hasTsserver) return;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-lsp-sweep-"));
+    try {
+      fs.writeFileSync(
+        path.join(dir, "tsconfig.json"),
+        JSON.stringify({ compilerOptions: { target: "ES2022", strict: true } }),
+      );
+      fs.writeFileSync(path.join(dir, "bad.ts"), "const x: string = 123;\n");
+      fs.writeFileSync(path.join(dir, "ok.ts"), "export const y = 1;\n");
+      fs.mkdirSync(path.join(dir, "node_modules"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "node_modules", "skipped.ts"), "const z: string = 456;\n");
+      clearLspClientCache(dir);
+      const client = getLspClient(dir)!;
+      const diags = await client.getProjectDiagnostics(50, 60_000);
+      const errors = diags.filter((d) => d.severity === "error");
+      // The bad file reports the assignment error…
+      expect(errors.some((d) => d.file.endsWith("bad.ts"))).toBe(true);
+      // …node_modules is not part of the sweep…
+      expect(errors.some((d) => d.file.includes("node_modules"))).toBe(false);
+      await client.dispose();
+    } finally {
+      // Windows: tsserver can hold the temp dir briefly after dispose.
+      for (let i = 0; i < 5; i++) {
+        try {
+          fs.rmSync(dir, { recursive: true, force: true });
+          break;
+        } catch {
+          await new Promise((r) => setTimeout(r, 200));
+        }
+      }
+    }
+  }, 90_000);
+
+  it("returns [] for a project with no script files", async () => {
+    if (!hasTsserver) return;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-lsp-empty-"));
+    try {
+      fs.writeFileSync(path.join(dir, "tsconfig.json"), "{}");
+      clearLspClientCache(dir);
+      const client = getLspClient(dir)!;
+      expect(await client.getProjectDiagnostics(50, 30_000)).toEqual([]);
+      await client.dispose();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+});
