@@ -118,8 +118,12 @@ export function isFallbackableModelError(error: unknown): boolean {
   if (status === 401 || status === 403 || status === 429) return false;
   if (isContextLengthError(error)) return false;
   const name = err?.name ?? "";
-  const msg = err?.message ?? "";
-  if (name === "AbortError" || msg === "Aborted" || msg.includes("aborted")) return false;
+  // Review follow-up (既有问题 E): message matching is case-insensitive —
+  // provider/SDK variants like "Request Aborted" or "Connection Timeout"
+  // used to slip past the lowercase-only checks and get misclassified
+  // (an abort treated as fallbackable, a timeout not treated as transient).
+  const msg = (err?.message ?? "").toLowerCase();
+  if (name === "AbortError" || msg.includes("aborted")) return false;
   return true;
 }
 
@@ -171,10 +175,12 @@ export async function handleModelError(
     return "abort";
   }
 
-  // User-initiated abort (Ctrl+C / turn abort) → never retry.
+  // User-initiated abort (Ctrl+C / turn abort) → never retry. Message
+  // matching is case-insensitive (review follow-up 既有问题 E — see
+  // isFallbackableModelError above).
   const name = err?.name as string | undefined;
-  const msg = (err?.message as string | undefined) ?? "";
-  if (name === "AbortError" || msg === "Aborted" || msg.includes("aborted")) {
+  const msg = ((err?.message as string | undefined) ?? "").toLowerCase();
+  if (name === "AbortError" || msg.includes("aborted")) {
     return "abort";
   }
 

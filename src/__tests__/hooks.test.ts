@@ -87,6 +87,24 @@ describe("HookRegistry — PreToolUse", () => {
     expect(out.block).toBeUndefined();
   });
 
+  it("matches official capitalized matchers against lowercase tool names (既有 C)", async () => {
+    // The documented config style ("Edit|Write", "Bash") used to silently
+    // never fire: registry tool names are lowercase and the matcher compared
+    // case-sensitively — a security hook that never runs reads as protected.
+    const reg = new HookRegistry();
+    reg.register({
+      matcher: "Edit|Write",
+      pre: () => ({ block: true, reason: "blocked by doc example" }),
+    });
+    expect((await reg.runPre({ toolName: "edit", input: {} })).block).toBe(true);
+    expect((await reg.runPre({ toolName: "write", input: {} })).block).toBe(true);
+    expect((await reg.runPre({ toolName: "read", input: {} })).block).toBeUndefined();
+
+    const reg2 = new HookRegistry();
+    reg2.register({ matcher: "Bash", pre: () => ({ block: true, reason: "no shell" }) });
+    expect((await reg2.runPre({ toolName: "bash", input: {} })).block).toBe(true);
+  });
+
   it("first blocking hook short-circuits", async () => {
     const reg = new HookRegistry();
     let secondRan = false;

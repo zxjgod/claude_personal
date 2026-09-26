@@ -94,6 +94,28 @@ describe("handleSlashCommand", () => {
     expect(ctx.modelConfig.model).toBe("gpt-4o");
   });
 
+  it("/mode accepts the camelCase mode names regardless of case/separator (既有 B)", async () => {
+    // The old lowercased-vs-camelCase comparison made `/mode acceptEdits`
+    // and `/mode bypassPermissions` always report "Unknown mode".
+    const ctx = makeCtx([]);
+    let mode = "default";
+    ctx.getPermissionMode = () => mode as never;
+    ctx.setPermissionMode = (m) => {
+      mode = String(m);
+    };
+    await handleSlashCommand("/mode acceptEdits", ctx);
+    expect(mode).toBe("acceptEdits");
+    await handleSlashCommand("/mode BYPASSPERMISSIONS", ctx);
+    expect(mode).toBe("bypassPermissions");
+    await handleSlashCommand("/mode accept-edits", ctx);
+    expect(mode).toBe("acceptEdits");
+    await handleSlashCommand("/mode plan", ctx);
+    expect(mode).toBe("plan");
+    // An unknown name must NOT change the mode.
+    await handleSlashCommand("/mode turbo", ctx);
+    expect(mode).toBe("plan");
+  });
+
   it("reports unknown commands as handled", async () => {
     const r = await handleSlashCommand("/bogus", makeCtx([]));
     expect(r.handled).toBe(true);

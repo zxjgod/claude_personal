@@ -135,6 +135,25 @@ describe("handleModelError budgets", () => {
     expect(isFallbackableModelError(anthropicErr)).toBe(false);
     expect(isFallbackableModelError(httpError(500, "boom"))).toBe(true);
   });
+
+  it("classifies abort/timeout message variants case-insensitively (既有 E)", async () => {
+    // Provider/SDK wordings vary in case; the old lowercase-only includes()
+    // misrouted "Request Aborted" (→ fallbackable, not abort) and
+    // "Connection Timeout" (→ abort-ish fallthrough, not transient).
+    const aborted = new Error("Request Aborted");
+    expect(await handleModelError(aborted, state())).toBe("abort");
+    expect(isFallbackableModelError(aborted)).toBe(false);
+
+    // "Connection Timeout" must classify as TRANSIENT (the old lowercase-only
+    // includes("timeout") missed it and it fell through to abort/fallback).
+    const notices: string[] = [];
+    const timeout = new Error("Connection Timeout");
+    expect(await handleModelError(timeout, state(), (n) => notices.push(n.kind))).toBe(
+      "retry_transient",
+    );
+    expect(notices).toEqual(["transient"]);
+    expect(await handleModelError(new Error("SOCKET HANG UP"), state())).toBe("retry_transient");
+  }, 20_000);
 });
 
 describe("onRetry notice bookkeeping", () => {

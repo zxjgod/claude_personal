@@ -30,9 +30,18 @@ export const modeCommand: SlashCommand = {
       return;
     }
 
-    const target = args.trim().toLowerCase() as PermissionMode;
-    if (!PERMISSION_MODE_CYCLE.includes(target)) {
-      console.log(chalk.red(`  Unknown mode: ${target}`));
+    // Review follow-up (既有问题 B): the raw lowercased arg was compared
+    // against the CAMELCASE mode list, so `/mode acceptEdits` and
+    // `/mode bypassPermissions` always reported "Unknown mode". Match
+    // case-/separator-insensitively (accept-edits, accept_edits,
+    // ACCEPTEDITS all resolve) and keep the canonical name as the target.
+    const squashed = (s: string) => s.toLowerCase().replace(/[-_\s]/g, "");
+    const wanted = squashed(args.trim());
+    const target = PERMISSION_MODE_CYCLE.find((m) => squashed(m) === wanted) as
+      | PermissionMode
+      | undefined;
+    if (!target) {
+      console.log(chalk.red(`  Unknown mode: ${args.trim()}`));
       console.log(chalk.dim("  Available modes:"));
       for (const m of PERMISSION_MODE_CYCLE) {
         console.log(chalk.dim(`    - ${m}`));

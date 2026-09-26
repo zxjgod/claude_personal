@@ -49,7 +49,19 @@ export function mergePermissionPolicies(...values: unknown[]): PermissionPolicy 
   return out;
 }
 
-/** Match official-style names such as `Bash`, `Bash(git *)`, and `*`. */
+/**
+ * Match official-style rules: `Bash`, `Bash(git *)`, `Bash(npm run:*)`, `*`.
+ *
+ * Review follow-up (既有问题 A): two silent-failure gaps closed —
+ *  - Tool names compare CASE-INSENSITIVELY. Official-style rules are
+ *    capitalized ("Bash", "Edit") while registry tool names are lowercase;
+ *    the old strict === made every official-style deny rule a no-op.
+ *  - The official colon-prefix form `Bash(npm run:*)` now matches commands
+ *    starting with "npm run" at a WORD boundary (so `Bash(git:*)` does not
+ *    also allow "github-cli …"). The old code compared against a literal
+ *    "npm run:" prefix, which real commands never carry.
+ * Trailing `*` inside the parens remains a plain prefix wildcard.
+ */
 export function permissionRuleMatches(
   rule: string,
   toolName: string,
@@ -63,15 +75,28 @@ export function permissionRuleMatches(
         : typeof input.url === "string"
           ? input.url
           : "";
-  const actual = target ? `${toolName}(${target})` : toolName;
   const trimmed = rule.trim();
   if (trimmed === "*") return true;
-  if (trimmed === toolName || trimmed === actual) return true;
-  if (trimmed.endsWith("(*)") && trimmed.slice(0, -3) === toolName) return true;
-  if (trimmed.endsWith("*") && actual.startsWith(trimmed.slice(0, -1))) return true;
-  const wildcard = trimmed.match(/^([^()]+)\((.*)\*\)$/);
-  if (wildcard && toolName === wildcard[1] && target.startsWith(wildcard[2] ?? "")) return true;
-  return false;
+  const name = toolName.toLowerCase();
+  // Split "Name(pattern)"; a rule without parens is a bare tool name.
+  const m = /^([^(]*)\((.*)\)$/s.exec(trimmed);
+  const ruleTool = (m ? m[1]! : trimmed).trim();
+  if (!m) {
+    if (ruleTool.endsWith("*")) return name.startsWith(ruleTool.slice(0, -1).toLowerCase());
+    return ruleTool.toLowerCase() === name;
+  }
+  if (ruleTool.toLowerCase() !== name) return false;
+  const pattern = m[2]!;
+  if (pattern === "*") return true;
+  // Official colon-prefix form: prefix match at a word boundary.
+  if (pattern.endsWith(":*")) {
+    const prefix = pattern.slice(0, -2);
+    if (target === prefix) return true;
+    return target.startsWith(prefix) && (prefix.endsWith(" ") || target[prefix.length] === " ");
+  }
+  // Trailing-star wildcard: plain prefix match.
+  if (pattern.endsWith("*")) return target.startsWith(pattern.slice(0, -1));
+  return target === pattern;
 }
 
 export function policyDecision(

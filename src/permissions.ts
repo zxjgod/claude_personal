@@ -106,7 +106,12 @@ export function checkDangerousPattern(
   // destructive equivalents of the bash checks below.
   if (toolName === "powershell" && input.command && typeof input.command === "string") {
     const cmd = input.command as string;
-    if (/\bRemove-Item\b[^|;]*(\s+-Recurse\b|\s+-r\b)/i.test(cmd) || /\brm\s+[^|;]*-r/i.test(cmd)) {
+    // Review follow-up (既有问题 D1): the old `\brm\s+[^|;]*-r` matched the
+    // "-r" INSIDE filenames (`rm file-report.txt` → catastrophic false
+    // positive). Token-anchored like the bash branch: the recursive flag must
+    // be a standalone parameter token (-r / -Recurse / the -rf/-fr combos
+    // people carry over from bash). `-Force`/`-ReadOnly` no longer match.
+    if (/\b(?:Remove-Item|rm)\b[^|;&\n]*\s["']?-(?:recurse|rf|fr|r)\b(?=["'\s]|$)/i.test(cmd)) {
       return {
         dangerous: true,
         reason: "Recursive delete (Remove-Item -Recurse / rm -r)",
@@ -195,15 +200,30 @@ export function checkDangerousPattern(
       };
     }
 
-    // Pipe to shell/interpreter. Case-insensitive (`| BASH`), word-boundaried
-    // (so `| grep push` isn't a false positive), and covers interpreter
-    // targets beyond shells (`curl x | python3` runs downloaded code too).
-    if (/(curl|wget)[\s\S]*\|[\s\S]*\b(bash|sh|zsh|python\d*|node|perl|php|ruby)\b/i.test(cmd)) {
-      return {
-        dangerous: true,
-        reason: "管道到 Shell — 执行从网络下载的未知代码 (严重安全风险)",
-        severity: "high",
-      };
+    // Pipe to shell/interpreter. Review follow-up (既有问题 D2): segment-
+    // based instead of one big regex — the interpreter must LEAD a pipe
+    // segment (optionally behind sudo/env), so `curl url | grep node` no
+    // longer false-positives on the word "node" sitting in a grep argument.
+    // Still catches `curl x | bash`, `wget -qO- y | sudo sh -s`, `… | python3`.
+    {
+      const segments = cmd.split("|");
+      const dlIdx = segments.findIndex((s) => /\b(?:curl|wget)\b/i.test(s));
+      const pipedToInterpreter =
+        dlIdx >= 0 &&
+        segments
+          .slice(dlIdx + 1)
+          .some((s) =>
+            /^\s*(?:sudo\s+|env\s+)?(?:bash|sh|zsh|ksh|dash|fish|python\d*|node|perl|php|ruby)\b/i.test(
+              s,
+            ),
+          );
+      if (pipedToInterpreter) {
+        return {
+          dangerous: true,
+          reason: "管道到 Shell — 执行从网络下载的未知代码 (严重安全风险)",
+          severity: "high",
+        };
+      }
     }
 
     // Force push. Global options between `git` and `push` are allowed
@@ -310,7 +330,13 @@ export function checkDangerousPattern(
       /\b(npm|yarn|pnpm)\s+(run\s+)?(dev|serve|start)\b/.test(cmd) || // dev servers
       /\b(vite|webpack-dev-server|next\s+dev|ng\s+serve)\b/.test(cmd) || // dev servers
       /\bssh\b/.test(cmd) || // interactive ssh
-      /\b(python|node|php|irb|pry)\s*$/.test(cmd.trim()) || // bare REPL
+      // Bare REPL: the FINAL pipe segment IS the interpreter with no
+      // arguments (reads stdin forever). Review follow-up (既有 D2 tail):
+      // the old `\b(python|node)\s*$` matched any command merely ENDING in
+      // the word — `curl api | grep node` and even `which node` were flagged
+      // as hangs. Anchoring to a bare segment keeps `node`/`python3` and
+      // `curl x | node` flagged while argument positions pass.
+      /^(?:python\d*|node|php|irb|pry)$/.test((cmd.split("|").pop() ?? "").trim()) ||
       /\b(python|node|php|irb|pry)\s+-i\b/.test(cmd) // interactive REPL
     ) {
       return {

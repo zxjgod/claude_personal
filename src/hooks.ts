@@ -93,12 +93,18 @@ export class HookRegistry {
   private matching(toolName: string): Hook[] {
     return this.hooks.filter((h) => {
       if (h.matcher === "*") return true;
-      if (h.matcher === toolName) return true;
+      // Review follow-up (既有问题 C): matching is CASE-INSENSITIVE. Official
+      // hook configs write capitalized tool names ("Edit|Write", "Bash") while
+      // this registry's tool names are lowercase — the old case-sensitive
+      // comparison made the documented examples silently never fire (a
+      // security hook that never runs is worse than no hook: it reads as
+      // protected).
+      if (h.matcher.toLowerCase() === toolName.toLowerCase()) return true;
       // Config-driven hooks may use a regex matcher (e.g. "Edit|Write"). A plain
       // tool name is also a valid (anchored) regex, so this is a safe superset of
       // strict equality. Invalid patterns never match.
       try {
-        return new RegExp(`^(?:${h.matcher})$`).test(toolName);
+        return new RegExp(`^(?:${h.matcher})$`, "i").test(toolName);
       } catch {
         return false;
       }

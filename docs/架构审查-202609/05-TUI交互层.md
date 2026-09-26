@@ -21,7 +21,7 @@
 > SpinnerGlyph.tsx 删除、仓库根 TUI_IMPROVEMENTS.md 删除、/branch"resumed immediately"
 > 与 /fork"Launch a sub-agent"描述改诚实。**结构项按用户拍板本轮不做**：B4
 > StreamingMarkdown 重 lex、B8 热键统一、B9 i18n 清扫、B11 三输入栈、B14 vim visual、
-> B15 小修包、run.tsx/InputBox 拆分。详见总纲"次级清单处置标注"节；1984 测试绿。
+> B15 小修包、run.tsx/InputBox 拆分。详见总纲"次级清单处置标注"节；2007 测试绿。
 
 ---
 
