@@ -125,7 +125,12 @@ export const WriteTool: Tool = buildTool({
   },
 
   async checkPermissions(input, context) {
-    const danger = checkDangerousPattern("write", input, context.workspaceRoot);
+    const danger = checkDangerousPattern(
+      "write",
+      input,
+      context.workspaceRoot,
+      context.allowedDirectories,
+    );
     if (danger.dangerous) {
       return { allowed: false, reason: danger.reason! };
     }

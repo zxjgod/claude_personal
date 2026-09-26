@@ -10,6 +10,7 @@
 import { describe, expect, it } from "vitest";
 import { agentLoop } from "../agent-loop.js";
 import { autoCompact } from "../auto-compact.js";
+import { handleModelError, isFallbackableModelError } from "../error-recovery.js";
 import type { Message, ModelCaller, ModelConfig, StreamEvent } from "../types.js";
 
 const testConfig: ModelConfig = {
@@ -368,5 +369,175 @@ describe("autoCompact failure safety", () => {
     expect(
       typeof compacted[0].content === "string" && compacted[0].content.includes("faithful"),
     ).toBe(true);
+  });
+});
+
+// ============================================================
+// Top10 #3: context overflow across BOTH provider dialects
+// ============================================================
+// Two compound bugs on the Anthropic native route: (H1) the usage baseline
+// read raw input_tokens, which EXCLUDES cache_read — high cache-hit sessions
+// under-counted the live context and proactive compaction never fired;
+// (H2) isContextLengthError only matched OpenAI wording, so Anthropic's
+// "prompt is too long" 400 skipped compact_and_retry and instead burned the
+// whole fallback chain with the same oversized prompt before aborting.
+// ============================================================
+
+describe("context overflow — provider dialect coverage (Top10 #3)", () => {
+  const anthropicConfig: ModelConfig = {
+    provider: "anthropic",
+    model: "claude-opus-4-8",
+    apiKey: "test-key",
+  };
+
+  const noopTool = {
+    name: "noop",
+    description: "noop",
+    promptDescription: "noop",
+    inputSchema: { type: "object" as const, properties: {}, required: [] },
+    isEnabled: () => true,
+    isReadOnly: () => true,
+    isConcurrencySafe: () => true,
+    call: async () => ({ content: "small" }),
+    formatResult: (r: any) => r.content,
+    checkPermissions: async () => ({ allowed: true as const }),
+  };
+
+  it("compacts and recovers on Anthropic wording 'prompt is too long'", async () => {
+    let calls = 0;
+    const caller: ModelCaller = async function* (messages: Message[]) {
+      calls++;
+      if (calls === 1) {
+        const e = new Error("prompt is too long: 210000 tokens > 200000 maximum");
+        (e as any).status = 400;
+        yield { type: "error", error: e };
+        return;
+      }
+      if (calls >= 3) {
+        expect(messages.length).toBeLessThan(40);
+      }
+      yield { type: "text_delta", delta: "recovered" };
+      yield {
+        type: "done",
+        usage: { input_tokens: 1, output_tokens: 1 },
+        finish_reason: "stop",
+      };
+    };
+
+    const messages = buildHistoryEndingInToolResult(40);
+    const types: string[] = [];
+    for await (const event of agentLoop(messages, [], caller, anthropicConfig, {
+      systemPrompt: "sys",
+      maxTurns: 5,
+      autoCompactThreshold: Number.POSITIVE_INFINITY, // disable proactive compaction
+    })) {
+      types.push(event.type);
+    }
+
+    expect(calls).toBeGreaterThan(1);
+    expect(calls).toBeLessThan(10);
+    expect(types).toContain("compacted");
+    expect(types).toContain("done");
+  });
+
+  it("anthropic high-cache-hit usage feeds the baseline and triggers proactive compaction", async () => {
+    // RED under the old code: done reported input_tokens:10 with a 120k
+    // cache_read prefix; the baseline stored 10, so turn 2 never crossed the
+    // 50k threshold and compaction never fired on the native route.
+    let turn = 0;
+    const caller: ModelCaller = async function* () {
+      turn++;
+      if (turn === 1) {
+        yield { type: "tool_use", id: "c1", name: "noop", input: {} };
+        yield {
+          type: "done",
+          usage: {
+            input_tokens: 10,
+            output_tokens: 10,
+            cache_read_input_tokens: 120_000,
+            cache_creation_input_tokens: 0,
+          },
+          finish_reason: "tool_calls",
+        };
+        return;
+      }
+      yield { type: "text_delta", delta: "done" };
+      yield {
+        type: "done",
+        usage: { input_tokens: 1, output_tokens: 1 },
+        finish_reason: "stop",
+      };
+    };
+
+    const messages: Message[] = [{ role: "user", content: [{ type: "text", text: "go" }] }];
+    const types: string[] = [];
+    for await (const event of agentLoop(messages, [noopTool as any], caller, anthropicConfig, {
+      systemPrompt: "sys",
+      maxTurns: 3,
+      autoCompactThreshold: 50_000,
+    })) {
+      types.push(event.type);
+    }
+
+    expect(types).toContain("compacting");
+  });
+
+  it("never re-sends an oversized prompt down the fallback chain", async () => {
+    // Every call fails with the Anthropic overflow wording. Whatever the path
+    // (compact_and_retry whose summarization also fails → abort), the error is
+    // NOT fallbackable: no model switch, no chain burn, fast terminal.
+    let calls = 0;
+    const caller: ModelCaller = async function* () {
+      calls++;
+      const e = new Error("prompt is too long: 210000 tokens > 200000 maximum");
+      (e as any).status = 400;
+      yield { type: "error", error: e };
+    };
+    const config: ModelConfig = { ...anthropicConfig, fallbackModels: ["backup-model"] };
+    const messages = buildHistoryEndingInToolResult(10);
+    const summaries: string[] = [];
+    const types: string[] = [];
+    for await (const event of agentLoop(messages, [], caller, config, {
+      systemPrompt: "sys",
+      maxTurns: 5,
+      autoCompactThreshold: Number.POSITIVE_INFINITY,
+    })) {
+      types.push(event.type);
+      if (event.type === "compacted") summaries.push(event.summary);
+    }
+    expect(summaries.some((s) => s.includes("Switched to fallback"))).toBe(false);
+    // Bounded by the context-length retry budget (maxContextLengthRetries=3 →
+    // at most 4 main attempts); the chain's "backup-model" is never tried.
+    expect(calls).toBeLessThanOrEqual(4);
+    expect(types).toContain("error");
+    expect(types).not.toContain("done");
+  });
+
+  it("isFallbackableModelError rejects context overflow in both wordings", async () => {
+    const anthropicErr = Object.assign(
+      new Error("prompt is too long: 210000 tokens > 200000 maximum"),
+      { status: 400 },
+    );
+    const openaiErr = Object.assign(new Error("context_length_exceeded: maximum context length"), {
+      status: 400,
+    });
+    expect(isFallbackableModelError(anthropicErr)).toBe(false);
+    expect(isFallbackableModelError(openaiErr)).toBe(false);
+    // A genuinely model-specific 400 remains fallbackable.
+    expect(
+      isFallbackableModelError(Object.assign(new Error("unsupported parameter"), { status: 400 })),
+    ).toBe(true);
+
+    // handleModelError routes both wordings to compact_and_retry.
+    const state = {
+      rateLimitRetries: 0,
+      contextLengthRetries: 0,
+      transientRetries: 0,
+      maxRateLimitRetries: 3,
+      maxContextLengthRetries: 3,
+      maxTransientRetries: 1,
+    };
+    expect(await handleModelError(anthropicErr, { ...state })).toBe("compact_and_retry");
+    expect(await handleModelError(openaiErr, { ...state })).toBe("compact_and_retry");
   });
 });

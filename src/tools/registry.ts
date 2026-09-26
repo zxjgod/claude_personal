@@ -135,7 +135,15 @@ interface CommonToolConfig<T extends ToolInput> {
 /** Default result formatter shared by every tool. */
 function defaultFormatResult(result: ToolResult): string {
   if (result.error) {
-    return `Error: ${result.error}`;
+    // Top10 #4: keep the tool's captured content ALONGSIDE the error. The old
+    // early-return dropped it, so a failing `npm test` reached the model as a
+    // bare "Command failed (exit code: 1)" with zero test output — the model
+    // was blind at the most information-rich failure moment (the tool result
+    // carried stdout/stderr all along; only this formatter boundary dropped
+    // it, and bash.ts's timeout path had to hand-embed output into the error
+    // string to survive). Error first, then the captured output.
+    const head = `Error: ${result.error}`;
+    return result.content ? `${head}\n${result.content}` : head;
   }
   const metadata = result.metadata ? `\n[${result.metadata.durationMs ?? 0}ms]` : "";
   const truncated = result.truncated ? "\n[... result too long, truncated]" : "";

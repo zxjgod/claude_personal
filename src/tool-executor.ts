@@ -4,9 +4,11 @@
 // Handles tool call grouping, early execution, and result formatting.
 // ============================================================
 
+import * as path from "node:path";
 import type { OperationOutcome } from "./audit-log.js";
 import { logBashOperation, logFileOperation, logToolExecution } from "./audit-log.js";
 import { checkPermission } from "./permissions.js";
+import { markRead } from "./read-tracker.js";
 import type { SpeculationCache } from "./speculation.js";
 import type { StreamingToolExecutor } from "./streaming-tool-executor.js";
 import { InputValidationError } from "./tools/registry.js";
@@ -156,6 +158,58 @@ async function withToolWatchdog<T>(
 }
 
 /**
+ * Promote a speculatively prefetched Read into the read-before-edit tracker
+ * (Top10 #6). The prefetch itself skips markRead — a read the model never saw
+ * must not open the Edit gate. Call this when the cached result is (or is
+ * about to be) committed to model history:
+ *   - executeSingleTool does it inline on a cache hit (STEP 5 path — the
+ *     result is committed by the STEP 6 finally no matter what);
+ *   - runOne does it when COLLECTING an early-started result (review
+ *     follow-up M4: an early start can still be discarded by a stream-error
+ *     retry, so its promotion must wait until the stream completed and
+ *     STEP 5 collects the result into the committed batch).
+ * The promoted mtime is the one captured at PREFETCH time — the version the
+ * model is about to see; a later mutation fails the staleness check.
+ */
+export function promoteSpeculativeRead(
+  r: { toolName: string; result?: ToolResult },
+  sessionId: string,
+): void {
+  if (r.toolName.toLowerCase() !== "read") return;
+  const md = r.result?.metadata;
+  if (typeof md?.readPath === "string" && typeof md.readMtimeMs === "number") {
+    markRead(sessionId, md.readPath, md.readMtimeMs);
+  }
+}
+
+/**
+ * Top10 #6: a mutating tool that COMPLETED — or threw/timed out mid-flight —
+ * may have touched files; invalidate any speculative entry for the path it
+ * names, or the whole cache when no path is derivable (bash can mutate
+ * anything). Over-invalidation costs one re-prefetch; a stale hit costs the
+ * model's correctness.
+ */
+function invalidateSpeculativeFor(
+  specCache: SpeculationCache | undefined,
+  tool: Tool,
+  input: Record<string, unknown>,
+  workspaceRoot: string,
+): void {
+  if (!specCache?.isEnabled) return;
+  try {
+    if (tool.isReadOnly(input) === true) return;
+    const mutated = tool.getPath?.(input);
+    if (mutated) specCache.invalidatePath(path.resolve(workspaceRoot, mutated));
+    else specCache.clear();
+  } catch {
+    // A throwing predicate must not skip invalidation — clear conservatively.
+    try {
+      specCache.clear();
+    } catch {}
+  }
+}
+
+/**
  * Execute a single tool call with full permission checks, input validation,
  * and result formatting.
  */
@@ -168,8 +222,20 @@ export async function executeSingleTool(
   specCache?: SpeculationCache,
   readFiles?: Set<string>,
   abortSignal?: AbortSignal,
+  opts?: {
+    /**
+     * Skip the inline speculative-read promotion on a cache hit (the caller
+     * promotes when it COMMITS the result). Set by the streaming early-start
+     * runner — see promoteSpeculativeRead / review follow-up M4.
+     */
+    deferSpecPromotion?: boolean;
+  },
 ): Promise<ToolExecutionResult> {
   const tool = tools.find((t) => t.name === toolCall.function.name);
+  // Captured once the call is cleared to execute, so the outer catch can
+  // invalidate speculative entries even when the tool THREW or timed out
+  // (review follow-up: the invalidation below only ran on returned results).
+  let executedMutating: { tool: Tool; input: Record<string, unknown> } | undefined;
 
   if (!tool) {
     return {
@@ -344,8 +410,17 @@ export async function executeSingleTool(
       : null;
     if (cached) {
       result = cached;
+      // Speculative-read promotion (Top10 #6): the prefetch itself skipped
+      // markRead; NOW the cached content is going to the model as this Read's
+      // result, so promote it — unless the caller asked to defer (streaming
+      // early-start: the result is only promoted when STEP 5 collects it,
+      // since a stream-error retry would discard it — review follow-up M4).
+      if (!opts?.deferSpecPromotion) {
+        promoteSpeculativeRead({ toolName: tool.name, result: cached }, context.sessionId);
+      }
     } else {
       const toolContext = { ...context, abortSignal };
+      executedMutating = { tool, input };
       result = await withToolWatchdog(
         (signal) => tool.call(input, { ...toolContext, abortSignal: signal }),
         abortSignal,
@@ -353,6 +428,12 @@ export async function executeSingleTool(
       );
     }
     const duration = Date.now() - startTime;
+
+    // Top10 #6: a mutating tool that just COMPLETED (success OR failure — a
+    // failed `sed -i` may still have half-written the file) invalidates any
+    // speculative entry for the path it touched; without derivable path info
+    // (bash/powershell can mutate anything) drop the whole cache.
+    invalidateSpeculativeFor(specCache, tool, input, context.workspaceRoot);
 
     // Audit the executed outcome (success / tool-reported error). Decisions
     // were already recorded above; this closes the loop for approved calls.
@@ -389,6 +470,17 @@ export async function executeSingleTool(
       durationMs: duration,
     };
   } catch (error) {
+    // A tool that THREW or was killed by the watchdog may still have modified
+    // files before dying — run the same speculative invalidation as the
+    // success path (review follow-up; the TTL alone would leave a window).
+    if (executedMutating) {
+      invalidateSpeculativeFor(
+        specCache,
+        executedMutating.tool,
+        executedMutating.input,
+        context.workspaceRoot,
+      );
+    }
     const message = error instanceof Error ? error.message : String(error);
     return {
       toolName: tool.name,
@@ -424,7 +516,14 @@ export async function* executeToolCalls(
     // M36: if this exact call was early-started during streaming, serve the
     // finished result instead of running it again.
     const early = await streamExecutor?.take(call.id);
-    if (early) return early;
+    if (early) {
+      // Review follow-up M4: the stream completed successfully (we are in
+      // STEP 5), so this result WILL be committed to history — NOW promote
+      // any speculative read it consumed (the early-start execution itself
+      // deferred promotion: a mid-stream error would have discarded it).
+      promoteSpeculativeRead(early, context.sessionId);
+      return early;
+    }
     return executeSingleTool(
       call,
       tools,

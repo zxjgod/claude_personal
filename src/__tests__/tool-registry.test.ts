@@ -174,6 +174,43 @@ describe("createTool", () => {
     });
     expect(formatted).toContain("Error: Something went wrong");
   });
+
+  // Top10 #4: the formatter is the boundary where a failed command's captured
+  // output used to evaporate — error present ⇒ content dropped, so the model
+  // saw "Command failed (exit code: 1)" and nothing else. Error + content must
+  // BOTH reach the model.
+  it("keeps captured content alongside the error (failed-command output survives)", () => {
+    const tool = createTool({
+      name: "test",
+      description: "Test",
+      promptDescription: "Test desc",
+      inputSchema: { type: "object", properties: {}, required: [] },
+      isReadOnly: true,
+      isConcurrencySafe: true,
+      call: async () => ({ content: "" }),
+    });
+
+    const formatted = tool.formatResult({
+      content: "FAIL src/a.test.ts\n  x expected true to be false",
+      error: "Command failed (exit code: 1)",
+    });
+    expect(formatted).toBe(
+      "Error: Command failed (exit code: 1)\nFAIL src/a.test.ts\n  x expected true to be false",
+    );
+  });
+
+  it("stays error-only when there is no captured content", () => {
+    const tool = createTool({
+      name: "test",
+      description: "Test",
+      promptDescription: "Test desc",
+      inputSchema: { type: "object", properties: {}, required: [] },
+      isReadOnly: true,
+      isConcurrencySafe: true,
+      call: async () => ({ content: "" }),
+    });
+    expect(tool.formatResult({ content: "", error: "boom" })).toBe("Error: boom");
+  });
 });
 
 // ============================================================

@@ -169,6 +169,16 @@ export interface ToolResultMetadata {
    */
   todos?: TodoDisplayItem[];
   incomplete?: boolean;
+  /**
+   * Speculative-read promotion metadata (Top10 #6). Set by Read ONLY when the
+   * call ran as a SpeculationCache prefetch (context.speculative): the resolved
+   * path and the mtime of the version being returned. The prefetch skips
+   * markRead; when the cached result is actually served to the model,
+   * tool-executor promotes it into the read-before-edit tracker with these
+   * values. Never set on ordinary (non-speculative) reads.
+   */
+  readPath?: string;
+  readMtimeMs?: number;
 }
 
 export interface ToolContext {
@@ -179,6 +189,15 @@ export interface ToolContext {
   /** Optional live permission-mode hooks; TUI uses these for mid-turn Shift+Tab changes. */
   getPermissionMode?: () => PermissionMode;
   setPermissionMode?: (mode: PermissionMode) => void;
+  /**
+   * True only while executing a SPECULATIVE prefetch (SpeculationCache,
+   * Top10 #6). The result may never reach the model (a miss discards it), so
+   * the execution must not satisfy conversation-level gates: Read skips
+   * markRead (read-before-edit) and instead reports {readPath, readMtimeMs}
+   * in metadata, which the cache-hit consumer promotes into the tracker when
+   * — and only when — the content actually goes to the model.
+   */
+  speculative?: boolean;
   /** Optional: model config for sub-agents (Task tool) */
   modelConfig?: ModelConfig;
   /** Optional sink for nested sub-agent activity (Task tool). */
@@ -697,7 +716,12 @@ export interface LoopOptions {
 
 /** Structural type for the hook registry — see src/hooks.ts. */
 export interface HookRunner {
-  runPre(payload: { toolName: string; input: Record<string, unknown> }): Promise<{
+  runPre(payload: {
+    toolName: string;
+    input: Record<string, unknown>;
+    /** True for SpeculationCache background prefetches (see hooks.ts). */
+    speculative?: boolean;
+  }): Promise<{
     block?: boolean;
     reason?: string;
     input?: Record<string, unknown>;

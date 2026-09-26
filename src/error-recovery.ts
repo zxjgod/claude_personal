@@ -41,24 +41,38 @@ export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** Check if an error is a context-length error (400 with context_length). */
+/**
+ * Context-overflow error message wordings across BOTH provider families
+ * (Top10 #3): OpenAI-compatible ("context_length_exceeded", "maximum context
+ * length") and Anthropic ("prompt is too long: N tokens > M maximum"). The
+ * Anthropic wording was missing, which made compact_and_retry a dead path on
+ * the native route — the loop instead burned the whole fallback chain with the
+ * same oversized prompt and aborted.
+ */
+const CONTEXT_LENGTH_RE = /context_length|maximum context|prompt is too long/i;
+
+/** Check if an error is a context-length error (400 with an overflow wording). */
 export function isContextLengthError(error: unknown): boolean {
   const err = error as { status?: number; message?: string } | null;
   const msg = err?.message ?? "";
-  return err?.status === 400 && (msg.includes("context_length") || msg.includes("maximum context"));
+  return err?.status === 400 && CONTEXT_LENGTH_RE.test(msg);
 }
 
 /**
  * Whether a model error is worth retrying on a DIFFERENT model (fallback chain).
  * Auth (401/403) and rate-limit (429) are account-level, and user aborts must
  * never fall through to another model — switching wouldn't help or would be
- * wrong. Everything else (5xx, 404 model-not-found, 400 non-context, connection
- * errors) is model-specific enough that a fallback model may succeed.
+ * wrong. Context overflow is NOT model-specific either: the same oversized
+ * prompt will not fit into any fallback, so re-sending it down the chain only
+ * burns quota — recovery is compact_and_retry (handleModelError). Everything
+ * else (5xx, 404 model-not-found, 400 non-context, connection errors) is
+ * model-specific enough that a fallback model may succeed.
  */
 export function isFallbackableModelError(error: unknown): boolean {
   const err = error as { status?: number; name?: string; message?: string } | null;
   const status = err?.status;
   if (status === 401 || status === 403 || status === 429) return false;
+  if (isContextLengthError(error)) return false;
   const name = err?.name ?? "";
   const msg = err?.message ?? "";
   if (name === "AbortError" || msg === "Aborted" || msg.includes("aborted")) return false;
@@ -94,11 +108,9 @@ export async function handleModelError(
     return "retry";
   }
 
-  // Context too long → compact once and retry (bounded).
-  if (
-    err?.status === 400 &&
-    ((err?.message as string | undefined) ?? "").match(/context_length|maximum context/)
-  ) {
+  // Context too long → compact once and retry (bounded). Both provider
+  // wordings are recognized via the shared CONTEXT_LENGTH_RE.
+  if (isContextLengthError(error)) {
     if (state.contextLengthRetries >= state.maxContextLengthRetries) {
       return "abort";
     }

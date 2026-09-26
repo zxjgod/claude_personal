@@ -182,9 +182,11 @@ async function main() {
   };
 
   // Build the full turn system prompt from the live goal + output-style
-  // holders. buildSystemPrompt memoizes its static sections (the output-style
-  // block is keyed by style name), so rebuilding each turn is cheap — only the
-  // dynamic suffix (and the output-style block when the style changes) recompute.
+  // holders. buildSystemPrompt memoizes ALL of its static sections — the
+  // output-style block is keyed by style name and the tool-descriptions block
+  // by a fingerprint of the enabled tool set (Top10 #10) — so rebuilding each
+  // turn is cheap: only the dynamic suffix recomputes, and an MCP tool-set
+  // change recomputes just the tools block.
   const buildTurnSystemPrompt = (): string => {
     const base = renderSystemPrompt(
       buildSystemPrompt({

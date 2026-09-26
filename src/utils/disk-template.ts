@@ -3,7 +3,16 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-/** Expand only directives present in the template, never in supplied values. */
+/**
+ * Expand only directives present in the template, never in supplied values.
+ *
+ * trustedShell gates !`cmd` execution and ${ENV} expansion. Policy note
+ * (user decision 2026-09, install-is-trust): every disk-template loader
+ * (commands/skills, project/user/plugin roots) passes trustedShell:true —
+ * installing or authoring a template vouches for it. The gate is kept as
+ * defense-in-depth and a future policy hook for callers that want prompt-only
+ * templates (they pass trustedShell:false explicitly).
+ */
 export async function expandDiskTemplate(
   body: string,
   opts: {
@@ -23,7 +32,7 @@ export async function expandDiskTemplate(
     cursor = (match.index ?? 0) + match[0].length;
     if (match[1] !== undefined) {
       if (!opts.trustedShell) {
-        output += "[shell expansion disabled for project templates]";
+        output += "[shell expansion disabled: untrusted template source]";
         continue;
       }
       // Caller arguments and environment substitutions must never become shell

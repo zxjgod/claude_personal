@@ -95,17 +95,49 @@ The following ALWAYS require explicit user confirmation:
 - Running commands that pipe downloaded content to a shell (curl|bash)`;
 }
 
+/**
+ * One line per ENABLED tool: `name — description` (the short UI-facing field),
+ * sorted by name codepoint. This section is an INDEX, not documentation: the
+ * authoritative full description (`promptDescription`) and the JSON Schema
+ * travel in the API `tools` argument on every request — the old code dumped
+ * promptDescription here too, double-carrying ~3.6k tokens per request and
+ * contradicting this section's own comment (Top10 #10).
+ *
+ * Sorting matters for caching: the registry's Map order shifts when MCP tools
+ * re-register mid-session, and an unstable order changes this section's bytes,
+ * busting the entire cacheable prefix even when the tool SET is unchanged.
+ * Codepoint comparison (not localeCompare) so the order is byte-stable across
+ * machines and ICU builds.
+ */
 function buildToolDescriptionsSection(tools: Tool[]): string {
   const lines = ["AVAILABLE TOOLS:", ""];
-  for (const tool of tools) {
-    if (!tool.isEnabled()) continue;
-    // One line per tool: name + intent (promptDescription already lists the
-    // parameters). The full JSON Schema is carried by the API `tools` argument,
-    // so duplicating it here doubles the token cost for no signal — both live
-    // in the cacheable prefix, so it's pure waste.
-    lines.push(`${tool.name} — ${tool.promptDescription}`, "");
+  const enabled = tools
+    .filter((t) => t.isEnabled())
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  for (const tool of enabled) {
+    lines.push(`${tool.name} — ${tool.description}`, "");
   }
   return lines.join("\n");
+}
+
+/**
+ * djb2 fingerprint of the enabled tool set (sorted name+description pairs) —
+ * the memo key for the tools section. Sorted so a pure registry reorder (MCP
+ * re-registration) fingerprints identically and the memo (and the prompt
+ * prefix) survives; any real content change produces a new key.
+ */
+function toolSetFingerprint(tools: Tool[]): string {
+  const parts = tools
+    .filter((t) => t.isEnabled())
+    .map((t) => `${t.name}\0${t.description}`)
+    .sort();
+  let h = 5381;
+  for (const part of parts) {
+    for (let i = 0; i < part.length; i++) {
+      h = ((h << 5) + h + part.charCodeAt(i)) | 0;
+    }
+  }
+  return (h >>> 0).toString(36);
 }
 
 // ============================================================
@@ -260,15 +292,24 @@ export function buildSystemPrompt(options: SystemPromptOptions): string[] {
   // The output-style section is memoized per style name so switching styles
   // recomputes only that block while the rest of the prefix stays cached.
   const outputStyle = options.outputStyle ?? "default";
+  // The tools section is memoized under a tool-set fingerprint key (Top10 #10):
+  // it used to be the ONLY static block rebuilt raw every turn, so an MCP
+  // connect/disconnect mid-session (registry re-register changes both content
+  // and Map order) silently changed the prefix bytes and busted the whole
+  // provider prompt cache. Stale `tools:*` keys are evicted first so MCP churn
+  // cannot accumulate dead entries; with the content sorted inside the section,
+  // a pure reorder keeps the same fingerprint and stays cached.
+  const toolsKey = `tools:${toolSetFingerprint(options.tools)}`;
+  for (const key of [...sectionCache.keys()]) {
+    if (key.startsWith("tools:") && key !== toolsKey) sectionCache.delete(key);
+  }
   const staticBlocks = [
     systemPromptSection("identity", buildIdentitySection),
     systemPromptSection("coding_rules", buildCodingRulesSection),
     systemPromptSection("tool_usage", buildToolUsageSection),
     systemPromptSection(`output_style:${outputStyle}`, () => buildOutputStyleSection(outputStyle)),
     systemPromptSection("destructive_actions", buildDestructiveActionsSection),
-    // Tool descriptions are stable within a session (the enabled tool set does
-    // not change turn-to-turn), so they belong in the cacheable prefix.
-    buildToolDescriptionsSection(options.tools),
+    systemPromptSection(toolsKey, () => buildToolDescriptionsSection(options.tools)),
   ];
 
   // --- Dynamic suffix (below the boundary; values drift at runtime) ---

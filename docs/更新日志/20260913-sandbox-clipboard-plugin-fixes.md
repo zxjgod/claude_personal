@@ -37,6 +37,18 @@
 | powershell `exit` 把哨兵负码映射进 uint32 空间 | TS 侧仅还原 -10..-16 这一已知带域,程序自身的负退出码/NTSTATUS 维持原样 |
 | cmd 重定向文件按 GBK 写出,UTF-8 解码乱码 | `decodeCapturedOutput`:strict-UTF-8 → GBK → lossy UTF-8 三级解码 |
 
+> **追记(2026-09-26,Top10 #7)**:上表"静默回退"一行已被用户决策更新为**回退必告警**——
+> 内嵌 C# 新增 `Warn()`,在「受限令牌拿不到」与「`CreateProcessAsUser` 失败回退」两处向宿主
+> stderr 发**哨兵行**,格式固定为前缀 `ccr-sandbox: WARNING: `(注意 WARNING 后带冒号;硬失败
+> 的 `Fail()` 行是 `ccr-sandbox: <op> failed ...`,**不带** WARNING,两者靠前缀精确区分)。
+> TS 侧 `splitSandboxWarnings()` 按行剥离哨兵(干净命令的 `result.stderr === ""` 契约不变,
+> `sandbox-policy.test.ts` win32 e2e 锁定),`reportSandboxDegraded()` 把首条升级为
+> **每进程一次**的 `console.error` 通知(`__resetSandboxWarnedForTests()` 供测试复位)。
+> 防回归要点:① C# 的 Warn 文案仍受"平铺字面量、禁引号转义/反斜杠/注释反引号"守则约束;
+> ② 新增哨兵文案必须带 `ccr-sandbox: WARNING:` 前缀否则会被当作命令 stderr 泄漏给模型;
+> ③ 不要把告警直接写进 result.stderr——工具层把 stderr 当命令诊断喂给模型,沙箱自身降级
+> 不属于命令输出。
+
 ### 2. 剪贴板(`src/utils/clipboard-text.ts`)
 
 - 主路径改 **`Set-Clipboard`**,脚本(含文本)整体走 `-EncodedCommand` base64 UTF-16LE——文本完全绕开 argv 引号与一切代码页。

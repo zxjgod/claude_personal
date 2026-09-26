@@ -1201,6 +1201,46 @@ describe("agentLoop", () => {
     expect(tr.results[0].isError).toBe(true);
   });
 
+  it("failed tool message carries error AND captured content (Top10 #4)", async () => {
+    // The old defaultFormatResult early-returned on `error`, dropping content:
+    // a failing `npm test` reached history as a bare "Command failed" with no
+    // test output. The model-visible tool message must contain both.
+    const failing = buildTool({
+      name: "failing_with_output",
+      description: "fails with output",
+      promptDescription: "fails with output",
+      schema: z.strictObject({ x: z.string() }),
+      isReadOnly: true,
+      isConcurrencySafe: true,
+      call: async () => ({ content: "payload-x", error: "failed-y" }),
+    });
+    const caller = makeMockCaller([
+      [
+        {
+          type: "tool_use",
+          id: "call_fw",
+          name: "failing_with_output",
+          input: { x: "y" },
+        },
+        { type: "done", usage: { input_tokens: 1, output_tokens: 1 }, finish_reason: "tool_calls" },
+      ],
+      [
+        { type: "text_delta", delta: "ok" },
+        { type: "done", usage: { input_tokens: 1, output_tokens: 1 }, finish_reason: "stop" },
+      ],
+    ]);
+    const msgs = messages("go");
+    for await (const _e of agentLoop(msgs, [failing as Tool], caller, testConfig, {
+      systemPrompt: "x",
+      maxTurns: 5,
+      speculation: false,
+    })) {
+      // drain
+    }
+    const toolMsg = msgs.find((m) => m.role === "tool") as any;
+    expect(toolMsg.content).toBe("<tool_use_error>Error: failed-y\npayload-x</tool_use_error>");
+  });
+
   it("rejects unknown-key injection via strict validation before side effects (M28)", async () => {
     let executed = false;
     const strict = buildTool({
@@ -1288,6 +1328,59 @@ describe("agentLoop", () => {
     expect(order.indexOf("writeX:start")).toBeGreaterThan(order.indexOf("readA:end"));
     expect(order.indexOf("readB:start")).toBeGreaterThan(order.indexOf("writeX:end"));
     // Results still come back in call order (reassembled by index).
+    const tr = events.find((e) => e.type === "tool_results");
+    expect(tr.results.map((r: any) => r.toolName)).toEqual(["readA", "writeX", "readB"]);
+  });
+
+  it("keeps the serial barrier WITH early-start enabled (speculation: true, Top10 #5)", async () => {
+    // Regression: with streaming early-start ON, `writeX; readB` in one message
+    // used to run readB during the stream — strictly BEFORE writeX (STEP 5) —
+    // and then served the stale read to the model in "correct order". The
+    // sawUnsafeCall barrier must keep readB out of early-start, so the M29
+    // ordering guarantees hold regardless of the accelerator.
+    const order: string[] = [];
+    const mkTool = (name: string, safe: boolean): Tool => ({
+      name,
+      description: name,
+      promptDescription: name,
+      inputSchema: { type: "object", properties: {}, required: [] },
+      isEnabled: () => true,
+      isReadOnly: () => safe,
+      isConcurrencySafe: () => safe,
+      call: async () => {
+        order.push(`${name}:start`);
+        await new Promise((r) => setTimeout(r, 5));
+        order.push(`${name}:end`);
+        return { content: name };
+      },
+      formatResult: (r) => r.content,
+      checkPermissions: async () => ({ allowed: true }),
+    });
+    const tools = [mkTool("readA", true), mkTool("writeX", false), mkTool("readB", true)];
+    const caller = makeMockCaller([
+      [
+        { type: "tool_use", id: "c1", name: "readA", input: {} },
+        { type: "tool_use", id: "c2", name: "writeX", input: {} },
+        { type: "tool_use", id: "c3", name: "readB", input: {} },
+        { type: "done", usage: { input_tokens: 1, output_tokens: 1 }, finish_reason: "tool_calls" },
+      ],
+      [
+        { type: "text_delta", delta: "ok" },
+        { type: "done", usage: { input_tokens: 1, output_tokens: 1 }, finish_reason: "stop" },
+      ],
+    ]);
+    const events: any[] = [];
+    for await (const e of agentLoop(messages("go"), tools, caller, testConfig, {
+      systemPrompt: "x",
+      maxTurns: 5,
+      speculation: true,
+    })) {
+      events.push(e);
+    }
+    // readA may early-start during the stream, but writeX and readB must run
+    // in STEP 5 order: writeX after readA ends, readB after writeX ends.
+    expect(order.indexOf("writeX:start")).toBeGreaterThan(order.indexOf("readA:end"));
+    expect(order.indexOf("readB:start")).toBeGreaterThan(order.indexOf("writeX:end"));
     const tr = events.find((e) => e.type === "tool_results");
     expect(tr.results.map((r: any) => r.toolName)).toEqual(["readA", "writeX", "readB"]);
   });

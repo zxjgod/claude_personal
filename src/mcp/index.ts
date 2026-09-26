@@ -61,10 +61,11 @@ export async function withTimeout<T>(
 /**
  * Expand `${ENV_VAR}` placeholders in a string using process.env.
  *
- * Mirrors Claude Code's MCP config behavior: `.mcp.json` may reference
- * secrets (e.g. `"Authorization": "Bearer ${GITHUB_TOKEN}"`) without baking
- * them into the repo. Undefined variables expand to "" rather than leaking a
- * literal `${...}` (which would be sent verbatim as a header value).
+ * Mirrors Claude Code's MCP config behavior: an MCP config (CCR reads
+ * `.claude/mcp.json`) may reference secrets (e.g. `"Authorization":
+ * "Bearer ${GITHUB_TOKEN}"`) without baking them into the repo. Undefined
+ * variables expand to "" rather than leaking a literal `${...}` (which would
+ * be sent verbatim as a header value).
  */
 export function expandEnvTemplate(value: string): string {
   return value.replace(/\$\{([A-Z][A-Z0-9_]*)\}/g, (_, name: string) => process.env[name] ?? "");
@@ -176,12 +177,13 @@ export function buildStdioEnv(overrides?: Record<string, string>): Record<string
 }
 
 // --- Project-MCP trust gate ------------------------------------------------
-// A project `.mcp.json` can spawn arbitrary stdio commands (and reach http
-// endpoints) — loading it unconditionally would make "clone a malicious repo
-// and run the assistant" a supply-chain exploit. Servers from a project config
-// are therefore trusted ONCE per (config-path, config-content) pair, keyed on a
-// fingerprint of the raw file so any edit re-prompts. Trust is persisted to the
-// same directory as the hooks trust store, in a separate file.
+// A project `.claude/mcp.json` can spawn arbitrary stdio commands (and reach
+// http endpoints) — loading it unconditionally would make "clone a malicious
+// repo and run the assistant" a supply-chain exploit. Servers from a project
+// config are therefore trusted ONCE per (config-path, config-content) pair,
+// keyed on a fingerprint of the raw file so any edit re-prompts. Trust is
+// persisted to the same directory as the hooks trust store, in a separate file.
+// Plugin configs are exempt by decision (install-is-trust); see McpConfigScope.
 
 function mcpTrustStorePath(): string {
   return (
@@ -883,22 +885,42 @@ export type ElicitationHandler = (request: ElicitationRequest) => Promise<Elicit
 // --- Discover MCP Config Files ---
 
 /**
- * Find all MCP configuration files from standard locations
+ * Where a discovered MCP config came from — drives the trust gate.
+ * - "project": `<root>/.claude/mcp.json` — travels with cloned repos, so it is
+ *   a supply-chain risk and MUST pass the fingerprint trust gate before any of
+ *   its servers is spawned.
+ * - "plugin": an installed plugin's `mcp.json` — install-is-trust (user
+ *   decision 2026-09): installing the plugin already vouched for its servers,
+ *   the same policy as disk command/skill templates. Not gated.
  */
-export function discoverMCPConfigs(workspaceRoot: string): string[] {
-  const configs: string[] = [];
+export type McpConfigScope = "project" | "plugin";
 
-  // User-level config (~/.claude/mcp.json)
-  // CCR-only workspace config; never read official Claude Code locations.
+export interface DiscoveredMcpConfig {
+  path: string;
+  scope: McpConfigScope;
+}
+
+/**
+ * Find all MCP configuration files from CCR-specific locations. Never reads
+ * official Claude Code locations (`.mcp.json`, `~/.claude.json`).
+ *
+ * Returns structured {path, scope} entries — callers gate on `scope`, NOT on
+ * string-comparing paths (the old string comparison mismatched the discovery
+ * location and silently disabled the project trust gate — Top10 #1).
+ */
+export function discoverMCPConfigs(workspaceRoot: string): DiscoveredMcpConfig[] {
+  const configs: DiscoveredMcpConfig[] = [];
+
+  // CCR-only workspace config: <root>/.claude/mcp.json
   const projectConfig = ccrPath(workspaceRoot, "mcp.json");
   if (fs.existsSync(projectConfig)) {
-    configs.push(projectConfig);
+    configs.push({ path: projectConfig, scope: "project" });
   }
   for (const dir of pluginDirs(workspaceRoot)) {
     const file = path.join(dir, "mcp.json");
-    if (fs.existsSync(file)) configs.push(file);
+    if (fs.existsSync(file)) configs.push({ path: file, scope: "plugin" });
     const nested = ccrPath(dir, "mcp.json");
-    if (fs.existsSync(nested)) configs.push(nested);
+    if (fs.existsSync(nested)) configs.push({ path: nested, scope: "plugin" });
   }
 
   return configs;

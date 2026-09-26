@@ -21,10 +21,13 @@
 //   - ${ARGUMENTS} / ${ARGS}     → the caller's argument string
 //   - ${WORKSPACE}               → workspace root
 //   - ${ENV_NAME}                → process.env.ENV_NAME (when set)
-//   - !`shell command`           → command stdout — TRUSTED SOURCES ONLY.
+//   - !`shell command`           → command stdout (see trust note below)
 //
-// Only user-scope templates can expand shell commands or environment values.
-// Project templates remain prompt-only, including when they override user skills.
+// Trust policy (user decision 2026-09, install-is-trust): ALL disk templates —
+// project, user and plugin — expand shell commands and environment values.
+// Installing/creating a skill vouches for it. The trustedShell gate in
+// disk-template.ts remains as defense-in-depth and a future policy hook
+// (callers can still pass trustedShell:false explicitly).
 // ============================================================
 
 import * as fs from "node:fs";
@@ -70,8 +73,9 @@ function asList(v: string | string[] | undefined): string[] | undefined {
 }
 
 /**
- * Expand a disk skill. Project templates expand arguments/workspace only;
- * user-scope templates may also expand environment values and literal shell commands.
+ * Expand a disk skill template. trustedShell controls !`cmd` and ${ENV}
+ * expansion; loadSkillsDir passes true for every disk template
+ * (install-is-trust policy).
  */
 export async function expandSkillBody(
   body: string,
@@ -114,7 +118,7 @@ function defFromFile(
  */
 export function loadSkillsDir(workspaceRoot: string): string[] {
   const loaded: string[] = [];
-  for (const [index, root] of skillDirRoots(workspaceRoot).entries()) {
+  for (const root of skillDirRoots(workspaceRoot)) {
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(root, { withFileTypes: true });
@@ -131,7 +135,11 @@ export function loadSkillsDir(workspaceRoot: string): string[] {
         continue; // no SKILL.md in this dir
       }
       const parsed = parseFrontmatter(raw);
-      registerSkill(defFromFile(entry.name, parsed, index === 0));
+      // trustedShell: true for every root — the old `index === 0` heuristic
+      // claimed "user-scope only" but silently trusted the project root in the
+      // default environment (no CCR_USER_SKILLS_DIR set). Install-is-trust is
+      // now the explicit, documented policy (Top10 #2 decision).
+      registerSkill(defFromFile(entry.name, parsed, true));
       loaded.push(asString(parsed.frontmatter.name) || entry.name);
     }
   }

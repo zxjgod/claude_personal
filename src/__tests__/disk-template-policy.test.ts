@@ -56,21 +56,30 @@ describe("disk template trust policy", () => {
     expect(execution).toHaveBeenCalledTimes(2);
   });
 
-  it.each(["skill", "command"])("keeps project %s overrides prompt-only", async (kind) => {
-    const writeTemplate = (dir: string, file: string) => {
+  // Policy inversion (Top10 #2, user decision 2026-09 install-is-trust):
+  // project templates are trusted like user templates. The old `index === 0`
+  // heuristic made this env-dependent — with CCR_USER_* stubbed (as here) the
+  // project root landed at index 1 and was silently prompt-only, contradicting
+  // the default-environment behavior. Trusted-ness must not depend on roots
+  // order anymore.
+  it.each([
+    "skill",
+    "command",
+  ])("project %s overrides are trusted like user templates", async (kind) => {
+    const writeTemplate = (dir: string, file: string, marker: string) => {
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(
         path.join(dir, file),
-        "Text ${ARGUMENTS}: !`version-tool` ${CCR_TEMPLATE_TEST_VALUE}",
+        `${marker} Text \${ARGUMENTS}: !\`version-tool\` \${CCR_TEMPLATE_TEST_VALUE}`,
       );
     };
     if (kind === "skill") {
-      writeTemplate(path.join(root, "user-skills", "sample"), "SKILL.md");
-      writeTemplate(path.join(root, ".claude", "skills", "sample"), "SKILL.md");
+      writeTemplate(path.join(root, "user-skills", "sample"), "SKILL.md", "user-marker");
+      writeTemplate(path.join(root, ".claude", "skills", "sample"), "SKILL.md", "project-marker");
       loadSkillsDir(root);
     } else {
-      writeTemplate(path.join(root, "user-commands"), "sample.md");
-      writeTemplate(path.join(root, ".claude", "commands"), "sample.md");
+      writeTemplate(path.join(root, "user-commands"), "sample.md", "user-marker");
+      writeTemplate(path.join(root, ".claude", "commands"), "sample.md", "project-marker");
       loadCommandsDir(root);
     }
     const output =
@@ -81,10 +90,29 @@ describe("disk template trust policy", () => {
               .get("sample")!
               .run("hello", { workspaceRoot: root } as never)
           )?.prompt;
-    expect(output).toContain("Text hello");
-    expect(output).toContain("shell expansion disabled");
-    expect(output).not.toContain("sample-environment-value");
+    // Project template wins the override AND expands fully.
+    expect(output).toContain("project-marker Text hello");
+    expect(output).not.toContain("user-marker");
+    expect(output).toContain("sample-output"); // !`cmd` executed
+    expect(output).toContain("sample-environment-value"); // ${ENV} expanded
+    expect(output).not.toContain("shell expansion disabled");
+    expect(execution).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the trustedShell gate functional for explicit untrusted callers", async () => {
+    // Defense-in-depth: callers passing trustedShell:false still get prompt-only
+    // behavior with the honest rejection marker.
+    const shellOut = await expandDiskTemplate("!`version-tool`", {
+      trustedShell: false,
+      workspaceRoot: root,
+    });
+    expect(shellOut).toContain("shell expansion disabled: untrusted template source");
     expect(execution).not.toHaveBeenCalled();
+    const envOut = await expandDiskTemplate("${CCR_TEMPLATE_TEST_VALUE}", {
+      trustedShell: false,
+      workspaceRoot: root,
+    });
+    expect(envOut).toBe("");
   });
 
   it("keeps argument values literal while allowing a trusted template's literal directive", async () => {

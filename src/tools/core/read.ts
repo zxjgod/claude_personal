@@ -79,6 +79,17 @@ export const ReadTool: Tool = buildTool({
 
       const mediaType = imageMediaType(filePath);
 
+      // Speculative prefetch (Top10 #6): a background read the model has not
+      // seen must NOT satisfy the read-before-edit gate. Skip markRead and
+      // instead report {readPath, readMtimeMs} (the mtime of the version being
+      // returned) in metadata, so the cache-hit consumer in tool-executor can
+      // PROMOTE the read when — and only when — the content actually reaches
+      // the model as a real Read result.
+      const specMeta = context.speculative ? { readPath: filePath, readMtimeMs: stat.mtimeMs } : {};
+      const noteRead = (): void => {
+        if (!context.speculative) markRead(context.sessionId, filePath, stat.mtimeMs);
+      };
+
       // Images/PDFs are loaded wholesale into memory below, so the size gate
       // MUST run before any read: a multi-GB PNG rejected only after
       // readFileSync would already have OOM'd the process.
@@ -112,10 +123,10 @@ export const ReadTool: Tool = buildTool({
 
       // Images and PDFs return as multimodal content blocks.
       if (mediaType) {
-        markRead(context.sessionId, filePath, stat.mtimeMs);
+        noteRead();
         return {
           content: `[Loaded ${mediaType}: ${input.filePath}]`,
-          metadata: { fileSize: stat.size },
+          metadata: { fileSize: stat.size, ...specMeta },
           images: [
             {
               type: "image",
@@ -130,10 +141,10 @@ export const ReadTool: Tool = buildTool({
       }
 
       if (isBinary(buffer)) {
-        markRead(context.sessionId, filePath, stat.mtimeMs);
+        noteRead();
         return {
           content: `[Binary file: ${filePath}]`,
-          metadata: { fileSize: stat.size },
+          metadata: { fileSize: stat.size, ...specMeta },
         };
       }
 
@@ -164,13 +175,14 @@ export const ReadTool: Tool = buildTool({
                 return `Cell ${index} [${cell.cell_type ?? "unknown"}]${cell.execution_count != null ? ` execution=${cell.execution_count}` : ""}${outputCount ? ` outputs=${outputCount}` : ""}\n${lines}`;
               })
               .join("\n\n");
-            markRead(context.sessionId, filePath, stat.mtimeMs);
+            noteRead();
             return {
               content: rendered || "(empty notebook)",
               metadata: {
                 fileSize: stat.size,
                 summary: `Read notebook (${notebook.cells.length} cells)`,
                 linesRead: rendered.split("\n").length,
+                ...specMeta,
               },
             };
           }
@@ -203,7 +215,7 @@ export const ReadTool: Tool = buildTool({
 
       const truncated = fileTruncated || end < totalLines;
 
-      markRead(context.sessionId, filePath, stat.mtimeMs);
+      noteRead();
 
       return {
         content: numbered,
@@ -212,6 +224,7 @@ export const ReadTool: Tool = buildTool({
           linesRead: lines.length,
           fileSize: stat.size,
           summary: lines.length === 1 ? "Read 1 line" : `Read ${lines.length} lines`,
+          ...specMeta,
         },
       };
     } catch (error) {

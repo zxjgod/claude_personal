@@ -202,7 +202,12 @@ export const EditTool: Tool = buildTool({
   },
 
   async checkPermissions(input, context) {
-    const danger = checkDangerousPattern("edit", input, context.workspaceRoot);
+    const danger = checkDangerousPattern(
+      "edit",
+      input,
+      context.workspaceRoot,
+      context.allowedDirectories,
+    );
     if (danger.dangerous) {
       return { allowed: false, reason: danger.reason! };
     }
@@ -385,7 +390,12 @@ export const MultiEditTool: Tool = buildTool({
   },
 
   async checkPermissions(input, context) {
-    const danger = checkDangerousPattern("edit", input, context.workspaceRoot);
+    const danger = checkDangerousPattern(
+      "edit",
+      input,
+      context.workspaceRoot,
+      context.allowedDirectories,
+    );
     if (danger.dangerous) {
       return { allowed: false, reason: danger.reason! };
     }

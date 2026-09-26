@@ -13,6 +13,14 @@ import type { ToolResult } from "./types.js";
 export interface PreToolUsePayload {
   toolName: string;
   input: Record<string, unknown>;
+  /**
+   * True when the call is a SpeculationCache background prefetch — a read the
+   * model has NOT (yet) asked for and may never see. Side-effectful hooks
+   * (audit trails, notifications) can skip these phantom calls; block/rewrite
+   * policy still applies to them exactly as to real calls (that gate is the
+   * whole point of running hooks at prefetch time — Top10 #6 / review M5).
+   */
+  speculative?: boolean;
 }
 
 export interface PreToolUseOutcome {
@@ -105,13 +113,20 @@ export class HookRegistry {
     let input = payload.input;
     for (const hook of this.matching(payload.toolName)) {
       if (!hook.pre) continue;
-      const outcome = await hook.pre({ toolName: payload.toolName, input });
+      const outcome = await hook.pre({
+        toolName: payload.toolName,
+        input,
+        speculative: payload.speculative,
+      });
       if (!outcome) continue;
       if (outcome.block) {
         return { block: true, reason: outcome.reason ?? "blocked by hook" };
       }
       if (outcome.input) input = outcome.input;
     }
+    // NOTE: `input` is returned even when unchanged (the SAME reference as
+    // payload.input) — consumers detecting a REWRITE must compare identity
+    // (see SpeculationCache.prefetch), not truthiness.
     return { input };
   }
 

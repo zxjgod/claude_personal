@@ -20,6 +20,15 @@
 // the given input are started early. Such calls are auto-approved by the
 // permission system anyway, so starting them before STEP 5's permission check
 // changes nothing observable. A write/destructive call is never early-started.
+//
+// Ordering barrier (Top10 #5): per-call safety is NOT enough. Within one
+// assistant message, `Write(f); Read(f)` early-started the Read during the
+// stream — strictly BEFORE STEP 5 ran the Write — and the loop then served the
+// stale pre-write content to the model in "correct order", silently defeating
+// partitionToolCalls' ordering guarantee. So once ANY call in the current
+// message is not early-start-safe, every LATER call in that message also loses
+// early-start eligibility (read or not). clear() — called by the loop at every
+// message/attempt boundary (STEP 5 finally, retry, abort) — resets the barrier.
 // ============================================================
 
 import type { Tool, ToolExecutionResult } from "./types.js";
@@ -38,6 +47,8 @@ export class StreamingToolExecutor {
   private readonly run: SingleToolRunner;
   private readonly inflight = new Map<string, Promise<ToolExecutionResult>>();
   private readonly scopes = new Set<CancellationScope>();
+  /** Per-message ordering barrier — see the file header (Top10 #5). */
+  private sawUnsafeCall = false;
   started = 0;
   hits = 0;
 
@@ -70,13 +81,21 @@ export class StreamingToolExecutor {
 
   /**
    * Offer a tool_use block (arrived mid-stream) for early execution. Starts the
-   * call in the background only when it is safe and not already started. A
-   * no-op when disabled or unsafe — STEP 5 will run it normally then.
+   * call in the background only when it is safe, no earlier call in this
+   * message was unsafe (ordering barrier), and it was not already started. A
+   * no-op otherwise — STEP 5 will run it normally then.
    */
   add(id: string, toolName: string, input: Record<string, unknown>): void {
     if (!this.enabled) return;
     if (this.inflight.has(id)) return;
-    if (!this.isSafeToStart(toolName, input)) return;
+    // Barrier: an earlier mutating/unsafe call in THIS message invalidates
+    // early-start for everything after it — ordering semantics beat latency
+    // hiding (a later Read may depend on the earlier Write).
+    if (this.sawUnsafeCall) return;
+    if (!this.isSafeToStart(toolName, input)) {
+      this.sawUnsafeCall = true;
+      return;
+    }
     const scope = new CancellationScope(this.parentSignal);
     this.scopes.add(scope);
     this.started++;
@@ -116,7 +135,9 @@ export class StreamingToolExecutor {
     return this.inflight.size;
   }
 
-  /** Drop early-started results when a model turn is retried or aborted. */
+  /** Drop early-started results when a model turn is retried or aborted, and
+   *  at every message boundary (STEP 5 finally) — which also resets the
+   *  ordering barrier for the next assistant message. */
   clear(): void {
     for (const scope of this.scopes) {
       scope.cancel("hard", "Discarded model attempt");
@@ -124,5 +145,6 @@ export class StreamingToolExecutor {
     }
     this.scopes.clear();
     this.inflight.clear();
+    this.sawUnsafeCall = false;
   }
 }

@@ -1,8 +1,14 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { describe, expect, it } from "vitest";
-import { runWindowsSandbox, trimToUtf8Boundary } from "../native-sandbox.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  __resetSandboxWarnedForTests,
+  reportSandboxDegraded,
+  runWindowsSandbox,
+  splitSandboxWarnings,
+  trimToUtf8Boundary,
+} from "../native-sandbox.js";
 import { loadSandboxPolicy, requiresNativeSandbox, sandboxViolation } from "../sandbox-policy.js";
 
 describe("trimToUtf8Boundary", () => {
@@ -22,6 +28,61 @@ describe("trimToUtf8Boundary", () => {
     const emoji = Buffer.from("a😀", "utf8"); // 61 F0 9F 98 80
     expect(trimToUtf8Boundary(emoji, 3)).toBe(1); // 2 of 4 bytes
     expect(trimToUtf8Boundary(emoji, 5)).toBe(5); // complete
+  });
+});
+
+// Top10 #7: degraded isolation (restricted token / CreateProcessAsUser
+// unavailable → unrestricted-token fallback) must be surfaced, but as a
+// per-process console notice — never inside result.stderr, which tools and
+// the win32 e2e suite contract to be empty for clean commands.
+describe("degraded-isolation warnings", () => {
+  afterEach(() => {
+    __resetSandboxWarnedForTests();
+    vi.restoreAllMocks();
+  });
+
+  it("strips WARNING sentinels and keeps real host diagnostics", () => {
+    const host = [
+      "ccr-sandbox: WARNING: restricted token unavailable - the command will run WITHOUT token privilege restriction",
+      "ccr-sandbox: spawn failed (win32 error 5)",
+      "some powershell noise",
+    ].join("\n");
+    const { clean, warnings } = splitSandboxWarnings(host);
+    expect(warnings).toEqual([
+      "restricted token unavailable - the command will run WITHOUT token privilege restriction",
+    ]);
+    // Hard-failure lines do NOT carry the WARNING prefix and must survive.
+    expect(clean).toContain("ccr-sandbox: spawn failed (win32 error 5)");
+    expect(clean).toContain("some powershell noise");
+    expect(clean).not.toContain("WARNING");
+  });
+
+  it("passes sentinel-free host stderr through byte-identical", () => {
+    const host = "Add-Type compile error at line 3\n";
+    const { clean, warnings } = splitSandboxWarnings(host);
+    expect(clean).toBe(host);
+    expect(warnings).toEqual([]);
+  });
+
+  it("reduces a sentinel-only host stderr to empty (clean-command contract)", () => {
+    const { clean, warnings } = splitSandboxWarnings("ccr-sandbox: WARNING: fallback\r\n");
+    expect(clean).toBe("");
+    expect(warnings).toEqual(["fallback"]);
+  });
+
+  it("escalates only the first warning per process", () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    reportSandboxDegraded(["first degraded reason"]);
+    reportSandboxDegraded(["second degraded reason"]);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(String(spy.mock.calls[0][0])).toContain("first degraded reason");
+    expect(String(spy.mock.calls[0][0])).toContain("[ccr-sandbox]");
+  });
+
+  it("stays quiet when there is nothing to report", () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    reportSandboxDegraded([]);
+    expect(spy).not.toHaveBeenCalled();
   });
 });
 
@@ -218,5 +279,31 @@ describe("native windows sandbox (win32 end-to-end)", () => {
     expect(result.truncated).toBe(true);
     expect(result.stdout).toContain("中中中");
     expect(result.stdout).not.toContain("涓"); // E4 B8 AD decoded as GBK
+  });
+
+  win32("degraded-isolation sentinels never leak into result.stderr", async () => {
+    // On machines where CreateProcessAsUser falls back (the common non-admin
+    // case), the C# Warn sentinel travels through the REAL host-stderr pipe.
+    // Whatever the machine does, a clean command's stderr must stay empty and
+    // the escalation (if any) must go to console.error, not the result.
+    __resetSandboxWarnedForTests();
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const result = await runWindowsSandbox({
+        command: "echo clean-run",
+        cwd: process.cwd(),
+        timeoutMs: 60_000,
+      });
+      expect(result.code).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stderr).not.toContain("ccr-sandbox: WARNING");
+      for (const call of spy.mock.calls) {
+        // The only acceptable console noise is the once-per-process notice.
+        expect(String(call[0])).toContain("[ccr-sandbox]");
+      }
+    } finally {
+      spy.mockRestore();
+      __resetSandboxWarnedForTests();
+    }
   });
 });

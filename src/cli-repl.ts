@@ -107,6 +107,20 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
   } = deps;
   const { persistence, session, recordTranscript, stats: sessionStats, telemetry } = deps.state;
 
+  // Best-effort mid-turn session save. Every floating (non-awaited) save MUST
+  // go through this: an uncaught rejection here reaches the process-level
+  // unhandledRejection handler, which tears the whole REPL down (review
+  // follow-up H1 — the cross-process session lock added a new, realistic
+  // rejection source: ELOCKED while another terminal holds the file).
+  const floatingSave = (opts?: {
+    taskState?: import("./session-memory.js").TaskState;
+    lastTerminalReason?: string;
+  }): void => {
+    persistence.save(session.id, messages, opts).catch((err) => {
+      console.error("Warning: session auto-save failed:", formatCliError(err));
+    });
+  };
+
   if (isInteractive && !quiet) {
     renderWelcome({
       version: "1.0.0",
@@ -277,7 +291,10 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
         controller.abort("User interrupted");
       };
       process.on("SIGINT", onSigint);
-      await persistence.save(session.id, messages, { taskState: "waiting_for_model" });
+      // Pre-turn save of the just-pushed user message. Best-effort like every
+      // other mid-loop save (saveChain keeps ordering; a failure must not kill
+      // the turn or the REPL — review follow-up H1).
+      floatingSave({ taskState: "waiting_for_model" });
 
       const renderer = new StreamingRenderer();
       turnInProgress = true;
@@ -389,7 +406,7 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
       for await (const event of loop) {
         switch (event.type) {
           case "thinking":
-            void persistence.save(session.id, messages, { taskState: "waiting_for_model" });
+            floatingSave({ taskState: "waiting_for_model" });
             thinkingStart = Date.now();
             thoughtReported = false;
             thinkingStreamed = false;
@@ -439,7 +456,7 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
           }
 
           case "tool_use": {
-            void persistence.save(session.id, messages, { taskState: "waiting_for_tool" });
+            floatingSave({ taskState: "waiting_for_tool" });
             resetIdleTimer();
             spinner.stop();
             if (thinkingStreamed) {
@@ -493,7 +510,7 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
           }
 
           case "compacting":
-            void persistence.save(session.id, messages, { taskState: "recovering" });
+            floatingSave({ taskState: "recovering" });
             spinner.stop();
             renderer.flush();
             console.log("\n  " + chalk.cyan("⏳") + " " + chalk.gray("正在压缩上下文…"));
@@ -529,7 +546,7 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
             break;
 
           case "error":
-            void persistence.save(session.id, messages, { taskState: "failed" });
+            floatingSave({ taskState: "failed" });
             spinner.stop();
             renderer.flush();
             recordTranscript({ type: "error", message: formatCliError(event.error) });
@@ -578,7 +595,7 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
             break;
 
           case "aborted":
-            void persistence.save(session.id, messages, {
+            floatingSave({
               taskState: "stopped_by_user",
               lastTerminalReason: "aborted_by_user",
             });

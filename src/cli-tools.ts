@@ -4,7 +4,6 @@
 // gating), MCP resource tools, and ToolSearch.
 // ============================================================
 
-import * as path from "node:path";
 import chalk from "chalk";
 
 import { loadAgentsDir } from "./agents/loadAgentsDir.js";
@@ -106,12 +105,17 @@ export async function setupTools(deps: {
   // MCP Setup
   const mcpManager = new MCPManager();
   const mcpConfigs = discoverMCPConfigs(workspaceRoot);
-  for (const configPath of mcpConfigs) {
-    const isProjectConfig = path.resolve(configPath) === path.resolve(workspaceRoot, ".mcp.json");
-    await mcpManager.loadConfig(configPath, {
-      requireTrust: isProjectConfig,
+  for (const cfg of mcpConfigs) {
+    // Trust gate binds on the discovery SCOPE, not a path string comparison
+    // (the old comparison never matched the discovered location, leaving the
+    // gate dead — Top10 #1). Project configs travel with cloned repos and can
+    // spawn arbitrary stdio commands, so they require a fingerprint-trust
+    // confirmation; plugin configs are install-is-trust (see McpConfigScope).
+    const gated = cfg.scope === "project";
+    await mcpManager.loadConfig(cfg.path, {
+      requireTrust: gated,
       confirm:
-        isProjectConfig && process.stdin.isTTY && process.stdout.isTTY
+        gated && process.stdin.isTTY && process.stdout.isTTY
           ? async (descriptions) => {
               console.log(
                 chalk.yellow(

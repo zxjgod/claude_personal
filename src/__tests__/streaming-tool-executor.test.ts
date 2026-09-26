@@ -119,4 +119,42 @@ describe("StreamingToolExecutor", () => {
     expect(cancelled).toBe(true);
     expect(ex.pending).toBe(0);
   });
+
+  // Top10 #5: per-call safety is not enough — `Write(f); Read(f)` in one
+  // assistant message must not early-start the Read (it would run strictly
+  // before STEP 5's Write and hand the model stale content in "correct order").
+  describe("ordering barrier (Top10 #5)", () => {
+    it("does not early-start a safe call that FOLLOWS an unsafe call", async () => {
+      let ran = 0;
+      const ex = new StreamingToolExecutor(true, [readTool, writeTool], async (n) => {
+        ran++;
+        return ok(n);
+      });
+      ex.add("c1", "write", { filePath: "a.ts", content: "x" }); // unsafe → barrier up
+      ex.add("c2", "read", { filePath: "a.ts" }); // safe, but AFTER the write
+      expect(ex.started).toBe(0);
+      expect(ran).toBe(0);
+      expect(await ex.take("c2")).toBeNull(); // STEP 5 runs it in order
+    });
+
+    it("still early-starts safe calls that PRECEDE the unsafe call", async () => {
+      const ex = new StreamingToolExecutor(true, [readTool, writeTool], async (n) => ok(n));
+      ex.add("c1", "read", { filePath: "a.ts" }); // safe, nothing before it
+      ex.add("c2", "write", { filePath: "a.ts", content: "x" }); // barrier goes up here
+      expect(ex.started).toBe(1);
+      expect((await ex.take("c1"))?.formatted).toBe("read ok");
+      expect(await ex.take("c2")).toBeNull();
+    });
+
+    it("clear() resets the barrier for the next message", async () => {
+      const ex = new StreamingToolExecutor(true, [readTool, writeTool], async (n) => ok(n));
+      ex.add("c1", "write", { filePath: "a.ts", content: "x" });
+      ex.add("c2", "read", { filePath: "a.ts" });
+      expect(ex.started).toBe(0);
+      ex.clear(); // message boundary (STEP 5 finally / retry / abort)
+      ex.add("c3", "read", { filePath: "b.ts" }); // new message — eligible again
+      expect(ex.started).toBe(1);
+      expect((await ex.take("c3"))?.formatted).toBe("read ok");
+    });
+  });
 });

@@ -21,10 +21,14 @@
 // Body substitution (at invocation, never at discovery):
 //   $ARGUMENTS / ${ARGUMENTS} / ${ARGS} → the caller's argument string
 //   $1 .. $9                            → positional args (whitespace-split)
-//   !`shell command`                    → command stdout — TRUSTED SOURCES ONLY.
+//   !`shell command`                    → command stdout (see trust note below)
 //
-// User-scope commands may execute literal shell directives. Project commands
-// are prompt-only and cannot expand environment values (see loadSkillsDir.ts).
+// Trust policy (user decision 2026-09, install-is-trust): ALL disk templates —
+// project, user and plugin — may execute literal shell directives and expand
+// ${ENV} values. Installing/creating a template vouches for it, the same
+// policy as plugin MCP configs. The trustedShell gate in disk-template.ts is
+// kept as defense-in-depth and a future policy hook (callers can still pass
+// trustedShell:false explicitly).
 // ============================================================
 
 import * as fs from "node:fs";
@@ -55,7 +59,8 @@ function asString(v: string | string[] | undefined): string | undefined {
   return Array.isArray(v) ? v.join(", ") : v;
 }
 
-/** Project templates are prompt-only; user-scope templates may run literal commands. */
+/** Expand a command body. trustedShell defaults to false at the API level;
+ *  loadCommandsDir passes true for every disk template (install-is-trust). */
 export async function expandCommandBody(
   body: string,
   opts: { args?: string; workspaceRoot?: string; trustedShell?: boolean },
@@ -118,7 +123,7 @@ export function resetCustomCommands(): void {
  */
 export function loadCommandsDir(workspaceRoot: string): string[] {
   const loaded: string[] = [];
-  for (const [index, root] of commandDirRoots(workspaceRoot).entries()) {
+  for (const root of commandDirRoots(workspaceRoot)) {
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(root, { withFileTypes: true });
@@ -138,7 +143,11 @@ export function loadCommandsDir(workspaceRoot: string): string[] {
       }
       const { frontmatter, body } = parseFrontmatter(raw);
       if (!body) continue; // a command with no prompt body is useless
-      registerCustomCommand(commandFromFile(name, body, frontmatter, index === 0));
+      // trustedShell: true for every root — the old `index === 0` heuristic
+      // claimed "user-scope only" but silently trusted the project root in the
+      // default environment (no CCR_USER_COMMANDS_DIR set). Install-is-trust
+      // is now the explicit, documented policy (Top10 #2 decision).
+      registerCustomCommand(commandFromFile(name, body, frontmatter, true));
       loaded.push(name);
     }
   }

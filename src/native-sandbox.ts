@@ -81,10 +81,14 @@ export function trimToUtf8Boundary(buf: Buffer, end: number): number {
  *     plain CreateProcess — still CREATE_SUSPENDED, still inside the
  *     kill-on-close Job Object — so resource limits and timeout teardown
  *     work everywhere; token lockdown applies only where it can. The fallback
- *     is silent; every HARD failure reports its win32 error on the host's
- *     stderr, which the Promise below forwards into the result. Swallowing
- *     those streams once turned every setup failure into a mysterious
- *     `code:1, no output`.
+ *     is NOT silent (Top10 #7): the C# Warn() emits a sentinel line prefixed
+ *     `ccr-sandbox: WARNING:` on the host's stderr; the TS side strips
+ *     sentinel lines out of result.stderr (so a clean command's stderr stays
+ *     empty) and escalates the first one per process into a single console
+ *     notice — see splitSandboxWarnings / reportSandboxDegraded. Every HARD
+ *     failure still reports its win32 error on the host's stderr, which the
+ *     Promise below forwards into the result. Swallowing those streams once
+ *     turned every setup failure into a mysterious `code:1, no output`.
  *
  * Known limitation (inherent to the `( )` grouping that keeps a user-side
  * `1>&2` from stealing our redirections): an UNQUOTED, unbalanced `)` in the
@@ -109,6 +113,58 @@ export function trimToUtf8Boundary(buf: Buffer, end: number): number {
  * OOM the agent process.
  */
 const MAX_CAPTURE_BYTES = 10 * 1024 * 1024;
+
+/** Sentinel prefix for degraded-isolation warnings emitted by the embedded
+ *  C# Warn(). These lines are host diagnostics, NOT command output:
+ *  splitSandboxWarnings strips them from result.stderr and escalates the
+ *  first one per process via reportSandboxDegraded. */
+const SANDBOX_WARN_PREFIX = "ccr-sandbox: WARNING:";
+
+/**
+ * Split the sandbox host's stderr into (clean diagnostics, degraded-isolation
+ * warnings). Clean command runs must keep `result.stderr === ""` — the win32
+ * e2e tests enforce this — so sentinel lines may never leak into it. Hard
+ * failures (`ccr-sandbox: <op> failed ...`) do NOT carry the WARNING prefix
+ * and stay in the clean text on purpose.
+ */
+export function splitSandboxWarnings(hostStderr: string): {
+  clean: string;
+  warnings: string[];
+} {
+  const warnings: string[] = [];
+  const kept: string[] = [];
+  for (const line of hostStderr.split("\n")) {
+    const bare = line.replace(/\r$/, "");
+    if (bare.startsWith(SANDBOX_WARN_PREFIX)) {
+      const detail = bare.slice(SANDBOX_WARN_PREFIX.length).trim();
+      if (detail) warnings.push(detail);
+      continue; // drop the sentinel line entirely
+    }
+    kept.push(line);
+  }
+  return { clean: kept.join("\n"), warnings };
+}
+
+let warnedDegraded = false;
+
+/**
+ * Escalate degraded isolation (restricted token / CreateProcessAsUser
+ * unavailable → the command ran with an unrestricted token) to a single
+ * per-process console notice. Once per process on purpose: on machines where
+ * the fallback is the norm, warning per command would flood transcripts.
+ */
+export function reportSandboxDegraded(warnings: string[]): void {
+  if (warnedDegraded || warnings.length === 0) return;
+  warnedDegraded = true;
+  console.error(
+    `[ccr-sandbox] Native sandbox degraded: ${warnings[0]}. The command ran WITHOUT token restriction (job resource limits and timeout kill still applied). This notice is shown once per process.`,
+  );
+}
+
+/** Test-only: reset the reportSandboxDegraded once-per-process latch. */
+export function __resetSandboxWarnedForTests(): void {
+  warnedDegraded = false;
+}
 
 export function runWindowsSandbox(options: NativeSandboxOptions): Promise<NativeSandboxResult> {
   if (process.platform !== "win32")
@@ -144,11 +200,14 @@ public static class CcrSandbox {
  [StructLayout(LayoutKind.Sequential)] struct BASIC { public long perProcess,perJob; public uint flags; public UIntPtr min,max; public uint active; public IntPtr affinity; public uint priority,sched; }
  [StructLayout(LayoutKind.Sequential)] struct LIMITS { public BASIC basic; public ulong io1,io2,io3,io4,io5,io6; public UIntPtr processMemoryLimit, jobMemoryLimit, peakProcessMemoryUsed, peakJobMemoryUsed; }
  static void Fail(string what){ Console.Error.WriteLine("ccr-sandbox: "+what+" failed (win32 error "+Marshal.GetLastWin32Error()+")"); }
+ static void Warn(string what){ Console.Error.WriteLine("ccr-sandbox: WARNING: "+what); }
  public static int Run(string cmd,string cwd,string output,string error){
   // '"' by char code — see the TS doc-comment: NO escaped quote or backslash may ever appear in this file's C#.
   string dq=((char)34).ToString();
   IntPtr orig=IntPtr.Zero, restricted=IntPtr.Zero;
-  if(OpenProcessToken(Process.GetCurrentProcess().Handle,TOKEN_QUERY|TOKEN_DUPLICATE|TOKEN_ASSIGN_PRIMARY|TOKEN_ADJUST_DEFAULT|TOKEN_ADJUST_SESSIONID,out orig)) CreateRestrictedToken(orig,DISABLE_MAX_PRIVILEGE,0,IntPtr.Zero,0,IntPtr.Zero,0,IntPtr.Zero,out restricted);
+  bool tokOk=OpenProcessToken(Process.GetCurrentProcess().Handle,TOKEN_QUERY|TOKEN_DUPLICATE|TOKEN_ASSIGN_PRIMARY|TOKEN_ADJUST_DEFAULT|TOKEN_ADJUST_SESSIONID,out orig);
+  if(tokOk) tokOk=CreateRestrictedToken(orig,DISABLE_MAX_PRIVILEGE,0,IntPtr.Zero,0,IntPtr.Zero,0,IntPtr.Zero,out restricted);
+  if(!tokOk||restricted==IntPtr.Zero) Warn("restricted token unavailable - the command will run WITHOUT token privilege restriction");
   // The user command goes inside ( ) and OUR redirections go OUTSIDE them.
   // Appending '> out 2> err' to a bare command line lets cmd bind
   // left-to-right, so a user-side redirect like 'echo x 1>&2' silently swaps
@@ -169,7 +228,11 @@ public static class CcrSandbox {
   var pi=new PROCESS_INFORMATION();
   bool ok=restricted!=IntPtr.Zero && CreateProcessAsUser(restricted,null,line,IntPtr.Zero,IntPtr.Zero,false,CREATE_SUSPENDED,IntPtr.Zero,cwd,ref si,out pi);
   // Restricted-token launch needs privileges a plain user lacks; fall back to a same-job unsandboxed-token spawn rather than hard-failing.
-  if(!ok) ok=CreateProcess(null,line,IntPtr.Zero,IntPtr.Zero,false,CREATE_SUSPENDED,IntPtr.Zero,cwd,ref si,out pi);
+  // The fallback is NOT silent: Warn emits a host-stderr sentinel that the TS side strips and escalates once per process. When restricted==Zero the token Warn above already fired, so only warn again here when CreateProcessAsUser itself failed.
+  if(!ok){
+   if(restricted!=IntPtr.Zero) Warn("CreateProcessAsUser failed - falling back to an unrestricted-token spawn (resource limits and timeout kill still apply)");
+   ok=CreateProcess(null,line,IntPtr.Zero,IntPtr.Zero,false,CREATE_SUSPENDED,IntPtr.Zero,cwd,ref si,out pi);
+  }
   if(!ok){ Fail("spawn"); return (int)(SB+1); }
   var job=CreateJobObject(IntPtr.Zero,null);
   // Every early return below MUST TerminateProcess: the child is CREATE_SUSPENDED and
@@ -261,7 +324,11 @@ public static class CcrSandbox {
           return { text: "", truncated: false };
         }
       };
-      const host = decodeCapturedOutput(Buffer.concat(hostErr));
+      const hostRaw = decodeCapturedOutput(Buffer.concat(hostErr));
+      // Degraded-isolation sentinels are host diagnostics, not command output:
+      // strip them from result.stderr and surface the first one per process.
+      const { clean: host, warnings } = splitSandboxWarnings(hostRaw);
+      reportSandboxDegraded(warnings);
       const out = readCapped(outFile);
       const err = readCapped(errFile);
       const truncated = out.truncated || err.truncated;

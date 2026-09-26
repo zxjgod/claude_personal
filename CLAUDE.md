@@ -35,6 +35,15 @@ CLI Entry --> Config/API Client --> System Prompt Builder --> Agent Loop --> Too
   - `快速开始.md` — install / config / run / smoke-test flow
   - `项目总览.md` — architecture, module list, completion status
   - `项目评审报告.md` — source-level review with findings & fixes
+  - `架构分析与升级总纲-202609.md` — 2026-09 全景架构审查存档（宏观架构、
+    Top10 重大问题、分部升级建议、中长期演进方向）；规划任何架构分部工作前
+    先读此文件，再按附录 A 指引读 `架构审查-202609/` 下对应分册（01 核心
+    引擎 / 02 LLM接入 / 03 工具系统 / 04 权限安全 / 05 TUI / 06 持久化扩展，
+    含行号级证据；行号基于 v1.5.0，编辑后会漂移需 grep 重新锚定）。
+    **Top10 已于 2026-09-26 全部处置完毕**（修复或经用户拍板决策保留，
+    逐项状态与决策记录见总纲 §五 表格后的"修复状态标注"；#2 磁盘模板
+    全部可信、#7 沙箱 best-effort 仅告警、#1 插件 MCP 免门属有意决策，
+    勿再当 bug 修）
   - `architecture/` — Claude Code internals analysis (tool-call flow, agent
     loop & extended thinking, terminal status UI; with source line refs)
   - `archive/` — historical ROADMAPs, changelogs, comparison tables (numbers may be stale)
@@ -78,5 +87,6 @@ npm start
 ## Configuration
 
 - `.env` — API keys and provider selection
-- `.mcp.json` — MCP server configurations (optional)
+- `.claude/mcp.json` — MCP server configurations (optional; project-level
+  configs pass a one-time fingerprint trust confirmation before spawn)
 - `.claude/settings.json` — Project-level Claude Code settings

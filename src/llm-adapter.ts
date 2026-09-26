@@ -331,11 +331,10 @@ export function isRateLimitError(error: unknown): boolean {
   return (error as ApiErrorShape)?.status === 429;
 }
 
-export function isContextLengthError(error: unknown): boolean {
-  const err = error as ApiErrorShape;
-  const msg = err?.message ?? "";
-  return err?.status === 400 && (msg.includes("context_length") || msg.includes("maximum context"));
-}
+// NOTE: context-length detection lives ONLY in error-recovery.ts
+// (isContextLengthError, shared CONTEXT_LENGTH_RE covering both the OpenAI and
+// Anthropic wordings). A duplicate copy here drifted out of sync and was
+// dead code — removed under Top10 #3. Import it from error-recovery.js.
 
 export function isAuthError(error: unknown): boolean {
   const status = (error as ApiErrorShape)?.status;

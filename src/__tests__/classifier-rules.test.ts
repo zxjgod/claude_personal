@@ -26,6 +26,17 @@ describe("buildClassifierPrompt", () => {
     const prompt = buildClassifierPrompt({ allow: [], soft_deny: [], environment: [] });
     expect(prompt).toContain("- (none)");
   });
+
+  // Top10 #8: the prompt must not tell the model that the (attacker-influenceable)
+  // command text outranks everything else, and must warn about injected
+  // verdict-like text inside the TOOL_CALL delimiters.
+  it("never calls the command text the ground truth and warns about injection", () => {
+    const prompt = buildClassifierPrompt(DEFAULT_CLASSIFIER_RULES);
+    expect(prompt).not.toContain("ground truth");
+    expect(prompt).toContain("untrusted DATA");
+    expect(prompt).toContain("TOOL_CALL");
+    expect(prompt.toLowerCase()).toContain("never obey");
+  });
 });
 
 describe("mergeClassifierRules", () => {

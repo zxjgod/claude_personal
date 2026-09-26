@@ -26,7 +26,7 @@ import {
 } from "./query/token-budget.js";
 import { predictReads, SpeculationCache } from "./speculation.js";
 import { StreamingToolExecutor } from "./streaming-tool-executor.js";
-import { estimateTokens } from "./token-estimator.js";
+import { estimateTokens, providerPromptTokens } from "./token-estimator.js";
 import {
   backfillMissingToolResults,
   executeSingleTool,
@@ -241,6 +241,12 @@ export async function* agentLoop(
         specCache,
         readFiles,
         signal,
+        // Review follow-up M4: an early-started call can still be DISCARDED
+        // if the stream errors afterwards (the retry regenerates the
+        // message), so its speculative-read promotion is deferred to runOne
+        // collecting the result in STEP 5 — promotion must never happen for
+        // a read that never entered history.
+        { deferSpecPromotion: true },
       ),
     abortSignal,
   );
@@ -406,7 +412,14 @@ export async function* agentLoop(
               lastTurnOutput = event.usage.output_tokens;
               modelFinishReason = event.finish_reason;
               thinkingBlocks = event.thinking;
-              const promptTokens = event.usage.input_tokens;
+              // Provider-aware baseline (Top10 #3): Anthropic's input_tokens
+              // EXCLUDES cache read/creation, so the old raw read under-counted
+              // the live context by the entire cached prefix — high cache-hit
+              // sessions never crossed the compaction threshold and then died
+              // on the provider's hard limit. OpenAI-compatible input_tokens
+              // already includes cached tokens; providerPromptTokens encodes
+              // both dialects (single source of truth in token-estimator.ts).
+              const promptTokens = providerPromptTokens(event.usage, modelConfig.provider);
               state = {
                 ...state,
                 totalTokens: state.totalTokens + usage.input_tokens + usage.output_tokens,
@@ -420,6 +433,9 @@ export async function* agentLoop(
 
             case "error": {
               streamExecutor.clear();
+              // A discarded model attempt's prefetches must not be served to
+              // the retry (Top10 #6) — drop them alongside the early starts.
+              specCache.clear();
               const recovery = await handleModelError(
                 event.error,
                 {
@@ -784,7 +800,9 @@ export async function* agentLoop(
         backfillMissingToolResults(messages, toolCalls);
       }
 
-      // 12.2: Speculatively prefetch likely follow-up Reads.
+      // 12.2: Speculatively prefetch likely follow-up Reads. Hooks are passed
+      // so a PreToolUse block/rewrite policy also governs the speculative
+      // read itself (Top10 #6 — the prefetch used to bypass them).
       if (specCache.isEnabled) {
         for (const r of toolResults) {
           if (r.result) {
@@ -792,6 +810,7 @@ export async function* agentLoop(
               predictReads(r.toolName, r.result, {}, readFiles),
               tools,
               baseContext,
+              hooks,
             );
           }
         }

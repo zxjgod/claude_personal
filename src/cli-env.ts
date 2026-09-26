@@ -189,7 +189,8 @@ Options:
 
 Configuration:
   .env                       LLM_PROVIDER, LLM_API_KEY, LLM_MODEL, LLM_BASE_URL
-  .mcp.json                  MCP server definitions (optional)
+  .claude/mcp.json           MCP server definitions (optional; project-level
+                             configs ask for a one-time trust confirmation)
   .claude/settings.json      Workspace permission mode, hooks, telemetry
 
 In-session: type /help for slash commands.`;

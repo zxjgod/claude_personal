@@ -33,6 +33,7 @@ import {
 import type { TaskState } from "../session-memory.js";
 import { normalizeFinishReason } from "../session-memory.js";
 import { formatSpeculationLine } from "./../speculation.js";
+import { estimateContextUsed } from "../token-estimator.js";
 import { startScheduler } from "../tools/extended/scheduler.js";
 import { drainNotifications, formatNotificationLine } from "../tools/notifications.js";
 import { expandFileRefs } from "../tools/utils/file-refs.js";
@@ -480,29 +481,6 @@ function toolDetail(input?: Record<string, unknown>): string {
     if (typeof v === "string") return v;
   }
   return "";
-}
-
-/**
- * Tokens occupying the context window after one model call — the estimate the
- * status-bar gauge plots. The two adapter families report input differently:
- * Anthropic's input_tokens EXCLUDES cache read/creation (sum all three),
- * OpenAI's prompt_tokens already INCLUDES cached tokens (summing again would
- * double-count). Mirrors the accounting note in session-stats.ts.
- */
-function estimateContextUsed(
-  u: {
-    input_tokens: number;
-    output_tokens: number;
-    cache_read_input_tokens?: number;
-    cache_creation_input_tokens?: number;
-  },
-  provider: string,
-): number {
-  const base = u.input_tokens + u.output_tokens;
-  if (provider === "anthropic") {
-    return base + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
-  }
-  return base;
 }
 
 function capitalize(name: string): string {

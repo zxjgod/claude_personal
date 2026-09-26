@@ -256,13 +256,15 @@ export const BashTool: Tool = buildTool({
     // for running too long.
     if (timedOut) {
       const timeoutSecs = Math.round(timeout / 1000);
+      // No hand-embedded output slice here anymore: defaultFormatResult now
+      // keeps content alongside error (Top10 #4), so the FULL captured output
+      // reaches the model via `content` instead of a 500-char preview.
       return {
         content: output || `Command timed out after ${timeoutSecs}s`,
         truncated: outTruncated,
         error:
           `Command timed out (${timeoutSecs}s)\n` +
-          chalk.gray(`   Hint: if this is expected, increase the timeout parameter`) +
-          (output ? `\n${chalk.gray("   Output so far:")}\n${output.slice(0, 500)}` : ""),
+          chalk.gray(`   Hint: if this is expected, increase the timeout parameter`),
         metadata: { exitCode: -1, timedOut: true },
       };
     }

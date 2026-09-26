@@ -3,11 +3,15 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { checkPermission } from "../permissions.js";
-import { executeSingleTool } from "../tool-executor.js";
+import { checkReadBeforeEdit, markRead } from "../read-tracker.js";
+import { SpeculationCache } from "../speculation.js";
+import { executeSingleTool, promoteSpeculativeRead } from "../tool-executor.js";
 import { BashTool } from "../tools/core/bash.js";
+import { EditTool } from "../tools/core/edit.js";
 import { GrepTool } from "../tools/core/grep.js";
 import { PowerShellTool } from "../tools/core/powershell.js";
 import { ReadTool } from "../tools/core/read.js";
+import { WriteTool } from "../tools/core/write.js";
 import type { ToolContext } from "../types.js";
 import { createSubAgentApprover } from "../utils/subagent-security.js";
 
@@ -121,5 +125,184 @@ describe("Grep sensitive path enforcement", () => {
     const result = await GrepTool.call({ pattern: "PROBE", glob: "**/*" }, ctx);
     expect(result.content).toContain("PUBLIC");
     expect(result.content).not.toContain("FAKE_");
+  });
+});
+
+// ============================================================
+// Tool-level boundary check vs --add-dir (review follow-up):
+// checkDangerousPattern's outside-workspace flag feeds edit/write's
+// HARD-deny checkPermissions, so it must honor allowedDirectories
+// or explicitly granted directories become uneditable without prompt.
+// ============================================================
+
+describe("tool-level boundary vs --add-dir (review follow-up)", () => {
+  it("edit's hard-deny honors context.allowedDirectories", async () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-added-"));
+    try {
+      const target = path.join(outside, "x.ts");
+      const input = { filePath: target, oldString: "a", newString: "b" };
+      // Without the grant: hard-denied at the tool level (no prompt).
+      const denied = await EditTool.checkPermissions!(input, ctx);
+      expect(denied).toMatchObject({
+        allowed: false,
+        reason: expect.stringContaining("outside workspace"),
+      });
+      // With --add-dir wiring the directory into allowedDirectories: allowed
+      // (the user explicitly granted it; resolveInWorkspace agrees).
+      const allowed = await EditTool.checkPermissions!(input, {
+        ...ctx,
+        allowedDirectories: [outside],
+      });
+      expect(allowed.allowed).toBe(true);
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+// ============================================================
+// Speculative prefetch guards (Top10 #6), end-to-end through
+// the real executeSingleTool × SpeculationCache × ReadTool chain
+// ============================================================
+
+describe("speculative prefetch guards (Top10 #6)", () => {
+  function execCtx(sessionId: string): ToolContext {
+    return { ...ctx, permissionMode: "bypassPermissions", sessionId };
+  }
+
+  it("cache-hit consumption promotes the read into the read-before-edit tracker", async () => {
+    const file = path.join(fixture, "promote.txt");
+    fs.writeFileSync(file, "original content\n");
+    const ectx = execCtx("promo-hit");
+    const cache = new SpeculationCache(true);
+    cache.prefetch([{ toolName: "read", input: { filePath: file } }], [ReadTool], ectx);
+
+    const res = await executeSingleTool(
+      {
+        id: "c1",
+        type: "function",
+        function: { name: "read", arguments: JSON.stringify({ filePath: file }) },
+      },
+      [ReadTool],
+      ectx,
+      async () => true,
+      undefined,
+      cache,
+    );
+    expect(res.isError).toBe(false);
+    expect(res.formatted).toContain("original content");
+    expect(cache.hits).toBe(1);
+    // The model has now genuinely seen this file (served from cache): the
+    // read-before-edit gate must open for exactly the prefetched version.
+    const { mtimeMs } = fs.statSync(file);
+    expect(checkReadBeforeEdit("promo-hit", file, mtimeMs).ok).toBe(true);
+  });
+
+  it("an unconsumed prefetch leaves the read-before-edit gate CLOSED", async () => {
+    const file = path.join(fixture, "silent.txt");
+    fs.writeFileSync(file, "content\n");
+    const ectx = execCtx("promo-silent");
+    const cache = new SpeculationCache(true);
+    cache.prefetch([{ toolName: "read", input: { filePath: file } }], [ReadTool], ectx);
+    await new Promise((r) => setTimeout(r, 150)); // let the background read finish
+    const { mtimeMs } = fs.statSync(file);
+    // The speculative read ran, but the model never saw it → no Edit rights.
+    expect(checkReadBeforeEdit("promo-silent", file, mtimeMs).ok).toBe(false);
+  });
+
+  it("deferSpecPromotion holds promotion back until the collector commits it (review M4)", async () => {
+    // The streaming early-start path passes deferSpecPromotion: an early-started
+    // result can still be DISCARDED by a mid-stream error retry, so executing
+    // it must not open the gate — runOne promotes when it collects the result
+    // into the committed batch.
+    const file = path.join(fixture, "deferred.txt");
+    fs.writeFileSync(file, "content\n");
+    const ectx = execCtx("promo-defer");
+    const cache = new SpeculationCache(true);
+    cache.prefetch([{ toolName: "read", input: { filePath: file } }], [ReadTool], ectx);
+
+    const res = await executeSingleTool(
+      {
+        id: "c1",
+        type: "function",
+        function: { name: "read", arguments: JSON.stringify({ filePath: file }) },
+      },
+      [ReadTool],
+      ectx,
+      async () => true,
+      undefined,
+      cache,
+      undefined,
+      undefined,
+      { deferSpecPromotion: true },
+    );
+    expect(res.isError).toBe(false);
+    expect(cache.hits).toBe(1);
+    const { mtimeMs } = fs.statSync(file);
+    // Executed via cache hit, but NOT promoted — a discarded attempt leaves no trace.
+    expect(checkReadBeforeEdit("promo-defer", file, mtimeMs).ok).toBe(false);
+    // The collector (runOne at STEP 5) promotes once the result is committed.
+    promoteSpeculativeRead(res, "promo-defer");
+    expect(checkReadBeforeEdit("promo-defer", file, mtimeMs).ok).toBe(true);
+  });
+
+  it("a completing write invalidates the cached read for that path", async () => {
+    const file = path.join(fixture, "mutate.txt");
+    fs.writeFileSync(file, "v1\n");
+    const ectx = execCtx("promo-write");
+    // WriteTool enforces read-before-edit for existing files → mark it first.
+    markRead("promo-write", file, fs.statSync(file).mtimeMs);
+    const cache = new SpeculationCache(true);
+    cache.prefetch([{ toolName: "read", input: { filePath: file } }], [ReadTool], ectx);
+
+    const res = await executeSingleTool(
+      {
+        id: "w1",
+        type: "function",
+        function: { name: "write", arguments: JSON.stringify({ filePath: file, content: "v2\n" }) },
+      },
+      [WriteTool],
+      ectx,
+      async () => true,
+      undefined,
+      cache,
+    );
+    expect(res.isError).toBe(false);
+    // The prefetched (now stale, pre-write) read must NOT be served.
+    // (The write's own execution already counted one take-miss for "write".)
+    const missesBefore = cache.misses;
+    expect(await cache.take("read", { filePath: file })).toBeNull();
+    expect(cache.misses).toBe(missesBefore + 1);
+    expect(cache.hits).toBe(0);
+  });
+
+  it("a mutating tool without path info clears the whole cache (bash)", async () => {
+    const file = path.join(fixture, "any.txt");
+    fs.writeFileSync(file, "v1\n");
+    const ectx = execCtx("promo-bash");
+    const cache = new SpeculationCache(true);
+    cache.prefetch([{ toolName: "read", input: { filePath: file } }], [ReadTool], ectx);
+
+    const res = await executeSingleTool(
+      {
+        id: "b1",
+        type: "function",
+        function: {
+          name: "bash",
+          arguments: JSON.stringify({
+            command: "echo mutated > any.txt",
+            description: "mutate via shell",
+          }),
+        },
+      },
+      [BashTool],
+      ectx,
+      async () => true,
+      undefined,
+      cache,
+    );
+    expect(res.isError).toBe(false);
+    // bash can mutate anything → conservative full clear.
+    expect(await cache.take("read", { filePath: file })).toBeNull();
   });
 });

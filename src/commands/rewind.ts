@@ -26,7 +26,7 @@ function findUserTurnBoundaries(messages: { role: string }[]): number[] {
 export const rewindCommand: SlashCommand = {
   name: "rewind",
   description: "Rewind the conversation by N turns and restore files (/rewind [n], default 1)",
-  run: (args, ctx): undefined => {
+  run: async (args, ctx): Promise<undefined> => {
     const n = Math.max(1, parseInt(args.trim(), 10) || 1);
     const messages = ctx.messages;
     const userIdx = findUserTurnBoundaries(messages);
@@ -68,6 +68,23 @@ export const rewindCommand: SlashCommand = {
       const before = messages.length;
       messages.length = cutAt;
       console.log(chalk.gray(`  Rewound ${n} turn(s) (${before} → ${messages.length} messages).`));
+    }
+
+    // Top10 #9: persist the truncated conversation IMMEDIATELY. File
+    // restoration above is synchronous on-disk state, but the session file
+    // used to stay un-rewound until the next turn's auto-save — a kill in
+    // between left "files restored, session history not", and resume showed
+    // ghost turns whose edits no longer existed. The TUI's Esc+Esc picker
+    // path already saves (run.tsx deps.onSave); this aligns the slash path.
+    if (ctx.persistence) {
+      try {
+        await ctx.persistence.save(ctx.sessionId, messages, { taskState: "paused" });
+      } catch (error) {
+        console.warn(
+          chalk.yellow("  Failed to persist the rewound session (rewind itself succeeded):"),
+          error instanceof Error ? error.message : String(error),
+        );
+      }
     }
     if (cpTurn === null) {
       console.log(

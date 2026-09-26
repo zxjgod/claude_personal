@@ -5,7 +5,8 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { executeSingleTool } from "../tool-executor.js";
 import {
   BashTool,
   bashCommandIsReadOnly,
@@ -17,6 +18,14 @@ import {
   WriteTool,
 } from "../tools/index.js";
 import type { ToolContext } from "../types.js";
+
+// The cross-layer suite at the bottom drives executeSingleTool, which writes
+// audit entries — keep those off the real disk.
+vi.mock("../audit-log.js", () => ({
+  logBashOperation: vi.fn(async () => {}),
+  logFileOperation: vi.fn(async () => {}),
+  logToolExecution: vi.fn(async () => {}),
+}));
 
 let tmpDir: string;
 let ctx: ToolContext;
@@ -676,5 +685,58 @@ describe("workspace boundary", () => {
     const result = await WriteTool.call({ filePath: "ok/inside.txt", content: "fine" }, ctx);
     expect(result.error).toBeUndefined();
     expect(fs.existsSync(path.join(tmpDir, "ok", "inside.txt"))).toBe(true);
+  });
+});
+
+// ============================================================
+// Cross-layer: failed-command output reaches the MODEL (Top10 #4)
+// ============================================================
+// The ToolResult layer always carried stdout/stderr of a failing command, but
+// defaultFormatResult early-returned on `error`, and the formatted string is
+// the ONLY thing that enters the message history. This suite drives the real
+// executeSingleTool × BashTool path and asserts on `formatted` — the exact
+// boundary where the output used to evaporate.
+// ============================================================
+
+describe("failed command output survives to the model-visible formatted string", () => {
+  it("formatted result of a non-zero exit contains stdout, stderr and the exit code", async () => {
+    const command = IS_WINDOWS
+      ? "echo out-text & echo err-text 1>&2 & exit /b 3"
+      : "echo out-text; echo err-text >&2; exit 3";
+    const result = await executeSingleTool(
+      {
+        id: "call-fail-1",
+        type: "function",
+        function: { name: "bash", arguments: JSON.stringify({ command, description: "failing" }) },
+      },
+      [BashTool],
+      { ...ctx, permissionMode: "bypassPermissions" },
+      async () => true,
+    );
+    expect(result.isError).toBe(true);
+    expect(result.formatted).toContain("out-text");
+    expect(result.formatted).toContain("err-text");
+    expect(result.formatted).toContain("exit code: 3");
+    expect(result.formatted).toMatch(/^Error: /);
+  });
+
+  it("a failing file-mutating command still surfaces its captured output", async () => {
+    // Same boundary through a command that also writes a file — proves the fix
+    // is in the shared formatter, not a bash-specific patch.
+    const command = IS_WINDOWS
+      ? "echo partial-progress & exit /b 1"
+      : "echo partial-progress; exit 1";
+    const result = await executeSingleTool(
+      {
+        id: "call-fail-2",
+        type: "function",
+        function: { name: "bash", arguments: JSON.stringify({ command, description: "failing" }) },
+      },
+      [BashTool],
+      { ...ctx, permissionMode: "bypassPermissions" },
+      async () => true,
+    );
+    expect(result.isError).toBe(true);
+    expect(result.formatted).toContain("partial-progress");
   });
 });

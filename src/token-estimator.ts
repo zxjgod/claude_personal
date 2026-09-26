@@ -235,3 +235,48 @@ export function estimateTokens(messages: Message[]): number {
 export function estimateTokensQuick(text: string): number {
   return Math.ceil(text.length / 4);
 }
+
+// ============================================================
+// Provider-aware usage semantics (Top10 #3)
+// ============================================================
+// The two adapter families pack prompt-side usage differently, and mixing the
+// dialects silently under-counts the live context (the loop's compaction
+// baseline once read Anthropic's cache-excluding input_tokens as the whole
+// prompt, so auto-compact never fired on high cache-hit sessions). These
+// helpers are the SINGLE source of truth for the mapping; both the engine
+// (agent-loop baseline) and the TUI (status-bar gauge) consume them.
+
+/** Usage as reported on an adapter's `done` stream event. */
+export interface ProviderUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+}
+
+/**
+ * Prompt-side context occupancy of one model call — the compaction BASELINE
+ * semantic. Excludes the call's own output on purpose: the loop appends the
+ * assistant response as new messages, which estimateContextTokens counts
+ * separately via the baseline's messageCount window (adding output here would
+ * double-count).
+ *
+ * - Anthropic: input_tokens EXCLUDES cached portions — the live window holds
+ *   input + cache_read + cache_creation (all three are in-context tokens).
+ * - OpenAI-compatible: input_tokens (prompt_tokens) already INCLUDES cached
+ *   tokens — summing cache fields again would double-count.
+ */
+export function providerPromptTokens(u: ProviderUsage, provider: string): number {
+  if (provider === "anthropic") {
+    return u.input_tokens + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
+  }
+  return u.input_tokens;
+}
+
+/**
+ * Total context-window occupancy after one model call (prompt + this call's
+ * output) — the TUI status-bar gauge semantic.
+ */
+export function estimateContextUsed(u: ProviderUsage, provider: string): number {
+  return providerPromptTokens(u, provider) + u.output_tokens;
+}

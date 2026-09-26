@@ -182,14 +182,23 @@ export class SessionMemory {
    */
   private saveChain: Promise<void> = Promise.resolve();
   /**
-   * P2 step 1: last-written SessionData per session. saveSerialized
-   * previously re-loaded and JSON.parsed the ENTIRE session file on every
-   * save just to preserve createdAt — O(messages) disk+parse work per turn.
-   * The cache holds the last data object written (identity fields intact);
-   * the first save of a session still loads from disk once. Messages are
-   * kept by reference — the caller's own array, so no extra copies.
+   * P2 step 1: last-written SessionData per session, with the file mtime
+   * observed right after the write. saveSerialized previously re-loaded and
+   * JSON.parsed the ENTIRE session file on every save just to preserve
+   * createdAt — O(messages) disk+parse work per turn. The cache is consulted
+   * INSIDE the cross-process lock and only trusted when the on-disk mtime
+   * still matches (Top10 #9): another process resuming the same session
+   * bumps the mtime, and the divergence is then surfaced instead of being
+   * blindly clobbered. Messages are kept by reference — the caller's own
+   * array, so no extra copies.
    */
-  private lastSaved = new Map<string, SessionData>();
+  private lastSaved = new Map<string, { data: SessionData; mtimeMs: number }>();
+  /** Sessions for which the cross-process divergence warning already fired
+   *  (once per session per process — every save would warn otherwise). */
+  private warnedDivergence = new Set<string>();
+  /** Sessions for which the "lock unavailable, save skipped" warning already
+   *  fired (same once-per-session throttle). */
+  private warnedLockSkip = new Set<string>();
   /** Last preview string actually written to the catalog for a session. */
   private lastPreviewWritten = new Map<string, string>();
 
@@ -237,30 +246,64 @@ export class SessionMemory {
     }
   }
 
-  private async writeCatalog(
+  private async writeCatalogRaw(
     catalog: Record<string, { pinned?: boolean; preview?: string }>,
   ): Promise<void> {
     this.ensureDir();
     const filePath = this.catalogPath();
     const tmpPath = `${filePath}.tmp`;
+    await fsPromises.writeFile(tmpPath, JSON.stringify(catalog, null, 2), "utf-8");
+    await fsPromises.rename(tmpPath, filePath);
+  }
 
-    // Use file lock to prevent concurrent writes
-    let release: (() => Promise<void>) | undefined;
+  /**
+   * Atomic catalog read-modify-write (review follow-up M3). The old
+   * readCatalog() → mutate → writeCatalog() sequence held the lock only for
+   * the WRITE: two processes pinning/previewing concurrently both read the
+   * old state and the later writer silently dropped the earlier one's entry.
+   * The lock must span the whole cycle.
+   *
+   * Degradation: if the lock cannot be acquired (another process holds it
+   * past the retry budget), warn and fall back to the optimistic
+   * read-modify-write — the catalog is low-risk metadata, and losing a pin
+   * under rare contention beats throwing into callers that don't expect it.
+   */
+  private async updateCatalog(
+    mutate: (
+      catalog: Record<string, { pinned?: boolean; preview?: string }>,
+    ) => Promise<boolean> | boolean,
+  ): Promise<void> {
+    this.ensureDir();
+    const filePath = this.catalogPath();
     try {
-      // Create catalog file if it doesn't exist (lockfile needs the file to exist)
-      if (!fs.existsSync(filePath)) {
-        await fsPromises.writeFile(filePath, "{}", "utf-8");
-      }
-
+      await fsPromises.writeFile(filePath, "{}", { encoding: "utf-8", flag: "wx" });
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+    }
+    let release: (() => Promise<void>) | undefined;
+    let locked = false;
+    try {
       release = await lockfile.lock(filePath, {
         retries: { retries: 5, minTimeout: 50, maxTimeout: 200 },
-        stale: 10000, // 10 seconds
+        stale: 10000,
+        onCompromised: (err: Error) => {
+          console.warn(`session-memory: catalog lock was compromised: ${err.message}`);
+        },
       });
-
-      await fsPromises.writeFile(tmpPath, JSON.stringify(catalog, null, 2), "utf-8");
-      await fsPromises.rename(tmpPath, filePath);
+      locked = true;
+    } catch (lockError) {
+      console.warn(
+        `session-memory: catalog lock unavailable, updating optimistically: ${
+          lockError instanceof Error ? lockError.message : String(lockError)
+        }`,
+      );
+    }
+    try {
+      const catalog = await this.readCatalog();
+      const changed = await mutate(catalog);
+      if (changed !== false) await this.writeCatalogRaw(catalog);
     } finally {
-      if (release) {
+      if (locked && release) {
         await release().catch(() => {
           // Ignore unlock errors (file may have been deleted)
         });
@@ -269,37 +312,80 @@ export class SessionMemory {
   }
 
   async setPinned(sessionId: string, pinned: boolean): Promise<void> {
-    const catalog = await this.readCatalog();
-    if (pinned) {
-      catalog[sessionId] = { ...(catalog[sessionId] ?? {}), pinned: true };
-    } else {
-      // Unpin but keep preview if it exists
-      const existing = catalog[sessionId];
-      if (existing?.preview) {
-        catalog[sessionId] = { preview: existing.preview };
+    await this.updateCatalog((catalog) => {
+      if (pinned) {
+        catalog[sessionId] = { ...(catalog[sessionId] ?? {}), pinned: true };
       } else {
-        delete catalog[sessionId];
+        // Unpin but keep preview if it exists
+        const existing = catalog[sessionId];
+        if (existing?.preview) {
+          catalog[sessionId] = { preview: existing.preview };
+        } else {
+          delete catalog[sessionId];
+        }
       }
-    }
-    await this.writeCatalog(catalog);
+      return true;
+    });
   }
 
   async deleteSession(sessionId: string): Promise<void> {
+    // Review follow-up M4: route the delete through the SAME serialization
+    // the saves use. A save queued before the delete must flush FIRST (then
+    // the unlink removes its file); without chaining, the unlink could land
+    // between the queued save's read and its rename, and the save would
+    // resurrect a session whose catalog entry was already cleaned — an orphan.
+    const task = this.saveChain.then(() => this.deleteSerialized(sessionId));
+    this.saveChain = task.catch(() => undefined);
+    return task;
+  }
+
+  private async deleteSerialized(sessionId: string): Promise<void> {
     const filePath = this.sessionPath(sessionId);
+    // Take the cross-process lock around the unlink so a concurrent save in
+    // ANOTHER process doesn't interleave (best-effort: if the lock is
+    // unavailable, still delete — same availability-over-strictness tradeoff
+    // as the save path, and the other process's in-memory state is beyond
+    // our reach regardless).
+    let release: (() => Promise<void>) | undefined;
     try {
-      fs.unlinkSync(filePath);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      if (fs.existsSync(filePath)) {
+        try {
+          release = await lockfile.lock(filePath, {
+            retries: { retries: 5, minTimeout: 50, maxTimeout: 200 },
+            stale: 10000,
+            onCompromised: () => {},
+          });
+        } catch (lockError) {
+          console.warn(
+            `session-memory: could not lock ${sessionId} for deletion, removing anyway: ${
+              lockError instanceof Error ? lockError.message : String(lockError)
+            }`,
+          );
+        }
+      }
+      try {
+        fs.unlinkSync(filePath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    } finally {
+      if (release) {
+        await release().catch(() => {
+          // Ignore unlock errors (file is gone — that's the point)
+        });
+      }
     }
     // A deleted session's cached last-written object must go too, or a later
     // save would resurrect its createdAt/version from the stale cache.
     this.lastSaved.delete(sessionId);
     this.lastPreviewWritten.delete(sessionId);
-    const catalog = await this.readCatalog();
-    if (catalog[sessionId]) {
+    this.warnedDivergence.delete(sessionId);
+    this.warnedLockSkip.delete(sessionId);
+    await this.updateCatalog((catalog) => {
+      if (!catalog[sessionId]) return false; // nothing to clean, skip the write
       delete catalog[sessionId];
-      await this.writeCatalog(catalog);
-    }
+      return true;
+    });
   }
 
   async isPinned(sessionId: string): Promise<boolean> {
@@ -410,58 +496,149 @@ export class SessionMemory {
     const now = new Date().toISOString();
 
     let data: SessionData;
+    let release: (() => Promise<void>) | undefined;
+    try {
+      // Cross-process lock (Top10 #9): saveChain only serializes saves WITHIN
+      // this process — two terminals resuming the same session used to
+      // full-rewrite the same file with the later writer silently clobbering
+      // the earlier one's messages. Same lockfile pattern/parameters as the
+      // catalog lock (battle-tested). Lock order is always session → catalog:
+      // the catalog update below runs AFTER this lock is released and
+      // updateCatalog takes its own lock, and no path takes them reversed.
+      try {
+        // lockfile needs the file to exist. "wx" (exclusive create) so the
+        // placeholder can NEVER truncate a complete session another process
+        // renamed into place between an exists-check and the write (review
+        // follow-up M2). "{}" loads as null and load() never quarantines it.
+        await fsPromises.writeFile(filePath, "{}", { encoding: "utf-8", flag: "wx" });
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      }
+      try {
+        release = await lockfile.lock(filePath, {
+          retries: { retries: 5, minTimeout: 50, maxTimeout: 200 },
+          stale: 10000,
+          // proper-lockfile's DEFAULT onCompromised throws synchronously from
+          // a timer when another process steals a lock it deems stale — an
+          // uncaughtException that would kill the CLI (review follow-up M3).
+          // Degrade to a warning: our write may interleave, but the atomic
+          // tmp+rename still guarantees readers never see a torn file.
+          onCompromised: (err: Error) => {
+            console.warn(
+              `session-memory: cross-process lock for ${sessionId} was compromised: ${err.message}`,
+            );
+          },
+        });
+      } catch (lockError) {
+        // Lock budget exhausted (another process holds it — the exact
+        // dual-terminal case the lock exists for) or lockfile I/O failure.
+        // SKIP this save instead of rejecting (review follow-up H1): callers
+        // treat auto-saves as best-effort fire-and-forget, and a rejection
+        // there surfaces as an unhandledRejection that tears down the whole
+        // REPL. The next turn re-saves the same (in-memory) messages, so
+        // skipping costs at most one save point. Warn once per session.
+        if (!this.warnedLockSkip.has(sessionId)) {
+          this.warnedLockSkip.add(sessionId);
+          console.warn(
+            `session-memory: could not acquire the cross-process lock for session ${sessionId}; skipping this save (will retry on the next one): ${
+              lockError instanceof Error ? lockError.message : String(lockError)
+            }`,
+          );
+        }
+        return;
+      }
 
-    // P2: prefer the in-memory last-written object over re-loading (and
-    // re-parsing) the whole session file — the read-modify-write was the
-    // dominant cost of every save on a long session.
-    const cached = this.lastSaved.get(sessionId);
-    const existing = cached ?? (await this.load(sessionId));
-    if (existing) {
-      data = {
-        ...existing,
-        updatedAt: now,
-        messages,
-        messageCount: messages.length,
-        completed: options?.completed ?? existing.completed,
-        taskState: options?.taskState ?? existing.taskState,
-        lastTerminalReason: options?.lastTerminalReason ?? existing.lastTerminalReason,
-      };
-    } else {
-      data = {
-        version: SESSION_FORMAT_VERSION,
-        sessionId,
-        createdAt: now,
-        updatedAt: now,
-        workspaceRoot: path.dirname(this.sessionsDir),
-        messages,
-        messageCount: messages.length,
-        completed: options?.completed ?? false,
-        taskState: options?.taskState ?? "paused",
-        lastTerminalReason: options?.lastTerminalReason,
-      };
+      // P2: prefer the in-memory last-written object over re-loading (and
+      // re-parsing) the whole session file — but only when the on-disk mtime
+      // still matches what we wrote (checked INSIDE the lock). A mismatch
+      // means another process saved this session since; re-read the disk
+      // state as the base (preserving the original createdAt) and surface the
+      // divergence once instead of blindly clobbering it.
+      const cached = this.lastSaved.get(sessionId);
+      let existing: SessionData | null;
+      if (cached) {
+        const diskMtime = await fsPromises.stat(filePath).then(
+          (s) => s.mtimeMs,
+          () => undefined,
+        );
+        if (diskMtime !== undefined && diskMtime === cached.mtimeMs) {
+          existing = cached.data;
+        } else {
+          existing = await this.load(sessionId);
+          if (!this.warnedDivergence.has(sessionId)) {
+            this.warnedDivergence.add(sessionId);
+            console.warn(
+              `session-memory: session ${sessionId} was modified by another process since this instance last saved it; reloading the on-disk state as the base (this save's messages take precedence). Avoid resuming the same session in two terminals.`,
+            );
+          }
+        }
+      } else {
+        existing = await this.load(sessionId);
+      }
+
+      if (existing) {
+        data = {
+          ...existing,
+          updatedAt: now,
+          messages,
+          messageCount: messages.length,
+          completed: options?.completed ?? existing.completed,
+          taskState: options?.taskState ?? existing.taskState,
+          lastTerminalReason: options?.lastTerminalReason ?? existing.lastTerminalReason,
+        };
+      } else {
+        data = {
+          version: SESSION_FORMAT_VERSION,
+          sessionId,
+          createdAt: now,
+          updatedAt: now,
+          workspaceRoot: path.dirname(this.sessionsDir),
+          messages,
+          messageCount: messages.length,
+          completed: options?.completed ?? false,
+          taskState: options?.taskState ?? "paused",
+          lastTerminalReason: options?.lastTerminalReason,
+        };
+      }
+
+      // No pretty-print: halves the serialized size of a message-heavy session.
+      const json = JSON.stringify(data);
+
+      // Atomic write: temp file + rename. A direct writeFile can leave a
+      // truncated file if the process is killed (Ctrl+C / OOM) mid-write;
+      // rename is atomic on the same filesystem, so readers always see either
+      // the old or the new complete file, never a partial one.
+      const tmpPath = `${filePath}.${process.pid}.tmp`;
+      await fsPromises.writeFile(tmpPath, json, "utf-8");
+      await fsPromises.rename(tmpPath, filePath);
+      // Record the mtime we just produced — the divergence check above
+      // compares against it on the next save.
+      const writtenMtime = await fsPromises.stat(filePath).then(
+        (s) => s.mtimeMs,
+        () => Date.now(),
+      );
+      this.lastSaved.set(sessionId, { data, mtimeMs: writtenMtime });
+    } finally {
+      if (release) {
+        await release().catch(() => {
+          // Ignore unlock errors (file may have been deleted)
+        });
+      }
     }
-    this.lastSaved.set(sessionId, data);
-
-    // No pretty-print: halves the serialized size of a message-heavy session.
-    const json = JSON.stringify(data);
-
-    // Atomic write: temp file + rename. A direct writeFile can leave a
-    // truncated file if the process is killed (Ctrl+C / OOM) mid-write;
-    // rename is atomic on the same filesystem, so readers always see either
-    // the old or the new complete file, never a partial one.
-    const tmpPath = `${filePath}.${process.pid}.tmp`;
-    await fsPromises.writeFile(tmpPath, json, "utf-8");
-    await fsPromises.rename(tmpPath, filePath);
 
     // Update catalog with preview for faster searchSessions — throttled to
     // saves whose preview CHANGED (the preview is the first user message; it
     // is stable for almost the whole session, so most saves skipped this I/O).
+    // Runs OUTSIDE the session lock (updateCatalog has its own) to keep the
+    // session critical section short, and the lock spans the catalog's whole
+    // read-modify-write (review follow-up M3).
     try {
       const preview = firstUserPreview(messages);
       if (preview && this.lastPreviewWritten.get(sessionId) !== preview) {
-        const catalog = await this.readCatalog();
-        catalog[sessionId] = { ...(catalog[sessionId] ?? {}), preview };
-        await this.writeCatalog(catalog);
+        await this.updateCatalog((catalog) => {
+          catalog[sessionId] = { ...(catalog[sessionId] ?? {}), preview };
+          return true;
+        });
         this.lastPreviewWritten.set(sessionId, preview);
       }
     } catch (error) {
@@ -495,6 +672,40 @@ export class SessionMemory {
   }
 
   /**
+   * Rename a corrupt session file aside instead of letting the next save
+   * silently overwrite it (Top10 #9): the bytes are preserved for manual
+   * recovery and the user is told BOTH file names. No-ops for the "{}"
+   * lock placeholder and for files that are already .corrupt backups —
+   * the anti-proliferation double-guard (listSessions skips backups too,
+   * so nothing should ever load one, but a manual `load("<id>.corrupt-…")`
+   * must not spawn a second backup either).
+   */
+  private async quarantineCorrupt(
+    sessionId: string,
+    filePath: string,
+    why: string,
+    raw?: string,
+  ): Promise<void> {
+    if (sessionId.includes(".corrupt-")) return;
+    if (raw !== undefined && raw.trim() === "{}") return;
+    // The sidecar catalog lives in the same directory and is NOT a session —
+    // quarantining it would destroy pins/previews (listSessions also skips it
+    // up front; this is the belt to that suspenders).
+    if (path.basename(filePath) === "catalog.json") return;
+    const backup = `${filePath.slice(0, -".json".length)}.corrupt-${Date.now()}.json`;
+    try {
+      await fsPromises.rename(filePath, backup);
+      console.warn(
+        `session-memory: session file for ${sessionId} was corrupt (${why}); preserved as ${path.basename(backup)} and starting fresh.`,
+      );
+    } catch {
+      console.warn(
+        `session-memory: session file for ${sessionId} is corrupt (${why}) and could not be preserved; the next save will overwrite it.`,
+      );
+    }
+  }
+
+  /**
    * Load a session from disk (async).
    * Applies version migrations automatically if needed.
    */
@@ -506,6 +717,10 @@ export class SessionMemory {
 
       // Basic validation
       if (!data.version || !data.sessionId || !Array.isArray(data.messages)) {
+        // Corrupt or non-session content (Top10 #9): quarantine instead of
+        // silently returning null and letting the next save overwrite the
+        // bytes. The "{}" lock placeholder is exempt inside quarantineCorrupt.
+        await this.quarantineCorrupt(sessionId, filePath, "not a session object", raw);
         return null;
       }
 
@@ -519,6 +734,7 @@ export class SessionMemory {
             `session-memory: failed to migrate session ${sessionId} from v${data.version}:`,
             error,
           );
+          await this.quarantineCorrupt(sessionId, filePath, "migration failed", raw);
           return null;
         }
       }
@@ -529,8 +745,13 @@ export class SessionMemory {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
       // A corrupt or partially-written session file should not crash the
       // caller (e.g. a save that re-reads to preserve createdAt). Treat it as
-      // "no existing session" so a fresh one is written instead of throwing.
-      if (error instanceof SyntaxError) return null;
+      // "no existing session" so a fresh one is written — but FIRST preserve
+      // the corrupt bytes under a .corrupt-<ts> sibling (Top10 #9: they used
+      // to vanish without a trace when the next save renamed over them).
+      if (error instanceof SyntaxError) {
+        await this.quarantineCorrupt(sessionId, filePath, "JSON parse error");
+        return null;
+      }
       throw error;
     }
   }
@@ -547,6 +768,14 @@ export class SessionMemory {
 
       for (const entry of entries) {
         if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+        // The sidecar catalog shares the directory but is not a session —
+        // loading it as one would fail validation and (with the Top10 #9
+        // quarantine) rename it away, destroying pins/previews.
+        if (entry.name === "catalog.json") continue;
+        // Quarantined corrupt backups are NOT sessions (Top10 #9
+        // anti-proliferation guard: loading one would parse-fail and spawn
+        // yet another backup, and the warn would fire on every listing).
+        if (entry.name.includes(".corrupt-")) continue;
 
         const sessionId = entry.name.replace(/\.json$/, "");
         const data = await this.load(sessionId);

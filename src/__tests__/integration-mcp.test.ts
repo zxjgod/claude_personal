@@ -14,6 +14,7 @@
 // No network beyond loopback; the http server binds 127.0.0.1:0.
 // ============================================================
 
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as http from "node:http";
 import * as os from "node:os";
@@ -23,8 +24,9 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { setupTools } from "../cli-tools.js";
 import type { MCPServerConfig } from "../mcp/index.js";
-import { MCPManager } from "../mcp/index.js";
+import { discoverMCPConfigs, MCPManager } from "../mcp/index.js";
 import type { ToolContext } from "../types.js";
 
 const STDIO_FIXTURE = fileURLToPath(
@@ -376,4 +378,107 @@ describe("project MCP trust gate persists", () => {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
   }, 30_000);
+});
+
+// ============================================================
+// Top10 #1 — discovery scopes + full-chain trust gate
+// The old wiring compared against `<root>/.mcp.json` while discovery scans
+// `<root>/.claude/mcp.json`, so `requireTrust` was ALWAYS false: a cloned
+// repo's project config spawned arbitrary stdio commands without consent.
+// These tests walk the real assembly path (discoverMCPConfigs → setupTools →
+// loadConfig) so the wiring itself is under test, not just the gate.
+// ============================================================
+
+function writeProjectMcpConfig(root: string, raw: string): string {
+  const dir = path.join(root, ".claude");
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, "mcp.json");
+  fs.writeFileSync(file, raw);
+  return file;
+}
+
+function writePluginMcpConfig(root: string, pluginName: string, raw: string): string {
+  const dir = path.join(root, ".claude", "plugins", pluginName);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "plugin.json"),
+    JSON.stringify({ name: pluginName, version: "1.0.0" }),
+  );
+  const file = path.join(dir, "mcp.json");
+  fs.writeFileSync(file, raw);
+  return file;
+}
+
+describe("discoverMCPConfigs scopes", () => {
+  it("labels project vs plugin configs and never scans official .mcp.json", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-mcp-scope-"));
+    try {
+      const projectCfg = writeProjectMcpConfig(tmp, JSON.stringify({ mcpServers: {} }));
+      // Official Claude Code location — must NOT be discovered (CCR-only paths).
+      fs.writeFileSync(path.join(tmp, ".mcp.json"), JSON.stringify({ mcpServers: {} }));
+      const pluginCfg = writePluginMcpConfig(tmp, "testplug", JSON.stringify({ mcpServers: {} }));
+
+      const found = discoverMCPConfigs(tmp);
+      expect(found).toEqual([
+        { path: projectCfg, scope: "project" },
+        { path: pluginCfg, scope: "plugin" },
+      ]);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("project MCP trust gate — full assembly chain", () => {
+  function useTempTrustStore(tmp: string): () => void {
+    const prev = process.env.CCR_TRUST_STORE_MCP;
+    process.env.CCR_TRUST_STORE_MCP = path.join(tmp, "trusted-mcp.json");
+    return () => {
+      if (prev === undefined) delete process.env.CCR_TRUST_STORE_MCP;
+      else process.env.CCR_TRUST_STORE_MCP = prev;
+    };
+  }
+
+  it("untrusted project config spawns nothing; trusted fingerprint loads", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-mcp-chain-"));
+    const restore = useTempTrustStore(tmp);
+    try {
+      const raw = JSON.stringify({ mcpServers: { mock: STDIO_CONFIG } });
+      const configPath = writeProjectMcpConfig(tmp, raw);
+
+      // Untrusted + non-TTY (vitest): fail-closed, zero servers spawned.
+      const untrusted = await setupTools({ workspaceRoot: tmp, verbose: false });
+      expect(untrusted.mcpManager.serverCount).toBe(0);
+      await untrusted.mcpManager.disconnectAll();
+
+      // Pre-seed the fingerprint (simulates a prior interactive "yes").
+      const fingerprint = crypto.createHash("sha256").update(raw).digest("hex");
+      fs.writeFileSync(
+        path.join(tmp, "trusted-mcp.json"),
+        JSON.stringify({ [path.resolve(configPath)]: fingerprint }),
+      );
+      const trusted = await setupTools({ workspaceRoot: tmp, verbose: false });
+      expect(trusted.mcpManager.serverCount).toBe(1);
+      await trusted.mcpManager.disconnectAll();
+    } finally {
+      restore();
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }, 90_000);
+
+  it("plugin mcp.json loads without trust confirmation (install-is-trust)", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-mcp-plugin-"));
+    const restore = useTempTrustStore(tmp);
+    try {
+      // Empty trust store — plugin configs must not consult it at all.
+      writePluginMcpConfig(tmp, "testplug", JSON.stringify({ mcpServers: { mock: STDIO_CONFIG } }));
+      const setup = await setupTools({ workspaceRoot: tmp, verbose: false });
+      expect(setup.mcpManager.serverCount).toBe(1);
+      expect(fs.existsSync(path.join(tmp, "trusted-mcp.json"))).toBe(false);
+      await setup.mcpManager.disconnectAll();
+    } finally {
+      restore();
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }, 90_000);
 });

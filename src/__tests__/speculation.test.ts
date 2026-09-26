@@ -2,7 +2,9 @@
 // Tests: speculation — predictive tool prefetch (12.2)
 // ============================================================
 
+import * as nodePath from "node:path";
 import { describe, expect, it } from "vitest";
+import { HookRegistry } from "../hooks.js";
 import {
   effectiveCap,
   formatSpeculationLine,
@@ -11,7 +13,7 @@ import {
   SpeculationCache,
   specKey,
 } from "../speculation.js";
-import type { Tool, ToolContext, ToolResult } from "../types.js";
+import type { HookRunner, Tool, ToolContext, ToolResult } from "../types.js";
 
 const ctx: ToolContext = {
   workspaceRoot: "/ws",
@@ -53,6 +55,15 @@ describe("predictReads", () => {
     });
     // Dedupes a.ts → two distinct files.
     expect(preds.map((p) => p.input.filePath)).toEqual(["src/a.ts", "src/b.ts"]);
+  });
+
+  it("extracts Windows drive-letter absolute paths without splitting at the drive colon", () => {
+    // Review follow-up: the generic `^([^:]+):` fallback used to yield "C"
+    // as the filename for "C:\proj\a.ts:12: ...", prefetching a file named C.
+    const preds = predictReads("grep", {
+      content: "C:\\proj\\a.ts:12:  const x = 1\nD:/other/b.ts:3:  y",
+    });
+    expect(preds.map((p) => p.input.filePath)).toEqual(["C:\\proj\\a.ts", "D:/other/b.ts"]);
   });
 
   it("returns nothing for non-search tools or errors", () => {
@@ -133,6 +144,20 @@ describe("specKey", () => {
   it("is stable regardless of key order", () => {
     expect(specKey("read", { a: 1, b: 2 })).toBe(specKey("read", { b: 2, a: 1 }));
   });
+
+  // Review follow-up M5: the old array-replacer form whitelisted TOP-level
+  // key names across the whole tree, so different nested objects collapsed
+  // onto one key — a poisoned-hit bug for any future nested tool input.
+  it("distinguishes different nested inputs", () => {
+    expect(specKey("read", { a: { b: 1 } })).not.toBe(specKey("read", { a: { c: 2 } }));
+    expect(specKey("read", { a: { b: 1 } })).not.toBe(specKey("read", { a: { b: 2 } }));
+  });
+
+  it("is stable for nested keys regardless of insertion order", () => {
+    expect(specKey("read", { z: 2, a: { b: 1, c: 3 } })).toBe(
+      specKey("read", { a: { c: 3, b: 1 }, z: 2 }),
+    );
+  });
 });
 
 describe("SpeculationCache", () => {
@@ -202,6 +227,187 @@ describe("SpeculationCache", () => {
     expect(stats.prefetched).toBe(0);
     expect(stats.hitRate).toBe(0);
     expect(stats.wasted).toBe(0);
+  });
+
+  // ============================================================
+  // Top10 #6: freshness guards — TTL, path invalidation, clear,
+  // hook gating, and the speculative context flag.
+  // ============================================================
+
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  function hookStub(runPre: HookRunner["runPre"]): HookRunner {
+    return { runPre, runPost: async () => ({}) };
+  }
+
+  it("expires entries past the TTL (staleness window is bounded)", async () => {
+    const calls: string[] = [];
+    const cache = new SpeculationCache(true, { ttlMs: 20 });
+    cache.prefetch([{ toolName: "read", input: { filePath: "a.ts" } }], [fakeReadTool(calls)], ctx);
+    await sleep(45);
+    expect(await cache.take("read", { filePath: "a.ts" })).toBeNull();
+    expect(cache.misses).toBe(1);
+    expect(cache.hits).toBe(0);
+  });
+
+  it("serves entries inside the TTL", async () => {
+    const cache = new SpeculationCache(true, { ttlMs: 5_000 });
+    cache.prefetch([{ toolName: "read", input: { filePath: "a.ts" } }], [fakeReadTool([])], ctx);
+    expect((await cache.take("read", { filePath: "a.ts" }))?.content).toBe("content of a.ts");
+  });
+
+  it("invalidatePath drops only the matching path's entry", async () => {
+    const cache = new SpeculationCache(true);
+    cache.prefetch(
+      [
+        { toolName: "read", input: { filePath: "a.ts" } },
+        { toolName: "read", input: { filePath: "b.ts" } },
+      ],
+      [fakeReadTool([])],
+      ctx,
+    );
+    cache.invalidatePath(nodePath.resolve(ctx.workspaceRoot, "a.ts"));
+    expect(await cache.take("read", { filePath: "a.ts" })).toBeNull(); // invalidated
+    expect((await cache.take("read", { filePath: "b.ts" }))?.content).toBe("content of b.ts");
+  });
+
+  it("clear drops every pending entry", async () => {
+    const cache = new SpeculationCache(true);
+    cache.prefetch(
+      [
+        { toolName: "read", input: { filePath: "a.ts" } },
+        { toolName: "read", input: { filePath: "b.ts" } },
+      ],
+      [fakeReadTool([])],
+      ctx,
+    );
+    cache.clear();
+    expect(await cache.take("read", { filePath: "a.ts" })).toBeNull();
+    expect(await cache.take("read", { filePath: "b.ts" })).toBeNull();
+  });
+
+  it("an expired unconsumed entry does not block re-prefetch (review follow-up)", async () => {
+    // The old `pending.has(key) → skip` check let a stale entry shadow the
+    // file for the whole run: TTL expired at take() time, but the entry was
+    // never re-prefetchable either.
+    const calls: string[] = [];
+    const cache = new SpeculationCache(true, { ttlMs: 20 });
+    cache.prefetch([{ toolName: "read", input: { filePath: "a.ts" } }], [fakeReadTool(calls)], ctx);
+    await sleep(45); // first entry expires unconsumed
+    cache.prefetch([{ toolName: "read", input: { filePath: "a.ts" } }], [fakeReadTool(calls)], ctx);
+    expect((await cache.take("read", { filePath: "a.ts" }))?.content).toBe("content of a.ts");
+    expect(calls).toEqual(["a.ts", "a.ts"]); // both prefetches actually ran
+    expect(cache.hits).toBe(1);
+  });
+
+  it("a PreToolUse hook block drops the prefetch (tool never runs, take misses)", async () => {
+    const calls: string[] = [];
+    const cache = new SpeculationCache(true);
+    const hooks = hookStub(async () => ({ block: true, reason: "policy" }));
+    cache.prefetch(
+      [{ toolName: "read", input: { filePath: "a.ts" } }],
+      [fakeReadTool(calls)],
+      ctx,
+      hooks,
+    );
+    expect(await cache.take("read", { filePath: "a.ts" })).toBeNull();
+    expect(cache.misses).toBe(1);
+    expect(calls).toEqual([]); // the speculative read itself was gated
+  });
+
+  it("a hook input rewrite drops the entry (rewritten call ≠ predicted call)", async () => {
+    const calls: string[] = [];
+    const cache = new SpeculationCache(true);
+    const hooks = hookStub(async () => ({ input: { filePath: "other.ts" } }));
+    cache.prefetch(
+      [{ toolName: "read", input: { filePath: "a.ts" } }],
+      [fakeReadTool(calls)],
+      ctx,
+      hooks,
+    );
+    expect(await cache.take("read", { filePath: "a.ts" })).toBeNull();
+    expect(calls).toEqual([]);
+  });
+
+  it("a throwing hook fails closed (no speculative read behind it)", async () => {
+    const calls: string[] = [];
+    const cache = new SpeculationCache(true);
+    const hooks = hookStub(async () => {
+      throw new Error("hook infra down");
+    });
+    cache.prefetch(
+      [{ toolName: "read", input: { filePath: "a.ts" } }],
+      [fakeReadTool(calls)],
+      ctx,
+      hooks,
+    );
+    expect(await cache.take("read", { filePath: "a.ts" })).toBeNull();
+    expect(calls).toEqual([]);
+  });
+
+  it("a pass-through hook keeps the prefetch working", async () => {
+    const cache = new SpeculationCache(true);
+    const hooks = hookStub(async () => ({}));
+    cache.prefetch(
+      [{ toolName: "read", input: { filePath: "a.ts" } }],
+      [fakeReadTool([])],
+      ctx,
+      hooks,
+    );
+    expect((await cache.take("read", { filePath: "a.ts" }))?.content).toBe("content of a.ts");
+  });
+
+  it("survives a real HookRegistry echoing the input unchanged (identity, not truthiness)", async () => {
+    // HookRegistry.runPre ALWAYS returns { input } — the same reference when
+    // nothing rewrote it. Treating a merely-present `input` as a rewrite
+    // would drop every prefetch whenever hooks are wired (i.e. always, in
+    // production) — speculation would be silently dead. The rewrite check
+    // must compare identity against the predicted input.
+    const registry = new HookRegistry();
+    registry.register({ matcher: "*" }); // matches everything, no pre/post → pure pass-through
+    const cache = new SpeculationCache(true);
+    cache.prefetch(
+      [{ toolName: "read", input: { filePath: "a.ts" } }],
+      [fakeReadTool([])],
+      ctx,
+      registry,
+    );
+    expect((await cache.take("read", { filePath: "a.ts" }))?.content).toBe("content of a.ts");
+    expect(cache.hits).toBe(1);
+  });
+
+  it("flags the prefetch runPre payload with speculative:true (review M5)", async () => {
+    // Side-effectful hooks (audit/notifications) must be able to tell a
+    // phantom prefetch from a model-issued call — while block policy still
+    // applies to both.
+    const seen: Array<{ toolName: string; speculative?: boolean }> = [];
+    const hooks = hookStub(async (payload) => {
+      seen.push({ toolName: payload.toolName, speculative: payload.speculative });
+      return {};
+    });
+    const cache = new SpeculationCache(true);
+    cache.prefetch(
+      [{ toolName: "read", input: { filePath: "a.ts" } }],
+      [fakeReadTool([])],
+      ctx,
+      hooks,
+    );
+    await cache.take("read", { filePath: "a.ts" });
+    expect(seen).toEqual([{ toolName: "read", speculative: true }]);
+  });
+
+  it("runs the prefetch with context.speculative = true (read-tracker stays clean)", async () => {
+    let seenSpeculative: boolean | undefined;
+    const tool = fakeReadTool([]);
+    const origCall = tool.call.bind(tool);
+    tool.call = async (input, context) => {
+      seenSpeculative = context.speculative;
+      return origCall(input, context);
+    };
+    const cache = new SpeculationCache(true);
+    cache.prefetch([{ toolName: "read", input: { filePath: "a.ts" } }], [tool], ctx);
+    await cache.take("read", { filePath: "a.ts" });
+    expect(seenSpeculative).toBe(true);
   });
 });
 

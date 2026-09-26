@@ -8,6 +8,7 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { recordChange, resetChangeTracker } from "../change-tracker.js";
 import { type CommandContext, handleSlashCommand } from "../commands.js";
+import { PersistenceManager } from "../persistence.js";
 import { registerSkill, resetSkills } from "../skills.js";
 import { clearCwd, getCwd, setCwd } from "../tools/session-cwd.js";
 import { SessionStats } from "../tui/session-stats.js";
@@ -487,6 +488,42 @@ describe("handleSlashCommand", () => {
       const r = await handleSlashCommand("/rewind", ctxWith(messages));
       expect(r.handled).toBe(true);
       expect(messages).toHaveLength(0);
+    });
+
+    // Top10 #9: the slash path used to truncate only the in-memory array —
+    // the session file stayed un-rewound until the next auto-save, so a kill
+    // in between left "files restored, history not" (ghost turns on resume).
+    it("persists the rewound conversation immediately", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-rewind-save-"));
+      try {
+        const persistence = new PersistenceManager(root);
+        const sessionId = "rewind-persist";
+        const stored: Message[] = [
+          { role: "user", content: [{ type: "text", text: "a" }] },
+          { role: "assistant", content: "1", tool_calls: [] },
+          { role: "user", content: [{ type: "text", text: "b" }] },
+          { role: "assistant", content: "2", tool_calls: [] },
+        ];
+        await persistence.save(sessionId, stored);
+
+        const messages: Message[] = structuredClone(stored);
+        const ctx: CommandContext = {
+          ...makeCtx(messages),
+          workspaceRoot: root,
+          sessionId,
+          persistence,
+        };
+        await handleSlashCommand("/rewind", ctx);
+        expect(messages).toHaveLength(2);
+
+        // A FRESH instance (simulating a kill + resume) must see the
+        // truncated history — not the pre-rewind 4 messages.
+        const reloaded = await new PersistenceManager(root).load(sessionId);
+        expect(reloaded!.messageCount).toBe(2);
+        expect(reloaded!.taskState).toBe("paused");
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
     });
   });
 

@@ -12,6 +12,27 @@ import {
   resetSystemPromptCache,
   systemPromptSection,
 } from "../system-prompt.js";
+import type { Tool } from "../types.js";
+
+function mkTool(
+  name: string,
+  description: string,
+  promptDescription = `full docs for ${name}`,
+  enabled = true,
+): Tool {
+  return {
+    name,
+    description,
+    promptDescription,
+    inputSchema: { type: "object", properties: {}, required: [] },
+    isEnabled: () => enabled,
+    isReadOnly: () => true,
+    isConcurrencySafe: () => true,
+    call: async () => ({ content: "" }),
+    formatResult: (r: any) => r.content,
+    checkPermissions: async () => ({ allowed: true }) as const,
+  } as unknown as Tool;
+}
 
 afterEach(() => {
   resetSystemPromptCache();
@@ -65,6 +86,10 @@ describe("buildSystemPrompt", () => {
       buildSystemPrompt({ workspaceRoot: "/tmp/test", tools: [mockTool] }),
     );
     expect(prompt).toContain("read");
+    // Top10 #10: the section is a one-line INDEX using the short description;
+    // the full promptDescription lives only in the API tools argument.
+    expect(prompt).toContain("read — Read file contents");
+    expect(prompt).not.toContain("Use this to read files");
   });
 
   it("includes CLAUDE.md content below the boundary when provided", () => {
@@ -79,6 +104,74 @@ describe("buildSystemPrompt", () => {
     expect(dynamic).toContain("TypeScript");
   });
 });
+
+// ============================================================
+// Tool descriptions section (Top10 #10)
+// ============================================================
+// The section is a one-line index (name — short description), memoized under
+// a tool-set fingerprint: the old code dumped every tool's full
+// promptDescription (~3.6k duplicate tokens per request) and rebuilt the
+// section raw every turn, so an MCP reconnect reordering the registry busted
+// the whole cacheable prefix.
+// ============================================================
+
+describe("tool descriptions section (Top10 #10)", () => {
+  it("lists one short line per enabled tool, never the full promptDescription", () => {
+    const tools = [
+      mkTool("read", "Read file contents", "Use this to read files. Parameters: filePath ..."),
+      mkTool("bash", "Execute a shell command", "Runs a command in the shell with timeout ..."),
+    ];
+    const prompt = renderSystemPrompt(buildSystemPrompt({ workspaceRoot: "/t", tools }));
+    expect(prompt).toContain("read — Read file contents");
+    expect(prompt).toContain("bash — Execute a shell command");
+    expect(prompt).not.toContain("Use this to read files");
+    expect(prompt).not.toContain("Runs a command in the shell");
+  });
+
+  it("excludes disabled tools", () => {
+    const tools = [
+      mkTool("read", "Read file contents"),
+      mkTool("off_tool", "Disabled", "d", false),
+    ];
+    const prompt = renderSystemPrompt(buildSystemPrompt({ workspaceRoot: "/t", tools }));
+    expect(prompt).toContain("read —");
+    expect(prompt).not.toContain("off_tool");
+  });
+
+  it("registry ORDER does not change the static prefix bytes (MCP reorder stability)", () => {
+    const a = mkTool("aaa", "A tool");
+    const b = mkTool("bbb", "B tool");
+    const p1 = buildSystemPrompt({ workspaceRoot: "/t", tools: [a, b] });
+    const p2 = buildSystemPrompt({ workspaceRoot: "/t", tools: [b, a] });
+    expect(staticPrefixOf(p1)).toBe(staticPrefixOf(p2));
+    // Sorted output: aaa before bbb regardless of input order.
+    const section = p2.find((block) => block.includes("AVAILABLE TOOLS"))!;
+    expect(section.indexOf("aaa")).toBeLessThan(section.indexOf("bbb"));
+  });
+
+  it("tool-set change alters the prefix; changing back restores the original bytes", () => {
+    const a = mkTool("aaa", "A tool");
+    const b = mkTool("bbb", "B tool");
+    const first = staticPrefixOf(buildSystemPrompt({ workspaceRoot: "/t", tools: [a] }));
+    const changed = staticPrefixOf(buildSystemPrompt({ workspaceRoot: "/t", tools: [a, b] }));
+    expect(changed).not.toBe(first);
+    // Back to the original set: stale tools: memo key evicted, section
+    // recomputed deterministically → byte-identical to the first build.
+    const back = staticPrefixOf(buildSystemPrompt({ workspaceRoot: "/t", tools: [a] }));
+    expect(back).toBe(first);
+  });
+
+  it("same tool set across builds hits the memo (no recompute drift)", () => {
+    const tools = [mkTool("aaa", "A tool"), mkTool("bbb", "B tool")];
+    const x = staticPrefixOf(buildSystemPrompt({ workspaceRoot: "/t", tools }));
+    const y = staticPrefixOf(buildSystemPrompt({ workspaceRoot: "/t", tools }));
+    expect(x).toBe(y);
+  });
+});
+
+function staticPrefixOf(blocks: string[]): string {
+  return blocks.slice(0, boundaryIndex(blocks)).join("\n");
+}
 
 describe("cache discipline (kernel §5)", () => {
   it("keeps the date OUT of the static cacheable prefix", () => {

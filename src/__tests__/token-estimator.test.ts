@@ -7,7 +7,12 @@
 // ============================================================
 
 import { describe, expect, it } from "vitest";
-import { estimateMessageTokens, estimateTokens } from "../token-estimator.js";
+import {
+  estimateContextUsed,
+  estimateMessageTokens,
+  estimateTokens,
+  providerPromptTokens,
+} from "../token-estimator.js";
 import type { Message } from "../types.js";
 
 function userText(text: string): Message[] {
@@ -107,5 +112,46 @@ describe("per-message memoization (P3)", () => {
     const sharedEst = estimateMessageTokens(shared);
     expect(estA - sharedEst).toBe(estimateTokens(userText("query a")));
     expect(estB - sharedEst).toBe(estimateTokens(userText("query b")));
+  });
+});
+
+// ============================================================
+// Provider-aware usage semantics (Top10 #3) — the single source
+// of truth shared by the loop baseline and the TUI gauge.
+// ============================================================
+
+describe("providerPromptTokens / estimateContextUsed", () => {
+  const full = {
+    input_tokens: 800,
+    output_tokens: 200,
+    cache_read_input_tokens: 90_000,
+    cache_creation_input_tokens: 2_000,
+  };
+
+  it("anthropic: cache_read and cache_creation are in-context tokens", () => {
+    expect(providerPromptTokens(full, "anthropic")).toBe(92_800);
+  });
+
+  it("openai-compatible: input_tokens already includes cached tokens", () => {
+    for (const provider of ["openai", "deepseek", "qwen", "ollama"]) {
+      expect(providerPromptTokens(full, provider), provider).toBe(800);
+    }
+  });
+
+  it("baseline excludes the call's own output; gauge includes it", () => {
+    expect(providerPromptTokens(full, "anthropic")).toBe(92_800);
+    expect(estimateContextUsed(full, "anthropic")).toBe(93_000);
+    expect(estimateContextUsed(full, "openai")).toBe(1_000);
+  });
+
+  it("the two dialects agree on the live-window figure for the same session", () => {
+    // High cache-hit session: OpenAI reports the whole prompt in input_tokens,
+    // Anthropic splits it across three fields. Both must yield the SAME
+    // in-context number — under the old raw-input_tokens baseline the
+    // Anthropic view under-counted by the entire cached prefix.
+    const openAiView = { input_tokens: 92_800, output_tokens: 200 };
+    expect(providerPromptTokens(openAiView, "openai")).toBe(
+      providerPromptTokens(full, "anthropic"),
+    );
   });
 });

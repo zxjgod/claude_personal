@@ -1,8 +1,15 @@
 // ============================================================
 // Tests: Usage Baseline Optimization
 // ============================================================
+// The baseline arithmetic is NOT simulated here anymore: the two former
+// "same logic as agent-loop" cases contradicted each other (one summed the
+// cache fields, one did not) while the real loop read raw input_tokens —
+// the Top10 #3 bug. These now assert the SHARED provider-aware functions the
+// loop and the TUI actually import (token-estimator.ts).
+// ============================================================
 
 import { describe, expect, it } from "vitest";
+import { estimateContextUsed, providerPromptTokens } from "../token-estimator.js";
 import type { Message } from "../types.js";
 
 describe("Usage Baseline", () => {
@@ -17,29 +24,54 @@ describe("Usage Baseline", () => {
     return { role: "tool", tool_call_id: "call_1", content };
   };
 
-  it("should extract input_tokens from usage as promptTokens", () => {
-    // Mock usage from provider
+  it("anthropic baseline sums input + cache_read + cache_creation (live window)", () => {
     const usage = {
       input_tokens: 5000,
       cache_read_input_tokens: 1000,
       cache_creation_input_tokens: 500,
       output_tokens: 200,
     };
+    // Anthropic's input_tokens EXCLUDES cached portions — all three are
+    // in-context tokens. Reading input_tokens alone under-counted the live
+    // context by the whole cached prefix (compaction never fired).
+    expect(providerPromptTokens(usage, "anthropic")).toBe(6500);
+  });
 
-    // Calculate promptTokens (same logic as agent-loop)
-    const promptTokens =
-      usage.input_tokens +
-      (usage.cache_read_input_tokens ?? 0) +
-      (usage.cache_creation_input_tokens ?? 0);
+  it("openai-compatible baseline takes input_tokens as-is (cached already included)", () => {
+    const usage = {
+      input_tokens: 5000,
+      cache_read_input_tokens: 1000,
+      cache_creation_input_tokens: 500,
+      output_tokens: 200,
+    };
+    // prompt_tokens already INCLUDES cached tokens — summing again would
+    // double-count.
+    expect(providerPromptTokens(usage, "openai")).toBe(5000);
+    expect(providerPromptTokens(usage, "deepseek")).toBe(5000);
+  });
 
-    expect(promptTokens).toBe(6500); // 5000 + 1000 + 500
+  it("missing cache fields default to zero", () => {
+    expect(providerPromptTokens({ input_tokens: 100, output_tokens: 5 }, "anthropic")).toBe(100);
+  });
+
+  it("estimateContextUsed adds the call's own output (TUI gauge semantic)", () => {
+    const usage = {
+      input_tokens: 5000,
+      cache_read_input_tokens: 1000,
+      cache_creation_input_tokens: 500,
+      output_tokens: 200,
+    };
+    expect(estimateContextUsed(usage, "anthropic")).toBe(6700);
+    expect(estimateContextUsed(usage, "openai")).toBe(5200);
   });
 
   it("should create baseline with correct structure", () => {
     const usage = { input_tokens: 5000, output_tokens: 100 };
     const windowAtCall = 10;
 
-    const promptTokens = usage.input_tokens;
+    // The loop stores providerPromptTokens(usage, provider) — output is NOT
+    // part of the baseline (the assistant message is counted as an append).
+    const promptTokens = providerPromptTokens(usage, "openai");
     const baseline = { promptTokens, messageCount: windowAtCall };
 
     expect(baseline).toEqual({
