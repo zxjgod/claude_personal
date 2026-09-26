@@ -20,7 +20,7 @@ import { BLACK_CIRCLE, TOOL_RESULT } from "./figures.js";
 import { t } from "./i18n.js";
 import { renderMarkdown } from "./markdown.js";
 import type { TranscriptItem } from "./store.js";
-import { truncateVisual } from "./terminal-width.js";
+import { terminalColumns, truncateVisual } from "./terminal-width.js";
 import { currentTheme, palette } from "./theme.js";
 import { toolOutputLines } from "./tool-output.js";
 
@@ -166,6 +166,11 @@ function itemLines(
  * (O(N²) markdown renders over a session) into O(new items) per update.
  * The theme name is part of the variant key so /theme invalidates naturally;
  * entries die with their items (WeakMap), no manual eviction needed.
+ * The terminal WIDTH is part of the key too (fourth-round review): rendered
+ * rows are width-dependent (markdown tables and diff background fill size
+ * themselves to terminalColumns()), so a resize used to freeze the whole
+ * committed history at the old width — overflowing backgrounds, viewport
+ * desync — with no way for old entries to ever re-render.
  */
 const ITEM_LINES_CACHE = new WeakMap<TranscriptItem, Map<string, TranscriptLine[]>>();
 
@@ -181,7 +186,7 @@ export function transcriptToLines(
   opts: TranscriptRenderOptions = {},
 ): TranscriptLine[] {
   const verbose = opts.verbose ?? false;
-  const variant = `${verbose ? 1 : 0}|${opts.collapseThinking ? 1 : 0}|${currentTheme()}`;
+  const variant = `${verbose ? 1 : 0}|${opts.collapseThinking ? 1 : 0}|${currentTheme()}|${terminalColumns()}`;
   const out: TranscriptLine[] = [];
   for (const item of transcript) {
     let variants = ITEM_LINES_CACHE.get(item);

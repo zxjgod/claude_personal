@@ -136,12 +136,23 @@ function readBlob(key: string, hash: string | null): string | null | undefined {
 function gcBlobs(key: string): void {
   try {
     const mirror = loadPersisted(key); // fresh from disk, not the in-memory copy
+    // Fourth-round review: an unreadable/missing/corrupt index must ABORT
+    // the GC — treating it as an empty reachable set deleted EVERY blob on
+    // disk, so a single failed state.json write (AV/backup placeholder
+    // blocking the rewrite of the same filename) later escalated into
+    // destroying all remaining rewind depth the in-memory mirror still
+    // references. Conservative rule: no readable index → no GC. (Known
+    // limitation, accepted: no cross-process lock — a same-session second
+    // terminal that wrote a blob between our index read and the unlinks can
+    // lose that one blob to GC; the reader treats it as missing and skips,
+    // degrading rewind depth without deleting live files.)
+    if (!mirror) return;
     const dir = nodePath.join(bucketDir(key), "blobs");
     const reachable = new Set<string>();
-    for (const o of Object.values(mirror?.originals ?? {})) {
+    for (const o of Object.values(mirror.originals)) {
       if (o.blob) reachable.add(o.blob);
     }
-    for (const t of Object.values(mirror?.turns ?? {})) {
+    for (const t of Object.values(mirror.turns)) {
       for (const b of Object.values(t.files)) if (b) reachable.add(b);
     }
     for (const name of fs.readdirSync(dir)) {
@@ -154,7 +165,7 @@ function gcBlobs(key: string): void {
       }
     }
   } catch {
-    /* no blobs dir / unreadable index — nothing to GC */
+    /* no blobs dir — nothing to GC */
   }
 }
 

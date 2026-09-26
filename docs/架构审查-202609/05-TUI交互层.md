@@ -22,6 +22,12 @@
 > 与 /fork"Launch a sub-agent"描述改诚实。**结构项按用户拍板本轮不做**：B4
 > StreamingMarkdown 重 lex、B8 热键统一、B9 i18n 清扫、B11 三输入栈、B14 vim visual、
 > B15 小修包、run.tsx/InputBox 拆分。详见总纲"次级清单处置标注"节；2007 测试绿。
+>
+> ✅ **第四轮外部审查跟进（2026-09-27，针对 9/26 四提交）**：transcript 条目缓存
+> （#34 WeakMap）variant 键补终端宽度——渲染行是宽度相关的（markdown 排版、diff
+> 背景填充），resize 后已提交历史原先永久冻结旧宽度（背景条溢出折行、ScrollView
+> 行计数失步）。详见总纲"外部审查跟进（第四轮）"标注；2024 测试绿。
+
 
 ---
 

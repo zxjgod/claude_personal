@@ -68,10 +68,16 @@ const SECRET_PATTERNS: Array<{ re: RegExp; to: string }> = [
   // Bearer FIRST: it swallows the whole credential, so a contained sk-/ghp_
   // token doesn't get half-redacted into "Bearer sk-<redacted>" first.
   { re: /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, to: "Bearer <redacted>" },
+  // Basic auth carries base64("user:password") — a full credential with no
+  // keyword for the value-patterns to catch (fourth-round review).
+  { re: /\bBasic\s+[A-Za-z0-9+/=]{8,}/gi, to: "Basic <redacted>" },
   { re: /\bsk-[A-Za-z0-9_-]{8,}\b/g, to: "sk-<redacted>" },
   { re: /\bAKIA[0-9A-Z]{12,}\b/g, to: "<redacted-aws-key>" },
   { re: /\bgh[pousr]_[A-Za-z0-9]{16,}\b/g, to: "<redacted-github-token>" },
   { re: /\bglpat-[A-Za-z0-9_-]{10,}\b/g, to: "<redacted-gitlab-token>" },
+  // curl/wget basic auth: `-u user:password` (password part may be empty for
+  // prompt-based auth; redact whatever shape follows the colon).
+  { re: /(^|[\s"'])-u\s+\S+:\S+/gi, to: "$1-u <redacted>" },
   {
     re: /((?:api[_-]?key|apikey|secret|token|passw(?:or)?d|credential)["']?\s*[:=]\s*)["']?[^\s"',;&|]+/gi,
     to: "$1<redacted>",

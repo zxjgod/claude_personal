@@ -16,10 +16,15 @@
 /**
  * Key shapes considered secret-bearing. Deliberately broad (over-stripping a
  * rarely-used variable beats leaking a key): anything containing api key /
- * apikey / secret / token / password / passwd / credential, in any casing or
- * separator style. `TOKEN` also catches GITHUB_TOKEN, HF_TOKEN, etc.
+ * apikey / access key / secret / token / password / passwd / credential, in
+ * any casing or separator style. `TOKEN` also catches GITHUB_TOKEN, HF_TOKEN,
+ * etc. Fourth-round review added `access_key` and the bare `…_KEY` / `…_PAT`
+ * suffixes (OPENAI_KEY, STRIPE_KEY, GITHUB_PAT) — real secret names the
+ * original list missed. The suffix form is anchored to a separator so plain
+ * words containing "key"/"pat" (MONKEY, KEYMAP, PATTERN) stay intact.
  */
-const SECRET_KEY_RE = /(api[_-]?key|apikey|secret|token|passw(or)?d|credential)/i;
+const SECRET_KEY_RE = /(api[_-]?key|apikey|access[_-]?key|secret|token|passw(or)?d|credential)/i;
+const SECRET_SUFFIX_RE = /(?:^|_)(key|pat)$/i;
 
 /**
  * Copy an environment with secret-shaped variables removed. Always keeps
@@ -29,7 +34,7 @@ export function sanitizeChildEnv(env: NodeJS.ProcessEnv): Record<string, string>
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {
     if (value === undefined) continue;
-    if (SECRET_KEY_RE.test(key)) continue;
+    if (SECRET_KEY_RE.test(key) || SECRET_SUFFIX_RE.test(key)) continue;
     out[key] = value;
   }
   return out;
@@ -37,5 +42,5 @@ export function sanitizeChildEnv(env: NodeJS.ProcessEnv): Record<string, string>
 
 /** The names that WOULD be stripped from a given env (diagnostics/tests). */
 export function strippedSecretNames(env: NodeJS.ProcessEnv): string[] {
-  return Object.keys(env).filter((key) => SECRET_KEY_RE.test(key));
+  return Object.keys(env).filter((key) => SECRET_KEY_RE.test(key) || SECRET_SUFFIX_RE.test(key));
 }

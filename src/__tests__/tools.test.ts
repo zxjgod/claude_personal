@@ -767,6 +767,23 @@ describe("Read per-line truncation (T1)", () => {
     expect(result.content).not.toContain("…[+");
     expect(result.truncated).toBe(false);
   });
+
+  it("never splits a surrogate pair at the 2000-char cut (fourth round)", async () => {
+    // "🎉" is 2 UTF-16 code units; land the cut INSIDE the pair by padding
+    // 1998 chars before it — a raw slice would end on a lone high surrogate.
+    const emoji = "🎉";
+    const line = `${"a".repeat(1998)}${emoji.repeat(10)}`;
+    fs.writeFileSync(path.join(tmpDir, "surrogate.txt"), `${line}\n`, "utf-8");
+    const result = await ReadTool.call({ filePath: path.join(tmpDir, "surrogate.txt") }, ctx);
+    expect(result.truncated).toBe(true);
+    const body = String(result.content);
+    // No lone surrogate escaped into the output.
+    expect(body.includes("\\ud83c")).toBe(false);
+    // The char before the cut marker is either complete ASCII or a full emoji.
+    const cut = body.indexOf(" …[+");
+    const prefix = body.slice(Math.max(0, cut - 4), cut);
+    expect(prefix.endsWith("a") || prefix.endsWith(emoji)).toBe(true);
+  });
 });
 
 describe("Read oversized-file honesty (review follow-up #8)", () => {

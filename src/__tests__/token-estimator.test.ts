@@ -203,6 +203,43 @@ describe("image token estimation (pixel-based, A8)", () => {
     expect(estimateTokens(msgs)).toBe(85);
   });
 
+  it("reads dimensions from a JPEG with 0xFF fill bytes (fourth round)", () => {
+    // SOI + a run of 0xFF fill bytes (legal padding) + SOF0 segment. The old
+    // scan treated the second 0xFF as a length-bearing marker, jumped off a
+    // bogus segment size, and bailed to the base64-length heuristic.
+    // Layout after SOI: FF FF FF | FF C0 len prec h w comps…
+    const sof = Buffer.alloc(12);
+    sof[0] = 0xff;
+    sof[1] = 0xc0; // SOF0
+    sof.writeUInt16BE(10, 2); // segment length
+    sof[4] = 8; // precision
+    sof.writeUInt16BE(1200, 5); // height
+    sof.writeUInt16BE(1600, 7); // width
+    sof[9] = 3; // components
+    const jpeg = Buffer.concat([
+      Buffer.from([0xff, 0xd8]), // SOI
+      Buffer.from([0xff, 0xff]), // 0xFF fill bytes before the next marker
+      sof,
+    ]);
+    const msgs: Message[] = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "image",
+            source: {
+              type: "base64",
+              media_type: "image/jpeg",
+              data: jpeg.toString("base64"),
+            },
+          } as any,
+        ],
+      },
+    ];
+    // 1600×1200 → 1,920,000 px → ceil(/750) = 2560 tokens from real pixels.
+    expect(estimateTokens(msgs)).toBe(2560);
+  });
+
   it("falls back to the size heuristic for unrecognized formats", () => {
     const msgs: Message[] = [
       {

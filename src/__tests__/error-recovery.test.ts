@@ -34,6 +34,18 @@ describe("retryAfterMsFrom (unit normalization)", () => {
     expect(retryAfterMsFrom(httpError(429, "slow down", { "Retry-After": "0.5" }))).toBe(500);
   });
 
+  it("reads headers from a real fetch Headers instance (fourth round)", () => {
+    // Both SDKs attach a Headers INSTANCE (data in internal slots) — plain
+    // property indexing returned undefined and the Retry-After path was dead
+    // in production while plain-object tests kept passing.
+    const err = Object.assign(httpError(429, "slow down"), {
+      headers: new Headers({ "retry-after": "7" }),
+    });
+    expect(retryAfterMsFrom(err)).toBe(7_000);
+    const absent = Object.assign(httpError(429, "x"), { headers: new Headers({}) });
+    expect(retryAfterMsFrom(absent)).toBeNull();
+  });
+
   it("honors an explicit retryAfterMs attached by an adapter", () => {
     const err = Object.assign(httpError(429, "x", { "retry-after": "7" }), { retryAfterMs: 1234 });
     expect(retryAfterMsFrom(err)).toBe(1234);

@@ -226,7 +226,14 @@ export const ReadTool: Tool = buildTool({
       lines = lines.map((line) => {
         if (line.length <= MAX_LINE_CHARS) return line;
         lineTruncated = true;
-        return `${line.slice(0, MAX_LINE_CHARS)} …[+${line.length - MAX_LINE_CHARS} chars]`;
+        // Cut at a CODE POINT boundary (fourth-round review): a raw index can
+        // split a surrogate pair (emoji / CJK extensions), leaving a lone high
+        // surrogate that JSON-escapes into garbage in the model context. Same
+        // discipline as hardWrapLine in live-window.
+        let cut = MAX_LINE_CHARS;
+        const last = line.charCodeAt(cut - 1);
+        if (last >= 0xd800 && last <= 0xdbff) cut -= 1; // high surrogate at the cut
+        return `${line.slice(0, cut)} …[+${line.length - cut} chars]`;
       });
 
       // Add line numbers (4-space padded)

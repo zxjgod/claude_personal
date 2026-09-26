@@ -109,9 +109,18 @@ export function checkDangerousPattern(
     // Review follow-up (既有问题 D1): the old `\brm\s+[^|;]*-r` matched the
     // "-r" INSIDE filenames (`rm file-report.txt` → catastrophic false
     // positive). Token-anchored like the bash branch: the recursive flag must
-    // be a standalone parameter token (-r / -Recurse / the -rf/-fr combos
-    // people carry over from bash). `-Force`/`-ReadOnly` no longer match.
-    if (/\b(?:Remove-Item|rm)\b[^|;&\n]*\s["']?-(?:recurse|rf|fr|r)\b(?=["'\s]|$)/i.test(cmd)) {
+    // be a standalone parameter token. `-Force`/`-ReadOnly` no longer match.
+    // Fourth-round review: PowerShell binds unambiguous parameter-name
+    // PREFIXES, so `-rec`/`-recu`/… are real recursive deletes too — the
+    // alternation now accepts every prefix of "recurse" down to bare `-r`
+    // (the `-ReadOnly` family still can't match: after `-r`/`-re` the next
+    // char must be a boundary or `c`). The bash carry-over combos (-rf/-fr)
+    // stay for paranoia even though PS itself rejects them.
+    if (
+      /\b(?:Remove-Item|rm)\b[^|;&\n]*\s["']?-(?:r(?:e(?:c(?:u(?:r(?:se?)?)?)?)?)?|rf|fr)(?=["'\s]|$)/i.test(
+        cmd,
+      )
+    ) {
       return {
         dangerous: true,
         reason: "Recursive delete (Remove-Item -Recurse / rm -r)",
@@ -202,21 +211,38 @@ export function checkDangerousPattern(
 
     // Pipe to shell/interpreter. Review follow-up (既有问题 D2): segment-
     // based instead of one big regex — the interpreter must LEAD a pipe
-    // segment (optionally behind sudo/env), so `curl url | grep node` no
-    // longer false-positives on the word "node" sitting in a grep argument.
-    // Still catches `curl x | bash`, `wget -qO- y | sudo sh -s`, `… | python3`.
+    // segment, so `curl url | grep node` no longer false-positives on the
+    // word "node" sitting in a grep argument. Fourth-round review: the
+    // leading-prefix-only form let real attack shapes through (`| /bin/bash`,
+    // `| timeout 30 bash`, `| nohup bash`, `| xargs bash`, `| env -i bash`),
+    // so the segment check now (a) strips repeatable exec-passing wrapper
+    // prefixes — sudo/env/nohup/nice/setsid/stdbuf/command/exec/xargs, each
+    // optionally path-qualified, plus `timeout <dur>` — before matching the
+    // interpreter (path-qualified interpreters like `/bin/bash` included),
+    // and (b) falls back to flagging any PATH-QUALIFIED interpreter token
+    // anywhere in the segment: a `/…/bash` token is near-always an execution
+    // and never a grep argument, so it adds no false positives.
     {
       const segments = cmd.split("|");
       const dlIdx = segments.findIndex((s) => /\b(?:curl|wget)\b/i.test(s));
+      // One wrapper token per iteration: optional path prefix, the wrapper
+      // name, any inline options (env -i / xargs -0), then the separator.
+      const wrapperRe =
+        /^(?:[\w.@/\\-]*[/\\])?(?:sudo|env|nohup|nice|setsid|stdbuf|command|exec|xargs)(?:\s+-[\w=]+)*\s+|^(?:[\w.@/\\-]*[/\\])?timeout\s+[\w.]+\s+/i;
+      const interpRe =
+        /^(?:[\w.@/\\-]*[/\\])?(?:bash|sh|zsh|ksh|dash|fish|python\d*|node|perl|php|ruby)\b/i;
+      const pathInterpRe = /[/\\](?:bash|sh|zsh|ksh|dash|fish|python\d*|node|perl|php|ruby)\b/i;
       const pipedToInterpreter =
         dlIdx >= 0 &&
-        segments
-          .slice(dlIdx + 1)
-          .some((s) =>
-            /^\s*(?:sudo\s+|env\s+)?(?:bash|sh|zsh|ksh|dash|fish|python\d*|node|perl|php|ruby)\b/i.test(
-              s,
-            ),
-          );
+        segments.slice(dlIdx + 1).some((s) => {
+          let rest = s.trimStart();
+          for (;;) {
+            const m = wrapperRe.exec(rest);
+            if (!m || m.index !== 0 || m[0].length === 0) break;
+            rest = rest.slice(m[0].length);
+          }
+          return interpRe.test(rest) || pathInterpRe.test(s);
+        });
       if (pipedToInterpreter) {
         return {
           dangerous: true,
@@ -231,9 +257,15 @@ export function checkDangerousPattern(
     // `-f` — INCLUDING combined short flags (`-qf`, `-fq`; the standalone
     // `-f` pattern missed them, review follow-up) — and `--force-with-lease`
     // (still overwrites remote history). Same flag-token anchoring as the
-    // rm check above: whitespace-delimited, optionally quoted.
+    // rm check above: whitespace-delimited, optionally quoted. Fourth-round
+    // review: git's parse-options accepts `--force=true` and long options
+    // take values (`--force-with-lease=refs/heads/main:abc123`), so an
+    // optional `=value` suffix is part of the flag token now — the old
+    // end-anchor let both spellings escape.
     if (
-      /\bgit\b[^|;&\n]*\bpush\b[^|;&\n]*\s["']?(-\w*f\w*|--force[\w-]*)["']?(?=\s|$)/i.test(cmd)
+      /\bgit\b[^|;&\n]*\bpush\b[^|;&\n]*\s["']?(?:-\w*f\w*|--force[\w-]*)(?:=[^\s]+)?["']?(?=\s|$)/i.test(
+        cmd,
+      )
     ) {
       return {
         dangerous: true,
@@ -244,8 +276,10 @@ export function checkDangerousPattern(
 
     // Force push via +refspec (`git push origin +main`, `+refs/heads/x:y`) —
     // the `+` prefix forces a non-fast-forward update exactly like --force
-    // (second-round review: a flag-based pattern cannot see it).
-    if (/\bgit\b[^|;&\n]*\bpush\b[^|;&\n]*\s\+[\w.@:/-]+/.test(cmd)) {
+    // (second-round review: a flag-based pattern cannot see it). Fourth-round
+    // review: the refspec may be quoted (`git push origin '+main'` — the `+`
+    // still applies), same optional-quote handling as the flag checks.
+    if (/\bgit\b[^|;&\n]*\bpush\b[^|;&\n]*\s["']?\+[\w.@:/-]+/.test(cmd)) {
       return {
         dangerous: true,
         reason: "强制推送 (git push +refspec) — 可能覆盖远程分支的提交历史",
@@ -263,7 +297,9 @@ export function checkDangerousPattern(
         severity: "catastrophic",
       };
     }
-    if (/\bgit\b[^|;&\n]*\bclean\b[^|;&\n]*\s-\w*f/.test(cmd)) {
+    // Fourth-round review: the long form `git clean --force -d -x` escaped
+    // the short-flag-only pattern — same token anchoring as git push.
+    if (/\bgit\b[^|;&\n]*\bclean\b[^|;&\n]*\s["']?(?:-\w*f\w*|--force[\w-]*)(?=\s|$)/.test(cmd)) {
       return {
         dangerous: true,
         reason: "git clean -f — 将删除所有未跟踪文件（含 .env 与未提交产物）",
@@ -330,13 +366,14 @@ export function checkDangerousPattern(
       /\b(npm|yarn|pnpm)\s+(run\s+)?(dev|serve|start)\b/.test(cmd) || // dev servers
       /\b(vite|webpack-dev-server|next\s+dev|ng\s+serve)\b/.test(cmd) || // dev servers
       /\bssh\b/.test(cmd) || // interactive ssh
-      // Bare REPL: the FINAL pipe segment IS the interpreter with no
+      // Bare REPL: the FINAL segment (pipe OR semicolon — fourth-round
+      // review: `echo hi; node` hung unseen) IS the interpreter with no
       // arguments (reads stdin forever). Review follow-up (既有 D2 tail):
       // the old `\b(python|node)\s*$` matched any command merely ENDING in
       // the word — `curl api | grep node` and even `which node` were flagged
       // as hangs. Anchoring to a bare segment keeps `node`/`python3` and
       // `curl x | node` flagged while argument positions pass.
-      /^(?:python\d*|node|php|irb|pry)$/.test((cmd.split("|").pop() ?? "").trim()) ||
+      /^(?:python\d*|node|php|irb|pry)$/.test((cmd.split(/[|;]/).pop() ?? "").trim()) ||
       /\b(python|node|php|irb|pry)\s+-i\b/.test(cmd) // interactive REPL
     ) {
       return {

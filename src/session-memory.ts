@@ -25,6 +25,7 @@ import * as fs from "node:fs";
 import * as fsPromises from "node:fs/promises";
 import * as path from "node:path";
 import lockfile from "proper-lockfile";
+import { resetCheckpoints } from "./checkpoint.js";
 import { firstUserPreview } from "./tui/history-replay.js";
 import type { Message } from "./types.js";
 import { ccrPath } from "./workspace-config.js";
@@ -279,7 +280,12 @@ export class SessionMemory {
   ): Promise<void> {
     this.ensureDir();
     const filePath = this.catalogPath();
-    const tmpPath = `${filePath}.tmp`;
+    // pid-suffixed like saveSerialized (fourth-round review): the lockless
+    // optimistic fallback in updateCatalog also writes, and a SHARED fixed
+    // tmp name could interleave with a locked writer's rename — tearing
+    // catalog.json into invalid JSON. The startup tmp sweep still matches
+    // (endsWith ".tmp").
+    const tmpPath = `${filePath}.${process.pid}.tmp`;
     await fsPromises.writeFile(tmpPath, JSON.stringify(catalog, null, 2), "utf-8");
     await fsPromises.rename(tmpPath, filePath);
   }
@@ -403,6 +409,17 @@ export class SessionMemory {
         fs.unlinkSync(path.join(this.sessionsDir, `${sessionId}.transcript.jsonl`));
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+      // Fourth-round review: the session's checkpoint BUCKET must go too —
+      // .claude/checkpoints/<bucket>/ held every shadowed-file blob and used
+      // to survive session deletion forever (the 64MB cap only bounds RAM,
+      // and gcBlobs only fires on rewind), so the tree grew unboundedly.
+      // resetCheckpoints clears memory + disk best-effort; it targets the
+      // deleted sessionId only, never the running session's bucket.
+      try {
+        resetCheckpoints(sessionId);
+      } catch {
+        // best-effort — bucket cleanup must not fail the session delete
       }
     } finally {
       if (release) {

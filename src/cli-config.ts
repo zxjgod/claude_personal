@@ -148,14 +148,14 @@ function flagValues(flag: string): string[] {
 // CLI flags are the user's own voice and are never gated.
 
 function projectAllowTrustStorePath(): string {
-  return (
-    process.env.CCR_TRUST_STORE_SETTINGS ||
-    path.join(
-      process.env.HOME || process.env.USERPROFILE || ".",
-      ".claude-code-replica",
-      "trusted-project-settings.json",
-    )
-  );
+  if (process.env.CCR_TRUST_STORE_SETTINGS) return process.env.CCR_TRUST_STORE_SETTINGS;
+  // Same rule as the audit log (A8): when neither HOME nor USERPROFILE
+  // exists, DISABLE ("" → every read/write throws → untrusted → project
+  // allow rules fail closed) rather than falling back to "." — a trust store
+  // landing inside the (possibly cloned) working tree would let a malicious
+  // repo pre-seed its own trust. Fourth-round review.
+  const home = process.env.HOME || process.env.USERPROFILE;
+  return home ? path.join(home, ".claude-code-replica", "trusted-project-settings.json") : "";
 }
 
 /** The project's allow rules + their content fingerprint, or null when none. */

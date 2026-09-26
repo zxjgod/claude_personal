@@ -88,11 +88,28 @@ export function permissionRuleMatches(
   if (ruleTool.toLowerCase() !== name) return false;
   const pattern = m[2]!;
   if (pattern === "*") return true;
-  // Official colon-prefix form: prefix match at a word boundary.
+  // Official colon-prefix form: prefix match at a boundary. COMMAND rules
+  // require a space after the prefix (`Bash(git:*)` must not also allow
+  // "github-cli"). URL-shaped prefixes (scheme:// or a space-less token with
+  // a dot, i.e. a host) additionally accept the hierarchical separators that
+  // legitimately follow a host — "/", ":", "?", "#" — so `WebFetch(https://
+  // evil.com:*)` matches "https://evil.com/x" instead of silently never
+  // matching anything (fourth-round review).
   if (pattern.endsWith(":*")) {
     const prefix = pattern.slice(0, -2);
     if (target === prefix) return true;
-    return target.startsWith(prefix) && (prefix.endsWith(" ") || target[prefix.length] === " ");
+    const urlIsh = prefix.includes("://") || (!prefix.includes(" ") && /\.[A-Za-z]/.test(prefix));
+    if (urlIsh && !prefix.includes("://")) {
+      // Bare-host rule (`WebFetch(domain.com:*)`): the target carries a
+      // scheme, so compare against the URL's host part instead of a plain
+      // prefix (which would never match "https://domain.com/a").
+      const host = /^[a-zA-Z][\w+.-]*:\/\/([^/?#]+)/.exec(target)?.[1];
+      return host === prefix;
+    }
+    if (!target.startsWith(prefix)) return false;
+    if (prefix.endsWith(" ")) return true;
+    const next = target[prefix.length];
+    return prefix.includes("://") ? /[/:?#]/.test(next ?? "") : next === " ";
   }
   // Trailing-star wildcard: plain prefix match.
   if (pattern.endsWith("*")) return target.startsWith(pattern.slice(0, -1));

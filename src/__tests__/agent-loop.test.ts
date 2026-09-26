@@ -2636,14 +2636,15 @@ describe("agentLoop — one-shot attachment lifecycle (E6)", () => {
       checkPermissions: async () => ({ allowed: true }),
     };
     const msgs = messages("remember things");
-    let sawAttachmentDuringCall = false;
+    // Fourth-round review: the old `turn >= 1` guard skipped the check on the
+    // FIRST call and the attachment was already pruned by the second, so the
+    // assertion could never tell "injected then pruned" from "never injected".
+    // Record per-call visibility instead — locks BOTH sides.
+    const seenByCall: boolean[] = [];
     const watchingCaller: ModelCaller = async function* (m, t, s, c, sig) {
-      // Turn 2 must NOT still carry the attachment from turn 1.
-      if (turn >= 1) {
-        sawAttachmentDuringCall ||= m.some(
-          (x) => x.role === "system" && String(x.content).includes("PREFETCH-ATTACHMENT"),
-        );
-      }
+      seenByCall.push(
+        m.some((x) => x.role === "system" && String(x.content).includes("PREFETCH-ATTACHMENT")),
+      );
       yield* caller(m, t, s, c, sig);
     };
     const { terminal } = await drain(
@@ -2655,9 +2656,74 @@ describe("agentLoop — one-shot attachment lifecycle (E6)", () => {
       }),
     );
     expect(terminal.reason).toBe("completed");
-    // The attachment was injected for turn 1, never re-sent on later turns...
-    expect(sawAttachmentDuringCall).toBe(false);
+    // Injected for the consuming call...
+    expect(seenByCall[0]).toBe(true);
+    // ...never re-sent on later calls.
+    expect(seenByCall.slice(1).some(Boolean)).toBe(false);
     // ...and pruned afterwards: the final history has no trace of it.
+    expect(
+      msgs.some((m) => m.role === "system" && String(m.content).includes("PREFETCH-ATTACHMENT")),
+    ).toBe(false);
+  });
+
+  it("keeps the prefetch attachment across a retry of the consuming call (fourth round)", async () => {
+    // Old behavior deleted one-shot attachments BEFORE the retry dispatch —
+    // a single 429 on the first call permanently lost the prefetch content:
+    // the retry (and every later call) never saw it again.
+    let calls = 0;
+    const rateLimited = () => {
+      const e = new Error("rate limited");
+      (e as any).status = 429;
+      (e as any).headers = { "retry-after": "0" };
+      return e;
+    };
+    const noop: Tool = {
+      name: "noop",
+      description: "noop",
+      promptDescription: "noop",
+      inputSchema: { type: "object", properties: {}, required: [] },
+      isEnabled: () => true,
+      isReadOnly: () => true,
+      isConcurrencySafe: () => true,
+      call: async () => ({ content: "ok" }),
+      formatResult: (r) => r.content,
+      checkPermissions: async () => ({ allowed: true }),
+    };
+    const seenByCall: boolean[] = [];
+    const caller: ModelCaller = async function* (m) {
+      calls++;
+      seenByCall.push(
+        m.some((x) => x.role === "system" && String(x.content).includes("PREFETCH-ATTACHMENT")),
+      );
+      if (calls === 1) {
+        yield { type: "error", error: rateLimited() };
+        return;
+      }
+      if (calls === 2) {
+        yield { type: "tool_use", id: "t1", name: "noop", input: {} };
+        yield {
+          type: "done",
+          usage: { input_tokens: 10, output_tokens: 2 },
+          finish_reason: "tool_calls",
+        };
+        return;
+      }
+      yield { type: "text_delta", delta: "done" };
+      yield { type: "done", usage: { input_tokens: 10, output_tokens: 2 }, finish_reason: "stop" };
+    };
+    const msgs = messages("remember things");
+    const { terminal } = await drain(
+      agentLoop(msgs, [noop], caller, testConfig, {
+        systemPrompt: "s",
+        maxTurns: 5,
+        speculation: false,
+        prefetch: async () => "PREFETCH-ATTACHMENT content",
+      }),
+    );
+    expect(terminal.reason).toBe("completed");
+    // The failed first call carried it, the RETRY still carries it (not
+    // duplicated), and calls after the consuming success do not.
+    expect(seenByCall).toEqual([true, true, false]);
     expect(
       msgs.some((m) => m.role === "system" && String(m.content).includes("PREFETCH-ATTACHMENT")),
     ).toBe(false);

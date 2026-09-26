@@ -639,12 +639,20 @@ export async function* agentLoop(
       }
 
       // The call that consumed this turn's one-shot attachments has finished
-      // (or failed) — drop them so they never ride along into later prompts
-      // (Top10 follow-up E6). Removal by identity; system attachments carry no
-      // tool-pairing obligations. If messages shrank below the usage
-      // baseline's window, estimateContextTokens falls back to a full
-      // re-estimate — correct, just unoptimized for one turn.
-      if (oneShotAttachments.length > 0) {
+      // (or failed terminally) — drop them so they never ride along into
+      // later prompts (Top10 follow-up E6). Fourth-round review: a RETRY
+      // re-issues the same call, so attachments must SURVIVE it — the
+      // consuming call never completed, and deleting before the retry
+      // dispatch permanently lost the prefetch/summary content (a single 429
+      // on the first call was enough; the re-inject guards above keep the
+      // surviving attachment from being duplicated). Removal by identity;
+      // system attachments carry no tool-pairing obligations. If messages
+      // shrank below the usage baseline's window, estimateContextTokens falls
+      // back to a full re-estimate — correct, just unoptimized for one turn.
+      // compact_and_retry replaces the whole messages array, so this identity
+      // removal simply no-ops there; whatever the compaction kept lives on
+      // inside the new history.
+      if (nextAction !== "retry" && oneShotAttachments.length > 0) {
         for (const att of oneShotAttachments) {
           const idx = messages.indexOf(att);
           if (idx !== -1) messages.splice(idx, 1);

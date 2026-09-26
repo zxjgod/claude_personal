@@ -124,12 +124,15 @@ function buildToolDescriptionsSection(tools: Tool[]): string {
  * djb2 fingerprint of the enabled tool set (sorted name+description pairs) —
  * the memo key for the tools section. Sorted so a pure registry reorder (MCP
  * re-registration) fingerprints identically and the memo (and the prompt
- * prefix) survives; any real content change produces a new key.
+ * prefix) survives; any real content change produces a new key. A trailing
+ * separator per part (fourth-round review) removes the boundary ambiguity
+ * where one part's description ends in NUL and the next part's name begins —
+ * two different sets could otherwise fold into the same byte stream.
  */
 function toolSetFingerprint(tools: Tool[]): string {
   const parts = tools
     .filter((t) => t.isEnabled())
-    .map((t) => `${t.name}\0${t.description}`)
+    .map((t) => `${t.name}\0${t.description}\0`)
     .sort();
   let h = 5381;
   for (const part of parts) {

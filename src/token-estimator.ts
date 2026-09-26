@@ -81,6 +81,14 @@ function imageSizeFromBase64(data: string): { w: number; h: number } | null {
           i += 2;
           continue;
         }
+        // 0xFF fill bytes (fourth-round review): any number of consecutive
+        // 0xFFs may pad before a marker — treating the second 0xFF as a
+        // length-bearing marker made the scan jump off a bogus segment size
+        // and bail to null (heuristic fallback) for valid JPEGs.
+        if (marker === 0xff) {
+          i += 2;
+          continue;
+        }
         i += 2 + buf.readUInt16BE(i + 2);
       }
       return null;

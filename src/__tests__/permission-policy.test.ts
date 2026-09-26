@@ -44,6 +44,36 @@ describe("permission policy", () => {
     expect(permissionRuleMatches("Bash(git:*)", "bash", { command: "github-cli x" })).toBe(false);
   });
 
+  it("matches URL-shaped colon-prefix rules against real URLs (fourth round)", () => {
+    // `WebFetch(https://evil.com:*)` silently never matched any real URL —
+    // the boundary required a space, but URLs continue with "/", ":" …
+    expect(
+      permissionRuleMatches("WebFetch(https://evil.com:*)", "webfetch", {
+        url: "https://evil.com/x",
+      }),
+    ).toBe(true);
+    expect(
+      permissionRuleMatches("WebFetch(https://evil.com:*)", "webfetch", {
+        url: "https://evil.com:8443/x",
+      }),
+    ).toBe(true);
+    // A host-lookalike suffix is NOT the same host.
+    expect(
+      permissionRuleMatches("WebFetch(https://evil.com:*)", "webfetch", {
+        url: "https://evil.com.evil.net/x",
+      }),
+    ).toBe(false);
+    // Bare-host rules match the host part of a schemed URL.
+    expect(
+      permissionRuleMatches("WebFetch(domain.com:*)", "webfetch", { url: "https://domain.com/a" }),
+    ).toBe(true);
+    expect(
+      permissionRuleMatches("WebFetch(domain.com:*)", "webfetch", { url: "https://evil.com/a" }),
+    ).toBe(false);
+    // Command rules keep the space boundary (git:* ≠ github-cli).
+    expect(permissionRuleMatches("Bash(git:*)", "bash", { command: "github-cli x" })).toBe(false);
+  });
+
   it("persists always-allow values", () => {
     const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ccr-perm-")), "permissions.json");
     process.env.CCR_PERMISSION_STORE = file;

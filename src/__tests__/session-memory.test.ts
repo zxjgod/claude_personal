@@ -9,6 +9,11 @@ import * as os from "node:os";
 import * as path from "node:path";
 import lockfile from "proper-lockfile";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  __clearCheckpointMemoryForTests,
+  beginUserTurn,
+  shadowBeforeWrite,
+} from "../checkpoint.js";
 import { PersistenceManager } from "../persistence.js";
 import { SessionMemory } from "../session-memory.js";
 import type { Message } from "../types.js";
@@ -305,5 +310,26 @@ describe("SessionMemory", () => {
     await Promise.all([pending, del]);
     expect(fs.existsSync(path.join(sessionsDirOf(tmpDir), `${id}.json`))).toBe(false);
     expect(await new SessionMemory(tmpDir).load(id)).toBeNull();
+  }, 30_000);
+
+  // Fourth-round review: the session's checkpoint bucket (.claude/checkpoints/
+  // <bucket>/ with every shadowed-file blob) used to survive deletion forever —
+  // the 64MB cap only bounds RAM and gcBlobs only fires on rewind.
+  it("deleteSession removes the session's checkpoint bucket too", async () => {
+    vi.stubEnv("WORKSPACE_ROOT", tmpDir); // checkpoint root resolves like production
+    try {
+      const file = path.join(tmpDir, "c.txt");
+      fs.writeFileSync(file, "x");
+      beginUserTurn("ckpt-del");
+      shadowBeforeWrite("ckpt-del", file); // creates the bucket + a blob
+      const bucket = path.join(tmpDir, ".claude", "checkpoints", "ckpt-del");
+      expect(fs.existsSync(bucket)).toBe(true);
+      await sm.save("ckpt-del", [userMsg("hi")]);
+      await sm.deleteSession("ckpt-del");
+      expect(fs.existsSync(bucket)).toBe(false);
+    } finally {
+      __clearCheckpointMemoryForTests();
+      vi.unstubAllEnvs();
+    }
   }, 30_000);
 });

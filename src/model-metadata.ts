@@ -234,6 +234,10 @@ const MODEL_METADATA: readonly ModelMetadata[] = [
   { match: "gpt-4", contextWindow: 8_192, maxOutput: 8_192, pricing: { input: 30, output: 60 } },
   { match: "gpt-3.5", contextWindow: 16_385, maxOutput: 4_096 },
   // o-series: prefix-anchored so unrelated ids containing "o1" don't match.
+  // o1-mini BEFORE o1 (fourth-round review): its max_completion_tokens cap is
+  // 65,536 — inheriting the o1 row's 100k let an explicitly raised
+  // LLM_MAX_TOKENS send an over-cap request that OpenAI rejects with a 400.
+  { match: "o1-mini", prefix: true, contextWindow: 200_000, maxOutput: 65_536, isReasoning: true },
   { match: "o1", prefix: true, contextWindow: 200_000, maxOutput: 100_000, isReasoning: true },
   { match: "o3", prefix: true, contextWindow: 200_000, maxOutput: 100_000, isReasoning: true },
   { match: "o4", prefix: true, contextWindow: 200_000, maxOutput: 100_000, isReasoning: true },

@@ -156,6 +156,28 @@ describe("checkpoint persistence (C8)", () => {
     expect(t1).toBeLessThan(t2);
   });
 
+  it("GC skips entirely when the on-disk index is unreadable (fourth round)", () => {
+    const file = path.join(root, "idx.txt");
+    fs.writeFileSync(file, "v0");
+    beginUserTurn("sess-idx");
+    shadowBeforeWrite("sess-idx", file); // original blob written + state.json
+    fs.writeFileSync(file, "v1");
+    const blobsDir = path.join(bucketDir("sess-idx"), "blobs");
+    const before = fs.readdirSync(blobsDir);
+    expect(before.length).toBeGreaterThanOrEqual(1);
+    // Simulate the real failure mode: the state.json rewrite fails AND the
+    // previous index is unreadable. Replacing the file with a DIRECTORY does
+    // both without mocks: readFileSync → EISDIR, and the persist rename
+    // onto it fails (swallowed best-effort). The old GC treated the
+    // unreadable index as an EMPTY reachable set and deleted every blob,
+    // destroying all remaining rewind depth; the conservative rule is "no
+    // readable index → no GC".
+    fs.rmSync(path.join(bucketDir("sess-idx"), "state.json"));
+    fs.mkdirSync(path.join(bucketDir("sess-idx"), "state.json"));
+    restoreToTurn("sess-idx", 1);
+    expect(fs.readdirSync(blobsDir).sort()).toEqual(before.slice().sort());
+  });
+
   it("a lost blob never turns into a file deletion on rewind (#R7③)", () => {
     const file = path.join(root, "precious.txt");
     fs.writeFileSync(file, "orig");

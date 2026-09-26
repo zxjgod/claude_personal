@@ -72,8 +72,19 @@ export function retryAfterMsFrom(error: unknown): number | null {
   ) {
     return err.retryAfterMs;
   }
-  const headers = (err?.headers ?? undefined) as Record<string, string> | undefined;
-  const raw = headers?.["retry-after"] ?? headers?.["Retry-After"];
+  const headers = (err?.headers ?? undefined) as
+    | (Record<string, string> & { get?: (name: string) => string | null })
+    | undefined;
+  // Fourth-round review: both SDKs' APIError.headers is a fetch `Headers`
+  // INSTANCE — its data lives in internal slots, so plain property indexing
+  // always returned undefined and the whole Retry-After path was dead in
+  // production (tests passed because they faked headers as plain objects).
+  // Prefer .get() when present; keep the property form for plain-object
+  // errors (and the SDK's user-supplied header-record typing).
+  const raw =
+    typeof headers?.get === "function"
+      ? (headers.get("retry-after") ?? headers.get("Retry-After"))
+      : (headers?.["retry-after"] ?? headers?.["Retry-After"]);
   if (raw === undefined || raw === null) return null;
   const secs = Number.parseFloat(String(raw));
   if (Number.isFinite(secs) && secs >= 0) return Math.round(secs * 1000);

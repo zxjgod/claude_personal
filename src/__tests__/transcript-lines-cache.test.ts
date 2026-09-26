@@ -97,4 +97,25 @@ describe("transcriptToLines item cache (#34)", () => {
     expect(one.some((l) => l.text.includes("more"))).toBe(false);
     expect(two.some((l) => l.text.includes("more"))).toBe(true);
   });
+
+  it("re-renders on terminal resize (fourth round)", () => {
+    // Rendered rows are width-dependent (markdown sizing, diff background
+    // fill), but the width used to be missing from the cache key — a resize
+    // froze the committed history at the old width forever.
+    const a = items();
+    const orig = process.stdout.columns;
+    try {
+      process.stdout.columns = 120;
+      const wide = transcriptToLines(a, "", "");
+      const wideAgain = transcriptToLines(a, "", "");
+      // Same width → cache hit (identity proof, same as the first test).
+      expect(wideAgain[0]).toBe(wide[0]);
+      process.stdout.columns = 60;
+      const narrow = transcriptToLines(a, "", "");
+      // New width → fresh row objects: history re-rendered at 60 columns.
+      expect(narrow[0]).not.toBe(wide[0]);
+    } finally {
+      process.stdout.columns = orig;
+    }
+  });
 });

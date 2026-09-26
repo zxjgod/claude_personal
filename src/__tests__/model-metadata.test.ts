@@ -64,6 +64,14 @@ describe("model metadata lookups", () => {
     expect(isOpenAIReasoningModel("gpt-4o")).toBe(false);
   });
 
+  it("splits o1-mini onto its real 65,536 output cap (fourth round)", () => {
+    // o1-mini previously inherited the o1 row's 100k — an explicitly raised
+    // LLM_MAX_TOKENS would send an over-cap request for a 400.
+    expect(modelMaxOutput("o1-mini")).toBe(65_536);
+    expect(modelMaxOutput("o1-mini-2024-09-12")).toBe(65_536);
+    expect(modelMaxOutput("o1")).toBe(100_000); // the o1 row itself is correct
+  });
+
   it("marks third-party reasoners for reasoning_effort but keeps windows", () => {
     expect(isOpenAIReasoningModel("deepseek-reasoner")).toBe(true);
     expect(isOpenAIReasoningModel("deepseek-chat")).toBe(false);

@@ -98,6 +98,25 @@ describe("project allow-rule trust gate (A3)", () => {
     writeSettings({ deny: ["Bash(rm:*)"] });
     expect(getPermissionPolicy(root).deny).toContain("Bash(rm:*)");
   });
+
+  it("no HOME at all disables the store — allow stays fail-closed, never lands in the repo (fourth round)", async () => {
+    // Same rule as the audit log (A8): the "." fallback would put the trust
+    // store INSIDE the (possibly cloned) working tree. Without a usable
+    // store path every read/write throws → untrusted → allow rules inert.
+    vi.stubEnv("CCR_TRUST_STORE_SETTINGS", "");
+    vi.stubEnv("HOME", "");
+    vi.stubEnv("USERPROFILE", "");
+    writeSettings({ allow: ["Bash(npm run:*)"] });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await confirmProjectAllowRules(root);
+    } finally {
+      warn.mockRestore();
+    }
+    expect(getPermissionPolicy(root).allow).not.toContain("Bash(npm run:*)");
+    // And nothing was written into the working tree.
+    expect(fs.existsSync(path.join(root, ".claude-code-replica"))).toBe(false);
+  });
 });
 
 // ============================================================
@@ -142,6 +161,34 @@ describe("sanitizeChildEnv (A4)", () => {
     }
     expect(strippedSecretNames(env).length).toBe(7);
   });
+
+  it("strips access-key and bare _KEY/_PAT suffix shapes (fourth round)", () => {
+    const e: Record<string, string> = {
+      AWS_ACCESS_KEY_ID: "AKIA123",
+      OPENAI_KEY: "sk-x",
+      STRIPE_KEY: "sk_live_x",
+      GITHUB_PAT: "ghp_x",
+      PRIVATE_KEY: "-----BEGIN",
+      // Plain words containing key/pat without the separator-anchored suffix:
+      MONKEY: "1",
+      KEYMAP: "us",
+      PATTERN: "factory",
+      HOTKEYS: "f5",
+    };
+    const out = sanitizeChildEnv(e);
+    for (const key of [
+      "AWS_ACCESS_KEY_ID",
+      "OPENAI_KEY",
+      "STRIPE_KEY",
+      "GITHUB_PAT",
+      "PRIVATE_KEY",
+    ]) {
+      expect(out[key], key).toBeUndefined();
+    }
+    for (const key of ["MONKEY", "KEYMAP", "PATTERN", "HOTKEYS"]) {
+      expect(out[key], key).toBe(e[key]);
+    }
+  });
 });
 
 // ============================================================
@@ -164,5 +211,17 @@ describe("redactSecrets (A8)", () => {
   it("leaves ordinary commands untouched", () => {
     const cmd = "npm test && git push origin main";
     expect(redactSecrets(cmd)).toBe(cmd);
+  });
+
+  it("scrubs Basic auth and curl -u credentials (fourth round)", () => {
+    expect(redactSecrets("curl -H 'Authorization: Basic dXNlcjpwYXNz' x")).toContain(
+      "Basic <redacted>",
+    );
+    expect(redactSecrets("curl -H 'Authorization: Basic dXNlcjpwYXNz' x")).not.toContain(
+      "dXNlcjpwYXNz",
+    );
+    const u = redactSecrets("curl -u admin:hunter2 https://x");
+    expect(u).toContain("-u <redacted>");
+    expect(u).not.toContain("hunter2");
   });
 });
