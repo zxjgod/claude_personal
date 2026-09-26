@@ -50,7 +50,6 @@ export const PowerShellTool: Tool = buildTool({
     "Parameters: command (required), description (required, what it does), " +
     "timeout (optional, ms, default 120000).",
   schema: PowerShellSchema,
-  searchHint: "powershell shell execute command script windows cmdlet",
   // Data-driven (M29): read-only PowerShell (Get-*/Test-*) is auto-approved and
   // safe to parallelize; anything else routes through approval and runs serially.
   isReadOnly: (input) => powershellCommandIsReadOnly(input?.command),
@@ -225,6 +224,11 @@ export const PowerShellTool: Tool = buildTool({
       });
       child.on("close", (code) => resolve(code));
     });
+    // Review follow-up #10: flush an incomplete final UTF-8 sequence rather
+    // than silently dropping it — bash.ts does this; here a multibyte char
+    // split at a kill/overflow boundary vanished with no decoder.end().
+    stdout += stdoutDecoder.end();
+    stderr += stderrDecoder.end();
 
     if (timer) clearTimeout(timer);
     if (abortSignal) abortSignal.removeEventListener("abort", onAbort);

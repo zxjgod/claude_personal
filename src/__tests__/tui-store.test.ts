@@ -141,26 +141,6 @@ describe("TuiStore", () => {
     expect(store.getSnapshot().toast).toBeNull(); // no popup anymore
   });
 
-  it("expandTool appends one expanded copy and is idempotent", () => {
-    const store = new TuiStore("p/m");
-    store.startTool("read", "a.ts", "c1");
-    store.finishTool(fakeResult("read"), "a.ts", "c1");
-    const original = store.getSnapshot().transcript.at(-1)!;
-    expect(store.expandTool(original.id)).toBe(true);
-    const after = store.getSnapshot().transcript;
-    expect(after).toHaveLength(2);
-    expect(after.at(-1)).toMatchObject({
-      kind: "tool",
-      expanded: true,
-      expandedOf: original.id,
-    });
-    // Second press on the same card: no duplicate copy.
-    expect(store.expandTool(original.id)).toBe(false);
-    expect(store.getSnapshot().transcript).toHaveLength(2);
-    // Expanding an expanded copy itself is rejected.
-    expect(store.expandTool(after.at(-1)!.id)).toBe(false);
-  });
-
   it("setModel updates id and label together", () => {
     const store = new TuiStore("p/m", { modelId: "model-a" });
     store.setModel("model-b", "prov/model-b");

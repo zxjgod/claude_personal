@@ -36,10 +36,54 @@ export interface RecoveryState {
   maxTransientRetries: number;
 }
 
-/** Sleep utility. */
-export function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+/**
+ * Sleep utility that respects an abort signal (Top10 follow-up E1): resolves
+ * EARLY (never rejects) when the signal fires, so a Ctrl+C during a 429
+ * backoff returns control immediately instead of hanging for up to 60s. The
+ * caller's next loop iteration handles the aborted state.
+ */
+export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted || ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(done, ms);
+    function done(): void {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    }
+    signal?.addEventListener("abort", done, { once: true });
+  });
 }
+
+/**
+ * Extract the server's Retry-After from an error and normalize to
+ * MILLISECONDS (Top10 follow-up E3/M-second-round). The old `err.retryAfter`
+ * property was never set by anything (dead) and its unit was ambiguous; both
+ * SDKs' APIError objects carry the raw `headers`, where Retry-After is
+ * SECONDS (or an HTTP-date) per RFC — reading it as ms made every real hint
+ * 1000× too small, and `|| 5000` swallowed a legitimate 0.
+ */
+export function retryAfterMsFrom(error: unknown): number | null {
+  const err = error as { retryAfterMs?: unknown; headers?: unknown } | null;
+  if (
+    typeof err?.retryAfterMs === "number" &&
+    Number.isFinite(err.retryAfterMs) &&
+    err.retryAfterMs >= 0
+  ) {
+    return err.retryAfterMs;
+  }
+  const headers = (err?.headers ?? undefined) as Record<string, string> | undefined;
+  const raw = headers?.["retry-after"] ?? headers?.["Retry-After"];
+  if (raw === undefined || raw === null) return null;
+  const secs = Number.parseFloat(String(raw));
+  if (Number.isFinite(secs) && secs >= 0) return Math.round(secs * 1000);
+  const dateMs = Date.parse(String(raw));
+  if (Number.isFinite(dateMs)) return Math.max(0, dateMs - Date.now());
+  return null;
+}
+
+/** Smallest backoff we will actually sleep, even when the server says 0. */
+const MIN_BACKOFF_MS = 100;
 
 /**
  * Context-overflow error message wordings across BOTH provider families
@@ -87,6 +131,7 @@ export async function handleModelError(
   error: unknown,
   state: RecoveryState,
   onRetry?: (notice: RetryNotice) => void,
+  abortSignal?: AbortSignal,
 ): Promise<ModelErrorRecovery> {
   const err = error as Record<string, unknown> | null;
 
@@ -96,15 +141,19 @@ export async function handleModelError(
       return "abort";
     }
 
-    // P1 Enhancement: Exponential backoff with jitter
-    const baseDelay = (err?.retryAfter as number) || 5000;
+    // P1 Enhancement: Exponential backoff with jitter. The server's
+    // Retry-After header (normalized to ms) replaces the dead `retryAfter`
+    // property; `?? 5000` (not `||`) so a legitimate 0 is honored — with a
+    // small floor so we never busy-loop.
+    const baseDelay = Math.max(retryAfterMsFrom(error) ?? 5000, MIN_BACKOFF_MS);
     const exponentialDelay = baseDelay * 2 ** state.rateLimitRetries;
     const cappedDelay = Math.min(exponentialDelay, 60000);
     const jitter = cappedDelay * 0.2 * (Math.random() * 2 - 1);
     const finalDelay = Math.round(cappedDelay + jitter);
 
     onRetry?.({ kind: "rate_limit", delayMs: finalDelay });
-    await sleep(finalDelay);
+    await sleep(finalDelay, abortSignal);
+    if (abortSignal?.aborted) return "abort";
     return "retry";
   }
 
@@ -129,8 +178,12 @@ export async function handleModelError(
     return "abort";
   }
 
-  // Transient timeout / connection error → retry once, bounded by its OWN
-  // budget (independent of rate-limit retries).
+  // Transient timeout / connection error / server-side 5xx & 529 overloaded →
+  // retry, bounded by its OWN budget (independent of rate-limit retries).
+  // 5xx/529 previously fell through to "abort" and burned the fallback chain
+  // on what a short backoff would have ridden out (Top10 follow-up E2).
+  const status = err?.status;
+  const serverHiccup = typeof status === "number" && status >= 500; // includes 529
   if (
     name === "TimeoutError" ||
     name === "ETIMEDOUT" ||
@@ -138,19 +191,23 @@ export async function handleModelError(
     err?.code === "ECONNRESET" ||
     err?.code === "ECONNREFUSED" ||
     msg.includes("timeout") ||
-    msg.includes("socket hang up")
+    msg.includes("socket hang up") ||
+    serverHiccup
   ) {
     if (state.transientRetries >= state.maxTransientRetries) {
       return "abort";
     }
     // Exponential backoff with jitter, mirroring the 429 path: base 1s, cap
     // 30s. A fixed 2s retry on a flaky connection just hammers it in lockstep.
-    const exponentialDelay = 1000 * 2 ** state.transientRetries;
+    // A server-provided Retry-After (normalized to ms) wins over the formula.
+    const retryAfter = serverHiccup ? retryAfterMsFrom(error) : null;
+    const exponentialDelay = retryAfter ?? 1000 * 2 ** state.transientRetries;
     const cappedDelay = Math.min(exponentialDelay, 30_000);
     const jitter = cappedDelay * 0.2 * (Math.random() * 2 - 1);
-    const finalDelay = Math.round(cappedDelay + jitter);
+    const finalDelay = Math.round(Math.max(cappedDelay + jitter, MIN_BACKOFF_MS));
     onRetry?.({ kind: "transient", delayMs: finalDelay });
-    await sleep(finalDelay);
+    await sleep(finalDelay, abortSignal);
+    if (abortSignal?.aborted) return "abort";
     return "retry_transient";
   }
 

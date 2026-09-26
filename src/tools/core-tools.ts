@@ -60,8 +60,8 @@ export const CORE_TOOLS: Tool[] = [
   WorkflowTool,
   TaskTool,
   AgentTool, // Enhanced sub-agent spawning with isolation support
-  JobOutputTool, // Aliases: TaskOutput, task_output
-  JobKillTool, // Aliases: TaskStop, task_stop
+  JobOutputTool,
+  JobKillTool,
   JobListTool,
   NotebookEditTool,
   LspDiagnosticsTool,
@@ -75,19 +75,19 @@ export const CORE_TOOLS: Tool[] = [
   TaskUpdateTool,
   TaskListTool,
   // Cron management
-  CronCreateTool, // Aliases: schedule_cron, cron_create
-  CronDeleteTool, // Aliases: cron_delete
-  CronListTool, // Aliases: cron_list
+  CronCreateTool,
+  CronDeleteTool,
+  CronListTool,
   // Dynamic loop scheduling
-  ScheduleWakeupTool, // Aliases: schedule_wakeup
+  ScheduleWakeupTool,
   // Recover evicted tool-result content (F2)
-  RestoreContextTool, // Aliases: restore_context
+  RestoreContextTool,
   // Durable cross-session memory write path (F1)
-  MemorySaveTool, // Aliases: memory_save
+  MemorySaveTool,
   // Code review
-  ReportFindingsTool, // Aliases: report_findings
+  ReportFindingsTool,
   // Design system integration
-  DesignSyncTool, // Aliases: design_sync
+  DesignSyncTool,
   ...TEAM_TOOLS,
   ...ORCHESTRATION_TOOLS,
 ];

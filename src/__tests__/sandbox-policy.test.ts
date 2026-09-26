@@ -100,6 +100,30 @@ describe("sandbox policy", () => {
     expect(sandboxViolation(policy, "format disk", root)).toContain("command");
   });
 
+  // Top10 follow-up A2: deniedCommands matched by raw substring, so denying
+  // "rm" also killed "form" and "charm". Matching is word-token based now.
+  it("denies whole-word matches only (no substring false positives)", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-sandbox-words-"));
+    fs.mkdirSync(path.join(root, ".claude"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, ".claude", "sandbox.json"),
+      JSON.stringify({ enabled: true, network: "allow", deniedCommands: ["rm", "git push"] }),
+    );
+    const policy = loadSandboxPolicy(root);
+    // Exact-word hits, including inside chains and quotes.
+    expect(sandboxViolation(policy, "rm -rf build", root)).toContain("command");
+    expect(sandboxViolation(policy, "cd x && rm y", root)).toContain("command");
+    expect(sandboxViolation(policy, 'echo done & r""m file', root)).toContain("command");
+    // Substring lookalikes must pass.
+    expect(sandboxViolation(policy, "form data --out x", root)).toBeUndefined();
+    expect(sandboxViolation(policy, "charmbracelet glow readme.md", root)).toBeUndefined();
+    expect(sandboxViolation(policy, "npm run format", root)).toBeUndefined();
+    // Multi-word patterns match on word boundaries.
+    expect(sandboxViolation(policy, "git push origin main", root)).toContain("command");
+    expect(sandboxViolation(policy, "mygit pushy", root)).toBeUndefined();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
   it("defaults unspecified network policy to deny", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-sandbox-default-"));
     fs.mkdirSync(path.join(root, ".claude"), { recursive: true });

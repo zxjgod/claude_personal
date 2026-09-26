@@ -27,15 +27,14 @@ export const WorkflowTool: Tool = buildTool({
   promptDescription:
     "Run a multi-agent orchestration: write a small async JS script that fans out " +
     "worker sub-agents in parallel, then synthesize. Globals: agent(prompt,{label}) " +
-    "(one read-only worker → its final text), parallel([thunks]), pipeline(items,...stages), " +
-    "log(msg), phase(title), args. End with `return <summary>`. Workers run read-only " +
-    "(read/glob/grep/bash), capped at a bounded concurrency. Only final worker texts are " +
+    "(one worker → its final text), parallel([thunks]), pipeline(items,...stages), " +
+    "log(msg), phase(title), args. End with `return <summary>`. Workers get a limited " +
+    "toolset (read/glob/grep/bash — bash is NOT sandboxed, so workers can mutate " +
+    "files), capped at a bounded concurrency. Only final worker texts are " +
     "returned — not their intermediate tool output.",
   schema: WorkflowSchema,
   isReadOnly: false, // spawns sub-agent loops (model calls)
   isConcurrencySafe: false, // each workflow is a heavyweight unit; serialize
-  searchHint: "workflow orchestrate fan-out parallel subagent script",
-  aliases: ["dynamic_workflow"],
 
   async call(input, context): Promise<ToolResult> {
     if (!context.modelConfig) {

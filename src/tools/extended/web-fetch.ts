@@ -84,8 +84,6 @@ export const WebFetchTool: Tool = buildTool({
   schema: WebFetchSchema,
   isReadOnly: true,
   isConcurrencySafe: true,
-  searchHint: "fetch web page scrape extract URL",
-  aliases: ["fetch", "scrape"],
 
   async call(input, context): Promise<ToolResult> {
     // P1-1: Use InputValidator for consistent URL validation (SSRF prevention)

@@ -10,7 +10,7 @@
 //   whenToUse: When cutting a release and you need notes from recent commits.
 //   context: inline            # or fork
 //   agent: general-purpose     # only meaningful with context: fork
-//   allowedTools: [read, grep] # restrict the fork sub-agent
+//   allowedTools: [read, grep] # only with context: fork (ignored for inline)
 //   ---
 //   Draft release notes from these commits:
 //   !`git log --oneline -20`

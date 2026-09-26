@@ -73,8 +73,6 @@ export const TodoTool: Tool = buildTool({
   schema: TodoSchema,
   isReadOnly: false,
   isConcurrencySafe: false,
-  searchHint: "todo task list track progress checklist",
-  aliases: ["todos", "tasks", "checklist"],
 
   async call(input, context): Promise<ToolResult> {
     // Zod validation ensures todos is a valid array with proper item structure

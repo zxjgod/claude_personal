@@ -410,16 +410,11 @@ export interface Tool<T extends ToolInput = ToolInput> {
    * defaults to "not read-only" when unspecified.
    */
   isDestructive?(input: T): boolean;
-  /** Alternate names the model may use for this tool (e.g. legacy aliases). */
-  aliases?: string[];
-  /** Short hint surfaced by the tool-search tool to help the model pick this. */
-  searchHint?: string;
-  /**
-   * What should happen to an in-flight call when the user interrupts (Ctrl+C).
-   * "kill" = abort immediately (default for side-effecting work like Bash),
-   * "wait" = let it finish (cheap read-only work not worth tearing down).
-   */
-  interruptBehavior?: "kill" | "wait";
+  // #45: the dead `aliases` / `searchHint` / `interruptBehavior` metadata
+  // fields were removed — nothing ever resolved aliases, no tool-search
+  // consumed the hints, and no interrupt path read the behavior (Ctrl+C
+  // kills in-flight calls unconditionally). Declaring unwired metadata only
+  // invites false confidence (and alias collisions with real tool names).
   timeoutMs?: number;
   /** Extract the primary filesystem path this call touches, if any (for UI/safety). */
   getPath?(input: T): string | undefined;
@@ -525,6 +520,10 @@ export type LoopEvent =
        *  messages" line). Absent when unknown. */
       messages?: number;
     }
+  /** The fallback chain switched models mid-session (Top10 follow-up E5).
+   *  A dedicated event instead of reusing `compacted` — nothing was
+   *  compacted, and UI consumers render this as a model notice. */
+  | { type: "model_switched"; from: string; to: string }
   | {
       type: "usage";
       usage: {

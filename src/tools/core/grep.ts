@@ -117,7 +117,6 @@ export const GrepTool: Tool = buildTool({
   schema: GrepSchema,
   isReadOnly: true,
   isConcurrencySafe: true,
-  searchHint: "grep search regex content find text rg",
 
   async call(input, context): Promise<ToolResult> {
     // Resolve `path` through the workspace containment check so an absolute

@@ -148,7 +148,6 @@ describe("full-screen App scrolling (M25.2 fix)", () => {
         store={store}
         commands={[{ name: "help", description: "h" }]}
         onSubmit={() => {}}
-        expandedId={null}
         fullscreen
       />,
     );
@@ -165,7 +164,6 @@ describe("full-screen App scrolling (M25.2 fix)", () => {
         store={store}
         commands={[{ name: "help", description: "h" }]}
         onSubmit={() => {}}
-        expandedId={null}
         fullscreen
       />,
     );
@@ -185,7 +183,6 @@ describe("full-screen App scrolling (M25.2 fix)", () => {
         store={store}
         commands={[{ name: "help", description: "h" }]}
         onSubmit={() => {}}
-        expandedId={null}
         fullscreen
       />,
     );

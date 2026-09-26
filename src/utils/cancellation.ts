@@ -48,6 +48,46 @@ export function isInterrupt(signal: AbortSignal): boolean {
   return signal.aborted && interpretCancelReason(signal.reason).kind === "interrupt";
 }
 
+/**
+ * STALL-timeout variant of combineAbortSignals (review follow-up #3): the
+ * timer REARMS on every touch(), so it fires only after `stallMs` with no
+ * stream activity — not `stallMs` after the request started. A wall-clock
+ * cap kills legitimate long turns: with the raised 128K output ceiling
+ * (user decision A6), a slow-but-progressing 50 tok/s generation needs ~40
+ * minutes and would die at 5:00 mid-stream, then burn the whole transient
+ * retry budget dying at 5:00 again each time (no finish_reason:"length", so
+ * the M40 continuation never fires either). A hung connection — the thing
+ * this guard exists for — produces NO events, so a stall timeout still
+ * catches it exactly as fast.
+ */
+export function createStallController(
+  parent: AbortSignal | undefined,
+  stallMs: number,
+): { signal: AbortSignal; touch: () => void; cleanup: () => void } {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const onParentAbort = () => controller.abort(parent?.reason);
+  const arm = () => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => controller.abort(new Error("Request timed out")), stallMs);
+  };
+  if (parent) {
+    if (parent.aborted) controller.abort(parent.reason);
+    else parent.addEventListener("abort", onParentAbort, { once: true });
+  }
+  if (!controller.signal.aborted) arm();
+  return {
+    signal: controller.signal,
+    touch: () => {
+      if (!controller.signal.aborted) arm();
+    },
+    cleanup: () => {
+      if (timer) clearTimeout(timer);
+      parent?.removeEventListener("abort", onParentAbort);
+    },
+  };
+}
+
 /** Compose a caller signal and timeout without relying on AbortSignal.any (Node 18). */
 export function combineAbortSignals(
   parent: AbortSignal | undefined,

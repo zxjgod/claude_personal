@@ -41,9 +41,7 @@ async function waitFor(cond: () => boolean, timeoutMs = 2000): Promise<void> {
 describe("App", () => {
   it("renders the official prompt footer fallback hint when idle (default mode)", () => {
     const store = new TuiStore("deepseek/chat");
-    const { lastFrame } = render(
-      <App store={store} commands={commands} onSubmit={noopSubmit} expandedId={null} />,
-    );
+    const { lastFrame } = render(<App store={store} commands={commands} onSubmit={noopSubmit} />);
     // Official footer: default mode shows no mode badge — the fallback hint
     // "? for shortcuts" owns the left column; model sits on the right.
     expect(lastFrame()).toContain("? for shortcuts");
@@ -53,9 +51,7 @@ describe("App", () => {
   it("shows the official mode indicator in the footer for non-default modes", () => {
     const store = new TuiStore("p/m");
     store.setPermissionMode("plan");
-    const { lastFrame } = render(
-      <App store={store} commands={commands} onSubmit={noopSubmit} expandedId={null} />,
-    );
+    const { lastFrame } = render(<App store={store} commands={commands} onSubmit={noopSubmit} />);
     expect(lastFrame()).toContain("⏸ plan mode on");
     expect(lastFrame()).toContain("(shift+tab to cycle)");
   });
@@ -65,9 +61,7 @@ describe("App", () => {
     store.addUserMessage("hello there");
     store.appendStreaming("hi back");
     store.commitStreaming();
-    const { lastFrame } = render(
-      <App store={store} commands={commands} onSubmit={noopSubmit} expandedId={null} />,
-    );
+    const { lastFrame } = render(<App store={store} commands={commands} onSubmit={noopSubmit} />);
     const frame = lastFrame()!;
     expect(frame).toContain("hello there");
     expect(frame).toContain("hi back");
@@ -77,9 +71,7 @@ describe("App", () => {
     const store = new TuiStore("p/m");
     store.setBusy(true);
     store.setSpinner("thinking");
-    const { lastFrame } = render(
-      <App store={store} commands={commands} onSubmit={noopSubmit} expandedId={null} />,
-    );
+    const { lastFrame } = render(<App store={store} commands={commands} onSubmit={noopSubmit} />);
     // Official footer hint while loading, plus the thinking-phase verb line.
     expect(lastFrame()).toContain("esc to interrupt");
   });
@@ -93,9 +85,7 @@ describe("App", () => {
       { content: "编写原理文档", status: "in_progress", activeForm: "编写原理文档" },
       { content: "实现 mini-agent", status: "pending" },
     ]);
-    const { lastFrame } = render(
-      <App store={store} commands={commands} onSubmit={noopSubmit} expandedId={null} />,
-    );
+    const { lastFrame } = render(<App store={store} commands={commands} onSubmit={noopSubmit} />);
     const frame = lastFrame()!;
     // First row hangs off the status line via the ⎿ connector.
     expect(frame).toContain("⎿");
@@ -106,9 +96,7 @@ describe("App", () => {
 
   it("hides the todo region when the list is empty", () => {
     const store = new TuiStore("p/m");
-    const { lastFrame } = render(
-      <App store={store} commands={commands} onSubmit={noopSubmit} expandedId={null} />,
-    );
+    const { lastFrame } = render(<App store={store} commands={commands} onSubmit={noopSubmit} />);
     expect(lastFrame()).not.toContain("⎿");
   });
 
@@ -129,9 +117,7 @@ describe("App", () => {
           "\n",
         ),
     );
-    const { lastFrame } = render(
-      <App store={store} commands={commands} onSubmit={noopSubmit} expandedId={null} />,
-    );
+    const { lastFrame } = render(<App store={store} commands={commands} onSubmit={noopSubmit} />);
     const frame = lastFrame()!;
     const lineCount = frame.split("\n").length;
     expect(lineCount).toBeLessThanOrEqual(24);
@@ -148,9 +134,7 @@ describe("App", () => {
     store.appendThinking(
       Array.from({ length: 40 }, (_, i) => `reasoning step ${i} about the codebase`).join("\n"),
     );
-    const { lastFrame } = render(
-      <App store={store} commands={commands} onSubmit={noopSubmit} expandedId={null} />,
-    );
+    const { lastFrame } = render(<App store={store} commands={commands} onSubmit={noopSubmit} />);
     const frame = lastFrame()!;
     expect(frame.split("\n").length).toBeLessThanOrEqual(24);
     expect(frame).toContain("earlier thinking lines elided"); // i18n hint (en)
@@ -167,9 +151,7 @@ describe("App", () => {
         status: (i === 5 ? "in_progress" : "pending") as "in_progress" | "pending",
       })),
     );
-    const { lastFrame } = render(
-      <App store={store} commands={commands} onSubmit={noopSubmit} expandedId={null} />,
-    );
+    const { lastFrame } = render(<App store={store} commands={commands} onSubmit={noopSubmit} />);
     const frame = lastFrame()!;
     expect(frame).toContain("task 5"); // the active task is always visible
     expect(frame).toContain("■ task 5");
@@ -185,9 +167,7 @@ describe("App", () => {
         status: "pending" as const,
       })),
     );
-    const { lastFrame } = render(
-      <App store={store} commands={commands} onSubmit={noopSubmit} expandedId={null} />,
-    );
+    const { lastFrame } = render(<App store={store} commands={commands} onSubmit={noopSubmit} />);
     const frame = lastFrame()!;
     expect(frame).toContain("task 0");
     expect(frame).toContain("task 3");
@@ -198,9 +178,7 @@ describe("App", () => {
   it("caps concurrent active tool cards with an overflow line", () => {
     const store = new TuiStore("p/m");
     for (let i = 0; i < 5; i++) store.startTool("read", `file-${i}.ts`, `c${i}`);
-    const { lastFrame } = render(
-      <App store={store} commands={commands} onSubmit={noopSubmit} expandedId={null} />,
-    );
+    const { lastFrame } = render(<App store={store} commands={commands} onSubmit={noopSubmit} />);
     const frame = lastFrame()!;
     expect(frame).toContain("file-0.ts");
     expect(frame).toContain("file-2.ts");
@@ -212,7 +190,7 @@ describe("App", () => {
     const store = new TuiStore("p/m");
     store.addUserMessage("old question");
     const { stdin, lastFrame } = render(
-      <App store={store} commands={commands} onSubmit={noopSubmit} expandedId={null} />,
+      <App store={store} commands={commands} onSubmit={noopSubmit} />,
     );
     await new Promise((r) => setTimeout(r, 10));
     stdin.write("\x1b[5~"); // PgUp
@@ -234,7 +212,7 @@ describe("App", () => {
     const store = new TuiStore("p/m");
     store.addUserMessage("old question");
     const { stdin, lastFrame } = render(
-      <App store={store} commands={commands} onSubmit={noopSubmit} expandedId={null} />,
+      <App store={store} commands={commands} onSubmit={noopSubmit} />,
     );
     await new Promise((r) => setTimeout(r, 10));
     stdin.write("\x1b[5~"); // PgUp → reviewing
@@ -261,19 +239,10 @@ describe("CompletedToolCard collapse (9.4)", () => {
   };
 
   it("collapses long output with an expand hint", () => {
-    const { lastFrame } = render(
-      <CompletedToolCard result={longResult} detail="foo" expanded={false} />,
-    );
+    const { lastFrame } = render(<CompletedToolCard result={longResult} detail="foo" />);
     const frame = lastFrame()!;
     expect(frame).toContain("ctrl+o to expand");
     expect(frame).not.toContain("line 20"); // beyond preview window
-  });
-
-  it("shows all lines when expanded", () => {
-    const { lastFrame } = render(
-      <CompletedToolCard result={longResult} detail="foo" expanded={true} />,
-    );
-    expect(lastFrame()).toContain("line 29");
   });
 
   it("renders errors in the branch", () => {
@@ -282,9 +251,7 @@ describe("CompletedToolCard collapse (9.4)", () => {
       formatted: "",
       error: "old_string not found",
     };
-    const { lastFrame } = render(
-      <CompletedToolCard result={errResult} detail="a.ts" expanded={false} />,
-    );
+    const { lastFrame } = render(<CompletedToolCard result={errResult} detail="a.ts" />);
     expect(lastFrame()).toContain("old_string not found");
   });
 
@@ -305,21 +272,6 @@ describe("CompletedToolCard collapse (9.4)", () => {
     expect(isToolExpandable(summaryResult)).toBe(true); // summary-collapsed
     expect(isToolExpandable(shortResult)).toBe(false); // nothing hidden
     expect(isToolExpandable(errResult)).toBe(false); // errors have no content
-  });
-
-  it("renders a transcript tool item's own expanded flag (expanded flag copy)", () => {
-    // store.expandTool appends an expanded COPY of the collapsed card; the
-    // App renders it fully expanded with no expandedId prop involved.
-    const store = new TuiStore("p/m");
-    store.startTool("grep", "foo", "c1");
-    store.finishTool(longResult, "foo", "c1");
-    const collapsedId = store.getSnapshot().transcript.at(-1)!.id;
-    store.expandTool(collapsedId);
-    const { lastFrame } = render(<App store={store} commands={commands} onSubmit={noopSubmit} />);
-    const frame = lastFrame()!;
-    // Collapsed original (clipped at 12 lines) and the expanded copy (full).
-    expect(frame).toContain("ctrl+o to expand");
-    expect(frame).toContain("line 29"); // only the expanded copy shows this
   });
 });
 

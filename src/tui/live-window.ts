@@ -122,6 +122,34 @@ export interface TailWindow {
 }
 
 /**
+ * #35 append-only prefix cache: streaming calls this ~30fps with a text that
+ * only GROWS, but the cost scan below is a per-char JS measurement loop —
+ * O(session) per frame, O(session²) per turn. The cache records the fully
+ * measured line-prefix `(settled text, line count, total cost, wide flag)` so
+ * a frame only measures lines appended since the last one. Keyed by wrap
+ * width because the two live regions (text/thinking) wrap at different
+ * columns; a startsWith miss (new turn, edit, resize) falls back to a full
+ * scan and re-seeds. Entries die on process exit; two slots of ≤ one turn's
+ * text is the whole footprint.
+ */
+interface PrefixCache {
+  /** Measured prefix — always ends at a "\n" boundary. */
+  settled: string;
+  /** Number of COMPLETE lines in `settled` (settled.split("\n").length - 1). */
+  lineCount: number;
+  /** Σ lineCost over those complete lines. */
+  total: number;
+  /** True when any of those complete lines is wider than the wrap width. */
+  anyWide: boolean;
+}
+const prefixCaches = new Map<number, PrefixCache>();
+
+/** Test hook: drop all cached prefixes (simulates a fresh process). */
+export function __clearLiveWindowCacheForTests(): void {
+  prefixCaches.clear();
+}
+
+/**
  * Window `text` to its LAST `maxLines` visual lines, re-wrapped at `colWidth`
  * columns (pass a width a few columns NARROWER than the real content column so
  * Ink never re-wraps the result). Cuts mid-line when the tail starts inside a
@@ -137,12 +165,49 @@ export function tailVisualLines(text: string, maxLines: number, colWidth: number
   // through raw: Ink would wrap it at the real (wider) column and wrap-ansi's
   // trim:false keeps the boundary space, emitting a raw line past the
   // terminal width that wraps mid-frame and desyncs the erase count.
+  //
+  // #35: incremental scan. Complete lines (everything except the last split
+  // element) that a previous frame already measured at THIS width are reused
+  // from the prefix cache; only appended lines pay the per-char loop. The
+  // wide-line flag is tracked separately for complete lines vs the final
+  // partial line so the cached flag stays exact (flags can't be un-set when
+  // the partial line later grows).
+  const completeCount = lines.length - 1;
   let total = 0;
-  let anyWide = false;
-  for (const l of lines) {
-    total += lineCost(l, width);
-    if (!anyWide && measureWidth(l) > width) anyWide = true;
+  let anyWideComplete = false;
+  let startIdx = 0;
+  const cached = prefixCaches.get(width);
+  if (
+    cached &&
+    cached.lineCount <= completeCount &&
+    (cached.lineCount === 0 || text.startsWith(cached.settled))
+  ) {
+    total = cached.total;
+    anyWideComplete = cached.anyWide;
+    startIdx = cached.lineCount;
   }
+  let anyWideLast = false;
+  for (let i = startIdx; i < lines.length; i++) {
+    const l = lines[i]!;
+    total += lineCost(l, width);
+    if (measureWidth(l) > width) {
+      if (i === completeCount) anyWideLast = true;
+      else anyWideComplete = true;
+    }
+  }
+  // Grow the cache to cover every complete line (only forward — a shrink
+  // means the text stopped being append-only and the next call re-seeds).
+  if (completeCount > startIdx || (!cached && completeCount > 0)) {
+    const settled = text.slice(0, text.lastIndexOf("\n") + 1);
+    const lastLine = lines[completeCount]!;
+    prefixCaches.set(width, {
+      settled,
+      lineCount: completeCount,
+      total: total - lineCost(lastLine, width),
+      anyWide: anyWideComplete,
+    });
+  }
+  const anyWide = anyWideComplete || anyWideLast;
   if (total <= maxLines && !anyWide) return { text, hiddenLines: 0 };
 
   if (total <= maxLines) {

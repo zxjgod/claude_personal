@@ -53,7 +53,6 @@ export const EditTool: Tool = buildTool({
   isReadOnly: false,
   isConcurrencySafe: false, // Same file edits must be serial
   getPath: (input) => input.filePath,
-  searchHint: "edit modify replace search change update",
 
   async call(input, context): Promise<ToolResult> {
     const resolution = resolveInWorkspace(
@@ -255,7 +254,6 @@ export const MultiEditTool: Tool = buildTool({
   isReadOnly: false,
   isConcurrencySafe: false, // Same file — must be serial
   getPath: (input) => input.filePath,
-  searchHint: "batch edit multiple changes atomic",
 
   async call(input, context): Promise<ToolResult> {
     const resolution = resolveInWorkspace(

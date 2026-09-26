@@ -79,3 +79,58 @@ export function renderDiffLine(line: string, language = ""): string {
   const width = Math.max(1, terminalColumns() - 5);
   return chalk.bgHex(background)(rendered + " ".repeat(Math.max(0, width - visualWidth(rendered))));
 }
+
+/** #33: max diff-preview lines shown in the permission dialog before folding
+ *  into a "…N more lines" notice. Shared by the builder below and the
+ *  PermissionPrompt renderer so both agree on the cap. */
+export const DIFF_PREVIEW_MAX = 20;
+
+/**
+ * Build a permission-dialog diff preview straight from the tool INPUT (#33) —
+ * no disk reads, so the prompt stays instant and can't be fooled by
+ * concurrent edits. Covers the edit family (edit / multi_edit / write);
+ * returns undefined for anything else. Output stays within DIFF_PREVIEW_MAX
+ * entries: on overflow the last entry is a plain-text fold notice carrying
+ * the true remaining-line count.
+ */
+export function buildPermissionDiff(
+  toolName: string,
+  input?: Record<string, unknown>,
+): string[] | undefined {
+  if (!input) return undefined;
+  const name = toolName.toLowerCase();
+  const filePath = typeof input.filePath === "string" ? input.filePath : "";
+  const language = languageForPath(filePath);
+  const raw: string[] = [];
+  const pushBlock = (removed: unknown, added: unknown) => {
+    // Empty strings are skipped so an all-empty input yields no preview at
+    // all (the edit schema rejects empty old_string upstream anyway).
+    if (typeof removed === "string" && removed.length > 0) {
+      for (const line of removed.split("\n")) raw.push(`- ${line}`);
+    }
+    if (typeof added === "string" && added.length > 0) {
+      for (const line of added.split("\n")) raw.push(`+ ${line}`);
+    }
+  };
+  if (name === "edit") {
+    pushBlock(input.old_string, input.new_string);
+  } else if (name === "multi_edit" || name === "multiedit") {
+    if (!Array.isArray(input.edits)) return undefined;
+    for (const edit of input.edits) {
+      if (edit && typeof edit === "object") {
+        const e = edit as Record<string, unknown>;
+        pushBlock(e.old_string, e.new_string);
+      }
+    }
+  } else if (name === "write") {
+    pushBlock(undefined, input.content);
+  } else {
+    return undefined;
+  }
+  if (raw.length === 0) return undefined;
+  const overflows = raw.length > DIFF_PREVIEW_MAX;
+  const shown = raw.slice(0, overflows ? DIFF_PREVIEW_MAX - 1 : DIFF_PREVIEW_MAX);
+  const lines = shown.map((line) => renderDiffLine(line, language));
+  if (overflows) lines.push(`  … ${raw.length - shown.length} more lines`);
+  return lines;
+}

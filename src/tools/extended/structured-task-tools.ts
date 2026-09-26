@@ -42,7 +42,6 @@ export const TaskCreateTool: Tool = buildTool({
   isReadOnly: false,
   requiresApproval: false,
   isConcurrencySafe: true,
-  searchHint: "task create todo project management tracking",
 
   async call(input, context): Promise<ToolResult> {
     const task = createTask(
@@ -78,7 +77,6 @@ export const TaskGetTool: Tool = buildTool({
   schema: TaskGetSchema,
   isReadOnly: true,
   isConcurrencySafe: true,
-  searchHint: "task get retrieve details",
 
   async call(input, context): Promise<ToolResult> {
     const task = getTask(context.sessionId, input.taskId);
@@ -124,7 +122,6 @@ export const TaskUpdateTool: Tool = buildTool({
   isReadOnly: false,
   requiresApproval: false,
   isConcurrencySafe: true,
-  searchHint: "task update status complete block",
 
   async call(input, context): Promise<ToolResult> {
     const { taskId, ...updates } = input;
@@ -155,7 +152,6 @@ export const TaskListTool: Tool = buildTool({
   schema: TaskListSchema,
   isReadOnly: true,
   isConcurrencySafe: true,
-  searchHint: "task list show all tasks",
 
   async call(_input, context): Promise<ToolResult> {
     const tasks = listTasks(context.sessionId);

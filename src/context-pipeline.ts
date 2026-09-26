@@ -131,7 +131,14 @@ export interface DedupeOptions {
   minChars?: number;
 }
 
-/** FNV-1a — fast, no collision-safety requirement (a rare fold miss is harmless). */
+/**
+ * FNV-1a (32-bit) — fast bucketing key. A 32-bit hash WILL eventually
+ * collide, and unlike a fold MISS (harmless), a fold on colliding-but-
+ * different content silently replaces real output with a stub pointing at
+ * different bytes. So dedupeToolResults keeps the original text alongside
+ * the hash and only folds after a full string comparison (Top10 follow-up
+ * E12); on collision both contents stay unfolded.
+ */
 function hashContent(text: string): string {
   let h = 0x811c9dc5;
   for (let i = 0; i < text.length; i++) {
@@ -164,7 +171,8 @@ export function dedupeToolResults(
   const protectedRecent = new Set(keepRecent > 0 ? toolIdx.slice(-keepRecent) : []);
 
   const out = messages.slice();
-  const seen = new Map<string, string>(); // content hash → first tool_call_id
+  // content hash → first occurrence (id + FULL text for the collision check)
+  const seen = new Map<string, { id: string; text: string }>();
   let changed = 0;
   let charsSaved = 0;
   for (let i = 0; i < messages.length; i++) {
@@ -177,10 +185,13 @@ export function dedupeToolResults(
     const hash = hashContent(m.content);
     const first = seen.get(hash);
     if (first === undefined) {
-      seen.set(hash, m.tool_call_id);
+      seen.set(hash, { id: m.tool_call_id, text: m.content });
       continue;
     }
-    const stub = `[duplicate of earlier tool result ${first}]`;
+    // Hash collision with DIFFERENT content: never fold — silently pointing
+    // the model at different bytes is worse than paying for the duplicate.
+    if (first.text !== m.content) continue;
+    const stub = `[duplicate of earlier tool result ${first.id}]`;
     charsSaved += m.content.length - stub.length;
     out[i] = { ...m, content: stub };
     changed++;

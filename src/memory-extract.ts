@@ -127,15 +127,28 @@ export async function extractMemoriesWithModel(
   callModel: ModelCaller,
   modelConfig: ModelConfig,
 ): Promise<ExtractedMemory[]> {
-  const transcript = messages
+  const lines = messages
     .map((m) => {
       if (m.role === "user") return `USER: ${userText(m)}`;
-      if (m.role === "assistant") return `ASSISTANT: ${m.content ?? ""}`;
+      // Block-aware (Top10 follow-up C12): tool-call-only assistant turns
+      // carry null content — the old `?? ""` emitted empty "ASSISTANT: "
+      // noise lines into the prompt.
+      if (m.role === "assistant") {
+        const text = typeof m.content === "string" ? m.content.trim() : "";
+        return text ? `ASSISTANT: ${text}` : "";
+      }
       return "";
     })
-    .filter(Boolean)
-    .join("\n")
-    .slice(0, 12000);
+    .filter(Boolean);
+  const full = lines.join("\n");
+  // Head + TAIL window (Top10 follow-up C12): the old `.slice(0, 12000)`
+  // kept only the conversation's HEAD — discarding exactly the recent
+  // decisions and stated preferences that are most worth remembering, so
+  // extraction quality degraded the longer the session ran.
+  const transcript =
+    full.length <= 12_000
+      ? full
+      : `${full.slice(0, 2_000)}\n…[middle elided]…\n${full.slice(-10_000)}`;
 
   const prompt: Message[] = [
     {
@@ -191,6 +204,14 @@ export async function extractMemoriesWithModel(
  */
 export class MemoryStore {
   private filePath: string;
+  /**
+   * In-process dedupe cache of normalized texts already on disk or appended
+   * by this instance (Top10 follow-up C12): append() used to re-read and
+   * re-parse the WHOLE file on every call. Lazily built; external writers
+   * during this instance's life are not seen — same best-effort guarantee as
+   * before, at O(1) per repeated append.
+   */
+  private dedupeCache: Set<string> | null = null;
 
   constructor(workspaceRoot: string) {
     this.filePath = path.join(workspaceRoot, ".claude", "memories.jsonl");
@@ -232,7 +253,10 @@ export class MemoryStore {
   append(memories: MemoryInput[]): ExtractedMemory[] {
     if (memories.length === 0) return [];
 
-    const existing = new Set(this.list().map((m) => normalize(m.text)));
+    if (!this.dedupeCache) {
+      this.dedupeCache = new Set(this.list().map((m) => normalize(m.text)));
+    }
+    const existing = this.dedupeCache;
     const toWrite: ExtractedMemory[] = [];
     for (const m of memories) {
       const key = normalize(m.text);

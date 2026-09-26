@@ -146,9 +146,7 @@ describe("App renders a long / resumed session", () => {
   it("renders a 30-round transcript without crashing and shows the latest turn", () => {
     const store = new TuiStore("deepseek/chat");
     for (let i = 0; i < ROUNDS; i++) round(store, i);
-    const { lastFrame } = render(
-      <App store={store} commands={commands} onSubmit={noop} expandedId={null} />,
-    );
+    const { lastFrame } = render(<App store={store} commands={commands} onSubmit={noop} />);
     const frame = lastFrame()!;
     // Check for content from the latest turn (model name may not be visible in frame)
     expect(frame).toContain(`question ${ROUNDS - 1}`);
@@ -169,25 +167,22 @@ describe("App renders a long / resumed session", () => {
     store.loadTranscript(items);
     expect(store.getSnapshot().transcript).toHaveLength(20);
 
-    const { lastFrame } = render(
-      <App store={store} commands={commands} onSubmit={noop} expandedId={null} />,
-    );
+    const { lastFrame } = render(<App store={store} commands={commands} onSubmit={noop} />);
     const frame = lastFrame()!;
     expect(frame).toContain("saved q0");
     expect(frame).toContain("saved a9");
   });
 
-  it("expands a tool card when expandedId targets it", () => {
+  it("clips a long tool result behind the ctrl+o hint (#45: no expandedId path)", () => {
     const store = new TuiStore("p/m");
     // A tool result long enough to be collapsed by default.
     const long = Array.from({ length: 40 }, (_, i) => `out ${i}`).join("\n");
     store.startTool("grep", "needle", "call-x");
     store.finishTool({ toolName: "grep", formatted: long, durationMs: 3 }, "needle", "call-x");
-    const toolItem = store.getSnapshot().transcript.find((x) => x.kind === "tool")!;
-    const { lastFrame } = render(
-      <App store={store} commands={commands} onSubmit={noop} expandedId={toolItem.id} />,
-    );
-    // Expanded → deep lines are visible (collapsed view hides line 20+).
-    expect(lastFrame()).toContain("out 39");
+    const { lastFrame } = render(<App store={store} commands={commands} onSubmit={noop} />);
+    // Collapsed preview: deep lines are hidden; the viewer hint points at
+    // ctrl+o (the only full-output path since the dead expand mechanism went).
+    expect(lastFrame()).not.toContain("out 39");
+    expect(lastFrame()).toContain("ctrl+o to expand");
   });
 });

@@ -186,6 +186,12 @@ Options:
   --llm-perm-classifier      Use the LLM permission-risk classifier
   --safe-mode                Read-only session (force plan mode)
   --permission-mode <mode>   Set the permission mode (default/acceptEdits/bypassPermissions/plan/auto/dontAsk)
+  --dangerously-skip-permissions
+                             Pre-allow all ORDINARY tool prompts (allow "*").
+                             Honest semantics note: unlike the official flag's
+                             name suggests, it does NOT skip the safety floor —
+                             dangerous-pattern confirmations and blocked paths
+                             still apply. Deliberately safer than the name.
 
 Configuration:
   .env                       LLM_PROVIDER, LLM_API_KEY, LLM_MODEL, LLM_BASE_URL

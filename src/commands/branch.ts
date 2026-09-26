@@ -1,10 +1,12 @@
 // /branch — fork the current conversation at this point (M18.1)
 // ============================================================
-// Saves the current messages as a NEW session (a branch point), so the user
-// can keep exploring from here while the original session stays intact. The
-// new branch is resumed immediately; the old session remains resumable via
-// /sessions. This mirrors Claude Code's "fork current messages" semantics
-// without a tree data structure — each branch is just its own session file.
+// Saves a snapshot of the current messages as a NEW session (a branch point).
+// The CURRENT session keeps running unchanged — the new branch is NOT resumed
+// automatically; the user switches to it explicitly via /resume <id> (the
+// command prints the exact invocation). This mirrors Claude Code's "fork
+// current messages" semantics without a tree data structure — each branch is
+// just its own session file. (#45: the header used to claim the branch was
+// "resumed immediately" — it never was.)
 // ============================================================
 import chalk from "chalk";
 import type { SlashCommand } from "./types.js";

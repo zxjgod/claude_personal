@@ -76,8 +76,27 @@ export function sandboxViolation(
   )
     return `Sandbox denied working directory: ${cwd}`;
   const normalized = normalizeForMatching(command);
-  if (policy.deniedCommands?.some((pattern) => normalized.includes(normalizeForMatching(pattern))))
-    return "Sandbox denied command by policy.";
+  if (policy.deniedCommands?.length) {
+    // Word-boundary matching (Top10 follow-up A2): the old substring
+    // `includes` over-matched — denying "rm" also killed "form" and "charm".
+    // The command is split on shell syntax into word tokens; a single-word
+    // pattern must equal a WHOLE token, a multi-word pattern must appear with
+    // non-word boundaries on both sides. Over-matching quoted/escaped
+    // fragments is already handled by normalizeForMatching above.
+    const tokens = normalized.split(/[^a-z0-9_./\\:@+-]+/).filter(Boolean);
+    for (const rawPattern of policy.deniedCommands) {
+      const pattern = normalizeForMatching(rawPattern).trim();
+      if (!pattern) continue;
+      if (/\s/.test(pattern)) {
+        const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        if (new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`).test(normalized)) {
+          return "Sandbox denied command by policy.";
+        }
+      } else if (tokens.includes(pattern)) {
+        return "Sandbox denied command by policy.";
+      }
+    }
+  }
   if (
     policy.network === "deny" &&
     // The pattern list is a heuristic deny-list, not a capability boundary:

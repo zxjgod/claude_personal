@@ -8,8 +8,9 @@
 // always fits the viewport.
 // ============================================================
 
-import { describe, expect, it } from "vitest";
-import { tailVisualLines } from "../tui/live-window.js";
+import { beforeEach, describe, expect, it } from "vitest";
+import { __clearLiveWindowCacheForTests, tailVisualLines } from "../tui/live-window.js";
+import { visualWidth } from "../tui/terminal-width.js";
 
 const W = 40; // pretend the body column wraps at 40 columns
 
@@ -97,6 +98,181 @@ describe("tailVisualLines", () => {
       let w = 0;
       for (const ch of line) w += ch === "\t" ? 4 : 1;
       expect(w).toBeLessThanOrEqual(W);
+    }
+  });
+});
+
+// ============================================================
+// #35 equivalence fuzz: the incremental prefix cache must be
+// observationally IDENTICAL to the original full-scan algorithm.
+// The reference below is a verbatim copy of the pre-#35
+// implementation; random append-only streams (ASCII/CJK/tabs/
+// blanks/long words, mixed widths) are fed to both and compared.
+// ============================================================
+
+const MIN_COL_WIDTH_REF = 20;
+const cellWidthRef = (ch: string): number => (ch === "\t" ? 4 : visualWidth(ch));
+function measureWidthRef(s: string): number {
+  let w = 0;
+  for (const ch of s) w += cellWidthRef(ch);
+  return w;
+}
+function lineCostRef(line: string, colWidth: number): number {
+  return Math.max(1, Math.ceil(measureWidthRef(line) / colWidth));
+}
+function hardWrapLineRef(line: string, width: number): string[] {
+  if (measureWidthRef(line) <= width) return [line];
+  const cps = Array.from(line);
+  const out: string[] = [];
+  let cur: string[] = [];
+  let curW = 0;
+  let lastSpace = -1;
+  let wAfterSpace = 0;
+  const flush = () => {
+    out.push(cur.join(""));
+    cur = [];
+    curW = 0;
+    lastSpace = -1;
+    wAfterSpace = 0;
+  };
+  for (const ch of cps) {
+    const w = cellWidthRef(ch);
+    if (curW + w > width) {
+      if (lastSpace > 0 && lastSpace < cur.length - 1) {
+        out.push(cur.slice(0, lastSpace).join(""));
+        cur = cur.slice(lastSpace + 1);
+        curW = wAfterSpace;
+      } else if (cur.length > 0) {
+        flush();
+      }
+      lastSpace = -1;
+      wAfterSpace = 0;
+    }
+    cur.push(ch);
+    curW += w;
+    if (ch === " ") {
+      lastSpace = cur.length - 1;
+      wAfterSpace = 0;
+    } else if (lastSpace >= 0) {
+      wAfterSpace += w;
+    }
+  }
+  if (cur.length > 0 || out.length === 0) out.push(cur.join(""));
+  return out;
+}
+function hardWrapRef(text: string, width: number): string[] {
+  const out: string[] = [];
+  for (const line of text.split("\n")) {
+    if (line === "") out.push("");
+    else out.push(...hardWrapLineRef(line, width));
+  }
+  return out;
+}
+/** Verbatim pre-#35 tailVisualLines (no cache). */
+function referenceTail(text: string, maxLines: number, colWidth: number) {
+  const width = Math.max(MIN_COL_WIDTH_REF, colWidth);
+  const lines = text.split("\n");
+  let total = 0;
+  let anyWide = false;
+  for (const l of lines) {
+    total += lineCostRef(l, width);
+    if (!anyWide && measureWidthRef(l) > width) anyWide = true;
+  }
+  if (total <= maxLines && !anyWide) return { text, hiddenLines: 0 };
+  if (total <= maxLines) {
+    return { text: hardWrapRef(text, width).join("\n"), hiddenLines: 0 };
+  }
+  const charBudget = maxLines * width * 2;
+  let budget = 0;
+  let start = lines.length;
+  while (start > 0) {
+    const w = measureWidthRef(lines[start - 1]!);
+    if (budget + w > charBudget && start < lines.length) break;
+    budget += w;
+    start--;
+  }
+  let tail = lines.slice(start).join("\n");
+  if (start === 0 && budget > charBudget) {
+    const cps = Array.from(tail);
+    let w = 0;
+    let cut = cps.length;
+    while (cut > 0) {
+      const cw = cellWidthRef(cps[cut - 1]!);
+      if (w + cw > charBudget) break;
+      w += cw;
+      cut--;
+    }
+    tail = cps.slice(cut).join("");
+  }
+  const wrapped = hardWrapRef(tail, width);
+  const kept = wrapped.slice(-maxLines);
+  const hiddenLines = Math.max(1, total - kept.length);
+  return { text: kept.join("\n"), hiddenLines };
+}
+
+/** Deterministic LCG so a fuzz failure is reproducible from the seed. */
+function makeRng(seed: number): () => number {
+  let s = seed >>> 0;
+  return () => {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    return s / 0x100000000;
+  };
+}
+
+describe("tailVisualLines prefix cache — old/new equivalence fuzz (#35)", () => {
+  beforeEach(() => __clearLiveWindowCacheForTests());
+
+  const CHUNKS = [
+    "a",
+    "word ",
+    "hello world ",
+    "x".repeat(60),
+    "你好世界",
+    "\t",
+    "\n",
+    "\n\n",
+    " ",
+    "line of code();\n",
+    "émoji 🚀 trail ",
+    "y".repeat(120),
+  ];
+
+  for (const seed of [1, 7, 42, 999]) {
+    it(`matches the reference on random append-only streams (seed ${seed})`, () => {
+      const rng = makeRng(seed);
+      const widths = [20, 23, 40, 77];
+      let text = "";
+      for (let step = 0; step < 60; step++) {
+        // Append 1-3 random chunks (append-only, like a streaming turn).
+        const n = 1 + Math.floor(rng() * 3);
+        for (let k = 0; k < n; k++) text += CHUNKS[Math.floor(rng() * CHUNKS.length)];
+        const width = widths[Math.floor(rng() * widths.length)]!;
+        const maxLines = 1 + Math.floor(rng() * 12);
+        const actual = tailVisualLines(text, maxLines, width);
+        const expected = referenceTail(text, maxLines, width);
+        expect(actual, `seed ${seed} step ${step} width ${width} maxLines ${maxLines}`).toEqual(
+          expected,
+        );
+        // Occasionally simulate a fresh turn / process: the cache must re-seed
+        // and stay exact.
+        if (rng() < 0.1) {
+          text = "";
+          __clearLiveWindowCacheForTests();
+        }
+      }
+    });
+  }
+
+  it("stays exact when the SAME width alternates between two texts", () => {
+    // The two live regions share the cache map; alternating texts with a
+    // shared width must miss (startsWith) and still return reference output.
+    let a = "alpha stream ";
+    let b = "beta 汉 stream ";
+    for (let i = 0; i < 30; i++) {
+      a += `chunk${i} `;
+      b += `块${i} `;
+      expect(tailVisualLines(a, 5, 40)).toEqual(referenceTail(a, 5, 40));
+      expect(tailVisualLines(b, 6, 40)).toEqual(referenceTail(b, 6, 40));
     }
   });
 });

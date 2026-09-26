@@ -1901,7 +1901,18 @@ describe("agentLoop — tool-batch summary (M36)", () => {
       ],
     ];
     let idx = 0;
-    const caller: ModelCaller = async function* () {
+    // E6 semantics: the digest is a ONE-SHOT attachment — it must be visible
+    // to the model call that consumes it, then pruned from the history (it
+    // used to linger for the rest of the session, stacking stale reminders).
+    let sawDigestInCall = false;
+    const caller: ModelCaller = async function* (m) {
+      sawDigestInCall ||= m.some(
+        (x) =>
+          x.role === "system" &&
+          typeof x.content === "string" &&
+          x.content.includes("grep found 500 matches across the tree.") &&
+          x.content.includes("<system-reminder>"),
+      );
       const events = scripts[idx++] ?? [
         { type: "done", usage: { input_tokens: 1, output_tokens: 1 }, finish_reason: "stop" },
       ];
@@ -1918,15 +1929,16 @@ describe("agentLoop — tool-batch summary (M36)", () => {
       }),
     );
     expect(summarize).toHaveBeenCalled();
-    // The digest was injected as a system-reminder somewhere in the history.
-    const injected = msgs.some(
+    // The digest reached the consuming model call...
+    expect(sawDigestInCall).toBe(true);
+    // ...and was pruned afterwards — the committed history carries no stale copy.
+    const lingering = msgs.some(
       (m) =>
         m.role === "system" &&
         typeof m.content === "string" &&
-        m.content.includes("grep found 500 matches across the tree.") &&
-        m.content.includes("<system-reminder>"),
+        m.content.includes("grep found 500 matches across the tree."),
     );
-    expect(injected).toBe(true);
+    expect(lingering).toBe(false);
   });
 
   it("does not summarize a tiny tool batch (below the size gate)", async () => {
@@ -2345,5 +2357,309 @@ describe("agentLoop — attempt boundaries and interrupt attribution", () => {
     expect(types.slice(0, retryIdx)).toContain("text_delta");
     expect(types.slice(retryIdx + 1)).toContain("text_delta");
     expect(terminal.reason).toBe("completed");
+  });
+});
+
+// ============================================================
+// Top10 follow-ups: model_switched event (E5), retry-counter
+// reset (E4), model-derived compaction thresholds (#24)
+// ============================================================
+
+describe("agentLoop — fallback and threshold follow-ups", () => {
+  const noopTool: Tool = {
+    name: "noop",
+    description: "noop",
+    promptDescription: "noop",
+    inputSchema: { type: "object", properties: {}, required: [] },
+    isEnabled: () => true,
+    isReadOnly: () => true,
+    isConcurrencySafe: () => true,
+    call: async () => ({ content: "small" }),
+    formatResult: (r) => r.content,
+    checkPermissions: async () => ({ allowed: true }),
+  };
+
+  it("emits a dedicated model_switched event on fallback (not a fake 'compacted')", async () => {
+    let calls = 0;
+    const caller: ModelCaller = async function* () {
+      calls++;
+      if (calls === 1) {
+        // 404 model-not-found: fallbackable, not transient, not context.
+        const e = new Error("model not found");
+        (e as any).status = 404;
+        yield { type: "error", error: e };
+        return;
+      }
+      yield { type: "text_delta", delta: "ok" };
+      yield {
+        type: "done",
+        usage: { input_tokens: 1, output_tokens: 1 },
+        finish_reason: "stop",
+      };
+    };
+    const { events, terminal } = await drain(
+      agentLoop(
+        messages("hi"),
+        [],
+        caller,
+        { ...testConfig, fallbackModels: ["fb-model"] },
+        {
+          systemPrompt: "s",
+          speculation: false,
+        },
+      ),
+    );
+    const switched = events.find((e) => e.type === "model_switched");
+    expect(switched).toBeDefined();
+    expect(switched.from).toBe("gpt-4o");
+    expect(switched.to).toBe("fb-model");
+    // The old misleading compacted-summary form is gone.
+    expect(
+      events.some((e) => e.type === "compacted" && String(e.summary).includes("Switched")),
+    ).toBe(false);
+    expect(terminal.reason).toBe("completed");
+  });
+
+  it("resets rate-limit/transient budgets after a successful call (E4)", async () => {
+    // Old behavior: budgets accumulated for the whole run, so the 4th
+    // isolated 429 aborted even though every call in between succeeded.
+    let calls = 0;
+    const rateLimited = () => {
+      const e = new Error("rate limited");
+      (e as any).status = 429;
+      (e as any).headers = { "retry-after": "0" };
+      return e;
+    };
+    const caller: ModelCaller = async function* () {
+      calls++;
+      if (calls === 1 || calls === 2) {
+        yield { type: "error", error: rateLimited() };
+        return;
+      }
+      if (calls === 3) {
+        // Success that continues the loop (tool call → next turn).
+        yield { type: "tool_use", id: "n1", name: "noop", input: {} };
+        yield {
+          type: "done",
+          usage: { input_tokens: 1, output_tokens: 1 },
+          finish_reason: "tool_calls",
+        };
+        return;
+      }
+      if (calls === 4 || calls === 5) {
+        yield { type: "error", error: rateLimited() };
+        return;
+      }
+      yield { type: "text_delta", delta: "recovered" };
+      yield {
+        type: "done",
+        usage: { input_tokens: 1, output_tokens: 1 },
+        finish_reason: "stop",
+      };
+    };
+    const { terminal } = await drain(
+      agentLoop(messages("hi"), [noopTool], caller, testConfig, {
+        systemPrompt: "s",
+        maxTurns: 10,
+        speculation: false,
+      }),
+    );
+    // 6 calls total: 429,429,ok,429,429,ok — only possible if the budgets
+    // reset at the successful call (max is 3 per burst).
+    expect(calls).toBe(6);
+    expect(terminal.reason).toBe("completed");
+  });
+
+  it("derives the context hard limit from the model window when not given (#24)", async () => {
+    // gpt-4 has an 8192-token window in the metadata table. With proactive
+    // compaction disabled and ~12k tokens of history, the DERIVED hard limit
+    // must block the call — the old fixed 200_000 limit never fired and the
+    // provider 400'd instead.
+    let modelCalled = false;
+    const caller: ModelCaller = async function* () {
+      modelCalled = true;
+      yield { type: "done", usage: { input_tokens: 1, output_tokens: 1 }, finish_reason: "stop" };
+    };
+    const big: Message[] = [{ role: "user", content: [{ type: "text", text: "start" }] }];
+    for (let i = 0; i < 30; i++) {
+      big.push({
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          { id: `c${i}`, type: "function", function: { name: "noop", arguments: "{}" } },
+        ],
+      });
+      big.push({
+        role: "tool",
+        tool_call_id: `c${i}`,
+        name: "noop",
+        content: `payload ${i} `.repeat(200), // ~1600 chars ≈ 400+ tokens each
+      });
+    }
+    const types: string[] = [];
+    for await (const e of agentLoop(
+      big,
+      [noopTool],
+      caller,
+      { ...testConfig, model: "gpt-4" },
+      {
+        systemPrompt: "s",
+        maxTurns: 3,
+        autoCompactThreshold: Number.POSITIVE_INFINITY,
+        speculation: false,
+      },
+    )) {
+      types.push(e.type);
+    }
+    expect(modelCalled).toBe(false);
+    expect(types).toContain("error");
+    expect(types).not.toContain("done");
+  });
+
+  it("re-derives the hard limit when a fallback switches to a smaller window (#R5)", async () => {
+    // Primary is a 1M-window model; the fallback is gpt-4 (8192). With the
+    // ~12k-token history below, the loop must block on the RE-DERIVED 8192
+    // hard limit after the switch — before the fix the 1M-derived limit
+    // survived the switch and the loop happily called the small-window model
+    // (eating a provider-side context error every turn instead).
+    let calls = 0;
+    const caller: ModelCaller = async function* () {
+      calls++;
+      if (calls === 1) {
+        const e = new Error("model not found");
+        (e as any).status = 404; // fallbackable, not transient
+        yield { type: "error", error: e };
+        return;
+      }
+      yield { type: "done", usage: { input_tokens: 1, output_tokens: 1 }, finish_reason: "stop" };
+    };
+    const big: Message[] = [{ role: "user", content: [{ type: "text", text: "start" }] }];
+    for (let i = 0; i < 30; i++) {
+      big.push({
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          { id: `c${i}`, type: "function", function: { name: "noop", arguments: "{}" } },
+        ],
+      });
+      big.push({
+        role: "tool",
+        tool_call_id: `c${i}`,
+        name: "noop",
+        content: `payload ${i} `.repeat(200),
+      });
+    }
+    const { events, terminal } = await drain(
+      agentLoop(
+        big,
+        [noopTool],
+        caller,
+        { ...testConfig, model: "claude-opus-4-8", fallbackModels: ["gpt-4"] },
+        {
+          systemPrompt: "s",
+          maxTurns: 5,
+          autoCompactThreshold: Number.POSITIVE_INFINITY,
+          speculation: false,
+        },
+      ),
+    );
+    expect(events.some((e: any) => e.type === "model_switched")).toBe(true);
+    expect(terminal.reason).toBe("blocking_limit");
+    expect(calls).toBe(1); // the post-switch model call never happens
+  });
+
+  it("caps consecutive truncation continuations instead of looping paid calls forever (#R6)", async () => {
+    // maxTurns defaults to Infinity, so the old "maxTurns is the backstop"
+    // claim was empty: a provider that ALWAYS finishes with "length" and no
+    // tool calls would continue forever. The cap must terminate the loop.
+    let calls = 0;
+    const caller: ModelCaller = async function* () {
+      calls++;
+      yield { type: "text_delta", delta: `chunk ${calls} ` };
+      yield {
+        type: "done",
+        usage: { input_tokens: 1, output_tokens: 1 },
+        finish_reason: "length",
+      };
+    };
+    const { events, terminal } = await drain(
+      agentLoop(messages("write a saga"), [], caller, testConfig, {
+        systemPrompt: "s",
+        speculation: false,
+      }),
+    );
+    expect(terminal.reason).toBe("max_turns");
+    const done = events.find((e) => e.type === "done");
+    expect(done.finishReason).toBe("max_turns");
+    expect(String(done.message)).toContain("truncated");
+    // 1 initial call + MAX_TRUNCATION_CONTINUATIONS (100) continuations.
+    expect(calls).toBe(101);
+  }, 60_000);
+});
+
+// ============================================================
+// Top10 follow-up E6: one-shot attachments are removed after
+// the consuming call — they must not stack up across turns.
+// ============================================================
+
+describe("agentLoop — one-shot attachment lifecycle (E6)", () => {
+  it("prunes the prefetch attachment after the consuming model call", async () => {
+    let turn = 0;
+    const caller: ModelCaller = async function* () {
+      turn++;
+      if (turn === 1) {
+        yield { type: "tool_use", id: "t1", name: "noop", input: {} };
+        yield {
+          type: "done",
+          usage: { input_tokens: 10, output_tokens: 2 },
+          finish_reason: "tool_calls",
+        };
+        return;
+      }
+      yield { type: "text_delta", delta: "done" };
+      yield {
+        type: "done",
+        usage: { input_tokens: 10, output_tokens: 2 },
+        finish_reason: "stop",
+      };
+    };
+    const noop: Tool = {
+      name: "noop",
+      description: "noop",
+      promptDescription: "noop",
+      inputSchema: { type: "object", properties: {}, required: [] },
+      isEnabled: () => true,
+      isReadOnly: () => true,
+      isConcurrencySafe: () => true,
+      call: async () => ({ content: "ok" }),
+      formatResult: (r) => r.content,
+      checkPermissions: async () => ({ allowed: true }),
+    };
+    const msgs = messages("remember things");
+    let sawAttachmentDuringCall = false;
+    const watchingCaller: ModelCaller = async function* (m, t, s, c, sig) {
+      // Turn 2 must NOT still carry the attachment from turn 1.
+      if (turn >= 1) {
+        sawAttachmentDuringCall ||= m.some(
+          (x) => x.role === "system" && String(x.content).includes("PREFETCH-ATTACHMENT"),
+        );
+      }
+      yield* caller(m, t, s, c, sig);
+    };
+    const { terminal } = await drain(
+      agentLoop(msgs, [noop], watchingCaller, testConfig, {
+        systemPrompt: "s",
+        maxTurns: 5,
+        speculation: false,
+        prefetch: async () => "PREFETCH-ATTACHMENT content",
+      }),
+    );
+    expect(terminal.reason).toBe("completed");
+    // The attachment was injected for turn 1, never re-sent on later turns...
+    expect(sawAttachmentDuringCall).toBe(false);
+    // ...and pruned afterwards: the final history has no trace of it.
+    expect(
+      msgs.some((m) => m.role === "system" && String(m.content).includes("PREFETCH-ATTACHMENT")),
+    ).toBe(false);
   });
 });

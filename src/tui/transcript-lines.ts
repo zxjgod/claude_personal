@@ -21,7 +21,7 @@ import { t } from "./i18n.js";
 import { renderMarkdown } from "./markdown.js";
 import type { TranscriptItem } from "./store.js";
 import { truncateVisual } from "./terminal-width.js";
-import { palette } from "./theme.js";
+import { currentTheme, palette } from "./theme.js";
 import { toolOutputLines } from "./tool-output.js";
 
 const PREVIEW_LINES = 12;
@@ -159,6 +159,17 @@ function itemLines(
 }
 
 /**
+ * #34 item-level render cache: transcript items are immutable once pushed
+ * (the store is append-only), so a committed item's rendered rows can never
+ * change except with the render options or the active theme. Keying a
+ * WeakMap by item identity turns "re-flatten ALL history on every append"
+ * (O(N²) markdown renders over a session) into O(new items) per update.
+ * The theme name is part of the variant key so /theme invalidates naturally;
+ * entries die with their items (WeakMap), no manual eviction needed.
+ */
+const ITEM_LINES_CACHE = new WeakMap<TranscriptItem, Map<string, TranscriptLine[]>>();
+
+/**
  * Flatten the transcript (+ optional live streaming text) into display rows.
  * A blank spacer row follows assistant/tool blocks to mirror the marginBottom
  * the <Static> path uses.
@@ -170,9 +181,20 @@ export function transcriptToLines(
   opts: TranscriptRenderOptions = {},
 ): TranscriptLine[] {
   const verbose = opts.verbose ?? false;
+  const variant = `${verbose ? 1 : 0}|${opts.collapseThinking ? 1 : 0}|${currentTheme()}`;
   const out: TranscriptLine[] = [];
   for (const item of transcript) {
-    out.push(...itemLines(item, verbose, opts));
+    let variants = ITEM_LINES_CACHE.get(item);
+    if (!variants) {
+      variants = new Map();
+      ITEM_LINES_CACHE.set(item, variants);
+    }
+    let rows = variants.get(variant);
+    if (!rows) {
+      rows = itemLines(item, verbose, opts);
+      variants.set(variant, rows);
+    }
+    out.push(...rows);
     if (item.kind === "assistant" || item.kind === "tool") out.push({ text: "" });
   }
   if (streamingThinking.trim()) {

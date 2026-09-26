@@ -167,8 +167,6 @@ export const AgentTool: Tool = buildTool({
   requiresApproval: false,
   isConcurrencySafe: true,
   timeoutMs: 15 * 60 * 1000,
-  searchHint: "agent subagent spawn fork parallel task isolation worktree",
-  aliases: ["agent"],
 
   async call(input: AgentInput, context): Promise<ToolResult> {
     const startTime = Date.now();

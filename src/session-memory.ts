@@ -34,6 +34,11 @@ import { ccrPath } from "./workspace-config.js";
 /** Current session format version. Increment when the schema changes. */
 export const SESSION_FORMAT_VERSION = 3;
 
+/** Bound on the lastSaved write-through cache (LRU by insertion order).
+ *  Without it a long-running process pinned full message arrays for every
+ *  session it ever saved (Top10 follow-up C3). */
+const LAST_SAVED_CACHE_MAX = 4;
+
 /** Durable lifecycle facts for a resumable main task. */
 export type TaskState =
   | "waiting_for_model"
@@ -206,11 +211,34 @@ export class SessionMemory {
     this.sessionsDir = ccrPath(workspaceRoot, "sessions");
   }
 
+  /** Set once the orphaned-tmp sweep has run for this instance. */
+  private tmpSwept = false;
+
   /**
-   * Ensure the sessions directory exists
+   * Ensure the sessions directory exists. On first use, also sweep orphaned
+   * `*.tmp` files left by crashed/killed saves (Top10 follow-up C4) — but
+   * only ones older than a minute, so a concurrent live process's in-flight
+   * tmp→rename window is never touched. `.lock` dirs and `.corrupt-` backups
+   * are deliberately not swept.
    */
   private ensureDir(): void {
     fs.mkdirSync(this.sessionsDir, { recursive: true });
+    if (this.tmpSwept) return;
+    this.tmpSwept = true;
+    try {
+      const cutoff = Date.now() - 60_000;
+      for (const entry of fs.readdirSync(this.sessionsDir, { withFileTypes: true })) {
+        if (!entry.isFile() || !entry.name.endsWith(".tmp")) continue;
+        const full = path.join(this.sessionsDir, entry.name);
+        try {
+          if (fs.statSync(full).mtimeMs < cutoff) fs.unlinkSync(full);
+        } catch {
+          // Raced with its owner's rename — fine.
+        }
+      }
+    } catch {
+      // Sweep is best-effort; never blocks the save.
+    }
   }
 
   /**
@@ -368,6 +396,14 @@ export class SessionMemory {
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
+      // Top10 follow-up C5: the session's transcript sidecar must go too —
+      // it used to survive as an orphan that listSessions never showed but
+      // resume-adjacent tooling could still stumble over.
+      try {
+        fs.unlinkSync(path.join(this.sessionsDir, `${sessionId}.transcript.jsonl`));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
     } finally {
       if (release) {
         await release().catch(() => {
@@ -474,9 +510,15 @@ export class SessionMemory {
     messages: Message[],
     options?: { completed?: boolean; taskState?: TaskState; lastTerminalReason?: string },
   ): Promise<void> {
-    // Chain onto the tail of any in-flight save. Each link captures its own
-    // sessionId/messages snapshot, so the serialized writes stay independent.
-    const next = this.saveChain.then(() => this.saveSerialized(sessionId, messages, options));
+    // Snapshot semantics, for real this time (Top10 follow-up C1): capture a
+    // SHALLOW COPY at enqueue time. The comment always claimed "each link
+    // captures its own messages snapshot", but the queued closure held the
+    // LIVE array reference — a save waiting behind a slow lock serialized
+    // whatever the array had become by then (post-truncation /post-rewind
+    // state stamped with the wrong taskState), not the moment it was asked.
+    const snapshot = [...messages];
+    // Chain onto the tail of any in-flight save.
+    const next = this.saveChain.then(() => this.saveSerialized(sessionId, snapshot, options));
     // Swallow rejection on the chain itself so a failing save doesn't poison
     // subsequent ones; the caller still sees the rejection via `next`.
     this.saveChain = next.catch(() => undefined);
@@ -617,7 +659,17 @@ export class SessionMemory {
         (s) => s.mtimeMs,
         () => Date.now(),
       );
+      // delete-then-set so Map insertion order tracks recency (LRU), then
+      // bound the cache (Top10 follow-up C3): an unbounded Map pinned the
+      // FULL message arrays of every session this process ever saved — a
+      // long-running multi-resume process leaked the whole history set.
+      this.lastSaved.delete(sessionId);
       this.lastSaved.set(sessionId, { data, mtimeMs: writtenMtime });
+      while (this.lastSaved.size > LAST_SAVED_CACHE_MAX) {
+        const oldest = this.lastSaved.keys().next().value;
+        if (oldest === undefined) break;
+        this.lastSaved.delete(oldest);
+      }
     } finally {
       if (release) {
         await release().catch(() => {

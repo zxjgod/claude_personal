@@ -250,9 +250,7 @@ describe("C4 — compact summary + context-low line", () => {
   it("App renders the official CompactSummary block", async () => {
     const store = new TuiStore("p/m");
     store.addCompactSummary("we fixed the bug and wrote tests", 42);
-    const { lastFrame, unmount } = render(
-      <App store={store} commands={[]} onSubmit={() => {}} expandedId={null} />,
-    );
+    const { lastFrame, unmount } = render(<App store={store} commands={[]} onSubmit={() => {}} />);
     await flush();
     const frame = lastFrame()!;
     expect(frame).toContain("Summarized conversation");
@@ -265,9 +263,7 @@ describe("C4 — compact summary + context-low line", () => {
   it("TokenWarning line appears at 80% (amber) and 95% (red), hidden below", async () => {
     const store = new TuiStore("p/m");
     store.setContextLimit(100_000);
-    const { lastFrame, unmount } = render(
-      <App store={store} commands={[]} onSubmit={() => {}} expandedId={null} />,
-    );
+    const { lastFrame, unmount } = render(<App store={store} commands={[]} onSubmit={() => {}} />);
     await flush();
     store.addUsage(80_000, 0, undefined, 80_000);
     await flush();
@@ -280,7 +276,7 @@ describe("C4 — compact summary + context-low line", () => {
     const store2 = new TuiStore("p/m");
     store2.setContextLimit(100_000);
     store2.addUsage(50_000, 0, undefined, 50_000);
-    const two = render(<App store={store2} commands={[]} onSubmit={() => {}} expandedId={null} />);
+    const two = render(<App store={store2} commands={[]} onSubmit={() => {}} />);
     await flush();
     expect(two.lastFrame()!).not.toContain("Context low");
     two.unmount();

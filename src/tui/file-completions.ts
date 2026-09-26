@@ -41,21 +41,57 @@ interface Listing {
 // time (and a root switch simply invalidates by comparison).
 let cache: Listing | null = null;
 
-/** Normalized, forward-slash paths of the workspace (cached, TTL-bounded). */
+/** #37: background refresh state. The in-flight flag IS the debounce — a
+ *  burst of keystrokes on a stale listing triggers at most one glob. */
+let refreshInFlight = false;
+
+/** Bumped on every clear so an in-flight background refresh can't commit a
+ *  stale listing over a deliberate invalidation. */
+let cacheGeneration = 0;
+
+const GLOB_OPTS = {
+  dot: false,
+  onlyFiles: true,
+  ignore: IGNORE,
+  suppressErrors: true,
+  deep: 8,
+  followSymbolicLinks: false,
+} as const;
+
+/**
+ * Normalized, forward-slash paths of the workspace (cached, TTL-bounded).
+ * #37: a STALE listing is served as-is while an async background glob
+ * refreshes the cache — the input loop never blocks on the 10–100ms walk
+ * again (the old fg.sync re-ran it inline on the first keystroke after every
+ * TTL expiry). Only the cold start (no listing at all for this root) still
+ * globs synchronously, once, so the very first "@" query returns real
+ * matches instead of an empty dropdown.
+ */
 function listFiles(root: string): string[] {
   const now = Date.now();
   if (cache && cache.root === root && now - cache.at < LIST_TTL_MS) return cache.files;
+  if (cache && cache.root === root) {
+    if (!refreshInFlight) {
+      refreshInFlight = true;
+      const gen = cacheGeneration;
+      void fg("**/*", { ...GLOB_OPTS, cwd: root })
+        .then((files) => {
+          // Drop the result if the cache was cleared mid-flight (test
+          // isolation / deliberate invalidation).
+          if (gen === cacheGeneration) cache = { at: Date.now(), root, files };
+        })
+        .catch(() => {
+          /* keep serving the stale listing */
+        })
+        .finally(() => {
+          refreshInFlight = false;
+        });
+    }
+    return cache.files;
+  }
   let files: string[] = [];
   try {
-    files = fg.sync("**/*", {
-      cwd: root,
-      dot: false,
-      onlyFiles: true,
-      ignore: IGNORE,
-      suppressErrors: true,
-      deep: 8,
-      followSymbolicLinks: false,
-    });
+    files = fg.sync("**/*", { ...GLOB_OPTS, cwd: root });
   } catch {
     files = [];
   }
@@ -66,6 +102,7 @@ function listFiles(root: string): string[] {
 /** Invalidate the cached listing (e.g. tests, or after known bulk writes). */
 export function clearFileCompletionCache(): void {
   cache = null;
+  cacheGeneration++;
 }
 
 /**

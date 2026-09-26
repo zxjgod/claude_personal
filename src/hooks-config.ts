@@ -37,6 +37,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { Hook, HookRegistry } from "./hooks.js";
+import { sanitizeChildEnv } from "./utils/env-sanitize.js";
 import { ccrPath } from "./workspace-config.js";
 
 export interface HookCommandSpec {
@@ -221,7 +222,10 @@ function runCommandHook(
       cwd,
       // Official hooks see CLAUDE_PROJECT_DIR pointing at the project —
       // scripts routinely use it to locate repo-relative helpers.
-      env: { ...process.env, CLAUDE_PROJECT_DIR: cwd },
+      // Secret-shaped variables are STRIPPED (Top10 follow-up A4, user
+      // decision): a hook from a cloned project must not inherit
+      // LLM_API_KEY & co. Hooks that need credentials read their own config.
+      env: { ...sanitizeChildEnv(process.env), CLAUDE_PROJECT_DIR: cwd },
       shell: true,
       windowsHide: true,
       detached: process.platform !== "win32",

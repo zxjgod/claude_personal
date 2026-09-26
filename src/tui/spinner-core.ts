@@ -5,8 +5,9 @@
 // the gerund verbs, the particle glyph frames, the Claude-orange/shimmer
 // colours, the shimmer-sweep maths, and the duration/token formatters. Both the
 // line-based CLI spinner (`cli-spinner.ts`, redraws a single \r line) and the
-// Ink TUI (`tui/StatusLine.tsx` + `tui/SpinnerGlyph.tsx`) import from here so
-// there is one source of truth for glyphs, timing, and formatting.
+// Ink TUI (`tui/StatusLine.tsx`) import from here so there is one source of
+// truth for glyphs, timing, and formatting. (#45: the orphan SpinnerGlyph.tsx
+// component — imported by nothing — was deleted.)
 //
 // No React, no chalk, no stdout — just data + pure functions. Reference:
 // claude test/src/src/components/Spinner/* and bridge/bridgeStatusUtil.ts.

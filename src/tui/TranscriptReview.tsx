@@ -57,10 +57,17 @@ export function TranscriptReview({ store }: { store: TuiStore }) {
   // the official showAll — the collapsed side folds thinking to one-liners
   // while tool output stays full.
   const [showAll, setShowAll] = useState(true);
-  const lines = transcriptToLines(transcript, streamingText, streamingThinking, {
-    verbose: true,
-    collapseThinking: !showAll,
-  });
+  // #34: memoized — the viewer re-renders on every keystroke (search typing,
+  // scrolling) and every streaming frame; flattening the VERBOSE history is
+  // the expensive part and only depends on these four inputs.
+  const lines = useMemo(
+    () =>
+      transcriptToLines(transcript, streamingText, streamingThinking, {
+        verbose: true,
+        collapseThinking: !showAll,
+      }),
+    [transcript, streamingText, streamingThinking, showAll],
+  );
 
   // The footer wraps when its display width exceeds the terminal columns
   // (CJK counts double) — budget its REAL row count so a wide terminal

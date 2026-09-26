@@ -131,8 +131,6 @@ export const ScheduleWakeupTool: Tool = buildTool({
   isReadOnly: false,
   requiresApproval: false,
   isConcurrencySafe: true,
-  searchHint: "schedule wakeup loop dynamic delay sleep resume",
-  aliases: ["schedule_wakeup"],
 
   async call(input): Promise<ToolResult> {
     // Stop the loop

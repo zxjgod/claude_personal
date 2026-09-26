@@ -26,7 +26,6 @@ export const GlobTool: Tool = buildTool({
   schema: GlobSchema,
   isReadOnly: true,
   isConcurrencySafe: true,
-  searchHint: "glob find files pattern match search",
 
   async call(input, context): Promise<ToolResult> {
     // Resolve `path` through the workspace containment check so an absolute

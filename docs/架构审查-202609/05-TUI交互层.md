@@ -5,6 +5,24 @@
 > ⚠️ 行号基于审查当日代码（v1.5.0）。后续编辑会造成漂移，引用前先用符号名 grep 重新锚定。
 > 总纲见 `docs/架构分析与升级总纲-202609.md`。
 
+> ✅ **第二轮次级项处置（2026-09-26，正文保留原始证据不改写）**：本册体验包落地——
+> TUI 系统提示解冻（`deps.buildTurnSystemPrompt` 每轮重建，MCP 中途连接即可见，指纹
+> memoize 使重建廉价）、权限弹窗 diff 预览（edit/multi_edit/write 从 tool.input 纯内存
+> 构建，不读盘；20 行折叠）、TranscriptReview `useMemo` + `transcriptToLines` 条目级
+> WeakMap 缓存（主题/选项变体分键；FullScreenApp memo 键改内容指纹 length:lastId）、
+> tailVisualLines append-only 前缀缓存（`(settled,行数,total,宽行标志)` 按 wrap 宽度分槽；
+> 新旧实现随机输入等价性 fuzz 测试防渲染回归）、file-completions 陈旧列表后台异步刷新
+> （in-flight 即防抖，冷启动仍同步一次）、appendHistory 免全量读（≤8KB 尾读 + memo）。
+> **appendStreaming/push 拷贝经微基准核实为有意不改**：V8 字符串 `+` 是 O(1) rope
+> （20k 次追加 ~1ms），chunk-list+join 每帧读反而慢三个数量级；transcript 数组拷贝
+> 5000 项累计 ~43ms，摊销化收益为负。**诚实化捆绑**：假鼠标注释删除（stdin/stdout
+> 传参从不启用鼠标协议）、expandTool/expandedOf/expandedId 三件套删除（从未接线的
+> ctrl+r 宣称）、cli-spinner `setMode` no-op + 死 `SpinnerMode` 删除、孤儿
+> SpinnerGlyph.tsx 删除、仓库根 TUI_IMPROVEMENTS.md 删除、/branch"resumed immediately"
+> 与 /fork"Launch a sub-agent"描述改诚实。**结构项按用户拍板本轮不做**：B4
+> StreamingMarkdown 重 lex、B8 热键统一、B9 i18n 清扫、B11 三输入栈、B14 vim visual、
+> B15 小修包、run.tsx/InputBox 拆分。详见总纲"次级清单处置标注"节；1984 测试绿。
+
 ---
 
 ## 1. 渲染架构

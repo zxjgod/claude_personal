@@ -220,6 +220,13 @@ export class FileTokenOAuthProvider implements OAuthClientProvider {
 
   private waitForCallbackCode(port: number, timeoutMs: number): Promise<string> {
     return new Promise<string>((resolve, reject) => {
+      // CSRF check (Top10 follow-up A7): when the SDK's authorization URL
+      // carries a `state` parameter, the callback MUST echo it back exactly —
+      // otherwise any local process (or a malicious page hitting
+      // 127.0.0.1:port/callback?code=…) could inject its own authorization
+      // code. Conditional because the SDK version in use may omit state;
+      // PKCE still binds the token exchange in that case.
+      const expectedState = this.pendingAuthUrl?.searchParams.get("state") ?? null;
       const server = http.createServer((req, res) => {
         try {
           const reqUrl = new URL(req.url || "/", `http://127.0.0.1:${port}`);
@@ -234,6 +241,12 @@ export class FileTokenOAuthProvider implements OAuthClientProvider {
             res.end(`<h3>Authorization failed: ${error}</h3>You can close this tab.`);
             cleanup();
             reject(new Error(`OAuth authorization error: ${error}`));
+            return;
+          }
+          if (expectedState !== null && reqUrl.searchParams.get("state") !== expectedState) {
+            res.end("<h3>State mismatch — the callback was rejected (possible CSRF).</h3>");
+            cleanup();
+            reject(new Error("OAuth callback state mismatch (possible CSRF) — rejected"));
             return;
           }
           if (!code) {
@@ -261,6 +274,18 @@ export class FileTokenOAuthProvider implements OAuthClientProvider {
 
       server.on("error", (e) => {
         cleanup();
+        // Actionable message for the common failure: the callback port is
+        // occupied. The port CANNOT simply be randomized per run — the
+        // redirect URL is part of both the OAuth client registration and the
+        // token-store binding hash, so it must stay stable across launches.
+        if ((e as NodeJS.ErrnoException).code === "EADDRINUSE") {
+          reject(
+            new Error(
+              `OAuth callback port ${port} is already in use. Free the port or configure a stable "redirectPort" for this server's OAuth config.`,
+            ),
+          );
+          return;
+        }
         reject(e);
       });
       server.listen(port, "127.0.0.1");

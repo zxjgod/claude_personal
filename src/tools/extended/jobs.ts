@@ -28,7 +28,6 @@ export const JobListTool: Tool = buildTool({
   schema: JobListSchema,
   isReadOnly: true,
   isConcurrencySafe: true,
-  searchHint: "job list background process status",
 
   async call(_input, context): Promise<ToolResult> {
     const jobs = listJobs(context.sessionId);
@@ -70,8 +69,6 @@ export const JobOutputTool: Tool = buildTool({
   schema: JobOutputSchema,
   isReadOnly: true,
   isConcurrencySafe: true,
-  searchHint: "job output read background result",
-  aliases: ["TaskOutput", "task_output"],
 
   async call(input, context): Promise<ToolResult> {
     const job = getJob(context.sessionId, input.job_id);
@@ -129,8 +126,6 @@ export const JobKillTool: Tool = buildTool({
   // through the normal permission flow rather than auto-approving.
   isReadOnly: false,
   isConcurrencySafe: false,
-  searchHint: "job kill stop background cancel",
-  aliases: ["TaskStop", "task_stop"],
 
   async call(input, context): Promise<ToolResult> {
     const job = getJob(context.sessionId, input.job_id);

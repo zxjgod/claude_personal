@@ -222,7 +222,9 @@ describe("classifier verdicts in the pipeline", () => {
     const r = await checkPermission(bashTool(), { command: "sudo rm" }, makeContext(), { askUser });
     expect(askUser).toHaveBeenCalledTimes(1);
     // sudo is matched first in checkDangerousPattern.
-    expect(askUser.mock.calls[0]![2]).toBe("提权命令 (sudo) — 尝试获取管理员权限");
+    expect(askUser.mock.calls[0]![2]).toBe(
+      "提权命令 (sudo/doas/pkexec/su -c) — 尝试获取管理员权限",
+    );
     expect(r.allowed).toBe(false);
   });
 

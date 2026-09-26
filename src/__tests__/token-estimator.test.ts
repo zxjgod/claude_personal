@@ -155,3 +155,67 @@ describe("providerPromptTokens / estimateContextUsed", () => {
     );
   });
 });
+
+// ============================================================
+// Top10 follow-up A8: pixel-based image estimation
+// ============================================================
+
+describe("image token estimation (pixel-based, A8)", () => {
+  function pngBase64(w: number, h: number): string {
+    const buf = Buffer.alloc(24);
+    buf[0] = 0x89;
+    buf[1] = 0x50;
+    buf[2] = 0x4e;
+    buf[3] = 0x47;
+    buf.writeUInt32BE(w, 16);
+    buf.writeUInt32BE(h, 20);
+    return buf.toString("base64");
+  }
+
+  it("estimates from real pixel dimensions, not base64 length", () => {
+    // 1500×1500 → ceil(2_250_000/750) = 3000 tokens regardless of payload size.
+    const msgs: Message[] = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "image",
+            source: { type: "base64", media_type: "image/png", data: pngBase64(1500, 1500) },
+          } as any,
+        ],
+      },
+    ];
+    expect(estimateTokens(msgs)).toBe(3000);
+  });
+
+  it("keeps the 85-token floor for tiny images", () => {
+    const msgs: Message[] = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "image",
+            source: { type: "base64", media_type: "image/png", data: pngBase64(1, 1) },
+          } as any,
+        ],
+      },
+    ];
+    expect(estimateTokens(msgs)).toBe(85);
+  });
+
+  it("falls back to the size heuristic for unrecognized formats", () => {
+    const msgs: Message[] = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "image",
+            source: { type: "base64", media_type: "image/webp", data: "AAAA".repeat(750) },
+          } as any,
+        ],
+      },
+    ];
+    // 3000 base64 chars → 85 + ceil(3000*4/750) = 85 + 16 = 101
+    expect(estimateTokens(msgs)).toBe(101);
+  });
+});

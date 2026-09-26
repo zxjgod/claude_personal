@@ -5,6 +5,11 @@
 import OpenAI from "openai";
 import { anthropicCaller } from "./anthropic-adapter.js";
 import { isCloudGateway, resolveGateway } from "./cloud-gateway.js";
+import {
+  DEFAULT_ANTHROPIC_MODEL,
+  isOpenAIReasoningModel,
+  modelMaxOutput,
+} from "./model-metadata.js";
 import { DEFAULT_MAX_RESULT_CHARS, truncateToolResult } from "./tools/truncation.js";
 import {
   getEffort,
@@ -14,18 +19,22 @@ import {
   resolveEffortMaxTokens,
 } from "./tui/effort.js";
 import type { Message, ModelCaller, ModelConfig, StreamEvent, Tool } from "./types.js";
-import { combineAbortSignals } from "./utils/cancellation.js";
+import { createStallController } from "./utils/cancellation.js";
 
 // --- Provider Default Configurations ---
 
+// Default models refreshed 2026-09 (Top10 follow-up A11): the old defaults
+// (gpt-4o / glm-4 / moonshot-v1-128k) were generations behind. Third-party
+// defaults are best-effort — verify against the provider's current catalog if
+// a default 404s; LLM_MODEL / provider profiles always override them.
 const PROVIDER_CONFIGS: Record<string, { baseURL: string; defaultModel: string }> = {
   anthropic: {
     baseURL: "https://api.anthropic.com",
-    defaultModel: "claude-opus-4-8",
+    defaultModel: DEFAULT_ANTHROPIC_MODEL,
   },
   openai: {
     baseURL: "https://api.openai.com/v1",
-    defaultModel: "gpt-4o",
+    defaultModel: "gpt-5",
   },
   deepseek: {
     baseURL: "https://api.deepseek.com/v1",
@@ -37,11 +46,11 @@ const PROVIDER_CONFIGS: Record<string, { baseURL: string; defaultModel: string }
   },
   moonshot: {
     baseURL: "https://api.moonshot.cn/v1",
-    defaultModel: "moonshot-v1-128k",
+    defaultModel: "moonshot-v1-auto",
   },
   zhipu: {
     baseURL: "https://open.bigmodel.cn/api/paas/v4",
-    defaultModel: "glm-4",
+    defaultModel: "glm-4-plus",
   },
   custom: {
     baseURL: "http://localhost:11434/v1",
@@ -80,6 +89,19 @@ function convertToOpenAIMessage(
             return { type: "text", text: block.text } as const;
           }
           if (block.type === "image") {
+            // PDFs ride the image-block channel from the Read tool, but the
+            // OpenAI-compatible API has no PDF-over-image_url path — the data
+            // URL is a guaranteed 400. Fail with an actionable message instead
+            // (Top10 follow-up T2); the Anthropic native path handles PDFs.
+            if (
+              block.source.type === "base64" &&
+              block.source.media_type &&
+              !block.source.media_type.startsWith("image/")
+            ) {
+              throw new Error(
+                `The current provider does not support ${block.source.media_type} input (only the Anthropic native path accepts PDFs). Ask for the document as text/images, or switch provider.`,
+              );
+            }
             const url =
               block.source.type === "base64"
                 ? `data:${block.source.media_type};base64,${block.source.data}`
@@ -134,6 +156,10 @@ async function* openAICompatibleCaller(
     apiKey: config.apiKey,
     baseURL:
       config.baseURL || PROVIDER_CONFIGS[config.provider]?.baseURL || "https://api.openai.com/v1",
+    // The agent loop owns retry policy (error-recovery.ts). The SDK default
+    // maxRetries:2 multiplied with the loop's budgets — worst case ~12
+    // requests for one logical call on a sustained 429 (Top10 follow-up A4).
+    maxRetries: 0,
   });
 
   const model = config.model || PROVIDER_CONFIGS[config.provider]?.defaultModel || "gpt-4o";
@@ -153,12 +179,25 @@ async function* openAICompatibleCaller(
     ? openaiReasoningEffort(getEffort(config.options))
     : undefined;
   const effort = getEffortStrategy(config.options);
+  // OpenAI's own o-series / gpt-5 REJECT `max_tokens` (400) and require
+  // `max_completion_tokens` (Top10 follow-up A12). Third-party
+  // OpenAI-COMPATIBLE endpoints (DeepSeek/Qwen reasoners) still take
+  // max_tokens, so the switch is gated on provider==="openai" — not on the
+  // reasoning flag alone.
+  const useMaxCompletionTokens = config.provider === "openai" && isOpenAIReasoningModel(model);
+  const maxOutputTokens = Math.min(
+    resolveEffortMaxTokens(getEffort(config.options), config.maxTokens),
+    modelMaxOutput(model) ?? Number.POSITIVE_INFINITY,
+  );
 
-  // Compose the caller's AbortSignal (Ctrl+C / turn abort) with a safety
-  // timeout so a hung provider stream can't pin the loop indefinitely. The
+  // Compose the caller's AbortSignal (Ctrl+C / turn abort) with a STALL
+  // timeout so a hung provider stream can't pin the loop indefinitely —
+  // without killing a slow-but-progressing long turn (review follow-up #3,
+  // same fix as the Anthropic path: the old wall-clock cap aborted 128K-output
+  // generations at 5:00). The chunk loop rearms the timer per event. The
   // OpenAI SDK forwards `signal` to fetch, aborting the in-flight request.
-  const STREAM_TIMEOUT_MS = 5 * 60 * 1000;
-  const combined = combineAbortSignals(abortSignal, STREAM_TIMEOUT_MS);
+  const STREAM_STALL_TIMEOUT_MS = 5 * 60 * 1000;
+  const combined = createStallController(abortSignal, STREAM_STALL_TIMEOUT_MS);
   const combinedSignal = combined.signal;
 
   try {
@@ -168,7 +207,9 @@ async function* openAICompatibleCaller(
         messages: requestMessages,
         tools: tools.length > 0 ? formatToolsForOpenAI(tools) : undefined,
         tool_choice: tools.length > 0 ? "auto" : undefined,
-        max_tokens: resolveEffortMaxTokens(getEffort(config.options), config.maxTokens),
+        ...(useMaxCompletionTokens
+          ? { max_completion_tokens: maxOutputTokens }
+          : { max_tokens: maxOutputTokens }),
         temperature: isReasoningModel ? undefined : (config.temperature ?? effort.temperature),
         ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
         stream: true,
@@ -218,12 +259,24 @@ async function* openAICompatibleCaller(
     };
 
     for await (const chunk of stream) {
+      combined.touch(); // stall watchdog: any stream activity rearms the timer
       if (abortSignal?.aborted) break;
       const delta = chunk.choices[0]?.delta;
 
       // Text delta
       if (delta?.content) {
         yield { type: "text_delta", delta: delta.content };
+      }
+
+      // Reasoning delta (DeepSeek/Qwen and other OpenAI-compatible reasoning
+      // models stream their chain of thought as `reasoning_content`). It used
+      // to be dropped entirely — reasoning was invisible in the UI and absent
+      // from the transcript (Top10 follow-up A12). Map it onto the same
+      // thinking event the Anthropic path emits. Not in the OpenAI SDK types.
+      const reasoningDelta = (delta as { reasoning_content?: string } | undefined)
+        ?.reasoning_content;
+      if (reasoningDelta) {
+        yield { type: "thinking", delta: reasoningDelta };
       }
 
       // Tool call delta

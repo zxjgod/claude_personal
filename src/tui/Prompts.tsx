@@ -18,6 +18,7 @@ import { t } from "./i18n.js";
 import type { Overlay, TuiStore } from "./store.js";
 import { terminalColumns } from "./terminal-width.js";
 import { palette } from "./theme.js";
+import { DIFF_PREVIEW_MAX } from "./tool-output.js";
 
 // Read at render time (see theme.ts header): module-scope snapshots freeze the dark palette.
 function accent(): string {
@@ -126,6 +127,20 @@ export function PermissionPrompt({
           </Box>
         ) : overlay.riskHint ? (
           <Text color="#e0af68">{overlay.riskHint}</Text>
+        ) : null}
+        {/* #33 diff preview: caller-built lines (already colored by
+            renderDiffLine), height-capped so a huge edit can't push the
+            option row off-screen. */}
+        {overlay.diff && overlay.diff.length > 0 ? (
+          <Box flexDirection="column" marginTop={1}>
+            {overlay.diff.slice(0, DIFF_PREVIEW_MAX).map((line, i) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: static preview lines
+              <Text key={i}>{line}</Text>
+            ))}
+            {overlay.diff.length > DIFF_PREVIEW_MAX ? (
+              <Text dimColor>…{overlay.diff.length - DIFF_PREVIEW_MAX} more lines</Text>
+            ) : null}
+          </Box>
         ) : null}
         <Box marginTop={1} flexDirection="column">
           <Text>{t("ui.permission.proceed")}</Text>

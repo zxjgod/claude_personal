@@ -287,10 +287,21 @@ export function FullScreenApp({
   // Perf: the component subscribes to streamingText (~30fps during a turn),
   // so a naive transcriptToLines(transcript, ...) re-rendered ALL history —
   // including a fresh renderMarkdown per assistant item — every frame
-  // (O(turn²) over a long session). The committed transcript changes by
-  // immutable array swap, so memo it by reference and only recompute the
-  // (small) streaming tail per frame.
-  const committedLines = useMemo(() => transcriptToLines(transcript, "", ""), [transcript]);
+  // (O(turn²) over a long session). Only the (small) streaming tail should
+  // recompute per frame.
+  // #34: the memo key is a CONTENT fingerprint (length + last id), not the
+  // array reference — the store is append-only and stamps every item with a
+  // fresh id, so the fingerprint changes exactly when content does, and any
+  // future store rewrite that copies the array without content changes no
+  // longer defeats the memo. Combined with transcriptToLines' item-level
+  // cache, an append now re-renders only the NEW item.
+  const transcriptFingerprint =
+    transcript.length === 0 ? "0" : `${transcript.length}:${transcript[transcript.length - 1]!.id}`;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: fingerprint is the intentional content key (#34)
+  const committedLines = useMemo(
+    () => transcriptToLines(transcript, "", ""),
+    [transcriptFingerprint],
+  );
   const tailLines = transcriptToLines([], streamingText, streamingThinking);
   const lines = committedLines.concat(tailLines);
   const [scrollTop, setScrollTop] = useState(0);

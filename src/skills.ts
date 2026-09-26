@@ -70,7 +70,12 @@ export interface SkillDefinition extends SkillInfo {
   context?: SkillContext;
   /** Sub-agent type to run when context==="fork" (falls back to general-purpose). */
   agent?: string;
-  /** Restrict the (fork) sub-agent to these core tools by name. */
+  /**
+   * Restrict the fork sub-agent to these core tools by name. ONLY honored when
+   * context==="fork" (forkSkill.ts narrows the resolved tool set); an INLINE
+   * skill runs in this conversation with the session's full tool set and this
+   * field is ignored — it is not a permission mechanism for inline skills.
+   */
   allowedTools?: string[];
 }
 

@@ -3,6 +3,7 @@
 // ============================================================
 
 import chalk from "chalk";
+import { logPermissionChange } from "../audit-log.js";
 import { PERMISSION_MODE_CYCLE } from "../tui/store.js";
 import type { PermissionMode } from "../types.js";
 import type { SlashCommand } from "./types.js";
@@ -43,6 +44,13 @@ export const modeCommand: SlashCommand = {
     if (ctx.permissionMode !== undefined) {
       (ctx as { permissionMode: string }).permissionMode = target;
     }
+    // Top10 follow-up A8: a mode switch changes the security posture — leave
+    // an audit trail (fire-and-forget; auditing must never block the command).
+    void logPermissionChange({
+      change: `mode: ${current} → ${target}`,
+      workspaceRoot: ctx.workspaceRoot,
+      sessionId: ctx.sessionId,
+    }).catch(() => {});
     console.log(chalk.green(`  Permission mode: ${current} → ${target}`));
   },
 };

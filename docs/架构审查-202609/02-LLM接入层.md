@@ -15,6 +15,21 @@
 > 本册其余建议（默认模型保鲜、错误去字符串化、超时模型、effort 门控、缓存断点
 > 升级、类型建模等）未动。正文为审查时点快照，未改写。
 
+> ✅ **第二轮次级项处置（2026-09-26 同日，正文保留原始证据不改写）**：本册次级项
+> 随"四主题包全量精进"大量落地——**基石**：新建 `model-metadata.ts` 单一事实源
+> （contextWindow/maxOutput/supportsEffort/supportsAdaptiveThinking/isReasoning/
+> 定价；模型 id 经 claude-api skill 查证）。接入层：SDK `maxRetries:0`（两 adapter，
+> 消除与 loop 重试叠乘）、effort 能力门控（仅 `supportsEffort` 模型发
+> `output_config.effort`）、adaptive thinking 门控、OpenAI reasoning 补强
+> （`max_completion_tokens` + `reasoning_content`→thinking）、OpenAI PDF 显式报错、
+> `resolveEffortMaxTokens` 允许上调（流式默认上限 128K，用户拍板）、默认模型值保鲜
+> （Bedrock→`anthropic.claude-sonnet-5`、Vertex→`google/gemini-2.5-pro`、
+> PROVIDER_CONFIGS 更新，标注未经真网实测）。缓存与系统提示：动态段按稳定→易变重排
+> （跨午夜不再连坐击穿）、Anthropic 长 turn 中间断点（>20 块时 15 块回溯，总断点≤4）、
+> `CCR_CACHE_TTL_1H=1` 开关（默认关，用户拍板）、删过时 interleaved-thinking beta 头、
+> `count_tokens` 校准（8s 超时降级估算）。**错误去字符串化/超时模型/类型建模等结构项
+> 按用户拍板本轮不做**。详见总纲"次级清单处置标注"节；1984 测试绿。
+
 ---
 
 ## 1. 模块清单

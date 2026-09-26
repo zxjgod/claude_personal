@@ -3,7 +3,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { highlightCode } from "../tui/markdown.js";
 import { stripAnsi } from "../tui/terminal-width.js";
 import { applyTheme } from "../tui/theme.js";
-import { renderNumberedDiffLine, toolOutputLines } from "../tui/tool-output.js";
+import {
+  buildPermissionDiff,
+  DIFF_PREVIEW_MAX,
+  renderNumberedDiffLine,
+  toolOutputLines,
+} from "../tui/tool-output.js";
 
 const originalLevel = chalk.level;
 beforeEach(() => {
@@ -90,5 +95,56 @@ describe("tool output colors", () => {
     expect(display).toContain("1 const n = 1;");
     expect(display).toContain("+39 lines");
     expect(JSON.stringify(result)).toBe(before);
+  });
+});
+
+describe("buildPermissionDiff (#33)", () => {
+  it("renders an Edit preview from input alone (old then new, diff-banded)", () => {
+    const lines = buildPermissionDiff("edit", {
+      filePath: "/repo/app.ts",
+      old_string: "const a = 1;",
+      new_string: "const a = 2;\nconst b = 3;",
+    })!;
+    expect(lines).toHaveLength(3);
+    expect(stripAnsi(lines[0]!).trimEnd()).toBe("- const a = 1;");
+    expect(stripAnsi(lines[1]!).trimEnd()).toBe("+ const a = 2;");
+    expect(lines[0]!).toContain("\x1b[48;2;56;0;0m"); // removed band
+    expect(lines[1]!).toContain("\x1b[48;2;0;40;0m"); // added band
+  });
+
+  it("renders a Write preview as all-added lines", () => {
+    const lines = buildPermissionDiff("write", {
+      filePath: "n.txt",
+      content: "one\ntwo",
+    })!;
+    expect(lines.map((l) => stripAnsi(l).trimEnd())).toEqual(["+ one", "+ two"]);
+  });
+
+  it("concatenates multi_edit edits in order", () => {
+    const lines = buildPermissionDiff("multi_edit", {
+      filePath: "m.js",
+      edits: [
+        { old_string: "x", new_string: "y" },
+        { old_string: "p", new_string: "q" },
+      ],
+    })!;
+    expect(lines.map((l) => stripAnsi(l).trimEnd())).toEqual(["- x", "+ y", "- p", "+ q"]);
+  });
+
+  it("folds overflow with a true remaining-count notice inside the cap", () => {
+    const content = Array.from({ length: 50 }, (_, i) => `line${i}`).join("\n");
+    const lines = buildPermissionDiff("write", { filePath: "big.txt", content })!;
+    expect(lines).toHaveLength(DIFF_PREVIEW_MAX);
+    // 50 raw lines: 19 rendered + fold notice reporting the other 31.
+    expect(stripAnsi(lines[DIFF_PREVIEW_MAX - 1]!)).toContain("31 more lines");
+  });
+
+  it("returns undefined for non-edit tools and empty/invalid input", () => {
+    expect(buildPermissionDiff("bash", { command: "rm -rf /" })).toBeUndefined();
+    expect(
+      buildPermissionDiff("edit", { filePath: "a.ts", old_string: "", new_string: "" }),
+    ).toBeUndefined();
+    expect(buildPermissionDiff("multi_edit", { filePath: "a.ts" })).toBeUndefined();
+    expect(buildPermissionDiff("edit", undefined)).toBeUndefined();
   });
 });

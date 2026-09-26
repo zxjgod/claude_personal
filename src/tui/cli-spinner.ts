@@ -44,8 +44,6 @@ export { computeGlimmerIndex, computeShimmerSegments, formatDuration, formatToke
 // verbose; we always show it so the elapsed clock is visible from the start).
 const SHOW_SUFFIX_AFTER_MS = 0;
 
-export type SpinnerMode = "thinking" | "tool" | "responding";
-
 // --- Spinner ---
 
 export interface SpinnerOptions {
@@ -99,10 +97,9 @@ export class Spinner {
     }
   }
 
-  // NOTE: the mode is currently not reflected in the rendered output (the
-  // write-only `mode` field was removed as dead state); kept as a no-op so
-  // callers compiling against this API keep working.
-  setMode(_mode: SpinnerMode): void {}
+  // #45: the former setMode() no-op (and its write-only SpinnerMode type) was
+  // removed — the rendered line never reflected a mode, so the calls in
+  // cli-repl were dead weight.
 
   /** Stop animating and erase the line. */
   stop(): void {

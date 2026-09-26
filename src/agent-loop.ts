@@ -16,6 +16,7 @@ import {
   isFallbackableModelError,
   type ModelErrorRecovery,
 } from "./error-recovery.js";
+import { modelContextWindow } from "./model-metadata.js";
 import {
   buildContinuationNudge,
   checkTokenBudget,
@@ -63,6 +64,26 @@ const defaultAskUser: AskUserFn = async () => true;
 const MAX_NOTIFICATION_CONTINUATIONS = 10;
 
 /**
+ * Review follow-up #6: cap on CONSECUTIVE M40 truncation continuations. The
+ * old comment claimed `maxTurns` was the backstop — but maxTurns defaults to
+ * Infinity ("a main task must not be silently cut short"), so a pathological
+ * provider that always returns finish_reason:"length" could loop PAID model
+ * calls forever. 100 consecutive truncated turns is ≥ ~800K output tokens for
+ * a single logical answer — legitimate long tasks finish far below the cap,
+ * a stuck provider hits it and the loop terminates as max_turns.
+ */
+const MAX_TRUNCATION_CONTINUATIONS = 100;
+
+/**
+ * Shared compaction budget for SUB-AGENT loops (Task/Team/workflow workers).
+ * Deliberately far below the main loop's model-derived threshold: workers run
+ * short, focused tasks and a compact worker context keeps fan-out cheap. One
+ * constant instead of private copies in team.ts / workflow.ts that can drift
+ * (Top10 follow-up #24 convergence).
+ */
+export const WORKER_COMPACT_THRESHOLD = 50_000;
+
+/**
  * Loop-carried state (kernel §3/§9). A single struct rewritten as a whole at
  * each "continue" point rather than nine scattered mutable locals.
  */
@@ -97,6 +118,12 @@ interface LoopState {
    * transitively) restarts itself cannot bounce the loop forever.
    */
   notificationContinuations: number;
+  /**
+   * Review follow-up #6: consecutive M40 truncation continuations
+   * (finish_reason:"length" with no tool calls). Capped by
+   * MAX_TRUNCATION_CONTINUATIONS; any turn that ends differently resets it.
+   */
+  truncationContinuations: number;
 }
 
 // --- Agent Loop (Async Generator) ---
@@ -112,8 +139,8 @@ export async function* agentLoop(
     // A main task must not be silently cut short by an arbitrary loop count.
     // Callers that need a safety ceiling can still pass a finite maxTurns.
     maxTurns = Number.POSITIVE_INFINITY,
-    autoCompactThreshold = 150_000,
-    contextHardLimit = 200_000,
+    autoCompactThreshold: autoCompactThresholdOpt,
+    contextHardLimit: contextHardLimitOpt,
     systemPrompt,
     abortSignal,
     toolContext,
@@ -125,6 +152,26 @@ export async function* agentLoop(
     drainNotifications,
     applyEffortInstruction = true,
   } = options;
+
+  // Model-aware compaction thresholds (Top10 follow-up #24): the historical
+  // 150k/200k constants ignored the real window — a 32k model blew up before
+  // compaction ever fired, and a 1M-context model compacted at 15% of its
+  // window. Derived from the model-metadata table when the model is known;
+  // explicit options always win; unknown models keep the historical defaults.
+  // `let`, re-derived on a fallback model switch (review follow-up #5): a
+  // 1M-window primary degrading to a 200K fallback used to keep the 850K
+  // threshold, eating one context_length error per turn until compact_and_retry
+  // self-healed it.
+  const deriveThresholds = (model: string | undefined): { threshold: number; hard: number } => {
+    const w = modelContextWindow(model);
+    return {
+      threshold: autoCompactThresholdOpt ?? (w !== null ? Math.floor(w * 0.85) : 150_000),
+      hard: contextHardLimitOpt ?? w ?? 200_000,
+    };
+  };
+  let { threshold: autoCompactThreshold, hard: contextHardLimit } = deriveThresholds(
+    modelConfig.model,
+  );
   const effort = getEffortStrategy(modelConfig.options);
   const effectiveSystemPrompt = applyEffortInstruction
     ? withEffortInstruction(systemPrompt, modelConfig.options)
@@ -217,6 +264,7 @@ export async function* agentLoop(
     budget: createTokenBudgetState(),
     stopHookActive: false,
     notificationContinuations: 0,
+    truncationContinuations: 0,
     fallbackIndex: 0,
   };
 
@@ -262,6 +310,11 @@ export async function* agentLoop(
     : null;
   let prefetchInjected = false;
   let readyToolSummary: string | null = null;
+  // Top10 follow-up E6: one-shot system attachments (prefetch results,
+  // tool-batch summaries) are recorded here and REMOVED once the model call
+  // that consumed them finishes — they used to linger for the rest of the
+  // session, stacking dozens of stale reminder messages in every later prompt.
+  const oneShotAttachments: Message[] = [];
 
   try {
     while (state.turnCount < maxTurns) {
@@ -347,13 +400,17 @@ export async function* agentLoop(
           // Append-only: the usage baseline survives — estimateContextTokens
           // adds whatever was appended past baseline.messageCount, so dropping
           // the baseline here would just force a full re-estimate for nothing.
-          messages.push({ role: "system", content: attachment });
+          const msg: Message = { role: "system", content: attachment };
+          messages.push(msg);
+          oneShotAttachments.push(msg);
         }
       }
 
       if (readyToolSummary) {
         // Append-only, same as the prefetch attachment above.
-        messages.push({ role: "system", content: readyToolSummary });
+        const msg: Message = { role: "system", content: readyToolSummary };
+        messages.push(msg);
+        oneShotAttachments.push(msg);
         readyToolSummary = null;
       }
 
@@ -425,6 +482,14 @@ export async function* agentLoop(
                 totalTokens: state.totalTokens + usage.input_tokens + usage.output_tokens,
                 usageBaseline: { promptTokens, messageCount: windowAtCall },
                 budget: recordOutput(state.budget, usage.output_tokens),
+                // Top10 follow-up E4: a SUCCESSFUL call proves the provider is
+                // serving us again — clear the rate-limit/transient budgets so
+                // they can't accumulate across a long session and abort on the
+                // 4th isolated 429. contextLengthRetries deliberately stays
+                // cumulative: repeated overflow means compaction itself is
+                // failing, and an unbounded budget would loop forever.
+                rateLimitRetries: 0,
+                transientRetries: 0,
               };
               yield { type: "usage", usage: event.usage };
               streamEnded = true;
@@ -459,6 +524,10 @@ export async function* agentLoop(
                       notice.kind === "rate_limit" ? MAX_RATE_LIMIT_RETRIES : MAX_TRANSIENT_RETRIES,
                   });
                 },
+                // Top10 follow-up E1: the backoff sleep must observe the turn
+                // abort — Ctrl+C during a 429 wait used to hang for the full
+                // (up to 60s) delay.
+                abortSignal,
               );
               if (recovery === "retry") {
                 state = { ...state, rateLimitRetries: state.rateLimitRetries + 1 };
@@ -519,8 +588,9 @@ export async function* agentLoop(
 
               // Fallback model chain (Phase 1.2): when the primary model fails with
               // a model-specific error (5xx / 404 / unknown — NOT auth/rate-limit/
-              // abort), degrade to the next configured fallback model and retry.
-              // Monotonic: each fallback is tried at most once per session.
+              // abort/context-overflow), degrade to the next configured fallback
+              // model and retry. Monotonic: each fallback is tried at most once
+              // per session.
               const fallbacks = modelConfig.fallbackModels ?? [];
               if (
                 recovery === "abort" &&
@@ -528,9 +598,21 @@ export async function* agentLoop(
                 isFallbackableModelError(event.error)
               ) {
                 const next = fallbacks[state.fallbackIndex]!;
+                const prev = modelConfig.model;
                 state = { ...state, fallbackIndex: state.fallbackIndex + 1 };
                 modelConfig = { ...modelConfig, model: next };
-                yield { type: "compacted", summary: `Switched to fallback model: ${next}` };
+                // Top10 follow-up E5: keep the shared tool context in sync —
+                // sub-agents (Task/Team) read baseContext.modelConfig at spawn
+                // time and would otherwise keep using the abandoned model.
+                baseContext.modelConfig = modelConfig;
+                // Review follow-up #5: the compaction thresholds are model-
+                // derived — re-derive for the new window (explicit opts still
+                // win inside deriveThresholds).
+                ({ threshold: autoCompactThreshold, hard: contextHardLimit } =
+                  deriveThresholds(next));
+                // Dedicated event (was a misleading `compacted`): nothing was
+                // compacted, this is a model switch.
+                yield { type: "model_switched", from: prev, to: next };
                 nextAction = "retry";
                 streamEnded = true;
                 break;
@@ -554,6 +636,20 @@ export async function* agentLoop(
         }
         yield { type: "error", error };
         return terminal("model_error", error);
+      }
+
+      // The call that consumed this turn's one-shot attachments has finished
+      // (or failed) — drop them so they never ride along into later prompts
+      // (Top10 follow-up E6). Removal by identity; system attachments carry no
+      // tool-pairing obligations. If messages shrank below the usage
+      // baseline's window, estimateContextTokens falls back to a full
+      // re-estimate — correct, just unoptimized for one turn.
+      if (oneShotAttachments.length > 0) {
+        for (const att of oneShotAttachments) {
+          const idx = messages.indexOf(att);
+          if (idx !== -1) messages.splice(idx, 1);
+        }
+        oneShotAttachments.length = 0;
       }
 
       if (nextAction === "abort") {
@@ -673,13 +769,24 @@ export async function* agentLoop(
         //
         // Deliberately INDEPENDENT of `decision.shouldContinue` (which is
         // "disabled" by default — maxOutputTokens is 0 unless the caller opts
-        // into a turn-output budget). There is NO separate continuation cap: a
-        // long task that needs many continuations to finish must be allowed to
-        // run them all. The `maxTurns` loop bound is the backstop that guarantees
-        // a provider which never stops truncating still cannot loop forever —
-        // truncation continuations consume `turnCount` like any other turn, so the
-        // loop always exits and reports `max_turns` (not "completed").
+        // into a turn-output budget). A long task that needs many
+        // continuations to finish may run them — but NOT without bound:
+        // `maxTurns` defaults to Infinity, so the old "maxTurns is the
+        // backstop" claim was empty and a provider that never stops
+        // truncating could loop paid calls forever (review follow-up #6).
+        // MAX_TRUNCATION_CONTINUATIONS consecutive truncations end the loop
+        // as max_turns; any turn that ends differently resets the counter.
         if (modelFinishReason === "length") {
+          if (state.truncationContinuations >= MAX_TRUNCATION_CONTINUATIONS) {
+            yield {
+              type: "done",
+              finishReason: "max_turns",
+              turns: turnCount,
+              message: `Output kept getting truncated after ${MAX_TRUNCATION_CONTINUATIONS} continuations — stopped to avoid an endless paid loop.`,
+              speculation: specCache.isEnabled ? specCache.getStats() : undefined,
+            };
+            return terminal("max_turns");
+          }
           const nudgeMsg: Message = {
             role: "user",
             content: [{ type: "text", text: buildContinuationNudge(state.budget) }],
@@ -687,10 +794,15 @@ export async function* agentLoop(
           messages.push(nudgeMsg);
           state = {
             ...state,
+            truncationContinuations: state.truncationContinuations + 1,
             turnCount: turnCount + 1,
             transition: { reason: "model_retry" },
           };
           continue;
+        }
+        // Any other finish reason breaks a truncation streak.
+        if (state.truncationContinuations > 0) {
+          state = { ...state, truncationContinuations: 0 };
         }
 
         // M41: deliver pending background completion notifications before the
@@ -863,7 +975,13 @@ export async function* agentLoop(
         noTurnBoundary,
       );
 
-      state = { ...state, turnCount: turnCount + 1, transition: { reason: "tools_done" } };
+      state = {
+        ...state,
+        turnCount: turnCount + 1,
+        transition: { reason: "tools_done" },
+        // A turn that produced tool calls breaks any truncation streak (#6).
+        truncationContinuations: 0,
+      };
     }
 
     // Max turns reached

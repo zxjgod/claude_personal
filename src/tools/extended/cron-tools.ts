@@ -2,7 +2,9 @@
 // Cron Management Tools — CronCreate, CronDelete, CronList
 // ============================================================
 // Complete cron scheduling API aligned with official Claude Code.
-// CronCreate is an alias for the existing ScheduleCron functionality.
+// (#45 honesty: CronCreate is NOT an alias of the separate `schedule_cron`
+// tool in breadth/orchestration.ts — both are registered under their own
+// names and share the same underlying scheduler via cron-shared.ts.)
 // ============================================================
 
 import { z } from "zod";
@@ -19,7 +21,7 @@ import {
 } from "./cron-shared.js";
 
 // ============================================================
-// CronCreate (alias for schedule_cron)
+// CronCreate
 // ============================================================
 
 const CronCreateSchema = z.strictObject({
@@ -47,8 +49,6 @@ export const CronCreateTool: Tool = buildTool({
   schema: CronCreateSchema,
   isReadOnly: false,
   isConcurrencySafe: true,
-  searchHint: "cron schedule recurring timer task automation",
-  aliases: ["schedule_cron", "cron_create"],
 
   async call(input, context): Promise<ToolResult> {
     const err = validateCron(input.cron);
@@ -95,8 +95,6 @@ export const CronDeleteTool: Tool = buildTool({
   schema: CronDeleteSchema,
   isReadOnly: false,
   isConcurrencySafe: true,
-  searchHint: "cron cancel delete remove unschedule",
-  aliases: ["cron_delete"],
 
   async call(input, context): Promise<ToolResult> {
     const removed = removeScheduledJob(input.id);
@@ -125,8 +123,6 @@ export const CronListTool: Tool = buildTool({
   schema: CronListSchema,
   isReadOnly: true,
   isConcurrencySafe: true,
-  searchHint: "cron list show scheduled jobs",
-  aliases: ["cron_list"],
 
   async call(): Promise<ToolResult> {
     const jobs = listScheduledJobs();

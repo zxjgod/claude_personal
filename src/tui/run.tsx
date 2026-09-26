@@ -73,6 +73,7 @@ import {
 import { StreamBuffer } from "./stream-buffer.js";
 import { truncateVisual } from "./terminal-width.js";
 import { applyTheme } from "./theme.js";
+import { buildPermissionDiff } from "./tool-output.js";
 
 // Debug monitoring - enabled via DEBUG_STREAM env var
 const DEBUG_STREAM = process.env.DEBUG_STREAM;
@@ -83,6 +84,15 @@ export interface TuiDeps {
   callModel: ModelCaller;
   modelConfig: ModelConfig;
   systemPrompt: string;
+  /**
+   * Live per-turn system-prompt builder (Top10 follow-up B1). The startup
+   * `systemPrompt` snapshot is FROZEN: MCP servers connecting mid-session,
+   * /memory edits or git-status refreshes never reached the model in the TUI
+   * path (the REPL rebuilds every turn). When provided, each turn rebuilds
+   * through this — cheap, since buildSystemPrompt memoizes all static
+   * sections including the tool-set fingerprint. Falls back to `systemPrompt`.
+   */
+  buildTurnSystemPrompt?: () => string;
   workspaceRoot: string;
   /** Live workspace-root reader (for /cd). Falls back to `workspaceRoot` when absent. */
   getWorkspaceRoot?: () => string;
@@ -142,10 +152,14 @@ export async function runTurn(
   // 800ms × N tools; removing it also makes single-tool turns feel snappier.
 
   // M18.12: append the session goal (if set) to this turn's system prompt.
+  // B1: rebuild the base prompt per turn when a live builder is wired —
+  // MCP tool changes, /memory edits and git refreshes reach the model instead
+  // of being frozen at startup. Memoized sections keep this cheap.
   const goal = deps.makeCommandContext().goal?.value;
+  const baseSystemPrompt = deps.buildTurnSystemPrompt?.() ?? deps.systemPrompt;
   const turnSystemPrompt = goal
-    ? `${deps.systemPrompt}\n\n[SESSION GOAL]\nThe user set this objective for the session. Keep it in view and steer toward it:\n${goal}`
-    : deps.systemPrompt;
+    ? `${baseSystemPrompt}\n\n[SESSION GOAL]\nThe user set this objective for the session. Keep it in view and steer toward it:\n${goal}`
+    : baseSystemPrompt;
   // Live session id (see TuiDeps.getSessionId): reads session.id at turn
   // start so /resume's in-place rewrite can't leave checkpoint buckets split.
   const sid = deps.getSessionId?.() ?? deps.sessionId;
@@ -401,10 +415,16 @@ export async function runTurn(
           store.addNotice(t("ui.compact.started"));
           break;
         case "compacted":
-          // Post-hoc result of a compaction (proactive, context-length
-          // recovery, or a fallback-model switch). Without this the loop's
-          // silent multi-second compaction LLM call reads as a dead spinner.
+          // Post-hoc result of a compaction (proactive or context-length
+          // recovery). Without this the loop's silent multi-second compaction
+          // LLM call reads as a dead spinner.
           store.addCompactSummary(event.summary, event.messages);
+          break;
+        case "model_switched":
+          // Top10 follow-up E5: the fallback chain changed models — a
+          // dedicated event, no longer smuggled in as a "compacted" summary.
+          store.addNotice(`⇄ Switched to fallback model: ${event.to} (was ${event.from})`);
+          deps.modelConfig.model = event.to;
           break;
         case "error":
           deps.onSave("failed");
@@ -1078,6 +1098,7 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
         detail || undefined,
         riskHint,
         alwaysLabel,
+        buildPermissionDiff(tool.name, input),
       );
       if (choice === "always") {
         deps.alwaysAllow.add(key);
@@ -1508,7 +1529,8 @@ export function runTui(deps: TuiDeps): Promise<void> {
       // Ctrl+C is handled by Root's InterruptHotkey (interrupt turn / exit when
       // idle) — Ink's default would hard-exit the process mid-turn.
       exitOnCtrlC: false,
-      // Enable mouse input for scrolling support
+      // Explicit stdio (Ink's defaults — stated for clarity; no mouse
+      // protocol is enabled: scrolling is the terminal's / PgUp pager's job).
       stdin: process.stdin,
       stdout: process.stdout,
       stderr: process.stderr,
@@ -1539,7 +1561,8 @@ export function runTui(deps: TuiDeps): Promise<void> {
   const { waitUntilExit } = render(<Root store={store} deps={deps} />, {
     // See the fullscreen render above: Ctrl+C belongs to InterruptHotkey.
     exitOnCtrlC: false,
-    // Enable mouse input for scrolling support
+    // Explicit stdio (Ink's defaults — stated for clarity; no mouse protocol
+    // is enabled: scrolling is the terminal's / PgUp pager's job).
     stdin: process.stdin,
     stdout: process.stdout,
     stderr: process.stderr,

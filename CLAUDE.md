@@ -43,7 +43,10 @@ CLI Entry --> Config/API Client --> System Prompt Builder --> Agent Loop --> Too
     **Top10 已于 2026-09-26 全部处置完毕**（修复或经用户拍板决策保留，
     逐项状态与决策记录见总纲 §五 表格后的"修复状态标注"；#2 磁盘模板
     全部可信、#7 沙箱 best-effort 仅告警、#1 插件 MCP 免门属有意决策，
-    勿再当 bug 修）
+    勿再当 bug 修）。**次级清单（~90 条）亦于同日第二轮"四主题包全量
+    精进"处置完毕**（①可靠性急修 ②安全补强 ③成本与缓存 ④体验与持久化，
+    ~45 条全落地；结构大工程按用户拍板不做；宣称不符一律改口诚实化；
+    逐项状态见总纲"次级清单处置标注"节 + 六分册各自的第二轮标注）
   - `architecture/` — Claude Code internals analysis (tool-call flow, agent
     loop & extended thinking, terminal status UI; with source line refs)
   - `archive/` — historical ROADMAPs, changelogs, comparison tables (numbers may be stale)

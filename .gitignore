@@ -22,6 +22,7 @@ coverage/
 # nested sandboxes (e.g. sandbox/.claude/) are covered too
 **/.claude/sessions/
 **/.claude/worktrees/
+**/.claude/checkpoints/
 
 # Spilled tool results (M30) — runtime artifacts written when output exceeds the cap
 .ccr/

@@ -4,6 +4,7 @@
 // Pure resolvers: no I/O beyond reading env/argv/settings files.
 // ============================================================
 
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -137,15 +138,121 @@ function flagValues(flag: string): string[] {
     .filter(Boolean);
 }
 
+// --- Project allow-rule trust gate (Top10 follow-up A3, user decision:
+// one-time fingerprint confirmation) ---
+// A cloned repo can ship `.claude/settings.json` with `permissions.allow`
+// entries — `allow: ["*"]` would silently erode every default prompt. Allow
+// rules from the PROJECT scope therefore require a one-time fingerprint
+// confirmation (same mechanism as the MCP project trust gate); deny/ask rules
+// stay effective untrusted (they only ever ADD friction). User-level rules and
+// CLI flags are the user's own voice and are never gated.
+
+function projectAllowTrustStorePath(): string {
+  return (
+    process.env.CCR_TRUST_STORE_SETTINGS ||
+    path.join(
+      process.env.HOME || process.env.USERPROFILE || ".",
+      ".claude-code-replica",
+      "trusted-project-settings.json",
+    )
+  );
+}
+
+/** The project's allow rules + their content fingerprint, or null when none. */
+function projectAllowFingerprint(workspaceRoot: string): { allow: string[]; fp: string } | null {
+  const perms = readSettings(workspaceRoot)?.permissions as { allow?: unknown } | undefined;
+  const allow = Array.isArray(perms?.allow)
+    ? (perms!.allow as unknown[]).filter((x): x is string => typeof x === "string")
+    : [];
+  if (allow.length === 0) return null;
+  const fp = crypto
+    .createHash("sha256")
+    .update(JSON.stringify([...allow].sort()))
+    .digest("hex");
+  return { allow, fp };
+}
+
+/** Trust is keyed by the RESOLVED settings path (like the MCP project gate):
+ *  the same allow list in a different clone is a different trust decision. */
+function projectSettingsKey(workspaceRoot: string): string {
+  return path.resolve(workspaceRoot, ".claude", "settings.json");
+}
+
+function isProjectAllowTrusted(workspaceRoot: string, fp: string): boolean {
+  try {
+    const store = JSON.parse(fs.readFileSync(projectAllowTrustStorePath(), "utf-8")) as Record<
+      string,
+      string
+    >;
+    return store[projectSettingsKey(workspaceRoot)] === fp;
+  } catch {
+    return false;
+  }
+}
+
+function trustProjectAllow(workspaceRoot: string, fp: string): void {
+  try {
+    const file = projectAllowTrustStorePath();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    let store: Record<string, string> = {};
+    try {
+      store = JSON.parse(fs.readFileSync(file, "utf-8")) as Record<string, string>;
+    } catch {
+      // Missing or corrupt store — start fresh.
+    }
+    store[projectSettingsKey(workspaceRoot)] = fp;
+    fs.writeFileSync(file, JSON.stringify(store, null, 2));
+  } catch {
+    // Best-effort persistence; failure just re-prompts next launch.
+  }
+}
+
+/**
+ * Interactive one-time confirmation of the project's allow rules. Call at
+ * startup BEFORE getPermissionPolicy. Non-TTY: untrusted allow rules are
+ * ignored for the session (fail-closed) with a warning. Editing the rules
+ * changes the fingerprint and re-prompts.
+ */
+export async function confirmProjectAllowRules(workspaceRoot: string): Promise<void> {
+  const found = projectAllowFingerprint(workspaceRoot);
+  if (!found || isProjectAllowTrusted(workspaceRoot, found.fp)) return;
+  if (process.stdin.isTTY && process.stdout.isTTY) {
+    console.log(
+      "\nThis project's .claude/settings.json defines permission ALLOW rules that skip confirmation prompts:",
+    );
+    for (const rule of found.allow.slice(0, 20)) console.log(`   ${rule}`);
+    if (found.allow.length > 20) console.log(`   …and ${found.allow.length - 20} more`);
+    const { askYesNo } = await import("./cli-prompts.js");
+    if (await askYesNo("Trust these project allow rules? [y/N] ")) {
+      trustProjectAllow(workspaceRoot, found.fp);
+      return;
+    }
+  }
+  console.warn(
+    "cli-config: project permission allow rules are NOT trusted (no confirmation possible); they are ignored for this session. deny/ask rules still apply.",
+  );
+}
+
 /** Resolve durable permission rules: user settings, project settings, then CLI flags. */
 export function getPermissionPolicy(workspaceRoot: string): PermissionPolicy {
   const project = readSettings(workspaceRoot);
-  const policy = mergePermissionPolicies(project?.permissions);
+  // Untrusted project allow rules are stripped before the merge (A3 gate);
+  // confirmProjectAllowRules() at startup is what flips the fingerprint.
+  const found = projectAllowFingerprint(workspaceRoot);
+  const projectPerms =
+    found && !isProjectAllowTrusted(workspaceRoot, found.fp)
+      ? { ...(project?.permissions as object), allow: [] }
+      : project?.permissions;
+  const policy = mergePermissionPolicies(projectPerms);
   policy.allow.push(...flagValues("--allowedTools"), ...flagValues("--allowed-tools"));
   policy.deny.push(...flagValues("--disallowedTools"), ...flagValues("--disallowed-tools"));
   if (process.argv.includes("--dangerously-skip-permissions")) {
     // Preserve the explicit opt-out semantics while still leaving the safety
-    // floor in checkPermission intact.
+    // floor in checkPermission intact. NOTE (Top10 follow-up A10, honest
+    // docs): despite the name, this flag does NOT skip the dangerous-pattern
+    // confirmations or blocked-path floor — it only pre-allows the ordinary
+    // prompt. That is deliberate (safer than the official behavior); the help
+    // text says so.
     policy.allow.push("*");
   }
   return policy;

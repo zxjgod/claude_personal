@@ -5,13 +5,12 @@
 import * as fs from "node:fs";
 import chalk from "chalk";
 import { z } from "zod";
-import { isBlockedPath } from "../../permissions.js";
 import { markRead } from "../../read-tracker.js";
 import type { Tool, ToolResult } from "../../types.js";
 import { InputValidator } from "../../utils/input-validator.js";
 import { buildTool } from "../registry.js";
 import { imageMediaType, isBinary, MAX_IMAGE_BYTES } from "../utils/file.js";
-import { resolveInWorkspace } from "../utils/path.js";
+import { resolveAllowedWorkspaceFile } from "../utils/path.js";
 
 const ReadSchema = z.strictObject({
   filePath: z.string().describe("The absolute path to the file to read"),
@@ -40,7 +39,6 @@ export const ReadTool: Tool = buildTool({
   // offset/limit, and spilling would loop "Read → spill file → Read the spill".
   maxResultSizeChars: Number.POSITIVE_INFINITY,
   getPath: (input) => input.filePath,
-  searchHint: "file read view cat open display",
 
   async call(input, context): Promise<ToolResult> {
     // P1: Validate file path input (boundary enforcement follows below via
@@ -50,7 +48,11 @@ export const ReadTool: Tool = buildTool({
       return { content: "", error: pathValidation.error };
     }
 
-    const resolution = resolveInWorkspace(
+    // Defense in depth (Top10 follow-up A9): the tool itself enforces the
+    // full boundary + blocked-path policy (raw input AND resolved/realpath
+    // forms) instead of relying on the executor's system-level check — a
+    // caller that invokes ReadTool.call directly gets the same protection.
+    const resolution = resolveAllowedWorkspaceFile(
       input.filePath,
       context.workspaceRoot,
       context.allowedDirectories,
@@ -59,13 +61,6 @@ export const ReadTool: Tool = buildTool({
       return { content: "", error: resolution.error };
     }
     const filePath = resolution.path;
-
-    if (isBlockedPath(filePath)) {
-      return {
-        content: "",
-        error: `Access denied: "${input.filePath}" is a blocked path`,
-      };
-    }
 
     try {
       const stat = fs.statSync(filePath);
@@ -197,6 +192,23 @@ export const ReadTool: Tool = buildTool({
       // Apply offset and limit
       const start = (input.offset ?? 1) - 1;
       const end = input.limit ? start + input.limit : Math.min(start + 2000, totalLines);
+
+      // Review follow-up #8: an offset past the loaded 10MB prefix used to
+      // return an empty result whose only hint was the generic "result too
+      // long, truncated" suffix — the model had no way to learn the file was
+      // cut at a BYTE budget it can't address by line. Say exactly that.
+      if (fileTruncated && start >= totalLines) {
+        noteRead();
+        return {
+          content:
+            `[offset ${start + 1} is beyond this file's readable window: it is ` +
+            `${stat.size} bytes and only the first ${MAX_TEXT_FILE_BYTES} bytes ` +
+            `(≈${totalLines} lines) are loadable. Lines past that point cannot be ` +
+            `read by this tool — use grep to locate content, or split the file.]`,
+          metadata: { linesRead: 0, fileSize: stat.size, ...specMeta },
+        };
+      }
+
       lines = lines.slice(start, end);
 
       // Strip trailing `\r` from CRLF files. The `\r` is invisible in the
@@ -204,6 +216,18 @@ export const ReadTool: Tool = buildTool({
       // push the model to embed `\r` into Edit old_string/new_string. (Edit
       // is CRLF-tolerant on match, so LF-only search text still works.)
       lines = lines.map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line));
+
+      // Per-line cap (Top10 follow-up T1, real-CC semantics): a minified
+      // bundle is ONE line — the offset/limit window counts LINES, and this
+      // tool never spills (maxResultSizeChars: Infinity), so a multi-MB
+      // single line used to enter the model context whole.
+      const MAX_LINE_CHARS = 2000;
+      let lineTruncated = false;
+      lines = lines.map((line) => {
+        if (line.length <= MAX_LINE_CHARS) return line;
+        lineTruncated = true;
+        return `${line.slice(0, MAX_LINE_CHARS)} …[+${line.length - MAX_LINE_CHARS} chars]`;
+      });
 
       // Add line numbers (4-space padded)
       const numbered = lines
@@ -213,12 +237,17 @@ export const ReadTool: Tool = buildTool({
         })
         .join("\n");
 
-      const truncated = fileTruncated || end < totalLines;
+      const truncated = fileTruncated || end < totalLines || lineTruncated;
 
       noteRead();
 
       return {
-        content: numbered,
+        // #8: when the file itself was cut at the 10MB byte budget, say so IN
+        // the content — the generic `truncated` suffix ("result too long")
+        // would otherwise misattribute a file-size cut to a window-size cut.
+        content: fileTruncated
+          ? `${numbered}\n[file truncated: ${stat.size} bytes on disk; showing only the first ${MAX_TEXT_FILE_BYTES} bytes ≈ ${totalLines} lines]`
+          : numbered,
         truncated,
         metadata: {
           linesRead: lines.length,

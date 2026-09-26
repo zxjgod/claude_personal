@@ -34,7 +34,12 @@ export interface SubagentType {
 }
 
 const EXPLORER_PROMPT = [
-  "You are a code-exploration sub-agent with access to read-only tools.",
+  // #45 honesty: the toolset includes bash, which is NOT a read-only boundary —
+  // the prompt states the intent (exploration) instead of claiming an
+  // enforcement that doesn't exist.
+  "You are a code-exploration sub-agent. Your tools (read/glob/grep/bash) are for",
+  "EXPLORING code — use bash only for read-oriented commands (ls, git log, rg, ...);",
+  "nothing is sandboxed, so do not modify anything.",
   "",
   "Instructions:",
   "- Use the available tools to complete your task",
@@ -70,7 +75,8 @@ const SUBAGENT_TYPES = new Map<string, SubagentType>([
     "code-explorer",
     {
       name: "code-explorer",
-      description: "Read-only exploration: search and summarize across many files",
+      description:
+        "Code exploration: search and summarize across many files (toolset includes bash — by-intent exploration, not an enforced read-only boundary)",
       whenToUse:
         "When you need to explore, search, or understand code across many files and only need a summary of findings back (not the raw tool output).",
       toolNames: ["read", "glob", "grep", "bash"],

@@ -1,7 +1,7 @@
 // Workflow orchestration scripts with bounded worker execution.
 
 import { Worker } from "node:worker_threads";
-import { agentLoop } from "./agent-loop.js";
+import { agentLoop, WORKER_COMPACT_THRESHOLD } from "./agent-loop.js";
 import { createModelCaller } from "./llm-adapter.js";
 import { extractLastAssistantText, getCoreToolsForSubagents } from "./subagents.js";
 import type { Message, ToolContext } from "./types.js";
@@ -91,7 +91,7 @@ export async function runWorkerAgent(
     for await (const event of agentLoop(subMessages, tools, subCaller, context.modelConfig, {
       systemPrompt: WORKER_PROMPT,
       maxTurns: WORKER_MAX_TURNS,
-      autoCompactThreshold: 50_000,
+      autoCompactThreshold: WORKER_COMPACT_THRESHOLD,
       toolContext: {
         workspaceRoot: context.workspaceRoot,
         sessionId: context.sessionId,

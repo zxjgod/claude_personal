@@ -421,10 +421,20 @@ export async function executeSingleTool(
     } else {
       const toolContext = { ...context, abortSignal };
       executedMutating = { tool, input };
+      // Top10 follow-up T6: an explicit per-call timeout (bash/powershell
+      // take `timeout` in ms) overrides the 5-min default watchdog — the two
+      // used to be unaware of each other, so a legitimate `timeout: 600000`
+      // command was watchdog-killed at 5 min with a confusing error while the
+      // tool's own timer never fired. withToolWatchdog still caps at its
+      // 30-min hard ceiling.
+      const inputTimeout =
+        typeof input.timeout === "number" && Number.isFinite(input.timeout) && input.timeout > 0
+          ? input.timeout
+          : undefined;
       result = await withToolWatchdog(
         (signal) => tool.call(input, { ...toolContext, abortSignal: signal }),
         abortSignal,
-        tool.timeoutMs,
+        inputTimeout ?? tool.timeoutMs,
       );
     }
     const duration = Date.now() - startTime;

@@ -194,9 +194,7 @@ describe("D6 — transcript viewer completion", () => {
 
   it("footer carries the official phrasing with the dynamic ctrl+e action", async () => {
     const store = reviewingStore();
-    const { lastFrame, unmount } = render(
-      <App store={store} commands={[]} onSubmit={() => {}} expandedId={null} />,
-    );
+    const { lastFrame, unmount } = render(<App store={store} commands={[]} onSubmit={() => {}} />);
     await flush();
     const frame = lastFrame()!;
     expect(frame).toContain("Showing detailed transcript");
@@ -210,7 +208,7 @@ describe("D6 — transcript viewer completion", () => {
   it("ctrl+e flips the footer action to expand", async () => {
     const store = reviewingStore();
     const { lastFrame, stdin, unmount } = render(
-      <App store={store} commands={[]} onSubmit={() => {}} expandedId={null} />,
+      <App store={store} commands={[]} onSubmit={() => {}} />,
     );
     await flush();
     expect(lastFrame()).toContain("collapse");
@@ -226,7 +224,7 @@ describe("D6 — transcript viewer completion", () => {
     const store = reviewingStore();
     store.addUserMessage("hello again");
     const { lastFrame, stdin, unmount } = render(
-      <App store={store} commands={[]} onSubmit={() => {}} expandedId={null} />,
+      <App store={store} commands={[]} onSubmit={() => {}} />,
     );
     await flush();
     stdin.write("/");
@@ -240,7 +238,7 @@ describe("D6 — transcript viewer completion", () => {
     unmount();
     const store2 = reviewingStore();
     store2.addUserMessage("hello again");
-    const two = render(<App store={store2} commands={[]} onSubmit={() => {}} expandedId={null} />);
+    const two = render(<App store={store2} commands={[]} onSubmit={() => {}} />);
     await flush();
     two.stdin.write("/");
     await flush();
@@ -257,7 +255,7 @@ describe("D6 — transcript viewer completion", () => {
     for (let i = 0; i < 27; i++) store.addUserMessage(`filler ${i}`);
     store.addUserMessage("hello last");
     const { lastFrame, stdin, unmount } = render(
-      <App store={store} commands={[]} onSubmit={() => {}} expandedId={null} />,
+      <App store={store} commands={[]} onSubmit={() => {}} />,
     );
     await flush();
     stdin.write("/");
@@ -274,7 +272,7 @@ describe("D6 — transcript viewer completion", () => {
   it("q still closes the viewer (less-style)", async () => {
     const store = reviewingStore();
     const { lastFrame, stdin, unmount } = render(
-      <App store={store} commands={[]} onSubmit={() => {}} expandedId={null} />,
+      <App store={store} commands={[]} onSubmit={() => {}} />,
     );
     await flush();
     expect(store.getSnapshot().reviewing).toBe(true);

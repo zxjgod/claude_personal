@@ -35,7 +35,6 @@ export const WriteTool: Tool = buildTool({
   isReadOnly: false,
   isConcurrencySafe: false, // Same file writes must be serial
   getPath: (input) => input.filePath,
-  searchHint: "file create write new save",
 
   async call(input, context): Promise<ToolResult> {
     // P1: Validate file path input (boundary enforcement follows below via

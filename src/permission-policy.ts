@@ -15,7 +15,16 @@ export interface PermissionPolicy {
   ask: string[];
 }
 
-const EMPTY: PermissionPolicy = { allow: [], deny: [], ask: [] };
+/**
+ * Fresh empty policy. Deliberately a FACTORY, not a shared `{...EMPTY}`
+ * template: a spread copies the array REFERENCES, so every consumer would
+ * push into the same module-level arrays — rules silently accumulating
+ * across mergePermissionPolicies calls (found via the A3 trust-gate tests:
+ * one test's allow rules leaked into the next policy built).
+ */
+function emptyPolicy(): PermissionPolicy {
+  return { allow: [], deny: [], ask: [] };
+}
 
 function list(value: unknown): string[] {
   return Array.isArray(value)
@@ -24,13 +33,13 @@ function list(value: unknown): string[] {
 }
 
 export function parsePermissionPolicy(value: unknown): PermissionPolicy {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return { ...EMPTY };
+  if (!value || typeof value !== "object" || Array.isArray(value)) return emptyPolicy();
   const v = value as PermissionPolicyConfig;
   return { allow: list(v.allow), deny: list(v.deny), ask: list(v.ask) };
 }
 
 export function mergePermissionPolicies(...values: unknown[]): PermissionPolicy {
-  const out: PermissionPolicy = { ...EMPTY };
+  const out: PermissionPolicy = emptyPolicy();
   for (const value of values) {
     const p = parsePermissionPolicy(value);
     out.allow.push(...p.allow);

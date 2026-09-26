@@ -184,7 +184,10 @@ describe("handleModelError recovery behavior", () => {
       calls++;
       const e: any = new Error("rate limited");
       e.status = 429;
-      e.retryAfter = 1;
+      // The backoff reads the RFC Retry-After HEADER (seconds), normalized to
+      // ms — the old `retryAfter` property was dead code (Top10 follow-up E3).
+      // "0" keeps this test fast (MIN_BACKOFF floor).
+      e.headers = { "retry-after": "0" };
       yield { type: "error", error: e };
     };
 

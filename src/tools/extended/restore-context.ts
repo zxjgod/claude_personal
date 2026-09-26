@@ -42,8 +42,6 @@ export const RestoreContextTool = buildTool({
   isReadOnly: true,
   requiresApproval: false,
   isConcurrencySafe: true,
-  searchHint: "restore recover evicted trimmed collapsed context original content",
-  aliases: ["restore_context"],
 
   async call(input, context) {
     const store = context.collapseStore;

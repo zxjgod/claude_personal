@@ -206,4 +206,84 @@ describe("openAICompatibleCaller", () => {
     // Tool call must be emitted exactly once.
     expect(events.filter((e) => e.type === "tool_use").length).toBe(1);
   });
+
+  // ============================================================
+  // Top10 follow-up A12: OpenAI reasoning-model request shape and
+  // the previously-dropped reasoning_content stream.
+  // ============================================================
+
+  it("o-series on provider=openai sends max_completion_tokens, not max_tokens", async () => {
+    createSpy.mockResolvedValue(
+      makeStream([
+        { choices: [{ delta: {}, finish_reason: "stop" }] },
+        { choices: [], usage: { prompt_tokens: 1, completion_tokens: 1 } },
+      ]),
+    );
+    const cfg: ModelConfig = { ...config, model: "o3-mini" };
+    for await (const _e of createModelCaller(cfg)(messages, [], "sys", cfg)) {
+      // drain
+    }
+    const params = createSpy.mock.calls[0][0];
+    expect(params.max_completion_tokens).toBeGreaterThan(0);
+    expect(params.max_tokens).toBeUndefined();
+    // Reasoning models reject temperature — must be omitted.
+    expect(params.temperature).toBeUndefined();
+  });
+
+  it("third-party reasoners keep max_tokens (the switch is OpenAI-official-only)", async () => {
+    createSpy.mockResolvedValue(
+      makeStream([
+        { choices: [{ delta: {}, finish_reason: "stop" }] },
+        { choices: [], usage: { prompt_tokens: 1, completion_tokens: 1 } },
+      ]),
+    );
+    const cfg: ModelConfig = { provider: "deepseek", model: "deepseek-reasoner", apiKey: "k" };
+    for await (const _e of createModelCaller(cfg)(messages, [], "sys", cfg)) {
+      // drain
+    }
+    const params = createSpy.mock.calls[0][0];
+    expect(params.max_tokens).toBeGreaterThan(0);
+    expect(params.max_completion_tokens).toBeUndefined();
+  });
+
+  it("maps delta.reasoning_content onto thinking events (was: silently dropped)", async () => {
+    createSpy.mockResolvedValue(
+      makeStream([
+        { choices: [{ delta: { reasoning_content: "let me " }, finish_reason: null }] },
+        { choices: [{ delta: { reasoning_content: "think..." }, finish_reason: null }] },
+        { choices: [{ delta: { content: "answer" }, finish_reason: null }] },
+        { choices: [{ delta: {}, finish_reason: "stop" }] },
+        { choices: [], usage: { prompt_tokens: 3, completion_tokens: 2 } },
+      ]),
+    );
+    const events: StreamEvent[] = [];
+    for await (const e of createModelCaller(config)(messages, [], "sys", config)) {
+      events.push(e);
+    }
+    const thinking = events.filter((e) => e.type === "thinking").map((e) => (e as any).delta);
+    expect(thinking).toEqual(["let me ", "think..."]);
+    const text = events.filter((e) => e.type === "text_delta").map((e) => (e as any).delta);
+    expect(text).toEqual(["answer"]);
+  });
+
+  it("rejects PDF content with an actionable provider error instead of a doomed image_url", async () => {
+    createSpy.mockResolvedValue(makeStream([]));
+    const pdfMessages: Message[] = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "image",
+            source: { type: "base64", media_type: "application/pdf", data: "eHl6" },
+          } as any,
+        ],
+      },
+    ];
+    await expect(async () => {
+      for await (const _e of createModelCaller(config)(pdfMessages, [], "sys", config)) {
+        // drain
+      }
+    }).rejects.toThrow(/does not support application\/pdf/);
+    expect(createSpy).not.toHaveBeenCalled(); // never reaches the wire
+  });
 });

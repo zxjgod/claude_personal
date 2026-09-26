@@ -27,6 +27,7 @@ import {
 } from "./classifier-rules.js";
 import { parseCliArgs } from "./cli-args.js";
 import {
+  confirmProjectAllowRules,
   getPermissionMode,
   getPermissionPolicy,
   getWorkspaceRoot,
@@ -102,6 +103,10 @@ async function main() {
   if (!modelConfig.provider) return;
   let workspaceRoot = getWorkspaceRoot();
   let permissionMode = getPermissionMode(workspaceRoot);
+  // A3 trust gate: a cloned repo's project allow rules need a one-time
+  // fingerprint confirmation BEFORE the policy is assembled (untrusted allow
+  // rules are stripped inside getPermissionPolicy).
+  await confirmProjectAllowRules(workspaceRoot);
   const permissionPolicy = getPermissionPolicy(workspaceRoot);
   warnUnknownSettings(readSettings(workspaceRoot));
   const permissionModeState = {
@@ -642,6 +647,10 @@ async function main() {
       callModel,
       modelConfig,
       systemPrompt,
+      // B1: live per-turn rebuild (memoized, so cheap) — MCP servers that
+      // connect mid-session and /memory or git refreshes now reach the model
+      // in the TUI path too, instead of being frozen at startup.
+      buildTurnSystemPrompt,
       workspaceRoot,
       getWorkspaceRoot: () => workspaceRoot,
       sessionId: session.id,

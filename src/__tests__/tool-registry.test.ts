@@ -277,7 +277,6 @@ describe("buildTool (M28)", () => {
     expect(tool.requiresApproval?.()).toBe(true);
     // isDestructive defaults to "not read-only" → true
     expect(tool.isDestructive?.({ x: "y" })).toBe(true);
-    expect(tool.interruptBehavior).toBe("kill");
   });
 
   it("honors explicit capability overrides", () => {

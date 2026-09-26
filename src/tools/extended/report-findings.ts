@@ -117,8 +117,6 @@ export const ReportFindingsTool: Tool = buildTool({
   isReadOnly: false,
   requiresApproval: false,
   isConcurrencySafe: true,
-  searchHint: "report findings code review defect bug issue",
-  aliases: ["report_findings"],
 
   async call(input, context): Promise<ToolResult> {
     const report: FindingsReport = {

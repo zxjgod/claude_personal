@@ -277,3 +277,83 @@ describe("createModelCaller routing", () => {
     expect(createModelCaller(anthropicConfig)).not.toBe(createModelCaller(openaiConfig));
   });
 });
+
+// ============================================================
+// Top10 follow-ups: cache breakpoints (A7①) + TTL switch (A7②)
+// ============================================================
+
+import { withMessageCacheBreakpoint } from "../anthropic-adapter.js";
+
+function msg(role: "user" | "assistant", blocks: number): any {
+  return {
+    role,
+    content: Array.from({ length: blocks }, (_, i) => ({ type: "text", text: `b${i}` })),
+  };
+}
+
+function countBreakpoints(messages: any[]): number {
+  let n = 0;
+  for (const m of messages) {
+    const blocks = typeof m.content === "string" ? [{ cache_control: undefined }] : m.content;
+    for (const b of blocks) if (b?.cache_control) n++;
+  }
+  return n;
+}
+
+describe("withMessageCacheBreakpoint (A7)", () => {
+  it("places exactly one breakpoint on short histories", () => {
+    const out = withMessageCacheBreakpoint([msg("user", 2), msg("assistant", 2)]);
+    expect(countBreakpoints(out)).toBe(1);
+    const last: any = out[out.length - 1];
+    expect(last.content[last.content.length - 1].cache_control).toMatchObject({
+      type: "ephemeral",
+    });
+  });
+
+  it("adds ONE mid breakpoint (15 blocks back) on long histories — total stays 2", () => {
+    // 10 messages × 4 blocks = 40 blocks > 20 → mid breakpoint at ordinal 25.
+    const msgs = Array.from({ length: 10 }, (_, i) => msg(i % 2 === 0 ? "user" : "assistant", 4));
+    const out = withMessageCacheBreakpoint(msgs as any);
+    expect(countBreakpoints(out)).toBe(2); // tail + mid — never more (4-cap budget)
+    // The mid breakpoint is NOT on the final block.
+    const last: any = out[out.length - 1];
+    const midInLast = last.content.slice(0, -1).filter((b: any) => b.cache_control).length;
+    const midElsewhere = countBreakpoints(out.slice(0, -1)) > 0 || midInLast > 0;
+    expect(midElsewhere).toBe(true);
+  });
+
+  it("never mutates the input array", () => {
+    const msgs = [msg("user", 3)];
+    const before = JSON.stringify(msgs);
+    withMessageCacheBreakpoint(msgs as any);
+    expect(JSON.stringify(msgs)).toBe(before);
+  });
+
+  it("never mutates the input on the MID-breakpoint path either (#R4)", () => {
+    // The mid branch used to write mBlocks[bi] in place — and toContentBlocks
+    // hands back the ORIGINAL array for array content, so the caller's own
+    // message block gained a cache_control. The main path only escaped this
+    // because convertMessagesToAnthropic builds fresh arrays.
+    const msgs = Array.from({ length: 10 }, (_, i) => msg(i % 2 === 0 ? "user" : "assistant", 4));
+    const before = JSON.stringify(msgs);
+    withMessageCacheBreakpoint(msgs as any);
+    expect(JSON.stringify(msgs)).toBe(before);
+  });
+
+  it("CCR_CACHE_TTL_1H=1 upgrades breakpoints to the 1h TTL; default has none", () => {
+    const out5m = withMessageCacheBreakpoint([msg("user", 1)]);
+    const cc = (out5m[0] as any).content[0].cache_control;
+    expect(cc).toEqual({ type: "ephemeral" });
+
+    process.env.CCR_CACHE_TTL_1H = "1";
+    try {
+      const out1h = withMessageCacheBreakpoint([msg("user", 1)]);
+      expect((out1h[0] as any).content[0].cache_control).toEqual({
+        type: "ephemeral",
+        ttl: "1h",
+      });
+    } finally {
+      delete process.env.CCR_CACHE_TTL_1H;
+    }
+  });
+});

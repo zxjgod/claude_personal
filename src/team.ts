@@ -14,7 +14,7 @@
 // naturally across send_message calls.
 // ============================================================
 
-import { agentLoop } from "./agent-loop.js";
+import { agentLoop, WORKER_COMPACT_THRESHOLD } from "./agent-loop.js";
 import { createModelCaller } from "./llm-adapter.js";
 import {
   buildSubagentSystemPrompt,
@@ -29,7 +29,6 @@ import { CancellationScope } from "./utils/cancellation.js";
 import { createSubAgentApprover } from "./utils/subagent-security.js";
 
 const AGENT_MAX_TURNS = 10;
-const AGENT_COMPACT_THRESHOLD = 50_000;
 
 export type AgentStatus = "idle" | "running" | "done" | "error" | "stopped";
 
@@ -240,7 +239,7 @@ export async function runAgentTurn(
     const loop = agentLoop(agent.messages, tools, caller, ctx.modelConfig, {
       systemPrompt,
       maxTurns: role.maxTurns ?? AGENT_MAX_TURNS,
-      autoCompactThreshold: AGENT_COMPACT_THRESHOLD,
+      autoCompactThreshold: WORKER_COMPACT_THRESHOLD,
       abortSignal: scope.signal,
       toolContext: {
         workspaceRoot: ctx.workspaceRoot,

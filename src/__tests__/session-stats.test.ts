@@ -30,7 +30,9 @@ describe("session-stats", () => {
   });
 
   it("looks up known model pricing by substring", () => {
-    expect(lookupPricing("claude-opus-4-8")).toEqual({ input: 15, output: 75 });
+    // Opus 4.8 pricing per the WS3 model-metadata table (verified against the
+    // claude-api skill's model list: $5 in / $25 out per 1M).
+    expect(lookupPricing("claude-opus-4-8")).toEqual({ input: 5, output: 25 });
     expect(lookupPricing("gpt-4o-mini")).toEqual({ input: 0.15, output: 0.6 });
     expect(lookupPricing("deepseek-chat")).toEqual({ input: 0.27, output: 1.1 });
   });
@@ -46,8 +48,8 @@ describe("session-stats", () => {
   });
 
   it("estimates cost for a known model", () => {
-    // 1M input @ $15 + 1M output @ $75 = $90
-    expect(estimateCost("claude-opus-4-8", 1_000_000, 1_000_000)).toBeCloseTo(90);
+    // 1M input @ $5 + 1M output @ $25 = $30 (Opus 4.8 metadata-table pricing)
+    expect(estimateCost("claude-opus-4-8", 1_000_000, 1_000_000)).toBeCloseTo(30);
   });
 
   it("returns null cost for unknown models", () => {

@@ -93,7 +93,6 @@ export const TOOL_DEFAULTS = {
   isReadOnly: false,
   isConcurrencySafe: false,
   requiresApproval: undefined as boolean | undefined,
-  interruptBehavior: "kill" as "kill" | "wait",
   timeoutMs: undefined as number | undefined,
   maxResultSizeChars: DEFAULT_MAX_RESULT_CHARS,
 } as const;
@@ -120,9 +119,6 @@ interface CommonToolConfig<T extends ToolInput> {
    */
   isConcurrencySafe?: boolean | ((input: T) => boolean);
   isDestructive?: (input: T) => boolean;
-  aliases?: string[];
-  searchHint?: string;
-  interruptBehavior?: "kill" | "wait";
   timeoutMs?: number;
   getPath?: (input: T) => string | undefined;
   /** Soft cap on model-facing result chars (M30); over this, results spill to disk. */
@@ -182,9 +178,6 @@ function finalizeTool<T extends ToolInput>(
     description: config.description,
     promptDescription: config.promptDescription,
     inputSchema,
-    aliases: config.aliases,
-    searchHint: config.searchHint,
-    interruptBehavior: config.interruptBehavior ?? TOOL_DEFAULTS.interruptBehavior,
     timeoutMs: config.timeoutMs ?? TOOL_DEFAULTS.timeoutMs,
     maxResultSizeChars: config.maxResultSizeChars ?? TOOL_DEFAULTS.maxResultSizeChars,
     isEnabled: () => true, // Can be overridden

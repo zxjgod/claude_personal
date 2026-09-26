@@ -89,7 +89,6 @@ export const DesignSyncTool: Tool = {
     schema: DesignSyncSchema,
     isReadOnly: false,
     isConcurrencySafe: false,
-    aliases: ["design_sync"],
     async call() {
       return {
         content: "",

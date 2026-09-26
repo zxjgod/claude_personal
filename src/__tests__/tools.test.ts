@@ -740,3 +740,94 @@ describe("failed command output survives to the model-visible formatted string",
     expect(result.formatted).toContain("partial-progress");
   });
 });
+
+// ============================================================
+// Top10 follow-ups: Read per-line truncation (T1) and the
+// watchdog × input.timeout linkage (T6)
+// ============================================================
+
+describe("Read per-line truncation (T1)", () => {
+  it("truncates a minified single-line file instead of swallowing it whole", async () => {
+    const long = "x".repeat(5000);
+    fs.writeFileSync(path.join(tmpDir, "minified.js"), `const a="${long}";\n`, "utf-8");
+    const result = await ReadTool.call({ filePath: path.join(tmpDir, "minified.js") }, ctx);
+    expect(result.error).toBeUndefined();
+    // The 2000-char cap fires with an explicit remainder marker...
+    expect(result.content).toContain("…[+");
+    expect(result.content).toContain("chars]");
+    // ...the result is flagged truncated and bounded (was: 5000+ chars whole).
+    expect(result.truncated).toBe(true);
+    expect(result.content.length).toBeLessThan(2500);
+  });
+
+  it("leaves normal-length lines untouched", async () => {
+    fs.writeFileSync(path.join(tmpDir, "normal.txt"), "short line\nanother\n", "utf-8");
+    const result = await ReadTool.call({ filePath: path.join(tmpDir, "normal.txt") }, ctx);
+    expect(result.content).toContain("short line");
+    expect(result.content).not.toContain("…[+");
+    expect(result.truncated).toBe(false);
+  });
+});
+
+describe("Read oversized-file honesty (review follow-up #8)", () => {
+  // Built lazily inside each test: tmpDir is assigned in a beforeEach, so a
+  // describe-body path.join would see undefined at collection time.
+  const SIZE = 11 * 1024 * 1024;
+
+  it("says the file was cut at the byte budget instead of a bare empty read", async () => {
+    const huge = path.join(tmpDir, "huge-11mb.txt");
+    // 11MB of "a\n" — every line short, so only the 10MB FILE cap can fire.
+    fs.writeFileSync(huge, Buffer.alloc(SIZE, "a\n"));
+    const result = await ReadTool.call({ filePath: huge }, ctx);
+    expect(result.error).toBeUndefined();
+    expect(result.content).toContain("[file truncated:");
+    expect(result.truncated).toBe(true);
+  }, 30_000);
+
+  it("explains an offset past the readable window instead of returning 'Read 0 lines'", async () => {
+    const huge = path.join(tmpDir, "huge-11mb.txt");
+    if (!fs.existsSync(huge)) fs.writeFileSync(huge, Buffer.alloc(SIZE, "a\n"));
+    const result = await ReadTool.call({ filePath: huge, offset: 99_999_999 }, ctx);
+    expect(result.error).toBeUndefined();
+    expect(result.content).toContain("beyond this file's readable window");
+    expect(result.content).toContain("grep");
+    expect(result.metadata?.linesRead).toBe(0);
+  }, 30_000);
+});
+
+describe("watchdog honors input.timeout (T6)", () => {
+  it("a per-call timeout below the default watchdog kills the call in time", async () => {
+    const slowTool = {
+      name: "slowpoke",
+      description: "slow",
+      promptDescription: "slow",
+      inputSchema: { type: "object" as const, properties: {}, required: [] },
+      isEnabled: () => true,
+      isReadOnly: () => true,
+      isConcurrencySafe: () => true,
+      // Ignores the abort signal — the watchdog must cut it off anyway.
+      call: async () => {
+        await new Promise((r) => setTimeout(r, 2000));
+        return { content: "too late" };
+      },
+      formatResult: (r: { content: string }) => r.content,
+      checkPermissions: async () => ({ allowed: true as const }),
+    };
+    const t0 = Date.now();
+    const result = await executeSingleTool(
+      {
+        id: "w1",
+        type: "function",
+        function: { name: "slowpoke", arguments: JSON.stringify({ timeout: 80 }) },
+      },
+      [slowTool as any],
+      ctx,
+      async () => true,
+    );
+    const elapsed = Date.now() - t0;
+    expect(result.isError).toBe(true);
+    expect(result.formatted).toMatch(/timed out/i);
+    // Killed at ~80ms, not at the 5-min default watchdog.
+    expect(elapsed).toBeLessThan(1500);
+  });
+});

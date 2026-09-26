@@ -411,7 +411,6 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
             thoughtReported = false;
             thinkingStreamed = false;
             resetIdleTimer();
-            spinner.setMode("thinking");
             spinner.start();
             break;
 
@@ -477,7 +476,6 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
               name: event.name,
               input: event.input,
             });
-            spinner.setMode("tool");
             spinner.start();
             break;
           }
@@ -526,6 +524,20 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
             }
             console.log(chalk.gray("  ──────────────────────────────────────"));
             console.log(chalk.gray("  提示: /context 可查看当前上下文状态"));
+            break;
+
+          case "model_switched":
+            // Top10 follow-up E5: dedicated event (no longer disguised as a
+            // "compacted" summary) — the fallback chain changed models.
+            spinner.stop();
+            renderer.flush();
+            console.log(
+              "\n  " +
+                chalk.yellow("⇄") +
+                " " +
+                chalk.bold("已切换备用模型") +
+                chalk.gray(`: ${event.from} → ${event.to}`),
+            );
             break;
 
           case "usage":

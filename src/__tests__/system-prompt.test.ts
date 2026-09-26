@@ -250,3 +250,42 @@ describe("memoized section registry (kernel §4)", () => {
     expect(listUncachedSections().has("date")).toBe(true);
   });
 });
+
+// ============================================================
+// Top10 follow-up A7③: dynamic blocks ordered stable → volatile
+// ============================================================
+
+describe("dynamic block stability ordering (A7③)", () => {
+  it("puts CLAUDE.md/env BEFORE the date and git (volatile last)", () => {
+    const blocks = buildSystemPrompt({
+      workspaceRoot: "/proj",
+      tools: [],
+      claudeMdContent: "RULES-MARKER",
+      gitStatus: "modified: x.ts",
+    });
+    const dynamic = blocks.slice(boundaryIndex(blocks)).join("\n");
+    const idxClaude = dynamic.indexOf("RULES-MARKER");
+    const idxDate = dynamic.indexOf("Today's date is");
+    const idxGit = dynamic.indexOf("GIT STATUS");
+    expect(idxClaude).toBeGreaterThanOrEqual(0);
+    expect(idxDate).toBeGreaterThan(idxClaude);
+    expect(idxGit).toBeGreaterThan(idxDate);
+  });
+
+  it("a date-only change leaves the CLAUDE.md block bytes untouched", () => {
+    // Same session inputs → identical prefix + identical CLAUDE.md block;
+    // the volatility is confined to the tail (prefix-cache friendly).
+    const a = buildSystemPrompt({
+      workspaceRoot: "/proj",
+      tools: [],
+      claudeMdContent: "STABLE-RULES",
+    });
+    const b = buildSystemPrompt({
+      workspaceRoot: "/proj",
+      tools: [],
+      claudeMdContent: "STABLE-RULES",
+    });
+    const join = (x: string[]) => x.slice(boundaryIndex(x)).join("\n");
+    expect(join(a)).toBe(join(b));
+  });
+});

@@ -174,11 +174,23 @@ export function checkDangerousPattern(
       };
     }
 
-    // Privilege escalation
-    if (/\bsudo\b/.test(cmd)) {
+    // Privilege escalation — sudo and its equivalents (doas, pkexec, su -c).
+    // Bare `su` (interactive) is already caught by the hang patterns below.
+    if (/\b(sudo|doas|pkexec)\b/.test(cmd) || /\bsu\b[^|;&\n]*\s-\w*c\b/.test(cmd)) {
       return {
         dangerous: true,
-        reason: "提权命令 (sudo) — 尝试获取管理员权限",
+        reason: "提权命令 (sudo/doas/pkexec/su -c) — 尝试获取管理员权限",
+        severity: "high",
+      };
+    }
+
+    // Process substitution piping a download into an interpreter
+    // (`bash <(curl …)`) — same class as the pipe-to-shell below, just the
+    // bash-native spelling that the pipe regex cannot see.
+    if (/<\s*\((\s*curl|\s*wget|\s*Invoke-WebRequest)/i.test(cmd)) {
+      return {
+        dangerous: true,
+        reason: "进程替换执行网络下载内容 (<(curl …)) — 等价于管道到 Shell",
         severity: "high",
       };
     }
@@ -207,6 +219,42 @@ export function checkDangerousPattern(
         dangerous: true,
         reason: "强制推送 (git push --force) — 可能覆盖远程分支的提交历史",
         severity: "catastrophic",
+      };
+    }
+
+    // Force push via +refspec (`git push origin +main`, `+refs/heads/x:y`) —
+    // the `+` prefix forces a non-fast-forward update exactly like --force
+    // (second-round review: a flag-based pattern cannot see it).
+    if (/\bgit\b[^|;&\n]*\bpush\b[^|;&\n]*\s\+[\w.@:/-]+/.test(cmd)) {
+      return {
+        dangerous: true,
+        reason: "强制推送 (git push +refspec) — 可能覆盖远程分支的提交历史",
+        severity: "catastrophic",
+      };
+    }
+
+    // Irreversible local destruction: shred (secure-delete, unrecoverable)
+    // and `git clean -f` (deletes ALL untracked files — including .env and
+    // uncommitted work). truncate/chmod are recoverable in principle → high.
+    if (/\bshred\b/.test(cmd)) {
+      return {
+        dangerous: true,
+        reason: "粉碎删除 (shred) — 数据不可恢复",
+        severity: "catastrophic",
+      };
+    }
+    if (/\bgit\b[^|;&\n]*\bclean\b[^|;&\n]*\s-\w*f/.test(cmd)) {
+      return {
+        dangerous: true,
+        reason: "git clean -f — 将删除所有未跟踪文件（含 .env 与未提交产物）",
+        severity: "catastrophic",
+      };
+    }
+    if (/\btruncate\b/.test(cmd) || /\bchmod\b[^|;&\n]*-R\b[^|;&\n]*\b0?00\b/.test(cmd)) {
+      return {
+        dangerous: true,
+        reason: "破坏性文件操作 (truncate / chmod -R 000) — 可能清空内容或锁死权限",
+        severity: "high",
       };
     }
 

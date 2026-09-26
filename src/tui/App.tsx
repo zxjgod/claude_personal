@@ -86,7 +86,7 @@ function PasteGuard(): null {
   return null;
 }
 
-function TranscriptRow({ item, expanded }: { item: TranscriptItem; expanded: boolean }) {
+function TranscriptRow({ item }: { item: TranscriptItem }) {
   switch (item.kind) {
     case "user":
       // Official rendering: the user's turn is dim gray with a "> " marker —
@@ -135,13 +135,7 @@ function TranscriptRow({ item, expanded }: { item: TranscriptItem; expanded: boo
         </Text>
       );
     case "tool":
-      return item.result ? (
-        <CompletedToolCard
-          result={item.result}
-          detail={item.detail}
-          expanded={item.expanded === true || expanded}
-        />
-      ) : null;
+      return item.result ? <CompletedToolCard result={item.result} detail={item.detail} /> : null;
     case "thought":
       return <Text color={palette.secondary}>{`  Thought for ${item.seconds}s`}</Text>;
     case "notice":
@@ -180,7 +174,7 @@ function TranscriptRow({ item, expanded }: { item: TranscriptItem; expanded: boo
 // --- Region components: each subscribes to only the slice it renders ---
 
 /** Completed history — printed once into <Static>, never repainted. */
-function TranscriptRegion({ store, expandedId }: { store: TuiStore; expandedId: number | null }) {
+function TranscriptRegion({ store }: { store: TuiStore }) {
   const transcript = useStoreField(store, "transcript");
   // The epoch key remounts <Static> after a bulk transcript replace (rewind /
   // reload). Ink's Static keeps a monotonically growing internal index: on a
@@ -192,7 +186,7 @@ function TranscriptRegion({ store, expandedId }: { store: TuiStore; expandedId: 
     <Static key={epoch} items={transcript}>
       {(item) => (
         <Box key={item.id} marginBottom={item.kind === "assistant" || item.kind === "tool" ? 1 : 0}>
-          <TranscriptRow item={item} expanded={expandedId === item.id} />
+          <TranscriptRow item={item} />
         </Box>
       )}
     </Static>
@@ -644,7 +638,6 @@ function ReviewableBody({
   store,
   commands,
   onSubmit,
-  expandedId,
   editorMode,
   completeFiles,
   onRewind,
@@ -655,7 +648,6 @@ function ReviewableBody({
   store: TuiStore;
   commands: CommandInfo[];
   onSubmit: (value: string) => void;
-  expandedId: number | null;
   editorMode?: { value: "default" | "vim" };
   completeFiles?: (query: string) => string[];
   onRewind?: () => void;
@@ -669,14 +661,14 @@ function ReviewableBody({
   if (reviewing) {
     return (
       <>
-        <TranscriptRegion store={store} expandedId={expandedId} />
+        <TranscriptRegion store={store} />
         <TranscriptReview store={store} />
       </>
     );
   }
   return (
     <>
-      <TranscriptRegion store={store} expandedId={expandedId} />
+      <TranscriptRegion store={store} />
       <ThinkingRegion store={store} />
       <StreamingRegion store={store} />
       <ActiveToolsRegion store={store} />
@@ -704,7 +696,6 @@ export function App({
   store,
   commands,
   onSubmit,
-  expandedId = null,
   editorMode,
   completeFiles,
   fullscreen,
@@ -718,9 +709,6 @@ export function App({
   store: TuiStore;
   commands: CommandInfo[];
   onSubmit: (value: string) => void;
-  /** Legacy per-item expansion prop (tests). Production expansion is driven
-   *  by the item's own `expanded` flag (ctrl+r → store.expandTool). */
-  expandedId?: number | null;
   editorMode?: { value: "default" | "vim" };
   /** Workspace path matcher for the InputBox's "@" dropdown. */
   completeFiles?: (query: string) => string[];
@@ -777,7 +765,6 @@ export function App({
         store={store}
         commands={commands}
         onSubmit={onSubmit}
-        expandedId={expandedId}
         editorMode={editorMode}
         completeFiles={completeFiles}
         onRewind={onRewind}

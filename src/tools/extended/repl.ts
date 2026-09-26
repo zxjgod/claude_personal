@@ -240,7 +240,6 @@ export const ReplTool: Tool = buildTool({
   schema: ReplSchema,
   isReadOnly: false, // can run arbitrary code — routes through approval
   isConcurrencySafe: false, // shared session state must serialize
-  searchHint: "repl evaluate expression interpreter node python compute",
 
   async call(input, context): Promise<ToolResult> {
     const language: ReplLanguage = input.language ?? "node";

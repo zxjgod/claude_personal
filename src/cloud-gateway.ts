@@ -28,14 +28,20 @@ export interface GatewayResolution {
   defaultModel: string;
 }
 
+// Defaults refreshed 2026-09 (Top10 follow-up A11): the old Bedrock default
+// (claude-3-5-sonnet v2) is RETIRED — requests against it 404 — and Vertex's
+// gemini-1.5-pro is past EOL. The Bedrock id follows the current `anthropic.`
+// -prefixed naming; the Vertex gemini-2.5-pro id is best-effort. Neither
+// gateway could be live-tested in this environment: if a default 404s, set
+// LLM_MODEL explicitly (flagged in the round's acceptance report).
 const DEFAULTS: Record<CloudGateway, { region: string; defaultModel: string }> = {
   bedrock: {
     region: "us-east-1",
-    defaultModel: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+    defaultModel: "anthropic.claude-sonnet-5",
   },
   vertex: {
     region: "us-central1",
-    defaultModel: "google/gemini-1.5-pro",
+    defaultModel: "google/gemini-2.5-pro",
   },
 };
 

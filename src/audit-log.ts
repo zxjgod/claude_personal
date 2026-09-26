@@ -35,24 +35,55 @@ export interface AuditEntry {
 }
 
 export interface AuditLogOptions {
-  logFilePath?: string; // Default: ~/.claude-code-replica/audit.log
+  logFilePath?: string; // Default: ~/.claude-code-replica/audit.log; "" disables file logging
   maxEntries?: number; // Default: 10000
   includeReadOperations?: boolean; // Default: false
 }
 
+/**
+ * Resolve the default audit path. CCR_AUDIT_LOG overrides (tests/multi-profile).
+ * When neither HOME nor USERPROFILE exists the log is DISABLED ("") rather
+ * than falling back to "." — an audit trail silently landing in whatever cwd
+ * the CLI was started from is both discoverable and surprising (Top10
+ * follow-up A8).
+ */
+function defaultAuditPath(): string {
+  if (process.env.CCR_AUDIT_LOG) return process.env.CCR_AUDIT_LOG;
+  const home = process.env.HOME || process.env.USERPROFILE;
+  return home ? path.join(home, ".claude-code-replica", "audit.log") : "";
+}
+
 const DEFAULT_OPTIONS: Required<AuditLogOptions> = {
-  // CCR_AUDIT_LOG overrides the path so tests (and multi-profile setups) can
-  // keep audit output hermetic instead of always writing to the home dir.
-  logFilePath:
-    process.env.CCR_AUDIT_LOG ||
-    path.join(
-      process.env.HOME || process.env.USERPROFILE || ".",
-      ".claude-code-replica",
-      "audit.log",
-    ),
+  logFilePath: defaultAuditPath(),
   maxEntries: 10000,
   includeReadOperations: false,
 };
+
+// --- Secret redaction (Top10 follow-up A8) ---
+// Audit entries quote raw commands and paths; a command like
+// `curl -H "Authorization: Bearer sk-…" ` or `export API_KEY=…` would
+// otherwise persist the secret in plaintext forever. Best-effort pattern
+// scrubbing before anything is written.
+const SECRET_PATTERNS: Array<{ re: RegExp; to: string }> = [
+  // Bearer FIRST: it swallows the whole credential, so a contained sk-/ghp_
+  // token doesn't get half-redacted into "Bearer sk-<redacted>" first.
+  { re: /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, to: "Bearer <redacted>" },
+  { re: /\bsk-[A-Za-z0-9_-]{8,}\b/g, to: "sk-<redacted>" },
+  { re: /\bAKIA[0-9A-Z]{12,}\b/g, to: "<redacted-aws-key>" },
+  { re: /\bgh[pousr]_[A-Za-z0-9]{16,}\b/g, to: "<redacted-github-token>" },
+  { re: /\bglpat-[A-Za-z0-9_-]{10,}\b/g, to: "<redacted-gitlab-token>" },
+  {
+    re: /((?:api[_-]?key|apikey|secret|token|passw(?:or)?d|credential)["']?\s*[:=]\s*)["']?[^\s"',;&|]+/gi,
+    to: "$1<redacted>",
+  },
+];
+
+/** Scrub secret-shaped substrings from a value destined for the audit log. */
+export function redactSecrets(text: string): string {
+  let out = text;
+  for (const { re, to } of SECRET_PATTERNS) out = out.replace(re, to);
+  return out;
+}
 
 export class AuditLogger {
   private options: Required<AuditLogOptions>;
@@ -76,10 +107,19 @@ export class AuditLogger {
   private async ensureInitialized(): Promise<void> {
     if (this.initialized) return;
 
-    // Ensure directory exists
+    // File logging disabled (no HOME and no CCR_AUDIT_LOG): entries stay
+    // queryable in memory only.
+    if (!this.options.logFilePath) {
+      this.entries = [];
+      this.persistedCount = 0;
+      this.initialized = true;
+      return;
+    }
+
+    // Ensure directory exists (0700: the audit trail quotes commands).
     const dir = path.dirname(this.options.logFilePath);
     try {
-      await fs.promises.mkdir(dir, { recursive: true });
+      await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 });
     } catch {
       // Directory may already exist
     }
@@ -110,19 +150,28 @@ export class AuditLogger {
   }
 
   private async persist(): Promise<void> {
+    if (!this.options.logFilePath) {
+      // Memory-only mode: keep counters consistent so nothing re-persists
+      // if a path shows up later via explicit options.
+      this.persistedCount = this.entries.length;
+      this.needsFullRewrite = false;
+      return;
+    }
     try {
+      // mode 0600: the audit log quotes commands and paths — owner-only on
+      // POSIX (a no-op on Windows, which has no unix mode bits; documented).
       if (this.needsFullRewrite || this.persistedCount > this.entries.length) {
         // A trim shifted the in-memory window; the on-disk file no longer
         // corresponds to any suffix of it, so rewrite wholesale (bounded by
         // maxEntries, so this stays cheap) instead of appending.
         const lines = this.entries.map((e) => JSON.stringify(e)).join("\n") + "\n";
-        await fs.promises.writeFile(this.options.logFilePath, lines);
+        await fs.promises.writeFile(this.options.logFilePath, lines, { mode: 0o600 });
       } else {
         // Normal path: append only the entries written since the last persist.
         const fresh = this.entries.slice(this.persistedCount);
         if (fresh.length === 0) return;
         const lines = fresh.map((e) => JSON.stringify(e)).join("\n") + "\n";
-        await fs.promises.writeFile(this.options.logFilePath, lines, { flag: "a" });
+        await fs.promises.writeFile(this.options.logFilePath, lines, { flag: "a", mode: 0o600 });
       }
       this.persistedCount = this.entries.length;
       this.needsFullRewrite = false;
@@ -145,6 +194,12 @@ export class AuditLogger {
 
     const fullEntry: AuditEntry = {
       ...entry,
+      // Redact secret-shaped substrings before anything touches memory/disk.
+      ...(entry.command !== undefined ? { command: redactSecrets(entry.command) } : {}),
+      ...(entry.filePath !== undefined ? { filePath: redactSecrets(entry.filePath) } : {}),
+      ...(entry.errorMessage !== undefined
+        ? { errorMessage: redactSecrets(entry.errorMessage) }
+        : {}),
       timestamp: new Date().toISOString(),
     };
 
@@ -277,6 +332,30 @@ export async function logToolExecution(params: {
     outcome: params.outcome,
     sessionId: params.sessionId,
     errorMessage: params.errorMessage,
+    metadata: params.metadata,
+  });
+}
+
+/**
+ * Record a permission-policy change (Top10 follow-up A8): the
+ * `permission_change` operation type existed but was NEVER written — the
+ * audit trail had no record of "always allow" grants or /mode switches, the
+ * two moments where the security posture actually changes.
+ */
+export async function logPermissionChange(params: {
+  change: string;
+  workspaceRoot: string;
+  sessionId?: string;
+  metadata?: Record<string, unknown>;
+}): Promise<void> {
+  const logger = getAuditLogger();
+  await logger.log({
+    operation: "permission_change",
+    command: params.change,
+    workspaceRoot: params.workspaceRoot,
+    userConfirmed: true, // policy changes are always user-driven
+    outcome: "success",
+    sessionId: params.sessionId,
     metadata: params.metadata,
   });
 }

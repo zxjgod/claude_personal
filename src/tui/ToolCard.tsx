@@ -3,8 +3,9 @@
 // ============================================================
 // A completed tool is shown as "⏺ Name(detail)" followed by a "⎿ result"
 // branch. Long results (read/grep) collapse to a preview whose hint points at
-// the verbose transcript viewer (ctrl+o); the ctrl+r handler can still append
-// a full-output copy via the App's expanded set.
+// the verbose transcript viewer (ctrl+o) — the viewer is the ONLY full-output
+// path (#45: the never-wired ctrl+r "expanded copy" mechanism was removed
+// rather than kept as dead code).
 //
 // M26: Tool status indicator:
 // - Active tool (executing): gray blinking dot
@@ -110,11 +111,9 @@ export function ActiveToolCard({
 export function CompletedToolCard({
   result,
   detail,
-  expanded,
 }: {
   result: ToolExecutionResult;
   detail: string;
-  expanded: boolean;
 }) {
   // Official head: `⏺ Name(detail)` — colored glyph + BOLD plain-color name
   // (the head itself carries no accent tint). Failed tools get the red dot.
@@ -141,15 +140,16 @@ export function CompletedToolCard({
   const allLines = toolOutputLines(result, detail);
   const isLong = allLines.length > PREVIEW_LINES;
 
-  // Read/Grep/Glob collapse to a single summary line ("Read N lines"); expanding
-  // (or a tool whose output IS the point, like Bash/Edit/Write) shows content.
+  // Read/Grep/Glob collapse to a single summary line ("Read N lines"); a tool
+  // whose output IS the point (Bash/Edit/Write) shows content, clipped to the
+  // preview window — ctrl+o reveals the rest.
   const summary = toolResultSummary(result);
-  const collapsedToSummary = !!summary && !expanded;
+  const collapsedToSummary = !!summary;
   const shown = collapsedToSummary
     ? [summary]
-    : expanded || !isLong
-      ? allLines
-      : allLines.slice(0, PREVIEW_LINES);
+    : isLong
+      ? allLines.slice(0, PREVIEW_LINES)
+      : allLines;
 
   return (
     <Box flexDirection="column">
@@ -165,7 +165,7 @@ export function CompletedToolCard({
         ))}
         {collapsedToSummary && allLines.length > 0 ? (
           <Text dimColor>{`  ${t("ui.tool.expandHint")}`}</Text>
-        ) : isLong && !expanded ? (
+        ) : isLong ? (
           <Text
             dimColor
           >{`  ${t("ui.tool.expandMore", { n: allLines.length - PREVIEW_LINES })}`}</Text>

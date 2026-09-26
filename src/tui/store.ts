@@ -36,10 +36,6 @@ export type TranscriptItem =
       name: string;
       detail: string;
       result?: ToolExecutionResult;
-      /** True on an appended full-output copy (ctrl+r handler) — renders expanded. */
-      expanded?: boolean;
-      /** On an expanded copy: the source item's id (dedupe for re-expansion). */
-      expandedOf?: number;
     }
   | { kind: "thought"; id: number; seconds: number }
   | { kind: "notice"; id: number; text: string }
@@ -135,6 +131,10 @@ export type Overlay =
        *  again for commands in <dir>" — built by the caller (run.tsx) from
        *  the tool + cwd. Falls back to the generic session label. */
       alwaysLabel?: string;
+      /** Pre-rendered diff preview lines (#33) for edit/write-style tools,
+       *  built by the caller from tool.input WITHOUT touching disk. Rendered
+       *  capped between the risk hint and the option row. */
+      diff?: string[];
       resolve: (choice: "yes" | "always" | "no") => void;
     }
   | {
@@ -770,31 +770,9 @@ export class TuiStore {
     this.set({ contextLimit: Math.max(0, limit) });
   }
 
-  /**
-   * Append a full-output copy of a completed tool card (ctrl+r handler). Ink's
-   * <Static> is write-once: an already-printed collapsed card can't be
-   * re-rendered in place, so "expanding" appends a sibling card with the same
-   * result rendered expanded. Idempotent — if this source item already has a
-   * copy, or the item itself is a copy, nothing is appended.
-   * Returns true when a copy landed.
-   */
-  expandTool(id: number): boolean {
-    const src = this.state.transcript.find((t) => t.id === id);
-    if (src?.kind !== "tool" || !src.result || src.expanded) return false;
-    const alreadyExpanded = this.state.transcript.some(
-      (t) => t.kind === "tool" && t.expandedOf === id,
-    );
-    if (alreadyExpanded) return false;
-    this.push({
-      kind: "tool",
-      name: src.name,
-      detail: src.detail,
-      result: src.result,
-      expanded: true,
-      expandedOf: id,
-    } as TranscriptItem);
-    return true;
-  }
+  // #45: the old expandTool()/expandedOf "ctrl+r expanded copy" mechanism was
+  // removed as dead code — no keybinding ever called it. The verbose
+  // transcript viewer (ctrl+o) is the one full-output path.
 
   // --- overlays (return promises the orchestration awaits) ---
 
@@ -803,6 +781,7 @@ export class TuiStore {
     detail?: string,
     riskHint?: string,
     alwaysLabel?: string,
+    diff?: string[],
   ): Promise<"yes" | "always" | "no"> {
     return new Promise((resolve) => {
       this.openOverlay({
@@ -811,6 +790,7 @@ export class TuiStore {
         detail,
         riskHint,
         alwaysLabel,
+        diff,
         resolve: (choice) => {
           this.set({ overlay: null });
           resolve(choice);

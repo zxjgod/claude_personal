@@ -50,8 +50,6 @@ export const MemorySaveTool = buildTool({
   isReadOnly: false,
   requiresApproval: false,
   isConcurrencySafe: true,
-  searchHint: "memory save remember persist preference lesson durable",
-  aliases: ["memory_save"],
 
   async call(input, context) {
     const store = new MemoryStore(context.workspaceRoot);

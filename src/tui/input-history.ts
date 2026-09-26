@@ -57,6 +57,56 @@ export function loadHistory(workspaceRoot: string): string[] {
   return out.slice(-HISTORY_LIMIT);
 }
 
+/**
+ * #37: last-entry memo per history file. appendHistory used to re-read and
+ * re-parse the WHOLE file on every submit just to check the consecutive-dup
+ * rule — O(history) per keystroke-submit. The memo makes that O(1) in-process;
+ * the first append after startup seeds it from an ≤8KB tail read (still
+ * cross-session-correct), never a full parse.
+ */
+const lastEntryMemo = new Map<string, string>();
+
+/** Read ONLY the last entry of a JSONL history file (≤8KB tail read).
+ *  Returns null when the file is missing/empty/unparseable. */
+function readLastEntry(file: string): string | null {
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(file, "r");
+    const size = fs.fstatSync(fd).size;
+    if (size === 0) return null;
+    const len = Math.min(size, 8192);
+    const buf = Buffer.alloc(len);
+    fs.readSync(fd, buf, 0, len, size - len);
+    const lines = buf.toString("utf-8").split("\n");
+    // Scan upward past blank AND corrupt lines — loadHistory skips corrupt
+    // lines too, so the "previous entry" must be the last VALID one for the
+    // dup-collapse rule to match the file's readable content. (The first
+    // line may be truncated by the 8KB window — a parse failure there just
+    // ends the scan.)
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i]!.trim();
+      if (!line) continue;
+      try {
+        const entry = JSON.parse(line) as { v?: unknown };
+        if (typeof entry.v === "string" && entry.v.trim()) return entry.v;
+      } catch {
+        /* corrupt line — keep scanning upward */
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+}
+
 /** Append one entry. Consecutive duplicates collapse; the file is created
  *  (with its directory) on demand. Best-effort: fs errors are swallowed —
  *  history persistence must never fail a submit. */
@@ -65,10 +115,15 @@ export function appendHistory(workspaceRoot: string, value: string): void {
   if (!v) return;
   try {
     const file = historyFile(workspaceRoot);
-    const prev = loadHistory(workspaceRoot);
-    if (prev.length > 0 && prev[prev.length - 1] === v) return; // consecutive dup
+    let prev = lastEntryMemo.get(file);
+    if (prev === undefined) {
+      prev = readLastEntry(file) ?? "";
+      lastEntryMemo.set(file, prev);
+    }
+    if (prev === v) return; // consecutive dup
     fs.mkdirSync(historyDir(workspaceRoot), { recursive: true });
     fs.appendFileSync(file, `${JSON.stringify({ v })}\n`, "utf-8");
+    lastEntryMemo.set(file, v);
   } catch {
     /* best-effort */
   }

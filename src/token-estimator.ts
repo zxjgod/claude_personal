@@ -41,6 +41,56 @@ function estimateMixedTextTokens(text: string, nonCjkCharsPerToken: number): num
   return Math.ceil(cjkCount + nonCjk / nonCjkCharsPerToken);
 }
 
+/**
+ * Parse image dimensions from the leading bytes of a base64 payload
+ * (PNG / GIF / JPEG; WebP and unknown formats return null → the caller falls
+ * back to the size heuristic). Decodes at most the first ~128KB so a JPEG's
+ * SOF marker is reachable without buffering a multi-MB image.
+ */
+function imageSizeFromBase64(data: string): { w: number; h: number } | null {
+  try {
+    const head = Buffer.from(data.slice(0, 64), "base64");
+    // PNG: 8-byte signature, then IHDR — width/height BE uint32 at 16/20.
+    if (head.length >= 24 && head[0] === 0x89 && head[1] === 0x50) {
+      return { w: head.readUInt32BE(16), h: head.readUInt32BE(20) };
+    }
+    // GIF: "GIF87a/89a" — logical screen size LE uint16 at 6/8.
+    if (head.length >= 10 && head[0] === 0x47 && head[1] === 0x49 && head[2] === 0x46) {
+      return { w: head.readUInt16LE(6), h: head.readUInt16LE(8) };
+    }
+    // JPEG: scan segment markers for SOFn (0xC0-0xCF minus DHT/JPG/DAC).
+    if (head.length >= 4 && head[0] === 0xff && head[1] === 0xd8) {
+      const buf = Buffer.from(data.slice(0, 174_000), "base64");
+      let i = 2;
+      while (i + 9 < buf.length) {
+        if (buf[i] !== 0xff) {
+          i++;
+          continue;
+        }
+        const marker = buf[i + 1]!;
+        if (
+          marker >= 0xc0 &&
+          marker <= 0xcf &&
+          marker !== 0xc4 &&
+          marker !== 0xc8 &&
+          marker !== 0xcc
+        ) {
+          return { h: buf.readUInt16BE(i + 5), w: buf.readUInt16BE(i + 7) };
+        }
+        if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
+          i += 2;
+          continue;
+        }
+        i += 2 + buf.readUInt16BE(i + 2);
+      }
+      return null;
+    }
+  } catch {
+    // Malformed/truncated header — fall back to the size heuristic.
+  }
+  return null;
+}
+
 // Code-like file extensions
 const CODE_EXTENSIONS = new Set([
   ".ts",
@@ -127,8 +177,16 @@ function isStructuredData(content: string): boolean {
  */
 function estimateBlockTokens(block: ContentBlock, sourceFile?: string): number {
   if (block.type === "image") {
-    // Images are expensive: 85 tokens base + pixels/750
+    // Pixel-based estimate (Top10 follow-up A8): the API bills images at
+    // ~(w×h)/750 tokens. The old `85 + base64len*4/750` mixed ENCODED SIZE
+    // into a PIXEL formula — dimensionally wrong and off by multiples for
+    // large screenshots. Dimensions are parsed from the format header bytes;
+    // unrecognized formats fall back to the old heuristic.
     const data = block.source.data ?? "";
+    const dims = imageSizeFromBase64(data);
+    if (dims && dims.w > 0 && dims.h > 0) {
+      return Math.max(85, Math.ceil((dims.w * dims.h) / 750));
+    }
     return 85 + Math.ceil((data.length * 4) / 750);
   }
 

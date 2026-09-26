@@ -67,6 +67,21 @@ describe("effort tiers", () => {
     expect(anthropicEffort("ultracode")).toBe("xhigh");
   });
 
+  it("resolveEffortMaxTokens: explicit override may RAISE, capped at the 128K streaming ceiling", () => {
+    // Top10 follow-up A6 (user decision 2026-09): LLM_MAX_TOKENS is
+    // authoritative — raising it lifts the tier caps (high = 8192) that made
+    // long outputs routinely take the slow truncate→continue path.
+    expect(resolveEffortMaxTokens("high", 64_000)).toBe(64_000);
+    expect(resolveEffortMaxTokens("high", 131_072)).toBe(131_072);
+    expect(resolveEffortMaxTokens("high", 500_000)).toBe(131_072); // hard ceiling
+    // Lowering still works; no override keeps the tier default; garbage falls
+    // back to the tier default.
+    expect(resolveEffortMaxTokens("high", 1000)).toBe(1000);
+    expect(resolveEffortMaxTokens("high")).toBe(8192);
+    expect(resolveEffortMaxTokens("high", Number.NaN)).toBe(8192);
+    expect(resolveEffortMaxTokens("high", 0)).toBe(8192);
+  });
+
   it("openaiReasoningEffort clamps at/above high to 'high'", () => {
     expect(openaiReasoningEffort("low")).toBe("low");
     expect(openaiReasoningEffort("medium")).toBe("medium");

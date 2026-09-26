@@ -57,7 +57,6 @@ export const BashTool: Tool = buildTool({
     "The working directory persists across calls within a session (use `cd <dir>`). " +
     "Very large output is saved to a file and you receive a preview plus the path.",
   schema: BashSchema,
-  searchHint: "shell command execute run script build test git npm background job",
   // Data-driven (M29): a read-only command (`cat`, `ls`, `git status`…) is
   // auto-approved and safe to parallelize; anything else routes through
   // approval and runs serially. Concurrency-safety mirrors read-only because a
@@ -229,6 +228,12 @@ export const BashTool: Tool = buildTool({
     if (timer) clearTimeout(timer);
     if (abortSignal) abortSignal.removeEventListener("abort", onAbort);
 
+    // M3: a shell command may touch the fs — drop cached listings. Placed
+    // BEFORE the abort/timeout returns so a killed command that already wrote
+    // files still invalidates (review follow-up #9: powershell did this "for
+    // parity with bash" while bash itself skipped it on the abort path).
+    invalidateToolWritableScopes(context);
+
     // Aborted (Ctrl+C) takes precedence over timeout.
     if (aborted) {
       return {
@@ -246,8 +251,6 @@ export const BashTool: Tool = buildTool({
     // full text). `outTruncated` now reflects only the 10MB in-memory guard
     // above, which is genuine data loss the formatter should flag.
     const outTruncated = truncated;
-    // M3: a shell command may touch the fs — drop cached listings.
-    invalidateToolWritableScopes(context);
 
     // timedOut is set by our killTree timer. We cannot rely on exitCode === null
     // here: on Windows `taskkill /T /F` makes the shell exit with code 1 (a real

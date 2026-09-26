@@ -5,66 +5,26 @@
 // here so /cost, /status, and /context can report session-wide totals that
 // survive across turns (the per-turn counters in cli.ts reset each prompt).
 //
-// Cost is best-effort: pricing is a small static table keyed by model-name
-// substring. Unknown models report tokens only (cost = null) rather than
-// guessing. Prices are USD per 1M tokens and may drift — they are a rough
-// guide for local debugging, not billing.
+// Cost is best-effort: pricing lives in the shared model-metadata table
+// (single source of truth — the old local PRICING and CONTEXT_WINDOWS tables
+// here were two of the three partial copies that drifted, e.g. Opus 4.6+
+// priced at legacy $15/$75 and windowed at 200k instead of 1M). Unknown
+// models report tokens only (cost = null) rather than guessing.
 // ============================================================
 
-export interface ModelPricing {
-  /** USD per 1M input tokens. */
-  input: number;
-  /** USD per 1M output tokens. */
-  output: number;
-}
+import { type ModelPricing, modelContextWindow, modelPricing } from "../model-metadata.js";
 
-// Keyed by a lowercase substring matched against the model id.
-const PRICING: Array<{ match: string; price: ModelPricing }> = [
-  { match: "claude-opus", price: { input: 15, output: 75 } },
-  { match: "claude-sonnet", price: { input: 3, output: 15 } },
-  { match: "claude-haiku", price: { input: 0.8, output: 4 } },
-  { match: "gpt-4o-mini", price: { input: 0.15, output: 0.6 } },
-  { match: "gpt-4o", price: { input: 2.5, output: 10 } },
-  { match: "gpt-4", price: { input: 30, output: 60 } },
-  { match: "deepseek", price: { input: 0.27, output: 1.1 } },
-  { match: "qwen", price: { input: 0.5, output: 1.5 } },
-  { match: "moonshot", price: { input: 0.6, output: 2.5 } },
-];
+// Re-exported for existing importers of the old local interface.
+export type { ModelPricing };
 
 /** Look up pricing for a model id, or null if unknown. */
 export function lookupPricing(model: string): ModelPricing | null {
-  const m = model.toLowerCase();
-  for (const entry of PRICING) {
-    if (m.includes(entry.match)) return entry.price;
-  }
-  return null;
+  return modelPricing(model);
 }
-
-// Known context-window sizes (tokens), keyed like PRICING by lowercase model-id
-// substring. Order matters: more specific keys first ("gpt-4o" before "gpt-4",
-// or "gpt-4o-2024" would match the wrong row). Best-effort like the pricing
-// table — unknown models return null and the status-bar gauge stays hidden
-// rather than guessing a window the model doesn't have.
-const CONTEXT_WINDOWS: Array<{ match: string; window: number }> = [
-  { match: "claude-opus", window: 200_000 },
-  { match: "claude-sonnet", window: 200_000 },
-  { match: "claude-haiku", window: 200_000 },
-  { match: "gpt-4o-mini", window: 128_000 },
-  { match: "gpt-4o", window: 128_000 },
-  { match: "gpt-4", window: 8_192 },
-  { match: "gpt-3.5", window: 16_385 },
-  { match: "deepseek", window: 64_000 },
-  { match: "qwen", window: 131_072 },
-  { match: "moonshot", window: 128_000 },
-];
 
 /** Look up the context-window size for a model id, or null if unknown. */
 export function lookupContextWindow(model: string): number | null {
-  const m = model.toLowerCase();
-  for (const entry of CONTEXT_WINDOWS) {
-    if (m.includes(entry.match)) return entry.window;
-  }
-  return null;
+  return modelContextWindow(model);
 }
 
 /**

@@ -1,15 +1,13 @@
-// /fork — spawn a sub-agent to continue from the current point (M18.2)
+// /fork — ask the model to explore an alternate path via a sub-agent (M18.2)
 // ============================================================
 // Where /branch splits the session into a separate resumable file, /fork
-// keeps the conversation in-place but immediately launches a fresh sub-agent
-// turn seeded with the current transcript summary. It's the "explore an
-// alternate path right now" counterpart to /branch's "save and switch later".
-//
-// Implementation: we inject a prompt that tells the model to spin up a
-// `general` sub-agent (via the task tool) carrying a one-paragraph recap of
-// the conversation so far. The prompt channel (CommandResult.prompt) runs it
-// through the normal agent loop, so the fork's tool calls and result render
-// like any other turn.
+// keeps the conversation in-place and injects a prompt ASKING the model to
+// spin up a `general` sub-agent (via the task tool) carrying a recap of the
+// conversation so far. (#45 honesty: nothing is spawned directly — the model
+// decides whether to honor the request, exactly like any other injected
+// prompt.) The prompt channel (CommandResult.prompt) runs it through the
+// normal agent loop, so the turn's tool calls and result render like any
+// other turn.
 // ============================================================
 import chalk from "chalk";
 import type { Message, TextContent } from "../types.js";
@@ -37,7 +35,7 @@ function recapOfMessages(messages: Message[]): string {
 
 export const forkCommand: SlashCommand = {
   name: "fork",
-  description: "Launch a sub-agent to explore an alternate path from here",
+  description: "Ask the model to explore an alternate path via a sub-agent",
   run: (args, ctx): CommandResult | undefined => {
     if (ctx.messages.length === 0) {
       console.log(chalk.yellow("  Nothing to fork — the conversation is empty."));

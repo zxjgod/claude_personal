@@ -8,6 +8,12 @@
 // ============================================================
 
 import Anthropic from "@anthropic-ai/sdk";
+import {
+  DEFAULT_ANTHROPIC_MODEL,
+  modelMaxOutput,
+  modelSupportsAdaptiveThinking,
+  modelSupportsEffort,
+} from "./model-metadata.js";
 import { checkResponseForCacheBreak, recordPromptState } from "./prompt-cache.js";
 import { DYNAMIC_BOUNDARY } from "./system-prompt.js";
 import { DEFAULT_MAX_RESULT_CHARS, truncateToolResult } from "./tools/truncation.js";
@@ -21,7 +27,7 @@ import type {
   ThinkingBlock,
   Tool,
 } from "./types.js";
-import { combineAbortSignals } from "./utils/cancellation.js";
+import { createStallController } from "./utils/cancellation.js";
 
 // --- Types kept intentionally local ---
 
@@ -34,8 +40,20 @@ type AnthropicTool = {
   name: string;
   description: string;
   input_schema: Tool["inputSchema"];
-  cache_control?: { type: "ephemeral" };
+  cache_control?: { type: "ephemeral"; ttl?: "1h" };
 };
+
+/**
+ * Cache breakpoint value. Default 5-minute TTL; `CCR_CACHE_TTL_1H=1` opts
+ * into the 1-hour extended TTL (Top10 follow-up A7②, user decision: OFF by
+ * default — 1h writes cost 2x vs 1.25x and only pay off for long sessions
+ * with >5-minute gaps between calls).
+ */
+function ephemeralCacheControl(): { type: "ephemeral"; ttl?: "1h" } {
+  return process.env.CCR_CACHE_TTL_1H === "1"
+    ? { type: "ephemeral", ttl: "1h" }
+    : { type: "ephemeral" };
+}
 
 // --- System prompt with cache_control ---
 
@@ -48,7 +66,7 @@ export function formatSystemForAnthropic(
       {
         type: "text",
         text: systemPrompt,
-        cache_control: { type: "ephemeral" },
+        cache_control: ephemeralCacheControl(),
       },
     ];
   }
@@ -61,7 +79,7 @@ export function formatSystemForAnthropic(
     blocks.push({
       type: "text",
       text: stable,
-      cache_control: { type: "ephemeral" },
+      cache_control: ephemeralCacheControl(),
     });
   }
   if (dynamic) {
@@ -233,15 +251,23 @@ export function formatToolsForAnthropic(tools: Tool[]): AnthropicTool[] {
   // LAST tool tells Anthropic to cache the whole tools prefix (which is stable
   // across a session), so subsequent turns read it from cache.
   if (formatted.length > 0) {
-    formatted[formatted.length - 1].cache_control = { type: "ephemeral" };
+    formatted[formatted.length - 1].cache_control = ephemeralCacheControl();
   }
   return formatted;
 }
 
 /**
- * Add a cache_control breakpoint to the last block of the last message (12.3).
- * Anthropic caches everything up to the breakpoint, so marking the tail of the
- * conversation lets the growing message history be reused turn-over-turn.
+ * Add cache_control breakpoints to the message history (12.3).
+ * Anthropic caches everything up to a breakpoint, so marking the tail lets
+ * the growing history be reused turn-over-turn.
+ *
+ * Long-turn insurance (Top10 follow-up A7①): a breakpoint only looks back
+ * ~20 content blocks for a prior cache entry — one turn dense with
+ * tool_use/tool_result pairs can exceed that and silently miss. When the
+ * history is long enough, ONE extra breakpoint is placed 15 blocks before the
+ * tail. Budget: tools(1) + system(1) + mid(1) + tail(1) = 4, exactly the API
+ * maximum — this function must never add more than two message breakpoints.
+ *
  * Returns a shallow-copied message array; never mutates the input.
  */
 export function withMessageCacheBreakpoint(messages: AnthropicMessage[]): AnthropicMessage[] {
@@ -251,10 +277,89 @@ export function withMessageCacheBreakpoint(messages: AnthropicMessage[]): Anthro
   const blocks = toContentBlocks(last.content);
   if (blocks.length === 0) return out;
   const newBlocks = blocks.map((b, i) =>
-    i === blocks.length - 1 ? { ...b, cache_control: { type: "ephemeral" } } : b,
+    i === blocks.length - 1 ? { ...b, cache_control: ephemeralCacheControl() } : b,
   );
   out[out.length - 1] = { ...last, content: newBlocks };
+
+  // Mid-history breakpoint, 15 blocks back from the end (only when the tail
+  // breakpoint's 20-block lookback could not reach the previous turn).
+  const sizes = out.map((m) =>
+    typeof m.content === "string" ? 1 : toContentBlocks(m.content).length,
+  );
+  const total = sizes.reduce((a, b) => a + b, 0);
+  if (total > 20) {
+    let target = total - 15; // 1-based ordinal of the block to mark
+    for (let mi = 0; mi < out.length; mi++) {
+      if (target > sizes[mi]) {
+        target -= sizes[mi];
+        continue;
+      }
+      const msg = out[mi];
+      if (typeof msg.content === "string") {
+        if (mi !== out.length - 1) {
+          out[mi] = {
+            ...msg,
+            content: [{ type: "text", text: msg.content, cache_control: ephemeralCacheControl() }],
+          };
+        }
+      } else {
+        // .slice() — toContentBlocks hands back the ORIGINAL array reference
+        // for array content, so writing mBlocks[bi] in place would mutate the
+        // caller's message (review follow-up #4: this function's contract is
+        // "never mutates the input"; the main path only escaped the bug
+        // because convertMessagesToAnthropic builds fresh arrays).
+        const mBlocks = toContentBlocks(msg.content).slice();
+        const bi = target - 1;
+        const isTailBlock = mi === out.length - 1 && bi === mBlocks.length - 1;
+        if (!isTailBlock && mBlocks[bi]) {
+          mBlocks[bi] = { ...mBlocks[bi], cache_control: ephemeralCacheControl() };
+          out[mi] = { ...msg, content: mBlocks };
+        }
+      }
+      break;
+    }
+  }
   return out;
+}
+
+// --- True token counting (Top10 follow-up A8) ---
+
+/**
+ * Exact prompt token count via Anthropic's count_tokens API. Char-ratio
+ * estimates drift from the real tokenizer by 15-35% depending on content
+ * (and the Opus 4.7+ tokenizer shifted counts further); this is the ground
+ * truth for the /context gauge and compaction-decision calibration.
+ * Best-effort: short timeout, null on ANY failure (missing key, non-Anthropic
+ * provider, network) — callers fall back to the estimator. Never call it per
+ * turn on the hot path.
+ */
+export async function countTokensAnthropic(
+  config: ModelConfig,
+  systemPrompt: string,
+  messages: Message[],
+  tools: Tool[],
+): Promise<number | null> {
+  if (config.provider !== "anthropic" || !config.apiKey) return null;
+  try {
+    const client = new Anthropic({
+      apiKey: config.apiKey,
+      baseURL: config.baseURL,
+      maxRetries: 0,
+      timeout: 8_000,
+    });
+    const res = await client.messages.countTokens({
+      model: config.model || DEFAULT_ANTHROPIC_MODEL,
+      system: systemPrompt,
+      messages: convertMessagesToAnthropic(messages, tools) as unknown as Anthropic.MessageParam[],
+      tools:
+        tools.length > 0
+          ? (formatToolsForAnthropic(tools) as unknown as Anthropic.Tool[])
+          : undefined,
+    });
+    return typeof res.input_tokens === "number" ? res.input_tokens : null;
+  } catch {
+    return null;
+  }
 }
 
 // --- Native Anthropic streaming caller ---
@@ -269,15 +374,23 @@ export const anthropicCaller: ModelCaller = async function* (
   const client = new Anthropic({
     apiKey: config.apiKey,
     baseURL: config.baseURL,
+    // The agent loop owns retry policy (error-recovery.ts budgets + backoff).
+    // The SDK default maxRetries:2 multiplied with it — a sustained 429 could
+    // fire ~12 requests for one logical call (Top10 follow-up A4).
+    maxRetries: 0,
   });
 
-  // Compose the caller's AbortSignal (Ctrl+C / turn abort) with a safety
-  // timeout so a hung provider connection can't pin the loop forever. The
-  // stream timeout is generous (5 min) because Anthropic streams chunks; the
-  // signal also lets the SDK abort the in-flight HTTP request promptly.
-  const STREAM_TIMEOUT_MS = 5 * 60 * 1000;
-  const combined = combineAbortSignals(abortSignal, STREAM_TIMEOUT_MS);
+  // Compose the caller's AbortSignal (Ctrl+C / turn abort) with a STALL
+  // timeout so a hung provider connection can't pin the loop forever — but a
+  // long turn that keeps streaming is never killed (review follow-up #3: the
+  // old wall-clock 5min cap died mid-generation on 128K-output turns). The
+  // loop below calls touch() per event (pings included); the signal also lets
+  // the SDK abort the in-flight HTTP request promptly.
+  const STREAM_STALL_TIMEOUT_MS = 5 * 60 * 1000;
+  const combined = createStallController(abortSignal, STREAM_STALL_TIMEOUT_MS);
   const combinedSignal = combined.signal;
+
+  const model = config.model || DEFAULT_ANTHROPIC_MODEL;
 
   // Phase 1 of cache-break detection: hash the cacheable prefix + tools so the
   // post-call check can attribute a cache miss to the exact cause.
@@ -285,45 +398,54 @@ export const anthropicCaller: ModelCaller = async function* (
     {
       systemPrompt,
       tools,
-      model: config.model || "claude-opus-4-8",
+      model,
       effort: getEffort(config.options),
     },
     messages,
   );
+  // Adaptive thinking is an Opus 4.6+ / Sonnet 4.6+ / Sonnet 5 / Fable 5
+  // feature; sending `thinking: {type:"adaptive"}` to a model without it
+  // (Sonnet 4.5, Haiku 4.5, legacy) is a 400. The default is now gated on the
+  // capability table; an explicit options.thinking still wins (caller's call).
+  const thinking = (config.options?.thinking ??
+    (modelSupportsAdaptiveThinking(model) ? { type: "adaptive" } : undefined)) as
+    | Anthropic.ThinkingConfigParam
+    | undefined;
 
-  // Claude 4.8 benefits from adaptive thinking; harmlessly omitted when the
-  // caller uses a non-Claude provider because this adapter only runs for
-  // provider="anthropic". An explicit options.thinking still wins.
-  const thinking = (config.options?.thinking ?? {
-    type: "adaptive",
-  }) as Anthropic.ThinkingConfigParam;
-  const thinkingEnabled =
-    typeof thinking === "object" && (thinking as { type?: string }).type !== "disabled";
+  // Per-model output cap from the metadata table (e.g. Haiku 4.5 streams to
+  // 64K, not the 128K raise ceiling) — an explicit LLM_MAX_TOKENS override
+  // must never exceed what the model accepts.
+  const maxTokens = Math.min(
+    resolveEffortMaxTokens(getEffort(config.options), config.maxTokens),
+    modelMaxOutput(model) ?? Number.POSITIVE_INFINITY,
+  );
+
+  // output_config.effort is a documented 400 on Sonnet 4.5 / Haiku 4.5 —
+  // gate on the capability table (Top10 follow-up A5). An explicit
+  // options.output_config still wins.
+  const outputConfig =
+    config.options?.output_config ??
+    (modelSupportsEffort(model)
+      ? { effort: anthropicEffort(getEffort(config.options)) }
+      : undefined);
 
   const stream = client.messages.stream(
     {
-      model: config.model || "claude-opus-4-8",
-      max_tokens: resolveEffortMaxTokens(getEffort(config.options), config.maxTokens),
+      model,
+      max_tokens: maxTokens,
       system: formatSystemForAnthropic(systemPrompt),
       messages: withMessageCacheBreakpoint(
         convertMessagesToAnthropic(messages, tools),
       ) as unknown as Anthropic.MessageParam[],
       tools: tools.length > 0 ? formatToolsForAnthropic(tools) : undefined,
-      thinking,
-      // The /effort tier drives reasoning depth. An explicit output_config in
-      // options still wins; otherwise map the tier (default "high").
-      output_config: (config.options?.output_config ?? {
-        effort: anthropicEffort(getEffort(config.options)),
-      }) as Anthropic.OutputConfig,
+      ...(thinking ? { thinking } : {}),
+      ...(outputConfig ? { output_config: outputConfig as Anthropic.OutputConfig } : {}),
     },
     {
       signal: combinedSignal,
-      // Interleaved thinking beta (SDK 0.105 has no `betas` request param, so
-      // go through RequestOptions.headers). Lets thinking blocks appear between
-      // tool_use rounds in one turn; required for the passback invariant below.
-      ...(thinkingEnabled
-        ? { headers: { "anthropic-beta": "interleaved-thinking-2025-05-14" } }
-        : {}),
+      // The old `interleaved-thinking-2025-05-14` beta header is GONE:
+      // adaptive thinking enables interleaving automatically, and the header
+      // is on the API's remove-list (Top10 follow-up #28).
     },
   );
 
@@ -357,6 +479,7 @@ export const anthropicCaller: ModelCaller = async function* (
     const emittedToolUseIds = new Set<string>();
 
     for await (const event of stream) {
+      combined.touch(); // stall watchdog: any stream activity rearms the timer
       if (abortSignal?.aborted) break;
       if (event.type === "content_block_start") {
         if (event.content_block.type === "tool_use") {

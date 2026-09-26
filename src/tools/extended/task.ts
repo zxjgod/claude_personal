@@ -105,8 +105,6 @@ export const TaskTool: Tool = buildTool({
   requiresApproval: false,
   isConcurrencySafe: true,
   timeoutMs: 15 * 60 * 1000,
-  searchHint: "task subagent fork parallel agent",
-  aliases: ["subagent", "spawn", "agent"],
 
   async call(input, context): Promise<ToolResult> {
     // --- Setup sub-agent ---

@@ -25,9 +25,20 @@
 //
 // Only tool-mediated writes are tracked. Files mutated by Bash (shell
 // commands) are outside this net — same caveat as the session /diff view.
+//
+// Persistence (Top10 follow-up C8): shadows and turn boundaries are mirrored
+// to `.claude/checkpoints/<bucket>/` — content-addressed blobs plus a
+// state.json index — so /rewind survives a process restart or /resume (it
+// used to be pure memory: kill the CLI and every checkpoint was gone). The
+// mirror is best-effort: any I/O failure degrades to the old memory-only
+// behavior, never breaking a tool write. In-memory retention is bounded
+// (MAX_CHECKPOINT_MEMORY_BYTES): older turn snapshots live on disk only and
+// are re-read lazily by restoreToTurn.
 // ============================================================
 
+import { createHash } from "node:crypto";
 import fs from "node:fs";
+import nodePath from "node:path";
 import { forgetChanges } from "./change-tracker.js";
 import { refreshRead } from "./read-tracker.js";
 
@@ -51,6 +62,208 @@ const sessions = new Map<string, SessionCheckpoints>();
 // messages can be GC'd with the conversation they belong to.
 const turnTags = new WeakMap<object, number>();
 
+// ============================================================
+// Disk persistence (Top10 follow-up C8)
+// ============================================================
+
+/** On-disk shape of one bucket's index. Blob ids are sha256 hex; `null`
+ *  content ("file did not exist") needs no blob. */
+interface PersistedBucket {
+  version: 1;
+  currentTurn: number;
+  originals: Record<string, { blob: string | null; firstWriteTurn: number }>;
+  turns: Record<string, { ts: number; files: Record<string, string | null> }>;
+}
+
+/** Soft cap on checkpoint CONTENT bytes held in memory per process. Beyond
+ *  it, older turn snapshots are dropped from memory (disk copy remains and
+ *  restoreToTurn re-reads them lazily). */
+const MAX_CHECKPOINT_MEMORY_BYTES = 64 * 1024 * 1024;
+
+/** Root for persisted checkpoints. Same workspace resolution as the CLI
+ *  (WORKSPACE_ROOT env, else cwd) — checkpoint APIs only carry sessionId. */
+function checkpointRoot(): string {
+  const ws = process.env.WORKSPACE_ROOT || process.cwd();
+  return nodePath.join(ws, ".claude", "checkpoints");
+}
+
+function bucketDir(key: string): string {
+  return nodePath.join(checkpointRoot(), key.replace(/[^a-zA-Z0-9_.-]/g, "_"));
+}
+
+function writeBlob(key: string, content: string | null): string | null {
+  if (content === null) return null;
+  try {
+    const hash = createHash("sha256").update(content).digest("hex");
+    const dir = nodePath.join(bucketDir(key), "blobs");
+    const file = nodePath.join(dir, hash);
+    if (!fs.existsSync(file)) {
+      fs.mkdirSync(dir, { recursive: true });
+      const tmp = `${file}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, content, "utf-8");
+      fs.renameSync(tmp, file);
+    }
+    return hash;
+  } catch {
+    return null; // best-effort: memory copy still works
+  }
+}
+
+/**
+ * Read a content blob. THREE states (review follow-up #7③):
+ *  - `string` — the blob's content;
+ *  - `null` — the shadow legitimately recorded "file did not exist" (hash is
+ *    null); a restore DELETES the file for this;
+ *  - `undefined` — the blob is missing/unreadable on disk. Must NEVER be
+ *    conflated with null: a lost blob would otherwise tell restoreToTurn the
+ *    file never existed and get it DELETED. Callers skip undefined paths.
+ */
+function readBlob(key: string, hash: string | null): string | null | undefined {
+  if (hash === null) return null;
+  try {
+    return fs.readFileSync(nodePath.join(bucketDir(key), "blobs", hash), "utf-8");
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Blob GC (review follow-up #7①): content-addressed blobs are shared, and
+ * rewinds/prunes only drop their state.json references — the files themselves
+ * used to leak forever. Delete every blob the FRESH on-disk index no longer
+ * references. Best-effort; runs after a rewind (the only pruning event).
+ */
+function gcBlobs(key: string): void {
+  try {
+    const mirror = loadPersisted(key); // fresh from disk, not the in-memory copy
+    const dir = nodePath.join(bucketDir(key), "blobs");
+    const reachable = new Set<string>();
+    for (const o of Object.values(mirror?.originals ?? {})) {
+      if (o.blob) reachable.add(o.blob);
+    }
+    for (const t of Object.values(mirror?.turns ?? {})) {
+      for (const b of Object.values(t.files)) if (b) reachable.add(b);
+    }
+    for (const name of fs.readdirSync(dir)) {
+      if (!reachable.has(name)) {
+        try {
+          fs.unlinkSync(nodePath.join(dir, name));
+        } catch {
+          /* another process may hold it — skip */
+        }
+      }
+    }
+  } catch {
+    /* no blobs dir / unreadable index — nothing to GC */
+  }
+}
+
+/** Full index (mirror of memory + any turns evicted from memory). Kept per
+ *  bucket so persistState never needs the evicted contents in RAM. */
+const diskMirrors = new Map<string, PersistedBucket>();
+
+function persistState(key: string, s: SessionCheckpoints): void {
+  try {
+    let mirror = diskMirrors.get(key);
+    if (!mirror) {
+      mirror = { version: 1, currentTurn: 0, originals: {}, turns: {} };
+      diskMirrors.set(key, mirror);
+    }
+    mirror.currentTurn = s.currentTurn;
+    for (const [path, firstTurn] of s.firstWriteTurn) {
+      if (!mirror.originals[path]) {
+        const content = s.originals.get(path) ?? null;
+        const blob = writeBlob(key, content);
+        // A FAILED blob write (non-null content, null hash) must not persist
+        // as blob:null — hydration would read that as "file did not exist
+        // pre-session" and a rewind would DELETE the file (#7③). Skip the
+        // entry; the next persistState retries.
+        if (content !== null && blob === null) continue;
+        mirror.originals[path] = { blob, firstWriteTurn: firstTurn };
+      }
+    }
+    // Drop pruned entries from the mirror (rewind/reset hygiene).
+    for (const path of Object.keys(mirror.originals)) {
+      if (!s.firstWriteTurn.has(path)) delete mirror.originals[path];
+    }
+    for (const t of Object.keys(mirror.turns)) {
+      if (!s.turnTimestamps.has(Number(t)) && !s.turnSnapshots.has(Number(t))) {
+        // Keep turns that are only on disk (memory-evicted) — they are still
+        // rewound-able; drop turns the session actually pruned.
+        const pruned = Number(t) > s.currentTurn || !diskTurnLive(key, s, Number(t));
+        if (pruned) delete mirror.turns[t];
+      }
+    }
+    const dir = bucketDir(key);
+    fs.mkdirSync(dir, { recursive: true });
+    const file = nodePath.join(dir, "state.json");
+    const tmp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(mirror), "utf-8");
+    fs.renameSync(tmp, file);
+  } catch {
+    // Best-effort mirror; memory checkpoints keep working.
+  }
+}
+
+/** A turn is live if memory still has it OR it was recorded and not rewound
+ *  past. Simple monotonic rule: turns ≤ currentTurn that were ever written. */
+function diskTurnLive(_key: string, s: SessionCheckpoints, turn: number): boolean {
+  return turn <= s.currentTurn;
+}
+
+function loadPersisted(key: string): PersistedBucket | null {
+  try {
+    const raw = fs.readFileSync(nodePath.join(bucketDir(key), "state.json"), "utf-8");
+    const parsed = JSON.parse(raw) as PersistedBucket;
+    return parsed && parsed.version === 1 ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Approximate content bytes currently held in memory for a bucket. */
+function memoryBytes(s: SessionCheckpoints): number {
+  let bytes = 0;
+  for (const c of s.originals.values()) bytes += c?.length ?? 0;
+  for (const snap of s.turnSnapshots.values()) {
+    for (const c of snap.values()) bytes += c?.length ?? 0;
+  }
+  return bytes;
+}
+
+/** Evict the OLDEST turn snapshots from memory until under the byte cap.
+ *  Disk copies remain; restoreToTurn re-reads them lazily. */
+function evictToMemoryCap(s: SessionCheckpoints): void {
+  while (memoryBytes(s) > MAX_CHECKPOINT_MEMORY_BYTES && s.turnSnapshots.size > 1) {
+    let oldest = Number.POSITIVE_INFINITY;
+    for (const t of s.turnSnapshots.keys()) if (t < oldest) oldest = t;
+    if (oldest === Number.POSITIVE_INFINITY) break;
+    s.turnSnapshots.delete(oldest);
+  }
+}
+
+/** Boundary lookup with disk fallback (memory-evicted or hydrated buckets). */
+function boundaryFor(
+  key: string,
+  s: SessionCheckpoints,
+  turn: number,
+): Map<string, string | null> | undefined {
+  const inMemory = s.turnSnapshots.get(turn);
+  if (inMemory) return inMemory;
+  const mirror = diskMirrors.get(key) ?? loadPersisted(key);
+  const entry = mirror?.turns[String(turn)];
+  if (!entry) return undefined;
+  const out = new Map<string, string | null>();
+  for (const [path, blob] of Object.entries(entry.files)) {
+    const content = readBlob(key, blob);
+    // A lost blob (undefined) is skipped, leaving the path "not tracked at
+    // this boundary" — restoreToTurn then leaves the file untouched instead
+    // of misreading the loss as "did not exist" and deleting it (#7③).
+    if (content !== undefined) out.set(path, content);
+  }
+  return out;
+}
+
 /**
  * Normalize a bucket key: sub-agent forks (`<parent>-agent-<ts>`) share the
  * PARENT's bucket so their file writes rewind with the parent conversation.
@@ -71,6 +284,27 @@ function bucket(sessionId: string): SessionCheckpoints {
       turnTimestamps: new Map(),
       contentCache: new Map(),
     };
+    // Hydrate from the disk mirror (Top10 follow-up C8): a restarted/resumed
+    // process regains the shadows and turn index, so /rewind can still
+    // restore files. Turn SNAPSHOT contents stay lazy (boundaryFor reads
+    // blobs on demand) to keep hydration cheap.
+    const persisted = loadPersisted(key);
+    if (persisted) {
+      diskMirrors.set(key, persisted);
+      s.currentTurn = persisted.currentTurn;
+      for (const [p, o] of Object.entries(persisted.originals ?? {})) {
+        // Undefined = blob lost on disk. Keep the firstWriteTurn bookkeeping
+        // but NO originals entry: restoreToTurn iterates originals, so the
+        // path is skipped (file untouched) instead of being deleted as a
+        // phantom "session-created" file (#7③).
+        const content = readBlob(key, o.blob);
+        if (content !== undefined) s.originals.set(p, content);
+        s.firstWriteTurn.set(p, o.firstWriteTurn);
+      }
+      for (const [t, entry] of Object.entries(persisted.turns ?? {})) {
+        s.turnTimestamps.set(Number(t), entry.ts);
+      }
+    }
     sessions.set(key, s);
   }
   return s;
@@ -117,8 +351,16 @@ function invalidateCache(s: SessionCheckpoints, filePath: string): void {
   s.contentCache.delete(filePath);
 }
 
-/** Upper bound on retained boundary snapshots (memory guard). Rewinds to
- *  turns older than the retained window become conversation-only. */
+/**
+ * Upper bound on boundary snapshots held IN MEMORY (memory guard). Review
+ * follow-up #7②: the old comment claimed older turns "become conversation-
+ * only" — since C8 that is false. A memory-pruned turn's snapshot still lives
+ * on disk (state.json + blobs) and boundaryFor() serves it lazily, so rewinds
+ * past this window still restore files. Timestamps are deliberately KEPT here
+ * so /rewind's turn list stays complete and matches what a restart would
+ * re-hydrate (previously a turn vanished from the list at the 100-cap and
+ * reappeared after a restart).
+ */
 const MAX_TURN_SNAPSHOTS = 100;
 
 function pruneOldestSnapshots(s: SessionCheckpoints): void {
@@ -129,8 +371,7 @@ function pruneOldestSnapshots(s: SessionCheckpoints): void {
     let oldest = Number.POSITIVE_INFINITY;
     for (const t of s.turnSnapshots.keys()) if (t < oldest) oldest = t;
     if (oldest === Number.POSITIVE_INFINITY) break;
-    s.turnSnapshots.delete(oldest);
-    s.turnTimestamps.delete(oldest);
+    s.turnSnapshots.delete(oldest); // disk copy survives; boundaryFor re-reads
   }
 }
 
@@ -142,6 +383,7 @@ function pruneOldestSnapshots(s: SessionCheckpoints): void {
  * Returns the 1-based turn index.
  */
 export function beginUserTurn(sessionId: string, msg?: object): number {
+  const key = bucketKey(sessionId);
   const s = bucket(sessionId);
   s.currentTurn += 1;
   const snapshot = new Map<string, string | null>();
@@ -149,6 +391,30 @@ export function beginUserTurn(sessionId: string, msg?: object): number {
   s.turnSnapshots.set(s.currentTurn, snapshot);
   s.turnTimestamps.set(s.currentTurn, Date.now());
   pruneOldestSnapshots(s);
+  // Memory cap: oldest snapshots may live on disk only from here on (C8).
+  evictToMemoryCap(s);
+  // Mirror the boundary to disk: blobs for each tracked file's content plus
+  // the index entry. Best-effort — failures keep the memory checkpoint alive.
+  try {
+    let mirror = diskMirrors.get(key);
+    if (!mirror) {
+      mirror = { version: 1, currentTurn: 0, originals: {}, turns: {} };
+      diskMirrors.set(key, mirror);
+    }
+    const files: Record<string, string | null> = {};
+    for (const [p, c] of snapshot) {
+      if (c === null) files[p] = null;
+      else {
+        const blob = writeBlob(key, c);
+        if (blob !== null) files[p] = blob;
+      }
+    }
+    mirror.turns[String(s.currentTurn)] = { ts: s.turnTimestamps.get(s.currentTurn)!, files };
+    mirror.currentTurn = s.currentTurn;
+    persistState(key, s);
+  } catch {
+    // best-effort
+  }
   if (msg !== undefined) turnTags.set(msg, s.currentTurn);
   return s.currentTurn;
 }
@@ -166,10 +432,14 @@ export function turnOfMessage(msg: object): number | null {
  * follow. Also records the turn of the first write (restore targeting).
  */
 export function shadowBeforeWrite(sessionId: string, filePath: string): void {
+  const key = bucketKey(sessionId);
   const s = bucket(sessionId);
   if (!s.originals.has(filePath)) {
     s.originals.set(filePath, snapshotAt(s, filePath));
     s.firstWriteTurn.set(filePath, Math.max(1, s.currentTurn));
+    // Persist the new shadow (C8) so a kill before the turn boundary still
+    // leaves the pre-session original recoverable.
+    persistState(key, s);
   }
   // A tool write follows IMMEDIATELY after this call — whatever the capture
   // just cached is about to be stale, and the write can land within the same
@@ -195,10 +465,13 @@ export interface RestoreResult {
  * Never throws — a failed write is skipped (reported by absence).
  */
 export function restoreToTurn(sessionId: string, turn: number): RestoreResult {
-  const s = sessions.get(bucketKey(sessionId));
-  if (!s) return { restored: [], deleted: [] };
+  const key = bucketKey(sessionId);
+  // bucket() (not the raw map) so a restarted process hydrates the disk
+  // mirror and can still rewind (Top10 follow-up C8).
+  const s = bucket(sessionId);
+  if (s.currentTurn === 0 && s.originals.size === 0) return { restored: [], deleted: [] };
   const target = Math.max(1, turn);
-  const boundary = s.turnSnapshots.get(target);
+  const boundary = boundaryFor(key, s, target);
   const restored: string[] = [];
   const deleted: string[] = [];
   const failures: Array<{ path: string; error: string }> = [];
@@ -284,23 +557,41 @@ export function restoreToTurn(sessionId: string, turn: number): RestoreResult {
   }
   // Roll the counter back so the next boundary reuses `target`.
   s.currentTurn = Math.min(s.currentTurn, target - 1);
+  // Prune the disk mirror the same way (C8): rewound-away turns and shadows
+  // must not survive on disk, or a restart would resurrect future state.
+  const mirror = diskMirrors.get(key);
+  if (mirror) {
+    for (const t of Object.keys(mirror.turns)) {
+      if (Number(t) >= target) delete mirror.turns[t];
+    }
+    for (const [p, o] of Object.entries(mirror.originals)) {
+      if (o.firstWriteTurn >= target) delete mirror.originals[p];
+    }
+  }
+  persistState(key, s);
+  // The prune above orphaned blobs (state.json references dropped, files left
+  // behind) — reclaim them now (#7①). A rewind is the only pruning event, so
+  // this is the only place GC needs to run; resetCheckpoints rm -rf's the
+  // whole bucket anyway.
+  gcBlobs(key);
   return { restored, deleted };
 }
 
-/** Files modified so far this session (path → first-write turn). */
+/** Files modified so far this session (path → first-write turn). Hydrates
+ *  from the disk mirror after a restart (C8). */
 export function changedFiles(sessionId: string): Map<string, number> {
-  const s = sessions.get(bucketKey(sessionId));
-  return s ? new Map(s.firstWriteTurn) : new Map();
+  const s = bucket(sessionId);
+  return new Map(s.firstWriteTurn);
 }
 
-/** Turn boundaries recorded so far: [{turn, timestamp, filesChanged}]. */
+/** Turn boundaries recorded so far: [{turn, timestamp, filesChanged}].
+ *  Hydrates from the disk mirror after a restart (C8). */
 export function listTurns(sessionId: string): Array<{
   turn: number;
   timestamp: number;
   filesChanged: number;
 }> {
-  const s = sessions.get(bucketKey(sessionId));
-  if (!s) return [];
+  const s = bucket(sessionId);
   const out: Array<{ turn: number; timestamp: number; filesChanged: number }> = [];
   for (const [turn, timestamp] of s.turnTimestamps) {
     // The turn's own edits are the ones whose first write is exactly `turn`.
@@ -311,14 +602,35 @@ export function listTurns(sessionId: string): Array<{
   return out.sort((a, b) => a.turn - b.turn);
 }
 
-/** Clear checkpoints for a session (e.g. on /clear). */
+/** Clear checkpoints for a session (e.g. on /clear) — memory AND disk (C8). */
 export function resetCheckpoints(sessionId: string): void {
-  sessions.delete(bucketKey(sessionId));
+  const key = bucketKey(sessionId);
+  sessions.delete(key);
+  diskMirrors.delete(key);
+  try {
+    fs.rmSync(bucketDir(key), { recursive: true, force: true });
+  } catch {
+    // best-effort cleanup
+  }
 }
 
-/** Test/util: clear everything. */
+/** Test/util: clear everything — memory buckets, disk mirrors, and the
+ *  persisted checkpoint tree for the current workspace root. */
 export function resetAllCheckpoints(): void {
   sessions.clear();
+  diskMirrors.clear();
+  try {
+    fs.rmSync(checkpointRoot(), { recursive: true, force: true });
+  } catch {
+    // best-effort cleanup
+  }
+}
+
+/** Test-only: drop in-memory state WITHOUT touching disk — simulates a
+ *  process restart so hydration-from-disk paths can be exercised. */
+export function __clearCheckpointMemoryForTests(): void {
+  sessions.clear();
+  diskMirrors.clear();
 }
 
 function dirname(p: string): string {

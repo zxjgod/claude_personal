@@ -119,10 +119,45 @@ export class SessionTranscript {
     return next;
   }
 
+  /**
+   * Highest seq already on disk for this session, or -1 when there is no
+   * (readable) transcript. Reads only the tail; a crash-truncated last line
+   * is skipped by scanning upward for the first parseable entry.
+   */
+  private lastSeqOnDisk(sessionId: string): number {
+    try {
+      const file = this.filePath(sessionId);
+      const size = fs.statSync(file).size;
+      const fd = fs.openSync(file, "r");
+      try {
+        const len = Math.min(size, 65_536);
+        const buf = Buffer.alloc(len);
+        fs.readSync(fd, buf, 0, len, size - len);
+        const lines = buf.toString("utf-8").split("\n").filter(Boolean);
+        for (let i = lines.length - 1; i >= 0; i--) {
+          try {
+            const parsed = JSON.parse(lines[i]!) as { seq?: unknown };
+            if (typeof parsed.seq === "number") return parsed.seq;
+          } catch {}
+        }
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch {
+      // No transcript yet — start at 0.
+    }
+    return -1;
+  }
+
   private writeSerialized(sessionId: string, entry: TranscriptInput): void {
     fs.mkdirSync(this.sessionsDir, { recursive: true });
 
-    const seq = this.seqs.get(sessionId) ?? 0;
+    // Continue the numbering from the existing file when this process hasn't
+    // written this session yet (Top10 follow-up C2): the per-process counter
+    // used to restart at 0 on every resume/restart, appending DUPLICATE seq
+    // values and corrupting replay ordering.
+    let seq = this.seqs.get(sessionId);
+    if (seq === undefined) seq = this.lastSeqOnDisk(sessionId) + 1;
     this.seqs.set(sessionId, seq + 1);
 
     const full: TranscriptEntry = {

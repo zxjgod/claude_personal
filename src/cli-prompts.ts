@@ -8,6 +8,7 @@
 
 import * as readline from "node:readline";
 import chalk from "chalk";
+import { logPermissionChange } from "./audit-log.js";
 import { loadPersistentAlwaysAllow, savePersistentAlwaysAllow } from "./permission-policy.js";
 import { promptPermissionMenu, promptSelectMenu } from "./tui/cli-interactive.js";
 import { renderPermissionPrompt } from "./tui/cli-renderer.js";
@@ -89,6 +90,13 @@ export function createUserPrompters(deps: {
       if (choice === "always") {
         alwaysAllow.add(key);
         savePersistentAlwaysAllow(alwaysAllow);
+        // Top10 follow-up A8: an always-allow grant CHANGES the security
+        // posture — it must leave an audit trail (permission_change was a
+        // declared-but-never-written operation type).
+        void logPermissionChange({
+          change: `always-allow: ${key}`,
+          workspaceRoot: process.env.WORKSPACE_ROOT || process.cwd(),
+        }).catch(() => {});
         // P2-2: Show confirmation feedback for "always allow"
         const target = detail || tool.name;
         console.log(chalk.green(`  ✓ 已记住: ${target} (本会话内不再询问)`));
@@ -106,6 +114,10 @@ export function createUserPrompters(deps: {
     if (answer === "a" || answer === "always") {
       alwaysAllow.add(key);
       savePersistentAlwaysAllow(alwaysAllow);
+      void logPermissionChange({
+        change: `always-allow: ${key}`,
+        workspaceRoot: process.env.WORKSPACE_ROOT || process.cwd(),
+      }).catch(() => {});
       // P2-2: Show confirmation feedback for "always allow"
       const target =
         (typeof input.command === "string" && input.command) ||

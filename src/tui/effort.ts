@@ -12,6 +12,7 @@
 // ============================================================
 
 import chalk from "chalk";
+import { isOpenAIReasoningModel } from "../model-metadata.js";
 
 /** Ordered effort tiers, low (fastest) → max (smartest). */
 export const EFFORT_GRADIENT = ["low", "medium", "high", "xhigh", "max"] as const;
@@ -171,10 +172,27 @@ export function withEffortInstruction(
   return `${systemPrompt}\n\n${getEffortStrategy(options).instruction}`;
 }
 
-/** Respect an explicit max-token ceiling while still differentiating defaults. */
+/**
+ * Hard ceiling for an explicitly RAISED max-tokens override: 128K — the
+ * streaming output cap of every current model family (Anthropic 1M-context
+ * models stream to 128K; Haiku 4.5 caps at 64K, and the adapters additionally
+ * clamp to the per-model maxOutput from model-metadata).
+ */
+export const STREAM_SAFE_MAX_OUTPUT_TOKENS = 131_072;
+
+/**
+ * Resolve the per-turn max output tokens. The tier default differentiates the
+ * levels; an explicit LLM_MAX_TOKENS override is authoritative and may RAISE
+ * the tier default as well as lower it (user decision 2026-09: streaming cap
+ * 128K). The old Math.min(configured, tierMax) could only lower — with the
+ * high tier's 8192 default, long outputs routinely hit the slow
+ * truncate→continue path.
+ */
 export function resolveEffortMaxTokens(level: EffortLevel, configured?: number): number {
-  const ceiling = configured ?? effortStrategy(level).maxOutputTokens;
-  return Math.max(1, Math.min(ceiling, effortStrategy(level).maxOutputTokens));
+  if (configured !== undefined && Number.isFinite(configured) && configured > 0) {
+    return Math.max(1, Math.min(Math.floor(configured), STREAM_SAFE_MAX_OUTPUT_TOKENS));
+  }
+  return effortStrategy(level).maxOutputTokens;
 }
 
 /** One-line description per tier, mirroring the Claude Code slider semantics. */
@@ -259,8 +277,11 @@ export function openaiReasoningEffort(effort: EffortLevel): "low" | "medium" | "
 /**
  * Heuristic: does this model honor `reasoning_effort`? Only reasoning-capable
  * models do; sending it to a plain chat model can 400 on strict providers.
+ * The model-metadata table is consulted first (single source of truth); the
+ * legacy regexes remain as the fallback for unlisted models.
  */
 export function modelSupportsReasoningEffort(provider: string, model: string): boolean {
+  if (isOpenAIReasoningModel(model)) return true;
   if (provider === "openai") {
     return /^(o\d|gpt-5|gpt-4\.\d-?(o|reason))/i.test(model) || /reason|think/i.test(model);
   }

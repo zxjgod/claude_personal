@@ -300,8 +300,6 @@ export const WebSearchTool: Tool = buildTool({
   schema: WebSearchSchema,
   isReadOnly: true,
   isConcurrencySafe: true,
-  searchHint: "search web internet find information",
-  aliases: ["search"],
 
   async call(input): Promise<ToolResult> {
     const errors: string[] = [];

@@ -313,25 +313,39 @@ export function buildSystemPrompt(options: SystemPromptOptions): string[] {
   ];
 
   // --- Dynamic suffix (below the boundary; values drift at runtime) ---
+  // Ordered MOST STABLE FIRST (Top10 follow-up A7③): prefix caching
+  // invalidates everything after the first changed byte, so the drift-prone
+  // blocks (date → git → MCP) go LAST. The old order put the date first —
+  // one midnight rollover re-paid the full write price for CLAUDE.md, env and
+  // everything below it; now a date change only invalidates date+git+mcp.
   const dynamicBlocks: string[] = [DYNAMIC_BOUNDARY];
 
-  dynamicBlocks.push(buildDateReminder());
-  dynamicBlocks.push(computeEnvInfo(options.workspaceRoot, options.model));
+  // Scratchpad: constant text — the most stable block below the boundary.
+  dynamicBlocks.push(
+    "[SCRATCHPAD]\nThink step by step before acting on complex tasks. Plan, then execute.",
+  );
 
   if (options.claudeMdContent) {
+    // Session-stable (the file rarely changes mid-session).
     dynamicBlocks.push(`[PROJECT CONTEXT from CLAUDE.md]\n${options.claudeMdContent}`);
   }
-  if (options.gitStatus) {
-    dynamicBlocks.push(`[GIT STATUS]\n${options.gitStatus}`);
-  }
+  dynamicBlocks.push(computeEnvInfo(options.workspaceRoot, options.model));
   if (options.languagePreference) {
     dynamicBlocks.push(
       `[LANGUAGE PREFERENCE]\nThe user prefers responses in: ${options.languagePreference}`,
     );
   }
+
+  // Daily drift: the one value most likely to silently bust a cache.
+  dynamicBlocks.push(buildDateReminder());
+
+  // Per-turn drift: the git snapshot refreshes between turns.
+  if (options.gitStatus) {
+    dynamicBlocks.push(`[GIT STATUS]\n${options.gitStatus}`);
+  }
   if (options.mcpInstructions) {
     // MCP servers connect/disconnect between turns, so this is intentionally
-    // cache-busting when present.
+    // cache-busting when present — and therefore LAST.
     dynamicBlocks.push(
       DANGEROUS_uncachedSystemPromptSection(
         "mcp_instructions",
@@ -340,10 +354,6 @@ export function buildSystemPrompt(options: SystemPromptOptions): string[] {
       ),
     );
   }
-  // Scratchpad: a stable reminder that the model may think before acting.
-  dynamicBlocks.push(
-    "[SCRATCHPAD]\nThink step by step before acting on complex tasks. Plan, then execute.",
-  );
 
   return [...staticBlocks, ...dynamicBlocks];
 }
