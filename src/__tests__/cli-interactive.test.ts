@@ -3,12 +3,14 @@
 // ============================================================
 
 import { EventEmitter } from "node:events";
+import chalk from "chalk";
 import { describe, expect, it } from "vitest";
 import {
   type CommandInfo,
   createRawInputReader,
   promptPermissionMenu,
 } from "../tui/cli-interactive.js";
+import { palette } from "../tui/theme.js";
 
 // A fake raw-mode TTY stdin we can push keystrokes into.
 class FakeStdin extends EventEmitter {
@@ -54,6 +56,25 @@ const COMMANDS: CommandInfo[] = [
 ];
 
 describe("createRawInputReader (TTY)", () => {
+  it("renders gray slash suggestions with a lavender selected row", async () => {
+    const previousLevel = chalk.level;
+    chalk.level = 3;
+    const input = new FakeStdin();
+    const { out, chunks } = fakeStdout();
+    const reader = createRawInputReader({ commands: COMMANDS, input: input as any, output: out });
+    try {
+      const pending = reader.readInput();
+      input.key("/");
+      const frame = chunks.join("");
+      expect(frame).toContain(chalk.hex(palette.commandSelected)("❯ /help     Show help"));
+      expect(frame).toContain(chalk.hex(palette.secondary)("  /clear    Clear history"));
+      reader.close();
+      await expect(pending).resolves.toBeNull();
+    } finally {
+      reader.close();
+      chalk.level = previousLevel;
+    }
+  });
   it("close resolves an outstanding input read and removes its listener", async () => {
     const input = new FakeStdin();
     const { out } = fakeStdout();

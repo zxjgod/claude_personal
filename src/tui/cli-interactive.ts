@@ -15,8 +15,7 @@
 import chalk from "chalk";
 import { t } from "./i18n.js";
 import { terminalColumns, truncateVisual, visualWidth } from "./terminal-width.js";
-
-const CLAUDE_ORANGE = chalk.rgb(215, 119, 87);
+import { palette } from "./theme.js";
 
 export interface CommandInfo {
   name: string;
@@ -283,10 +282,8 @@ export function createRawInputReader(opts: {
         const selected = i === state.selected;
         const name = ("/" + s.name).padEnd(nameWidth + 1);
         const desc = truncate(s.description, width - nameWidth - 3);
-        const row = selected
-          ? CLAUDE_ORANGE(name) + " " + chalk.white(desc)
-          : chalk.cyan(name) + " " + chalk.dim(desc);
-        lines.push((selected ? chalk.dim("❯ ") : "  ") + row);
+        const color = chalk.hex(selected ? palette.commandSelected : palette.secondary);
+        lines.push(color(`${selected ? "❯ " : "  "}${name} ${desc}`));
       }
     } else {
       lines.push(chalk.dim("  ? for shortcuts"));

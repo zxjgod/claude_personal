@@ -1112,9 +1112,9 @@ export function InputBox({
                 const realIdx = start + i;
                 const sel = realIdx === safeSelected;
                 return (
-                  <Text key={s.name} color={sel ? palette.accent : palette.command}>
+                  <Text key={s.name} color={sel ? palette.commandSelected : palette.secondary}>
                     {sel ? "❯ " : "  "}/{s.name}
-                    <Text dimColor> {s.description}</Text>
+                    {` ${s.description}`}
                   </Text>
                 );
               })}

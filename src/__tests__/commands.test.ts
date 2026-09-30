@@ -334,7 +334,7 @@ describe("handleSlashCommand", () => {
     const r = await handleSlashCommand("/context", ctx);
     expect(r.handled).toBe(true);
     const out = (console.log as any).mock.calls.flat().join("\n");
-    expect(out).toContain("Total");
+    expect(out).toContain("Context Usage");
   });
 
   it("/config shows runtime config", async () => {
@@ -786,7 +786,7 @@ describe("handleSlashCommand", () => {
       ];
       const ctx = makeCtx(messages);
       ctx.systemPrompt = "y".repeat(80);
-      await handleSlashCommand("/context", ctx);
+      await handleSlashCommand("/context --details", ctx);
       const out = (console.log as any).mock.calls.flat().join("\n");
       expect(out).toContain("Compaction window");
       expect(out).toContain("headroom");

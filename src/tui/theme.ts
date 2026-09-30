@@ -37,6 +37,7 @@ interface PaletteShape {
   accentBright: string;
   /** Slash-command names in the palette / autocomplete. */
   command: string;
+  commandSelected: string;
   /** Added lines / positive diffs. */
   success: string;
   /** Errors / removed lines. */
@@ -85,6 +86,7 @@ const DARK: PaletteShape = {
   accent: "#d77757",
   accentBright: "#f59575",
   command: "#7dcfff",
+  commandSelected: "#b1b9f9",
   /** Claude Code dark success green rgb(78,186,101). */
   success: "#4EBA65",
   error: "#f7768e",
@@ -138,6 +140,7 @@ const LIGHT: PaletteShape = {
   accent: "#d77757", // brand orange reads on both
   accentBright: "#d76d47", // shimmer darkened for light backgrounds
   command: "#0a7ea4",
+  commandSelected: "#4b50a8",
   success: "#2c7a39", // official light rgb(44,122,57)
   error: "#ab2b3f", // official rgb(171,43,63)
   warning: "#9a6a00",
@@ -172,6 +175,7 @@ export function applyTheme(name: string): ThemeName {
   palette.accent = src.accent;
   palette.accentBright = src.accentBright;
   palette.command = src.command;
+  palette.commandSelected = src.commandSelected;
   palette.success = src.success;
   palette.error = src.error;
   palette.warning = src.warning;

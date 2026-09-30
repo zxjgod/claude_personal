@@ -601,7 +601,10 @@ async function main() {
     permissionMode,
     getPermissionMode: permissionModeState.get,
     setPermissionMode: (mode: string) => permissionModeState.set(mode as PermissionMode),
-    systemPrompt,
+    systemPrompt: buildTurnSystemPrompt(),
+    contextMemoryFiles: claudeMdContent
+      ? [{ path: path.join(workspaceRoot, "CLAUDE.md"), content: claudeMdContent }]
+      : [],
     mcpServerCount: mcpManager.serverCount,
     mcpManager,
     hooks,

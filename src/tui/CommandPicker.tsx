@@ -66,8 +66,8 @@ export function CommandPicker({
   const nameWidth = visible.reduce((w, c) => Math.max(w, c.name.length), 0);
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={palette.command} paddingX={1}>
-      <Text bold color={palette.command}>
+    <Box flexDirection="column" borderStyle="round" borderColor={palette.promptBorder} paddingX={1}>
+      <Text bold color={palette.secondary}>
         Commands
       </Text>
       <Text dimColor>
@@ -81,10 +81,12 @@ export function CommandPicker({
           const selected = realIdx === cursor;
           return (
             <Box key={c.name}>
-              <Text color={selected ? palette.command : undefined}>
+              <Text color={selected ? palette.commandSelected : palette.secondary}>
                 {selected ? "❯ " : "  "}/{c.name.padEnd(nameWidth)}
               </Text>
-              <Text dimColor>{"  " + c.description}</Text>
+              <Text color={selected ? palette.commandSelected : palette.secondary}>
+                {`  ${c.description}`}
+              </Text>
             </Box>
           );
         })}

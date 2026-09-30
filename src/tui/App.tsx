@@ -164,7 +164,9 @@ function TranscriptRow({ item }: { item: TranscriptItem }) {
       return (
         <Box flexDirection="column">
           {item.lines.map((l, i) => (
-            <Text key={i}>{l}</Text>
+            <Box key={i} minHeight={1}>
+              <Text>{l}</Text>
+            </Box>
           ))}
         </Box>
       );

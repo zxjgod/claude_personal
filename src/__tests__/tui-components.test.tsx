@@ -67,6 +67,16 @@ describe("App", () => {
     expect(frame).toContain("hi back");
   });
 
+  it("preserves blank rows between slash-command output sections", () => {
+    const store = new TuiStore("p/m");
+    store.addLog(["Context Usage", "", "Memory files", "", "Skills", "", "Built-in"]);
+    const { lastFrame, unmount } = render(
+      <App store={store} commands={commands} onSubmit={noopSubmit} />,
+    );
+    expect(lastFrame()).toMatch(/Context Usage\n\s*\nMemory files\n\s*\nSkills\n\s*\nBuilt-in/);
+    unmount();
+  });
+
   it("shows a working hint while busy", () => {
     const store = new TuiStore("p/m");
     store.setBusy(true);

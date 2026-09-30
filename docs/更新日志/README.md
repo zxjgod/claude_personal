@@ -59,6 +59,8 @@ docs/更新日志/
 
 | 日期 | 类型 | 模块 | 主题 | commit | 关联 |
 |---|---|---|---|---|---|
+| 2026-09-30 | fix | TUI / 命令菜单 / 主题 | [命令菜单灰色文字与淡紫色选中主题](./20260930-command-menu-colors.md) | 待提交 | — |
+| 2026-09-30 | feature / fix | commands / CLI | [/context 彩色使用量网格、分类统计与内存/技能清单](./20260930-context-usage-display.md) | 待提交 | — |
 | 2026-09-10 | fix / feature | TUI / commands / tools / 测试基建 | [修复第一批+第二批：`/release-notes` 死链、`/theme` 在 picker 失效、HelpPanel 模式顺序自相矛盾、diff 缺行号槽、CI 抖动；新增 `/copy` 与 `/release-notes`；订正 DesignSync 文档吹嘘](./20260910-tui-batch1-batch2-fixes.md) | 待提交 | [TUI官方对齐方案](../TUI官方对齐方案.md)（D2/D3）、[批次B](./20260906-TUI官方对齐批次B.md)（B5） |
 | 2026-08-28 | feature | TUI / StatusBar / InputBox / ToolCard | [TUI 状态显示与交互升级（StatusBar v2 含 ctx 水位/成本/queued、ctrl+r 展开兑现、Esc 中断、@ 文件补全、usePaste 粘贴、按键冲突修复、reduced-motion 贯通、P3 i18n/列宽截断/翻页器上色）](./20260828-tui-status-interaction-upgrade.md) | 待提交 | — |
 | 2026-08-14 | feature | 上下文压缩 | [按工具类型选择性清除（`COMPACTABLE_TOOLS` 保护 Task/Skill 语义工具，只清 bulk I/O 工具结果）](./20260814-tool-type-aware-microcompact.md) | 待提交 | [参考源码移植路线图](../参考源码移植路线图.md) |
@@ -94,6 +96,10 @@ docs/更新日志/
 > 新条目加在表格**最上方**。
 
 ## 索引 ②：按模块（出 bug 时从这里查某子功能的历次改动）
+
+- **命令菜单配色**：[`20260930-command-menu-colors`](./20260930-command-menu-colors.md)（`/` 与 `/help` 普通灰色、选中淡紫色，名称/说明同色；兼容暗/浅主题与原始 TTY）。
+
+- **/context / 上下文使用量**：[`20260930-context-usage-display`](./20260930-context-usage-display.md)（彩色网格、六类统计、已加载内存与技能来源清单；修复系统提示/消息计数，支持窄终端与模型容量覆盖）。
 
 > 某个子功能再出问题时，先在这里找它涉及过哪些日志，再顺藤摸瓜到 commit 与设计决策。
 
