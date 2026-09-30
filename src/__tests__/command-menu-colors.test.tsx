@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CommandPicker } from "../tui/CommandPicker.js";
 import { InputBox } from "../tui/InputBox.js";
 import { setLanguage } from "../tui/i18n.js";
+import { stripAnsi } from "../tui/terminal-width.js";
 import { applyTheme, palette } from "../tui/theme.js";
 
 const commands = [
@@ -37,12 +38,25 @@ describe("command menu reference colors", () => {
       await flush();
       stdin.write("/");
       await flush();
-      expect(lastFrame()).toContain(chalk.hex(palette.commandSelected)("❯ /help Show help"));
-      expect(lastFrame()).toContain(chalk.hex(palette.secondary)("  /clear Clear history"));
+      expect(lastFrame()).toContain(
+        chalk.hex(palette.commandSelected)(`❯ ${"/help".padEnd(27)} Show help`),
+      );
+      expect(lastFrame()).toContain(
+        chalk.hex(palette.secondary)(`  ${"/clear".padEnd(27)} Clear history`),
+      );
+      const rows = stripAnsi(lastFrame() ?? "").split("\n");
+      const help = rows.find((row) => row.includes("Show help")) ?? "";
+      const clear = rows.find((row) => row.includes("Clear history")) ?? "";
+      expect(help.indexOf("Show help")).toBe(30);
+      expect(clear.indexOf("Clear history")).toBe(30);
       stdin.write("\x1b[B");
       await flush();
-      expect(lastFrame()).toContain(chalk.hex(palette.commandSelected)("❯ /clear Clear history"));
-      expect(lastFrame()).toContain(chalk.hex(palette.secondary)("  /help Show help"));
+      expect(lastFrame()).toContain(
+        chalk.hex(palette.commandSelected)(`❯ ${"/clear".padEnd(27)} Clear history`),
+      );
+      expect(lastFrame()).toContain(
+        chalk.hex(palette.secondary)(`  ${"/help".padEnd(27)} Show help`),
+      );
     } finally {
       unmount();
     }
@@ -53,8 +67,12 @@ describe("command menu reference colors", () => {
       <CommandPicker overlay={{ kind: "commandPicker", commands, resolve: () => {} }} />,
     );
     try {
-      expect(lastFrame()).toContain(chalk.hex(palette.commandSelected)("❯ /help   Show help"));
-      expect(lastFrame()).toContain(chalk.hex(palette.secondary)("  /clear  Clear history"));
+      expect(lastFrame()).toContain(
+        chalk.hex(palette.commandSelected)(`❯ ${"/help".padEnd(27)} Show help`),
+      );
+      expect(lastFrame()).toContain(
+        chalk.hex(palette.secondary)(`  ${"/clear".padEnd(27)} Clear history`),
+      );
     } finally {
       unmount();
     }

@@ -14,9 +14,11 @@
 
 import { Box, Text, useInput } from "ink";
 import { useRef, useState } from "react";
+import { formatCommandMenuRow } from "./command-menu-layout.js";
 import { t } from "./i18n.js";
 import { nextOffset } from "./SessionPicker.js";
 import type { Overlay } from "./store.js";
+import { terminalColumns } from "./terminal-width.js";
 import { palette } from "./theme.js";
 
 /** How many command rows are visible at once before the list scrolls. */
@@ -62,8 +64,6 @@ export function CommandPicker({
   const visible = commands.slice(start, start + windowSize);
   const hiddenAbove = start;
   const hiddenBelow = commands.length - (start + windowSize);
-  // Align descriptions into a column: pad names to the longest visible name.
-  const nameWidth = visible.reduce((w, c) => Math.max(w, c.name.length), 0);
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={palette.promptBorder} paddingX={1}>
@@ -80,14 +80,9 @@ export function CommandPicker({
           const realIdx = start + i;
           const selected = realIdx === cursor;
           return (
-            <Box key={c.name}>
-              <Text color={selected ? palette.commandSelected : palette.secondary}>
-                {selected ? "❯ " : "  "}/{c.name.padEnd(nameWidth)}
-              </Text>
-              <Text color={selected ? palette.commandSelected : palette.secondary}>
-                {`  ${c.description}`}
-              </Text>
-            </Box>
+            <Text key={c.name} color={selected ? palette.commandSelected : palette.secondary}>
+              {formatCommandMenuRow(c, selected, commands, terminalColumns() - 4)}
+            </Text>
           );
         })}
         <Text dimColor>{hiddenBelow > 0 ? `  ↓ ${hiddenBelow} more` : " "}</Text>

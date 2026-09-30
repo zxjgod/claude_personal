@@ -66,8 +66,12 @@ describe("createRawInputReader (TTY)", () => {
       const pending = reader.readInput();
       input.key("/");
       const frame = chunks.join("");
-      expect(frame).toContain(chalk.hex(palette.commandSelected)("❯ /help     Show help"));
-      expect(frame).toContain(chalk.hex(palette.secondary)("  /clear    Clear history"));
+      expect(frame).toContain(
+        chalk.hex(palette.commandSelected)(`❯ ${"/help".padEnd(27)} Show help`),
+      );
+      expect(frame).toContain(
+        chalk.hex(palette.secondary)(`  ${"/clear".padEnd(27)} Clear history`),
+      );
       reader.close();
       await expect(pending).resolves.toBeNull();
     } finally {

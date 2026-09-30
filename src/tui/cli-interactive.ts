@@ -13,6 +13,7 @@
 // ============================================================
 
 import chalk from "chalk";
+import { formatCommandMenuRow } from "./command-menu-layout.js";
 import { t } from "./i18n.js";
 import { terminalColumns, truncateVisual, visualWidth } from "./terminal-width.js";
 import { palette } from "./theme.js";
@@ -276,14 +277,11 @@ export function createRawInputReader(opts: {
 
     // Dropdown for slash commands.
     if (state.suggestions.length > 0) {
-      const nameWidth = Math.max(...state.suggestions.map((s) => s.name.length + 1), 8);
       for (let i = 0; i < state.suggestions.length; i++) {
         const s = state.suggestions[i]!;
         const selected = i === state.selected;
-        const name = ("/" + s.name).padEnd(nameWidth + 1);
-        const desc = truncate(s.description, width - nameWidth - 3);
         const color = chalk.hex(selected ? palette.commandSelected : palette.secondary);
-        lines.push(color(`${selected ? "❯ " : "  "}${name} ${desc}`));
+        lines.push(color(formatCommandMenuRow(s, selected, opts.commands, width)));
       }
     } else {
       lines.push(chalk.dim("  ? for shortcuts"));

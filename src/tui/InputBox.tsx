@@ -46,6 +46,7 @@
 
 import { Box, Text, useInput, usePaste } from "ink";
 import { useEffect, useRef, useState } from "react";
+import { formatCommandMenuRow } from "./command-menu-layout.js";
 import { POINTER } from "./figures.js";
 import { t } from "./i18n.js";
 import { editInEditor } from "./open-editor.js";
@@ -1113,8 +1114,7 @@ export function InputBox({
                 const sel = realIdx === safeSelected;
                 return (
                   <Text key={s.name} color={sel ? palette.commandSelected : palette.secondary}>
-                    {sel ? "❯ " : "  "}/{s.name}
-                    {` ${s.description}`}
+                    {formatCommandMenuRow(s, sel, commands, ruleWidth())}
                   </Text>
                 );
               })}
