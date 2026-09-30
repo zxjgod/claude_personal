@@ -331,7 +331,7 @@ describe("EffortPrompt (M13.7)", () => {
     expect(frame).toContain("Faster");
     expect(frame).toContain("Smarter");
     expect(frame).toContain("ultracode");
-    expect(frame).toContain("Thorough reasoning");
+    expect(frame).not.toContain("Thorough reasoning");
     expect(frame).toContain("adjust");
   });
 
@@ -344,7 +344,8 @@ describe("EffortPrompt (M13.7)", () => {
     const { stdin, lastFrame } = render(<EffortPrompt overlay={overlay} />);
     stdin.write("[C"); // right arrow → xhigh
     await new Promise((r) => setTimeout(r, 20));
-    expect(lastFrame()).toContain("Extra reasoning");
+    expect(lastFrame()).toContain("xhigh");
+    expect(lastFrame()).not.toContain("Extra reasoning");
   });
 
   it("shows the ultracode sublabel and resolves on Enter", async () => {

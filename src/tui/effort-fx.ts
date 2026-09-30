@@ -1,97 +1,50 @@
-// ============================================================
-// effort-fx — frame builder for the /effort slider (M13.7)
-// ============================================================
-// Pure functions that render one animation frame to an array of ANSI
-// strings (via chalk). EffortPrompt owns only timing + key input.
-//
-// Layout (identical row count for ALL tiers — no vertical shift):
-//   0 divider   1 "Effort"   2 blank   3 Faster…Smarter
-//   4 track     5 labels     6 sublabel  7 blank
-//   8 description   9 hint
-//
-// Signature effects:
-//   • max       → official rainbow flow (hueToRgb sweep) on track + label
-//   • ultracode → full-panel dynamic violet pixel gradient, layered; vertical
-//                 block glitch jitter (column strips offset); a soft violet
-//                 bloom glow; and a fade-in diffusion when first switched to.
-//                 Painted as a BACKGROUND wash over rows 0–7, so no rows are
-//                 added and nothing shifts.
-// ============================================================
-
 import chalk, { type ChalkInstance } from "chalk";
-import {
-  EFFORT_DESCRIPTIONS,
-  EFFORT_GRADIENT,
-  type EffortLevel,
-  gradientColorAt,
-  hslToHex,
-  rainbowColors,
-} from "./effort.js";
-
-// --- Track geometry (track-local columns) ---
-const GRAD_START = 4;
-const STEP = 9;
-const GRAD_MARKERS = EFFORT_GRADIENT.map((_, i) => GRAD_START + i * STEP); // 4,13,22,31,40
-const DIVIDER_COL = GRAD_MARKERS[GRAD_MARKERS.length - 1]! + 7; // 47
-const ULTRA_MARKER = DIVIDER_COL + 7; // 54
-const TRACK_WIDTH = ULTRA_MARKER + 9; // 63
+import { EFFORT_GRADIENT, type EffortLevel, rainbowColors } from "./effort.js";
+import { palette } from "./theme.js";
 
 const ORDER: EffortLevel[] = [...EFFORT_GRADIENT, "ultracode"];
+const ULTRA_VIOLET = "#8c50f0";
+const SELECTED_VIOLET = "#af87ff";
+const SELECTED_COLORS: Partial<Record<EffortLevel, string>> = {
+  low: "#ffc107",
+  xhigh: SELECTED_VIOLET,
+};
+const VIOLET_SHADES = [
+  "#3e1676",
+  "#491e87",
+  "#542799",
+  "#5f2faa",
+  "#6b37bc",
+  "#763fcd",
+  "#8148df",
+  ULTRA_VIOLET,
+];
 
-/** Marker column (track-local) for a tier. */
-function markerCol(level: EffortLevel): number {
-  const gi = EFFORT_GRADIENT.indexOf(level as (typeof EFFORT_GRADIENT)[number]);
-  return gi >= 0 ? GRAD_MARKERS[gi]! : ULTRA_MARKER;
-}
-
-// --- Cell grid ---
 interface Cell {
   ch: string;
   fg?: string;
   bg?: string;
   bold?: boolean;
-  dim?: boolean;
 }
-function row(width: number): Cell[] {
-  return Array.from({ length: width }, () => ({ ch: " " }));
-}
-function put(cells: Cell[], col: number, text: string, attrs: Partial<Cell> = {}): void {
-  for (let i = 0; i < text.length; i++) {
-    const c = col + i;
-    if (c >= 0 && c < cells.length) cells[c] = { ch: text[i]!, ...attrs };
+
+function put(cells: Cell[], column: number, text: string, attrs: Partial<Cell> = {}): void {
+  for (let index = 0; index < text.length; index++) {
+    const target = column + index;
+    if (target >= 0 && target < cells.length) cells[target] = { ch: text[index]!, ...attrs };
   }
 }
+
 function paint(cell: Cell): string {
-  let c: ChalkInstance = chalk;
-  if (cell.bg) c = c.bgHex(cell.bg);
-  if (cell.fg) c = c.hex(cell.fg);
-  if (cell.bold) c = c.bold;
-  if (cell.dim) c = c.dim;
-  return c === chalk ? cell.ch : c(cell.ch);
-}
-function renderRow(cells: Cell[]): string {
-  return cells.map(paint).join("");
+  let color: ChalkInstance = chalk;
+  if (cell.bg) color = color.bgHex(cell.bg);
+  if (cell.fg) color = color.hex(cell.fg);
+  if (cell.bold) color = color.bold;
+  return color === chalk ? cell.ch : color(cell.ch);
 }
 
-const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+const clamp = (value: number, minimum: number, maximum: number) =>
+  Math.min(maximum, Math.max(minimum, value));
 
-// Vivid, "heavy" cyber-violet: electric indigo (≈262°) at high saturation so
-// the field reads as a rich neon violet rather than a washed grey-purple.
-// `light` drives ripple crests/troughs; `hueShift` spreads indigo↔magenta.
-function violet(light: number, hueShift = 0): string {
-  return hslToHex(262 + hueShift, 0.95, clamp(light, 0.12, 0.62));
-}
-
-/** Deterministic [0,1) hash for the glitch jitter (stable within a frame). */
-function hash(n: number): number {
-  const x = Math.sin(n * 127.1) * 43758.5453;
-  return x - Math.floor(x);
-}
-
-/**
- * Build one frame. `cols` centers the panel in the terminal.
- * `fade` (0→1) is the entrance-diffusion progress for ultracode (1 = settled).
- */
 export function buildEffortFrame(opts: {
   active: EffortLevel;
   phase: number;
@@ -102,186 +55,105 @@ export function buildEffortFrame(opts: {
   const fade = clamp(opts.fade ?? 1, 0, 1);
   const isMax = active === "max";
   const isUltra = active === "ultracode";
-
-  const canvasW = Math.min(Math.max(cols - 1, 60), 120);
-  const leftPad = Math.max(2, Math.floor((canvasW - TRACK_WIDTH) / 2));
-  // Lavender foreground so text stays readable on the purple wash.
-  const LAV = "#d8c8ee";
-
-  // Rectangle bounds for the violet field. Left/right go FULL WIDTH (edge to
-  // edge). Top starts BELOW the divider white line (row 0), so the field's top
-  // edge sits under it; bottom is the blank row before the text.
-  const rectL = 0;
-  const rectR = canvasW - 1;
-  const RECT_TOP = 1;
-  const RECT_BOTTOM = 7;
-
-  const grid: Cell[][] = [];
-  const newRow = () => {
-    const r = row(canvasW);
-    grid.push(r);
-    return r;
-  };
-
-  // 0 — divider (white line). Full width, same dim style for every tier; the
-  //     ultracode violet field starts on the row below, so this stays clean.
-  const dv = newRow();
-  for (let c = 0; c < canvasW; c++) dv[c] = { ch: "─", dim: true };
-
-  // 1 — title.
-  const tr = newRow();
-  put(tr, 2, "Effort", isUltra ? { fg: "#c9b6ee", bold: true } : { fg: "#36c6e0", bold: true });
-
-  // 2 — blank.
-  newRow();
-
-  // 3 — Faster … Smarter, aligned to the track ends.
-  const fr = newRow();
-  put(fr, leftPad, "Faster", { dim: !isUltra, fg: isUltra ? LAV : undefined });
-  put(fr, leftPad + TRACK_WIDTH - "Smarter".length, "Smarter", {
-    dim: !isUltra,
-    fg: isUltra ? LAV : undefined,
-  });
-
-  // 4 — track.
-  const trk = newRow();
-  const rainbow = isMax ? rainbowColors(TRACK_WIDTH, phase) : null;
-  for (let c = 0; c < TRACK_WIDTH; c++) {
-    const abs = leftPad + c;
-    if (c === DIVIDER_COL) {
-      trk[abs] = { ch: "┆", fg: isUltra ? LAV : undefined, dim: !isUltra && !isMax };
-      continue;
-    }
-    const inGrad = c < DIVIDER_COL;
-    let fg: string;
-    if (isUltra) fg = LAV;
-    else if (rainbow) fg = rainbow[c]!;
-    else fg = gradientColorAt(inGrad ? c / (DIVIDER_COL - 1) : 1);
-    trk[abs] = { ch: "─", fg };
+  const width = Math.max(20, cols - 1);
+  const trackWidth = Math.min(62, width - 4);
+  const leftPad = Math.floor((width - trackWidth) / 2);
+  const scaleColumn = (column: number) => Math.round((column / 61) * (trackWidth - 1));
+  const markers = [1, 11, 21, 30, 40].map(scaleColumn);
+  const dividerColumn = scaleColumn(43);
+  const ultraColumn = scaleColumn(53);
+  const activeIndex = EFFORT_GRADIENT.indexOf(active as (typeof EFFORT_GRADIENT)[number]);
+  const activeColumn = activeIndex >= 0 ? markers[activeIndex]! : ultraColumn;
+  const grid: Cell[][] = Array.from({ length: 9 }, () =>
+    Array.from({ length: width }, () => ({ ch: " " })),
+  );
+  for (let column = 0; column < width; column++) {
+    grid[0]![column] = { ch: "─", fg: palette.secondary };
   }
-  // Single ▲ marker — identical placement for every tier (no gap).
-  const mAbs = leftPad + markerCol(active);
-  const mFg = isUltra
-    ? "#f1e9ff"
-    : rainbow
-      ? rainbow[markerCol(active)]!
-      : gradientColorAt(markerCol(active) / (DIVIDER_COL - 1));
-  trk[mAbs] = { ch: "▲", fg: mFg, bold: true };
+  put(grid[1]!, 2, "Effort", { fg: palette.text, bold: true });
+  put(grid[3]!, leftPad, "Faster", { fg: palette.text });
+  put(grid[3]!, leftPad + trackWidth - 7, "Smarter", { fg: palette.text });
 
-  // 5 — labels.
-  const lr = newRow();
-  EFFORT_GRADIENT.forEach((lvl, i) => {
-    const start = leftPad + GRAD_MARKERS[i]! - Math.floor(lvl.length / 2);
-    const on = active === lvl;
-    if (isMax && on) {
-      const cols = rainbowColors(lvl.length, phase);
-      for (let k = 0; k < lvl.length; k++)
-        put(lr, start + k, lvl[k]!, { fg: cols[k]!, bold: true });
+  for (let column = 0; column < trackWidth; column++) {
+    grid[4]![leftPad + column] = {
+      ch: column === dividerColumn ? "┆" : "─",
+      fg:
+        column === dividerColumn
+          ? palette.secondary
+          : column > dividerColumn
+            ? ULTRA_VIOLET
+            : palette.secondary,
+    };
+  }
+  put(grid[4]!, leftPad + activeColumn, "▲", { fg: palette.text, bold: true });
+  EFFORT_GRADIENT.forEach((level, index) => {
+    const start = Math.max(leftPad, leftPad + markers[index]! - Math.floor(level.length / 2));
+    const selected = active === level;
+    if (selected && isMax) {
+      const colors = rainbowColors(6, phase);
+      for (let character = 0; character < level.length; character++) {
+        put(grid[5]!, start + character, level[character]!, { fg: colors[character]!, bold: true });
+      }
+    } else if (selected && level === "xhigh") {
+      const highlight = (Math.floor(phase) % (level.length + 8)) - 4;
+      for (let character = 0; character < level.length; character++) {
+        put(grid[5]!, start + character, level[character]!, {
+          fg: character === highlight ? "#d0b4e8" : SELECTED_VIOLET,
+          bold: true,
+        });
+      }
     } else {
-      put(
-        lr,
-        start,
-        lvl,
-        on
-          ? { fg: gradientColorAt(GRAD_MARKERS[i]! / (DIVIDER_COL - 1)), bold: true }
-          : { fg: "#808080" },
-      );
+      put(grid[5]!, start, level, {
+        fg: selected
+          ? (SELECTED_COLORS[level] ??
+            (level === "medium" ? palette.success : palette.commandSelected))
+          : palette.secondary,
+        bold: selected,
+      });
     }
   });
-  const ul = "ultracode";
-  const ulStart = leftPad + ULTRA_MARKER - Math.floor(ul.length / 2);
-  if (isUltra) {
-    put(lr, ulStart, ul, { fg: "#eadcff", bold: true });
-  } else {
-    put(lr, ulStart, ul, { fg: "#808080" });
+  put(grid[5]!, leftPad + ultraColumn - 4, "ultracode", { fg: ULTRA_VIOLET, bold: isUltra });
+  put(grid[6]!, leftPad + ultraColumn - 8, "xhigh + workflows", { fg: palette.secondary });
+  put(grid[8]!, 2, "←/→ to adjust · Enter to confirm · Esc to cancel", { fg: palette.secondary });
+
+  if (isMax) {
+    const warning: Cell[] = Array.from({ length: width }, () => ({ ch: " " }));
+    put(
+      warning,
+      4,
+      "May use excessive tokens resulting in long response times or overthinking. Use sparingly for the hardest tasks.",
+      { fg: palette.secondary },
+    );
+    grid.splice(7, 0, warning);
   }
 
-  // 6 — sublabel.
-  const sr = newRow();
-  const sub = "xhigh + workflows";
-  put(
-    sr,
-    leftPad + ULTRA_MARKER - Math.floor(sub.length / 2),
-    sub,
-    isUltra ? { fg: LAV } : { dim: true },
-  );
-
-  // 7 — blank (bottom edge of the ripple rectangle).
-  newRow();
-
-  // 8 — description.
-  const dr = newRow();
-  put(
-    dr,
-    2,
-    active,
-    isUltra
-      ? { fg: "#c9b6ee", bold: true }
-      : isMax
-        ? { bold: true }
-        : { fg: "#36c6e0", bold: true },
-  );
-  put(dr, 2 + active.length, " — " + EFFORT_DESCRIPTIONS[active], { dim: true });
-
-  // 9 — hint.
-  const hr = newRow();
-  put(hr, 2, "←/→ to adjust · Enter to confirm · Esc to cancel", { dim: true });
-
-  // --- Ultracode effect: full-panel violet pixel field as a BACKGROUND wash
-  //     over rows 0–7, centred on the ▲ marker. Layers:
-  //       (1) fill diffusion  — a circle grows SLOWLY from ▲ to cover the rect
-  //       (2) radial ripples  — once filled, concentric rings expand outward
-  //                             from ▲ (sin of distance − time): the water wave
-  //       (3) vertical block glitch — column strips jump ±1 row occasionally
-  //       (4) bloom glow       — global breathing brightness
   if (isUltra) {
-    const centerCol = leftPad + ULTRA_MARKER;
-    const centerRow = 4;
-    const maxDist = Math.max(
-      Math.hypot(centerCol - rectL, (centerRow - RECT_TOP) * 2.1),
-      Math.hypot(rectR - centerCol, (RECT_BOTTOM - centerRow) * 2.1),
+    const centerColumn = leftPad + ultraColumn;
+    const centerRow = 5;
+    const maxDistance = Math.max(
+      Math.hypot(centerColumn, (centerRow - 1) * 2.1),
+      Math.hypot(width - 1 - centerColumn, (8 - centerRow) * 2.1),
     );
-    // (1) fill front grows slowly from the marker (eased), reaching full
-    //     coverage at fade=1. Slower start than before for a deliberate bloom.
-    const fillR = maxDist * (fade * fade); // ease-in → gentle at first
-    // (4) bloom: gentle global breathing.
-    const bloom = (Math.sin(phase * 0.08) + 1) / 2;
-
-    for (let r = RECT_TOP; r <= RECT_BOTTOM; r++) {
-      const cells = grid[r]!;
-      for (let c = rectL; c <= rectR; c++) {
-        // (3) glitch: sample this column strip from a row offset ±1 sometimes.
-        const strip = Math.floor((c - rectL) / 2);
-        const jitter =
-          hash(strip * 3.7 + Math.floor(phase / 6)) > 0.85
-            ? hash(strip + Math.floor(phase / 6)) > 0.5
-              ? 1
-              : -1
-            : 0;
-        const sr = r + jitter;
-
-        // Radial distance from the ▲ (aspect-corrected: chars ~2× tall).
-        const dx = c - centerCol;
-        const dy = (sr - centerRow) * 2.1;
-        const dist = Math.hypot(dx, dy);
-
-        // (1) not yet reached by the growing fill front → leave dark.
-        if (dist > fillR + 0.5) continue;
-
-        // (2) concentric ripple: rings of brightness expanding outward from ▲.
-        //     Slow drift (small phase coeff) so the waves roll out gently.
-        const ripple = Math.sin(dist * 0.24 - phase * 0.08);
-        // Soft edge so the fill front itself glows as it advances.
-        const front = Math.max(0, 1 - Math.abs(dist - fillR) / 3);
-        const base = 0.3 + 0.16 * ripple + 0.1 * bloom + 0.14 * front;
-        const light = base; // already vivid; violet() clamps to 0.12–0.62
-        const hueShift = 16 * ripple; // ring crests tilt toward magenta
-        cells[c] = { ...grid[r]![c]!, bg: violet(light, hueShift) };
+    const radius = 2.5 + (maxDistance - 2.5) * fade;
+    for (let rowIndex = 1; rowIndex <= 8; rowIndex++) {
+      for (let column = 0; column < width; column++) {
+        const pixelColumn = centerColumn + Math.floor((column - centerColumn) / 2) * 2 + 0.5;
+        const distance = Math.hypot(pixelColumn - centerColumn, (rowIndex - centerRow) * 2.1);
+        if (fade < 1 && distance > radius) continue;
+        const wave = (Math.cos(distance * 0.34 - phase * 0.08) + 1) / 2;
+        const front = fade < 1 ? Math.max(0, 1 - Math.abs(distance - radius) / 3) : 0;
+        const shade = Math.round(clamp(Math.max(wave, front), 0, 1) * (VIOLET_SHADES.length - 1));
+        const cell = grid[rowIndex]![column]!;
+        grid[rowIndex]![column] = {
+          ...cell,
+          bg: VIOLET_SHADES[shade]!,
+          fg: "#ffffff",
+          bold: cell.ch !== " ",
+        };
       }
     }
   }
-
-  return grid.map(renderRow);
+  return grid.map((cells) => cells.map(paint).join(""));
 }
 
 export { ORDER };

@@ -3,54 +3,47 @@
 // ============================================================
 // Mirrors Claude Code's /effort slider. Owns animation timing + key input;
 // the per-frame visuals live in effort-fx.ts (buildEffortFrame).
-//   • max       → official rainbow flow on track + label
-//   • ultracode → full-panel violet pixel gradient + vertical glitch jitter +
-//                 bloom glow + fade-in diffusion on entry.
 // ============================================================
 
 import { Box, Text, useInput } from "ink";
 import { useEffect, useRef, useState } from "react";
 import { buildEffortFrame, ORDER } from "./effort-fx.js";
+import { isReducedMotion } from "./spinner-core.js";
 import type { Overlay } from "./store.js";
 import { terminalColumns } from "./terminal-width.js";
 
-// Frames of fade-in diffusion when switching INTO ultracode. Larger = the
-// initial circle grows out from ▲ more slowly before the ripples take over.
-const FADE_FRAMES = 26;
+const FADE_FRAMES = 32;
 
 export function EffortPrompt({ overlay }: { overlay: Extract<Overlay, { kind: "effort" }> }) {
   const [idx, setIdx] = useState(Math.max(0, ORDER.indexOf(overlay.current)));
   const [phase, setPhase] = useState(0);
   // Frame counter since the active tier last changed (drives fade-in).
   const [sinceSwitch, setSinceSwitch] = useState(0);
-  const prevIdx = useRef(idx);
   // Synced selection ref (see RewindPicker): arrows and Enter can arrive in
   // ONE stdin chunk without a re-render between them — Enter must resolve
   // the tier the arrows actually moved to, not the render-time selection.
   const idxRef = useRef(idx);
 
   const active = ORDER[idx]!;
-  const animated = active === "max" || active === "ultracode";
-  // Ultracode runs a brisker clock for a denser, more intense field.
-  const stepMs = active === "ultracode" ? 70 : 110;
-
-  // Reset the fade counter whenever the selected tier changes.
-  if (prevIdx.current !== idx) {
-    prevIdx.current = idx;
-    if (sinceSwitch !== 0) setSinceSwitch(0);
-  }
+  const reducedMotion = isReducedMotion();
+  const animated =
+    !reducedMotion && (active === "xhigh" || active === "max" || active === "ultracode");
+  const stepMs = active === "xhigh" ? 160 : active === "max" ? 60 : 70;
 
   useEffect(() => {
     if (!animated) return;
     const t = setInterval(() => {
-      setPhase((p) => p + (active === "ultracode" ? 9 : 6));
+      setPhase((p) => p + (active === "ultracode" ? 9 : active === "max" ? 20 : 1));
       setSinceSwitch((n) => Math.min(FADE_FRAMES, n + 1));
     }, stepMs);
     return () => clearInterval(t);
   }, [animated, active, stepMs]);
 
   const select = (n: number) => {
+    if (idxRef.current === n) return;
     idxRef.current = n;
+    setPhase(0);
+    setSinceSwitch(0);
     setIdx(n);
   };
 
@@ -65,7 +58,8 @@ export function EffortPrompt({ overlay }: { overlay: Extract<Overlay, { kind: "e
     }
   });
 
-  const fade = active === "ultracode" ? Math.min(1, sinceSwitch / FADE_FRAMES) : 1;
+  const fade =
+    active === "ultracode" && !reducedMotion ? Math.min(1, sinceSwitch / FADE_FRAMES) : 1;
   const lines = buildEffortFrame({ active, phase, cols: terminalColumns(), fade });
 
   return (
@@ -73,7 +67,6 @@ export function EffortPrompt({ overlay }: { overlay: Extract<Overlay, { kind: "e
       {lines.map((ln, i) => (
         <Text key={i}>{ln.length > 0 ? ln : " "}</Text>
       ))}
-      <Text dimColor>←→ move · Enter select · Esc cancel · Shift+Tab mode</Text>
     </Box>
   );
 }

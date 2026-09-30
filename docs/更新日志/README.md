@@ -59,6 +59,7 @@ docs/更新日志/
 
 | 日期 | 类型 | 模块 | 主题 | commit | 关联 |
 |---|---|---|---|---|---|
+| 2026-09-30 | feature / fix | TUI / EffortPrompt / 动画 | [/effort 灰紫布局与 Ultracode 紫色线性扩散波纹](./20260930-effort-layout-ultracode-ripple.md) | 待提交 | — |
 | 2026-09-30 | fix | TUI / 命令菜单 / 主题 | [命令菜单灰色文字与淡紫色选中主题](./20260930-command-menu-colors.md) | 待提交 | — |
 | 2026-09-30 | feature / fix | commands / CLI | [/context 彩色使用量网格、分类统计与内存/技能清单](./20260930-context-usage-display.md) | 待提交 | — |
 | 2026-09-10 | fix / feature | TUI / commands / tools / 测试基建 | [修复第一批+第二批：`/release-notes` 死链、`/theme` 在 picker 失效、HelpPanel 模式顺序自相矛盾、diff 缺行号槽、CI 抖动；新增 `/copy` 与 `/release-notes`；订正 DesignSync 文档吹嘘](./20260910-tui-batch1-batch2-fixes.md) | 待提交 | [TUI官方对齐方案](../TUI官方对齐方案.md)（D2/D3）、[批次B](./20260906-TUI官方对齐批次B.md)（B5） |
@@ -96,6 +97,8 @@ docs/更新日志/
 > 新条目加在表格**最上方**。
 
 ## 索引 ②：按模块（出 bug 时从这里查某子功能的历次改动）
+
+- **/effort / Ultracode 动画**：[`20260930-effort-layout-ultracode-ripple`](./20260930-effort-layout-ultracode-ripple.md)（灰紫轨道、简洁布局、八档紫色像素波纹；档位中心线性扩散至操作提示行，保留键盘交互与减少动态效果模式）。
 
 - **命令菜单配色**：[`20260930-command-menu-colors`](./20260930-command-menu-colors.md)（`/` 与 `/help` 普通灰色、选中淡紫色，名称/说明同色；兼容暗/浅主题与原始 TTY）。
 

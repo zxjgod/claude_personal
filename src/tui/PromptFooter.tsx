@@ -37,6 +37,7 @@ function selectFooter(s: StoreState) {
     contextLimit: s.contextLimit,
     queuedInputs: s.queuedInputs,
     showExitHint: s.showExitHint,
+    effortOverlay: s.overlay?.kind === "effort",
   };
 }
 
@@ -59,6 +60,7 @@ export function ctxRemainingText(usedFraction: number): string {
 export function PromptFooter({ store }: { store: TuiStore }) {
   const s = useStoreSelector(store, selectFooter);
   const columns = terminalColumns();
+  if (s.effortOverlay) return null;
 
   // --- Left column: first match in the priority chain wins ---
   let leftNode: ReactNode;
