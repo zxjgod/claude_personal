@@ -8,6 +8,7 @@
 // ============================================================
 
 import Anthropic from "@anthropic-ai/sdk";
+import { anthropicEffort, getEffort, resolveEffortMaxTokens } from "./effort.js";
 import {
   DEFAULT_ANTHROPIC_MODEL,
   modelMaxOutput,
@@ -17,7 +18,6 @@ import {
 import { checkResponseForCacheBreak, recordPromptState } from "./prompt-cache.js";
 import { DYNAMIC_BOUNDARY } from "./system-prompt.js";
 import { DEFAULT_MAX_RESULT_CHARS, truncateToolResult } from "./tools/truncation.js";
-import { anthropicEffort, getEffort, resolveEffortMaxTokens } from "./tui/effort.js";
 import type {
   Message,
   ModelCaller,

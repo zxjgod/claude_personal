@@ -6,18 +6,18 @@ import OpenAI from "openai";
 import { anthropicCaller } from "./anthropic-adapter.js";
 import { isCloudGateway, resolveGateway } from "./cloud-gateway.js";
 import {
-  DEFAULT_ANTHROPIC_MODEL,
-  isOpenAIReasoningModel,
-  modelMaxOutput,
-} from "./model-metadata.js";
-import { DEFAULT_MAX_RESULT_CHARS, truncateToolResult } from "./tools/truncation.js";
-import {
   getEffort,
   getEffortStrategy,
   modelSupportsReasoningEffort,
   openaiReasoningEffort,
   resolveEffortMaxTokens,
-} from "./tui/effort.js";
+} from "./effort.js";
+import {
+  DEFAULT_ANTHROPIC_MODEL,
+  isOpenAIReasoningModel,
+  modelMaxOutput,
+} from "./model-metadata.js";
+import { DEFAULT_MAX_RESULT_CHARS, truncateToolResult } from "./tools/truncation.js";
 import type { Message, ModelCaller, ModelConfig, StreamEvent, Tool } from "./types.js";
 import { createStallController } from "./utils/cancellation.js";
 

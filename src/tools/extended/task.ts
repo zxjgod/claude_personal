@@ -21,7 +21,7 @@ import {
   resolveSubagentTools,
   setAgentMemoryLoader,
 } from "../../subagents.js";
-import type { Message, Tool, ToolResult } from "../../types.js";
+import { deriveSubContext, type Message, type Tool, type ToolResult } from "../../types.js";
 import { CancellationScope } from "../../utils/cancellation.js";
 import { Semaphore } from "../../utils/semaphore.js";
 import { createSubAgentApprover } from "../../utils/subagent-security.js";
@@ -75,6 +75,11 @@ const slots = new Semaphore(MAX_CONCURRENCY, "Sub-agent");
 const acquireSlot = (signal?: AbortSignal): Promise<void> => slots.acquire(signal);
 const releaseSlot = (): void => slots.release();
 
+/** Test teardown: drop held slots so a case can't strand the next one. */
+export function resetTaskSlots(): void {
+  slots.reset();
+}
+
 // --- Tool ---
 
 // Build the promptDescription dynamically to include current subagent types
@@ -85,6 +90,9 @@ function buildTaskPromptDescription(): string {
 
   return (
     "Launch a sub-agent to handle complex, multi-step tasks. " +
+    "This is the DEFAULT sub-agent tool — reach for it unless you need per-agent " +
+    "control (a different model/effort, git worktree isolation, or background " +
+    "execution), which only the `Agent` tool provides.\n" +
     "Parameters: description (required, short summary), prompt (required, detailed instructions), " +
     "subagent_name (optional, omit to fork current agent). " +
     "OMIT subagent_name to FORK: inherits conversation context and prompt cache, returns final report only. " +
@@ -203,16 +211,16 @@ export const TaskTool: Tool = buildTool({
         autoCompactThreshold: SUBAGENT_COMPACT_THRESHOLD,
         abortSignal: scope.signal,
         // Run sub-agent tools in the same workspace/session as the parent.
-        toolContext: {
-          workspaceRoot: context.workspaceRoot,
-          sessionId: context.sessionId,
-          permissionMode: context.permissionMode,
-          modelConfig: context.modelConfig,
-          // Use restricted approver to prevent sub-agents from bypassing permissions
+        // deriveSubContext is an explicit allow-list — a spread here would
+        // hand the worker the parent's fork hooks and full approver.
+        toolContext: deriveSubContext(context, {
+          // Restricted approver: a sub-agent must not bypass permissions.
           askUser: subApprover,
+          // The worker's own scope, so a Ctrl+C in the worker cancels it.
+          abortSignal: scope.signal,
           // Thread the nesting depth so a fork-of-a-fork is capped.
           subagentDepth: depth + 1,
-        },
+        }),
         // Also pass restricted askUser at the LoopOptions level
         askUser: subApprover,
       });

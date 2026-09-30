@@ -128,6 +128,47 @@ export function policyDecision(
   return undefined;
 }
 
+/**
+ * Does a deny rule hide the WHOLE tool, or only some of its calls?
+ *
+ * Only a bare tool name (`Bash`, `Edit`) or an explicit catch-all (`Bash(*)`,
+ * `*`) removes the tool outright. A parameterized rule like `Bash(rm *)`
+ * denies one shape of call, so the tool must stay visible — hiding it would
+ * also take away `git status`, which the user never denied.
+ */
+function denyRuleHidesTool(rule: string, toolName: string): boolean {
+  const trimmed = rule.trim();
+  const name = toolName.toLowerCase();
+  if (trimmed === "*") return true;
+  const m = /^([^(]*)\((.*)\)$/s.exec(trimmed);
+  if (!m) {
+    // Bare name, optionally with a trailing-star prefix wildcard.
+    if (trimmed.endsWith("*")) return name.startsWith(trimmed.slice(0, -1).toLowerCase());
+    return trimmed.toLowerCase() === name;
+  }
+  if (m[1]!.trim().toLowerCase() !== name) return false;
+  return m[2]!.trim() === "*";
+}
+
+/**
+ * Should this tool be withheld from the model entirely?
+ *
+ * Deny rules gated EXECUTION only: the tool stayed in the request payload, so
+ * the model kept seeing `bash`'s full schema and kept proposing calls that
+ * were then refused. Hiding the tool is strictly better — the model stops
+ * asking for a capability the operator removed.
+ *
+ * Deliberately NOT applied to `ask` rules (those must still be offered so the
+ * user gets the prompt) and not to `allow` (additive, not restrictive).
+ */
+export function isToolHiddenByPolicy(
+  policy: PermissionPolicy | undefined,
+  toolName: string,
+): boolean {
+  if (!policy || policy.deny.length === 0) return false;
+  return policy.deny.some((rule) => denyRuleHidesTool(rule, toolName));
+}
+
 function storePath(): string {
   return process.env.CCR_PERMISSION_STORE || ccrPath(process.cwd(), "permissions.json");
 }

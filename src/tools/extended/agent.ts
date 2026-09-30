@@ -21,7 +21,7 @@ import {
   listSubagentSelectionHints,
   resolveSubagentTools,
 } from "../../subagents.js";
-import type { Message, Tool, ToolResult } from "../../types.js";
+import { deriveSubContext, type Message, type Tool, type ToolResult } from "../../types.js";
 import { Semaphore } from "../../utils/semaphore.js";
 import { createSubAgentApprover } from "../../utils/subagent-security.js";
 import { createJob, settleJob } from "../job-store.js";
@@ -49,6 +49,11 @@ const MAX_CONCURRENCY = (() => {
 })();
 
 const agentSlots = new Semaphore(MAX_CONCURRENCY, "Agent");
+
+/** Test teardown: drop held slots so a case can't strand the next one. */
+export function resetAgentSlots(): void {
+  agentSlots.reset();
+}
 
 // ============================================================
 // Worktree isolation helpers
@@ -144,6 +149,12 @@ function buildAgentPromptDescription(): string {
 
   return (
     "Launch a sub-agent to handle complex tasks. Each agent has its own context and tools.\n" +
+    "WHEN TO USE THIS vs the `task` tool: this one adds per-agent CONTROL that `task` lacks —\n" +
+    "  - a different `model` or `effort` for a hard sub-problem,\n" +
+    '  - `isolation: "worktree"` so a mutating sub-task edits a throwaway git worktree\n' +
+    "    instead of the working tree (expensive — creates a branch per agent),\n" +
+    "  - `run_in_background: true` to keep working while it runs.\n" +
+    "For an ordinary same-model, read-only sub-task, prefer `task` — it is the common case.\n" +
     "Parameters:\n" +
     "  - prompt (required): detailed task instructions\n" +
     "  - description (optional): short summary shown in UI\n" +
@@ -349,17 +360,22 @@ export const AgentTool: Tool = buildTool({
         maxTurns: subagentType?.maxTurns ?? 20,
         autoCompactThreshold: 50_000,
         abortSignal: context.abortSignal,
-        toolContext: {
+        // Explicit allow-list, not a spread: a spread would hand the worker
+        // the parent's fork hooks (making a typed Agent able to re-fork) and
+        // its unrestricted approver.
+        toolContext: deriveSubContext(context, {
+          // Worktree isolation moves the worker's cwd.
           workspaceRoot: effectiveWorkspaceRoot,
+          // A fork runs under its own session id so its checkpoint bucket is
+          // distinct from the parent's.
           sessionId: `${context.sessionId}-agent-${Date.now()}`,
-          permissionMode: context.permissionMode,
-          modelConfig: context.modelConfig,
           askUser: approver,
+          abortSignal: context.abortSignal,
           onSubAgentProgress: context.onSubAgentProgress,
           hooks: context.hooks,
           // Thread the nesting depth so a fork-of-a-fork is capped.
           subagentDepth: forkDepth + 1,
-        },
+        }),
         askUser: approver,
       });
 

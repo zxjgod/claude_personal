@@ -88,4 +88,23 @@ export class Semaphore {
     }
     this.activeCount--;
   }
+
+  /**
+   * Drop every held slot and reject every parked waiter.
+   *
+   * For test teardown only. The semaphore is a module singleton, so a case
+   * that aborts a turn mid-flight — or deliberately over-subscribes to prove
+   * the cap — would otherwise strand slots and make later cases hang on
+   * acquire(). Draining via release() would be wrong: that hands each slot to
+   * the next waiter instead of clearing the count.
+   */
+  reset(): void {
+    this.activeCount = 0;
+    for (const waiter of this.waitQueue.splice(0)) {
+      if (waiter.onAbort && waiter.signal) {
+        waiter.signal.removeEventListener("abort", waiter.onAbort);
+      }
+      waiter.reject(new Error(`${this.label} semaphore reset`));
+    }
+  }
 }

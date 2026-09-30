@@ -1,11 +1,25 @@
-// Workflow orchestration scripts with bounded worker execution.
+// Workflow orchestration with bounded worker execution.
+//
+// The orchestration itself is a DECLARATIVE PLAN interpreted by
+// src/workflow-dsl.ts — no model-authored code is ever evaluated. See that
+// file for why the previous `node:vm` sandbox had to go (it was escapable:
+// `this.constructor.constructor("return process")()` reached the real
+// `process`, and therefore every credential in the environment).
+// Fan-out concurrency is still bounded, and workers still run real agent
+// loops with a narrowed tool set.
 
-import { Worker } from "node:worker_threads";
 import { agentLoop, WORKER_COMPACT_THRESHOLD } from "./agent-loop.js";
 import { createModelCaller } from "./llm-adapter.js";
 import { extractLastAssistantText, getCoreToolsForSubagents } from "./subagents.js";
 import type { Message, ToolContext } from "./types.js";
 import { CancellationScope } from "./utils/cancellation.js";
+import { Semaphore } from "./utils/semaphore.js";
+import {
+  collectText,
+  parseWorkflowPlan,
+  runWorkflowPlan,
+  type StepResult,
+} from "./workflow-dsl.js";
 
 const WORKER_PROMPT = [
   "You are a workflow worker sub-agent.",
@@ -22,56 +36,23 @@ const MAX_WORKER_CONCURRENCY = (() => {
   return Number.isInteger(raw) && raw > 0 ? raw : 4;
 })();
 
-interface WorkerWaiter {
-  resolve: () => void;
-  reject: (error: Error) => void;
-  signal?: AbortSignal;
-  onAbort?: () => void;
-}
+// Shared Semaphore (utils/semaphore.ts) rather than a private queue — the
+// Task/Agent/team caps all use it, so abort-aware FIFO behavior is identical
+// everywhere instead of re-implemented per call site.
+const workerSlots = new Semaphore(MAX_WORKER_CONCURRENCY, "Workflow worker");
 
-let activeWorkers = 0;
-const workerQueue: WorkerWaiter[] = [];
-
-async function acquireWorkerSlot(signal?: AbortSignal): Promise<void> {
-  if (signal?.aborted) throw new Error("Workflow worker aborted before acquiring a slot");
-  if (workerQueue.length === 0 && activeWorkers < MAX_WORKER_CONCURRENCY) {
-    activeWorkers++;
-    return;
-  }
-
-  await new Promise<void>((resolve, reject) => {
-    const waiter: WorkerWaiter = { resolve, reject, signal };
-    if (signal) {
-      waiter.onAbort = () => {
-        const index = workerQueue.indexOf(waiter);
-        if (index >= 0) workerQueue.splice(index, 1);
-        reject(new Error("Workflow worker aborted while waiting for a slot"));
-      };
-      signal.addEventListener("abort", waiter.onAbort, { once: true });
-    }
-    workerQueue.push(waiter);
-  });
-}
-
-function releaseWorkerSlot(): void {
-  while (workerQueue.length > 0) {
-    const next = workerQueue.shift()!;
-    if (next.signal?.aborted) {
-      if (next.onAbort && next.signal) next.signal.removeEventListener("abort", next.onAbort);
-      next.reject(new Error("Workflow worker aborted while waiting for a slot"));
-      continue;
-    }
-    if (next.onAbort && next.signal) next.signal.removeEventListener("abort", next.onAbort);
-    next.resolve();
-    return;
-  }
-  activeWorkers--;
-}
+const acquireWorkerSlot = (signal?: AbortSignal): Promise<void> => workerSlots.acquire(signal);
+const releaseWorkerSlot = (): void => workerSlots.release();
 
 export const __workerSlots = {
   acquire: acquireWorkerSlot,
   release: releaseWorkerSlot,
   max: MAX_WORKER_CONCURRENCY,
+  get active() {
+    return workerSlots.active;
+  },
+  /** Test teardown — the semaphore is a module singleton. */
+  reset: (): void => workerSlots.reset(),
 };
 
 export async function runWorkerAgent(
@@ -182,25 +163,30 @@ export async function runWorkflow(
   });
 
   try {
-    const result = await Promise.race([
-      runWorkflowScriptInWorker(
-        script,
-        options.args,
-        Math.min(timeoutMs, 10_000),
-        async (prompt, label) => {
+    // Parse BEFORE racing the timeout: a malformed plan is the caller's
+    // mistake and should fail fast with a precise message, not surface as a
+    // generic timeout.
+    const plan = parseWorkflowPlan(script);
+    if (options.args !== undefined) {
+      record.logs.push(`args: ${safePreview(options.args)}`);
+    }
+    const { result } = await Promise.race([
+      runWorkflowPlan(plan, {
+        agent: async (prompt, label) => {
           if (revoked || workflowScope.aborted) throw new Error("workflow timed out (revoked)");
-          const displayLabel = label ?? (prompt.length > 60 ? `${prompt.slice(0, 57)}...` : prompt);
-          record.logs.push(`agent: ${displayLabel}`);
+          // The interpreter already logs "agent: <label>" per step; this adds
+          // the "now running" breadcrumb so a long fan-out is traceable.
+          if (label) record.logs.push(`running: ${label}`);
           return agentRunner(prompt, context, workflowScope.signal);
         },
-        (line) => record.logs.push(line),
-        workflowScope.signal,
-      ),
+        log: (line) => record.logs.push(line),
+        signal: workflowScope.signal,
+      }),
       timeout,
     ]);
     record.status = "completed";
     record.finishedAt = Date.now();
-    record.result = result;
+    record.result = renderResult(result);
   } catch (error) {
     record.status = "failed";
     record.finishedAt = Date.now();
@@ -215,131 +201,18 @@ export async function runWorkflow(
   return record;
 }
 
-/** Message protocol sent by the workflow worker (see WORKFLOW_WORKER_SOURCE). */
-interface WorkflowWorkerMessage {
-  type?: string;
-  id?: number;
-  message?: unknown;
-  prompt?: unknown;
-  label?: string;
-  result?: unknown;
-  error?: unknown;
-}
-
-function runWorkflowScriptInWorker(
-  script: string,
-  args: unknown,
-  syncBudget: number,
-  runAgent: (prompt: string, label?: string) => Promise<string>,
-  onLog: (line: string) => void,
-  abortSignal: AbortSignal,
-): Promise<string | undefined> {
-  const worker = new Worker(WORKFLOW_WORKER_SOURCE, {
-    eval: true,
-    workerData: { script, args, syncBudget },
-  });
-
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const send = (message: unknown): void => {
-      try {
-        worker.postMessage(message);
-      } catch {
-        // The worker may already be terminated after timeout.
-      }
-    };
-    const finish = (error?: Error, result?: string): void => {
-      if (settled) return;
-      settled = true;
-      abortSignal.removeEventListener("abort", onAbort);
-      void worker.terminate().catch(() => {});
-      if (error) reject(error);
-      else resolve(result);
-    };
-    const onAbort = () => finish(new Error("Workflow aborted"));
-
-    worker.on("message", (message: WorkflowWorkerMessage) => {
-      if (message?.type === "log") {
-        onLog(String(message.message));
-      } else if (message?.type === "agent") {
-        void runAgent(String(message.prompt), message.label)
-          .then((result) => send({ type: "agent_result", id: message.id, result }))
-          .catch((error: unknown) =>
-            send({
-              type: "agent_result",
-              id: message.id,
-              error: error instanceof Error ? error.message : String(error),
-            }),
-          );
-      } else if (message?.type === "result") {
-        finish(undefined, message.result === undefined ? undefined : String(message.result));
-      } else if (message?.type === "error") {
-        finish(new Error(String(message.error)));
-      }
-    });
-    worker.on("error", (error) => finish(error));
-    worker.on("exit", (code) => {
-      if (!settled && code !== 0) finish(new Error(`Workflow worker exited with code ${code}`));
-    });
-    abortSignal.addEventListener("abort", onAbort, { once: true });
-    if (abortSignal.aborted) onAbort();
-  });
-}
-
-const WORKFLOW_WORKER_SOURCE = String.raw`
-const { parentPort, workerData } = require("node:worker_threads");
-const vm = require("node:vm");
-const pendingAgents = new Map();
-let nextAgentId = 1;
-
-parentPort.on("message", (message) => {
-  if (!message || message.type !== "agent_result") return;
-  const pending = pendingAgents.get(message.id);
-  if (!pending) return;
-  pendingAgents.delete(message.id);
-  if (message.error) pending.reject(new Error(message.error));
-  else pending.resolve(message.result);
-});
-
-function agent(prompt, opts) {
-  return new Promise((resolve, reject) => {
-    const id = nextAgentId++;
-    pendingAgents.set(id, { resolve, reject });
-    parentPort.postMessage({
-      type: "agent",
-      id,
-      prompt: String(prompt),
-      label: opts && opts.label ? String(opts.label) : undefined,
-    });
-  });
-}
-
-const parallel = (thunks) => Promise.all(thunks.map((thunk) => Promise.resolve().then(thunk)));
-const pipeline = async (items, ...stages) => {
-  let acc = items;
-  for (const stage of stages) {
-    acc = await Promise.all(acc.map((item, index) => stage(item, index)));
-  }
-  return acc;
-};
-
-const sandbox = {
-  agent,
-  parallel,
-  pipeline,
-  log: (message) => parentPort.postMessage({ type: "log", message: String(message) }),
-  phase: (title) => parentPort.postMessage({ type: "log", message: "[phase] " + String(title) }),
-  args: workerData.args,
-};
-vm.createContext(sandbox);
-
-(async () => {
+function safePreview(value: unknown): string {
   try {
-    const wrapped = "(async () => {\n" + workerData.script + "\n})()";
-    const result = await vm.runInContext(wrapped, sandbox, { timeout: workerData.syncBudget });
-    parentPort.postMessage({ type: "result", result: result === undefined ? undefined : String(result) });
-  } catch (error) {
-    parentPort.postMessage({ type: "error", error: error && error.message ? error.message : String(error) });
+    const text = typeof value === "string" ? value : JSON.stringify(value);
+    if (text === undefined) return String(value);
+    return text.length > 200 ? `${text.slice(0, 199)}…` : text;
+  } catch {
+    return String(value);
   }
-})();
-`;
+}
+
+/** Flatten a step result to the single string the model sees as the answer. */
+function renderResult(result: StepResult): string {
+  const text = collectText(result);
+  return text.trim() === "" ? "(no result)" : text;
+}

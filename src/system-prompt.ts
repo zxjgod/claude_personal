@@ -19,6 +19,8 @@
 // ============================================================
 
 import { outputStylePrompt } from "./output-style.js";
+import type { PermissionPolicy } from "./permission-policy.js";
+import { visibleTools } from "./tools/registry.js";
 import type { Tool } from "./types.js";
 
 // ============================================================
@@ -109,11 +111,11 @@ The following ALWAYS require explicit user confirmation:
  * Codepoint comparison (not localeCompare) so the order is byte-stable across
  * machines and ICU builds.
  */
-function buildToolDescriptionsSection(tools: Tool[]): string {
+function buildToolDescriptionsSection(tools: Tool[], policy?: PermissionPolicy): string {
   const lines = ["AVAILABLE TOOLS:", ""];
-  const enabled = tools
-    .filter((t) => t.isEnabled())
-    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  const enabled = visibleTools(tools, policy).sort((a, b) =>
+    a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+  );
   for (const tool of enabled) {
     lines.push(`${tool.name} — ${tool.description}`, "");
   }
@@ -129,9 +131,8 @@ function buildToolDescriptionsSection(tools: Tool[]): string {
  * where one part's description ends in NUL and the next part's name begins —
  * two different sets could otherwise fold into the same byte stream.
  */
-function toolSetFingerprint(tools: Tool[]): string {
-  const parts = tools
-    .filter((t) => t.isEnabled())
+function toolSetFingerprint(tools: Tool[], policy?: PermissionPolicy): string {
+  const parts = visibleTools(tools, policy)
     .map((t) => `${t.name}\0${t.description}\0`)
     .sort();
   let h = 5381;
@@ -259,6 +260,13 @@ export interface SystemPromptOptions {
   mcpInstructions?: string;
   /** Active output style name (default / explanatory / learning / custom). */
   outputStyle?: string;
+  /**
+   * Active permission policy. Tools it denies outright are withheld from the
+   * AVAILABLE TOOLS index, matching what the adapters send in the `tools`
+   * argument — the index and the payload must advertise the same set or the
+   * model reads about a capability it cannot actually call.
+   */
+  permissionPolicy?: PermissionPolicy;
 }
 
 // ============================================================
@@ -302,7 +310,7 @@ export function buildSystemPrompt(options: SystemPromptOptions): string[] {
   // provider prompt cache. Stale `tools:*` keys are evicted first so MCP churn
   // cannot accumulate dead entries; with the content sorted inside the section,
   // a pure reorder keeps the same fingerprint and stays cached.
-  const toolsKey = `tools:${toolSetFingerprint(options.tools)}`;
+  const toolsKey = `tools:${toolSetFingerprint(options.tools, options.permissionPolicy)}`;
   for (const key of [...sectionCache.keys()]) {
     if (key.startsWith("tools:") && key !== toolsKey) sectionCache.delete(key);
   }
@@ -312,7 +320,9 @@ export function buildSystemPrompt(options: SystemPromptOptions): string[] {
     systemPromptSection("tool_usage", buildToolUsageSection),
     systemPromptSection(`output_style:${outputStyle}`, () => buildOutputStyleSection(outputStyle)),
     systemPromptSection("destructive_actions", buildDestructiveActionsSection),
-    systemPromptSection(toolsKey, () => buildToolDescriptionsSection(options.tools)),
+    systemPromptSection(toolsKey, () =>
+      buildToolDescriptionsSection(options.tools, options.permissionPolicy),
+    ),
   ];
 
   // --- Dynamic suffix (below the boundary; values drift at runtime) ---

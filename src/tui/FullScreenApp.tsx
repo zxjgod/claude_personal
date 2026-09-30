@@ -31,6 +31,7 @@ import { EffortPrompt } from "./EffortPrompt.js";
 import { HelpPanel } from "./HelpPanel.js";
 import { type CommandInfo, InputBox } from "./InputBox.js";
 import { t } from "./i18n.js";
+import { createResolver, DEFAULT_BINDINGS, loadUserBindings } from "./keybindings/index.js";
 import { ModelPicker } from "./ModelPicker.js";
 import { PlanApproval } from "./PlanApproval.js";
 import { PromptFooter } from "./PromptFooter.js";
@@ -204,6 +205,18 @@ function FsTodoRegion({ store }: { store: TuiStore }) {
   return <TodoList todos={todos} />;
 }
 
+/**
+ * Global-hotkey resolver: defaults + any user overrides from
+ * ~/.claude/keybindings.json. Loaded once at startup (not hot-reloaded).
+ *
+ * This mirrors App.tsx's `globalResolver` exactly. The full-screen path used
+ * to hardcode all ten hotkeys in an if/else chain, which meant a user's
+ * ~/.claude/keybindings.json customizations were silently ignored whenever
+ * --fullscreen was on — the same action reachable two ways, two behaviors.
+ * One resolver, one action table, both layouts.
+ */
+const globalResolver = createResolver(DEFAULT_BINDINGS, loadUserBindings());
+
 /** Mode hotkey — self-contained so FullScreenApp works without App.tsx. */
 function FsModeHotkey({
   store,
@@ -215,33 +228,38 @@ function FsModeHotkey({
   onThinkingToggle?: () => void;
 }) {
   useInput((input, key) => {
-    // Overlays own the keyboard (pickers bind their own keys).
+    const result = globalResolver(input, key, ["Global"]);
+    if (result.type !== "match") return;
+    // Overlays own the keyboard: flipping `reviewing` under an open overlay
+    // would unmount the overlay component and hang its resolve() promise.
     if (store.getSnapshot().overlay) return;
-    if (key.ctrl && input === "s") {
+    if (result.action === "chat:stash") {
       store.dispatchInputAction("stash");
-    } else if (key.ctrl && input === "g") {
+    } else if (result.action === "chat:externalEditor") {
       store.dispatchInputAction("editor");
-    } else if (key.ctrl && input === "r") {
+    } else if (result.action === "history:search") {
       store.dispatchInputAction("historySearch");
-    } else if (key.ctrl && input === "t") {
+    } else if (result.action === "app:toggleTodos") {
       store.toggleTodosCollapsed();
-    } else if (key.ctrl && input === "l") {
-      process.stdout.write("[2J[H");
+    } else if (result.action === "app:redraw") {
+      // Clear the viewport and force a store emit so Ink repaints the live
+      // frame immediately — Ink 7's useApp has no clear().
+      process.stdout.write("\x1B[2J\x1B[H");
       store.setQueuedInputs(store.getSnapshot().queuedInputs);
-    } else if (key.meta && input === "p") {
+    } else if (result.action === "chat:modelPicker") {
       onModelPicker?.();
-    } else if (key.meta && input === "t") {
+    } else if (result.action === "chat:thinkingToggle") {
       onThinkingToggle?.();
-    } else if (key.tab && key.shift) {
+    } else if (result.action === "chat:cycleMode") {
       store.cyclePermissionMode();
-    } else if (input === "?") {
+    } else if (result.action === "help:toggle") {
       // Same contract as App's ModeHotkey: "?" opens help only on an empty
       // draft (the InputBox mirrors it into the store) and never toggles
       // closed — the panel closes via Esc/Enter, which the input-suspended
       // InputBox must not also consume.
       const s = store.getSnapshot();
       if (s.draft.text.length === 0 && !s.showHelp) store.setShowHelp(true);
-    } else if (key.ctrl && input === "o") {
+    } else if (result.action === "transcript:toggle") {
       // P0-1/P0-2: fullscreen thinking renders collapsed — this is the only
       // route to the verbose transcript viewer here.
       store.setReviewing(!store.getSnapshot().reviewing);

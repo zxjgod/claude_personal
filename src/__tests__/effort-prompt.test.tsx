@@ -11,6 +11,32 @@ let previousColorLevel: typeof chalk.level;
 const wait = (milliseconds = 30) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const backgrounds = (frame: string | undefined) => (frame?.match(/48;2;/g) ?? []).length;
 
+/**
+ * Advance the animation deterministically by firing the registered interval
+ * callback `ticks` times.
+ *
+ * These assertions used to sleep on the real clock (`wait(710)` waiting out a
+ * 160ms interval). Under a full parallel run the event loop delays those
+ * timers past the assertion, so the frame genuinely had not advanced yet and
+ * the test failed for reasons unrelated to the code under test — a flake that
+ * only surfaced at CI scale. Firing the captured callback makes "the animation
+ * advanced" a fact rather than a race, and asserts the SAME thing.
+ */
+async function advanceAnimation(
+  interval: { mock: { calls: unknown[][] } },
+  ticks: number,
+  stepMs: number,
+): Promise<void> {
+  const entry = interval.mock.calls.find((call) => call[1] === stepMs);
+  const fn = entry?.[0];
+  if (typeof fn !== "function") throw new Error(`no interval registered with ${stepMs}ms`);
+  for (let i = 0; i < ticks; i++) {
+    (fn as () => void)();
+    // One macrotask so React re-renders and Ink repaints.
+    await wait();
+  }
+}
+
 beforeEach(() => {
   previousColorLevel = chalk.level;
   chalk.level = 3;
@@ -33,7 +59,7 @@ describe("effort reference animation interaction", () => {
     try {
       const initial = lastFrame();
       expect(interval).toHaveBeenCalledWith(expect.any(Function), 160);
-      await wait(710);
+      await advanceAnimation(interval, 5, 160);
       expect(lastFrame()).not.toBe(initial);
       expect(lastFrame()).toContain("38;2;208;180;232");
       expect(lastFrame()).not.toContain("38;2;255;255;255");
@@ -51,7 +77,7 @@ describe("effort reference animation interaction", () => {
     try {
       expect(interval).toHaveBeenCalledWith(expect.any(Function), 60);
       const initial = lastFrame();
-      await wait(150);
+      await advanceAnimation(interval, 3, 60);
       expect(lastFrame()).not.toBe(initial);
       expect(stripAnsi(lastFrame() ?? "")).toBe(stripAnsi(initial ?? ""));
     } finally {
@@ -60,6 +86,7 @@ describe("effort reference animation interaction", () => {
   });
 
   it("grows outward after moving right to ultracode and restarts on re-entry", async () => {
+    const interval = vi.spyOn(globalThis, "setInterval");
     const resolve = vi.fn();
     const { stdin, lastFrame, unmount } = render(
       <EffortPrompt overlay={{ kind: "effort", current: "max", resolve }} />,
@@ -69,7 +96,8 @@ describe("effort reference animation interaction", () => {
       stdin.write("\x1b[C");
       await wait();
       const initial = backgrounds(lastFrame());
-      await wait(280);
+      // FADE_FRAMES steps of the 60ms clock grows the highlight span.
+      await advanceAnimation(interval, 5, 60);
       const expanded = backgrounds(lastFrame());
       expect(initial).toBeGreaterThan(0);
       expect(expanded).toBeGreaterThan(initial);
@@ -94,12 +122,17 @@ describe("effort reference animation interaction", () => {
     "ultracode",
   ] as const)("keeps %s static when reduced motion is enabled", async (current) => {
     vi.stubEnv("CCR_REDUCED_MOTION", "1");
+    const interval = vi.spyOn(globalThis, "setInterval");
     const { lastFrame, unmount } = render(
       <EffortPrompt overlay={{ kind: "effort", current, resolve: () => {} }} />,
     );
     try {
       const initial = lastFrame();
       if (current === "ultracode") expect(backgrounds(initial)).toBeGreaterThan(100);
+      // Reduced motion registers NO interval at all, so nothing can advance
+      // regardless of how long we wait — assert that directly instead of
+      // sleeping and hoping.
+      expect(interval).not.toHaveBeenCalled();
       await wait(180);
       expect(lastFrame()).toBe(initial);
     } finally {

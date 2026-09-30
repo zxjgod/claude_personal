@@ -208,6 +208,9 @@ async function main() {
         // detected; otherwise the output-style's "respond in the user's
         // language" rule already governs.
         languagePreference: detectLanguage() === "zh-CN" ? "Chinese" : undefined,
+        // Withhold denied tools from the AVAILABLE TOOLS index so it matches
+        // the `tools` payload the adapters actually send.
+        permissionPolicy,
       }),
     );
     return goalHolder.value

@@ -10,6 +10,7 @@
 import { autoCompact, latestUserText } from "./auto-compact.js";
 import { beginUserTurn } from "./checkpoint.js";
 import { CollapseStore, prepareCheapLayers } from "./context-pipeline.js";
+import { getEffortStrategy, withEffortInstruction } from "./effort.js";
 import {
   handleModelError,
   isContextLengthError,
@@ -33,8 +34,8 @@ import {
   executeSingleTool,
   executeToolCalls,
 } from "./tool-executor.js";
+import { visibleTools } from "./tools/registry.js";
 import { startToolSummary } from "./tools/summary.js";
-import { getEffortStrategy, withEffortInstruction } from "./tui/effort.js";
 import type {
   AskUserFn,
   AssistantMessage,
@@ -393,6 +394,16 @@ export async function* agentLoop(
       // === STEP 2: Call the LLM ===
       yield { type: "thinking" };
 
+      // Withhold tools the permission policy denies outright. Deny rules used
+      // to gate execution only, so the model kept seeing e.g. `bash`'s full
+      // schema and kept proposing calls that were then refused — wasted turns
+      // on calls that could never succeed. The EXECUTION check in
+      // tool-executor still runs (a policy can also deny per-call), so this
+      // is a narrowing of what we advertise, not a replacement for the gate.
+      // Recomputed per turn because /permissions can change the policy
+      // mid-session.
+      const advertisedTools = visibleTools(tools, baseContext.permissionPolicy);
+
       if (prefetchPromise && !prefetchInjected) {
         prefetchInjected = true;
         const attachment = await prefetchPromise;
@@ -433,7 +444,7 @@ export async function* agentLoop(
       try {
         for await (const event of safeCallModel(
           messages,
-          tools,
+          advertisedTools,
           effectiveSystemPrompt,
           modelConfig,
           abortSignal,

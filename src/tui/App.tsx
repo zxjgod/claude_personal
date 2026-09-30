@@ -607,7 +607,7 @@ function ModeHotkey({
       // B5 (ctrl+l): clear the viewport (scrollback stays) and force a store
       // emit so Ink repaints the live frame immediately — Ink 7's useApp has
       // no clear(), so this is the manual equivalent.
-      process.stdout.write("[2J[H");
+      process.stdout.write("\x1B[2J\x1B[H");
       store.setQueuedInputs(store.getSnapshot().queuedInputs);
     } else if (result.action === "chat:modelPicker") {
       onModelPicker?.();

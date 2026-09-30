@@ -4,8 +4,28 @@
 
 import type { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
+import { isToolHiddenByPolicy, type PermissionPolicy } from "../permission-policy.js";
 import type { PermissionResult, Tool, ToolContext, ToolInput, ToolResult } from "../types.js";
 import { DEFAULT_MAX_RESULT_CHARS } from "./truncation.js";
+
+/**
+ * The tool set a provider request should advertise: enabled, minus anything
+ * the permission policy denies outright.
+ *
+ * Deny rules used to gate execution only. The tool stayed in the request
+ * payload with its full schema, so the model kept proposing calls the policy
+ * then refused — burning turns on calls that could never succeed. Withholding
+ * the schema is the stronger and cheaper control, and it composes with the
+ * execution check (which still runs; a tool can also be denied per-call).
+ *
+ * Shared by both provider adapters and the system prompt's AVAILABLE TOOLS
+ * block so all three advertise exactly the same set.
+ */
+export function visibleTools(tools: Tool[], policy?: PermissionPolicy): Tool[] {
+  const enabled = tools.filter((t) => t.isEnabled());
+  if (!policy || policy.deny.length === 0) return enabled;
+  return enabled.filter((t) => !isToolHiddenByPolicy(policy, t.name));
+}
 
 /** Where a tool came from — drives /tools-style listings. */
 export type ToolSource = "core" | "mcp";
@@ -213,7 +233,6 @@ export function createTool<T extends ToolInput = ToolInput>(config: BaseToolConf
 // Cache by schema identity, not tool name: separate registries may legitimately
 // reuse a name with a different input contract.
 const jsonSchemaCache = new WeakMap<object, Tool["inputSchema"]>();
-
 export interface BuildToolConfig<S extends z.ZodType>
   extends CommonToolConfig<z.infer<S> & ToolInput> {
   /**

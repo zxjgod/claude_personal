@@ -105,7 +105,8 @@ export const SendMessageTool: Tool = buildTool({
     "Send a message to a team member by id; it runs a turn with its accumulated " +
     "history and returns its reply. Set background:true to run without waiting " +
     "(fire-and-forget) — then poll with task_get/task_list. Create members first " +
-    "with team_create.",
+    "with team_create. At most TEAM_MAX_CONCURRENCY member turns run at once " +
+    "(default 3); further messages queue until a slot frees.",
   schema: SendMessageSchema,
   isReadOnly: false,
   requiresApproval: false,

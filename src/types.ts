@@ -181,7 +181,48 @@ export interface ToolResultMetadata {
   readMtimeMs?: number;
 }
 
-export interface ToolContext {
+/**
+ * The INTERACTION surface a tool may use to reach the human.
+ *
+ * Grouped rather than inlined on ToolContext because it is the security-
+ * critical part of that object and because it must be re-derived, never
+ * blindly inherited, when a context crosses into a sub-agent. A sub-agent
+ * gets a RESTRICTED approver (utils/subagent-security.ts) built from these
+ * channels — if this group were part of a spread-copied context, a worker
+ * would silently inherit the parent's full authority. `deriveSubContext`
+ * (below) is the only sanctioned way to build a child's context, and it
+ * deliberately does NOT carry these fields over.
+ */
+export interface ToolInteraction {
+  /**
+   * The parent loop's interactive approver, threaded into sub-agent loops so a
+   * sub-agent's destructive tool calls (bash/write/edit) still surface to the
+   * user for confirmation. Without this, sub-agents fall back to the loop's
+   * auto-approving default and can run bash/write unattended — a real safety
+   * gap. Optional: absent in tests/plan mode (sub-loops then use their own
+   * default approver, but plan mode hard-blocks destructive tools anyway).
+   */
+  askUser?: AskUserFn;
+  /**
+   * Ask the user a structured single/multi-select question and block for the
+   * answer. Injected by the CLI; absent for sub-agents/tests (tools should
+   * degrade gracefully when it's undefined). Returns the selected option
+   * label(s), or null if the user cancelled.
+   */
+  askUserQuestion?: (question: UserQuestion) => Promise<string[] | null>;
+  /**
+   * Batch C2 (ExitPlanMode): surface the agent's plan for user approval.
+   * Resolves with the verdict and the (possibly editor-revised) plan text;
+   * absent = non-interactive contexts where approval is impossible.
+   *
+   * NOTE: unlike askUser, this IS safe to inherit — a plan-mode overlay is
+   * only mounted when the parent's toolContext provides it, and it is part of
+   * `interaction` only for cohesion. deriveSubContext drops it regardless.
+   */
+  requestPlanApproval?: (plan: string) => Promise<{ choice: "approve" | "reject"; plan: string }>;
+}
+
+export interface ToolContext extends ToolInteraction {
   workspaceRoot: string;
   allowedDirectories?: string[];
   sessionId: string;
@@ -202,26 +243,9 @@ export interface ToolContext {
   modelConfig?: ModelConfig;
   /** Optional sink for nested sub-agent activity (Task tool). */
   onSubAgentProgress?: (event: SubAgentProgress) => void;
-  /** Batch C2 (ExitPlanMode): surface the agent's plan for user approval.
-   *  Resolves with the verdict and the (possibly editor-revised) plan text;
-   *  absent = non-interactive contexts where approval is impossible. */
-  requestPlanApproval?: (plan: string) => Promise<{ choice: "approve" | "reject"; plan: string }>;
-  /**
-   * The parent loop's interactive approver, threaded into sub-agent loops so a
-   * sub-agent's destructive tool calls (bash/write/edit) still surface to the
-   * user for confirmation. Without this, sub-agents fall back to the loop's
-   * auto-approving default and can run bash/write unattended — a real safety
-   * gap. Optional: absent in tests/plan mode (sub-loops then use their own
-   * default approver, but plan mode hard-blocks destructive tools anyway).
-   */
-  askUser?: AskUserFn;
-  /**
-   * Ask the user a structured single/multi-select question and block for the
-   * answer. Injected by the CLI; absent for sub-agents/tests (tools should
-   * degrade gracefully when it's undefined). Returns the selected option
-   * label(s), or null if the user cancelled.
-   */
-  askUserQuestion?: (question: UserQuestion) => Promise<string[] | null>;
+  // askUser / askUserQuestion / requestPlanApproval are inherited from
+  // ToolInteraction above — see that interface for why the human-facing
+  // surface is grouped and why a sub-agent must re-derive it.
   /**
    * Optional LLM-assisted permission risk classifier (M15.3). Threaded from
    * the CLI into every tool call's permission check. When present, the
@@ -269,6 +293,64 @@ export interface ToolContext {
    * to re-run the tool. Each agent loop owns its own store; absent in tests.
    */
   collapseStore?: import("./context-pipeline.js").CollapseStore;
+}
+
+/**
+ * Build a SUB-AGENT's ToolContext from its parent's — an explicit allow-list,
+ * not a spread.
+ *
+ * The spread (`{ ...context, abortSignal }`) that this replaces looked
+ * equivalent but was not: it silently handed every worker the parent's
+ * `getParentMessages` / `parentSystemPrompt` (making a TYPED sub-agent able to
+ * fork, since Task's `canFork` is just a presence check on those two fields)
+ * and the parent's `askUser` (granting full approval authority to a worker
+ * that should hold a restricted approver). Both are authority leaks, and
+ * neither raised an error — the worker simply had more power than intended.
+ *
+ * The allow-list is the contract: a worker gets the workspace, the session,
+ * the permission mode, the model, and the approver its CALLER chose. Anything
+ * else a future field might carry is opt-in by being named here.
+ */
+export function deriveSubContext(
+  parent: ToolContext,
+  overrides: {
+    /** The restricted approver for this worker (utils/subagent-security.ts). */
+    askUser?: AskUserFn;
+    abortSignal?: AbortSignal;
+    /** Nesting depth for fork-in-fork capping. */
+    subagentDepth?: number;
+    /** Session id override — a fork may run under `<parent>-agent-<ts>`. */
+    sessionId?: string;
+    permissionMode?: PermissionMode;
+    /** Workspace override — the Agent tool isolates via a git worktree. */
+    workspaceRoot?: string;
+    /** Progress sink, when a worker should report into the parent's UI. */
+    onSubAgentProgress?: (event: SubAgentProgress) => void;
+    /** Hooks, when the worker must run under the session's hook policy. */
+    hooks?: HookRunner;
+  } = {},
+): ToolContext {
+  return {
+    workspaceRoot: overrides.workspaceRoot ?? parent.workspaceRoot,
+    sessionId: overrides.sessionId ?? parent.sessionId,
+    permissionMode: overrides.permissionMode ?? parent.permissionMode,
+    modelConfig: parent.modelConfig,
+    // The caller's approver, never the parent's raw one.
+    askUser: overrides.askUser,
+    onSubAgentProgress: overrides.onSubAgentProgress,
+    hooks: overrides.hooks,
+    // The worker's own signal (a CancellationScope forked from the parent),
+    // and its nesting depth. Both are per-worker facts: inheriting the
+    // parent's depth would make a nested worker look shallower than it is
+    // and defeat the fork-in-fork cap.
+    abortSignal: overrides.abortSignal,
+    subagentDepth: overrides.subagentDepth ?? 0,
+    // Absent: allowedDirectories (a worker must not widen its own reach),
+    // getParentMessages / parentSystemPrompt (no fork from a worker),
+    // requestPlanApproval / askUserQuestion (the parent's overlays are not
+    // mounted for worker turns), permissionClassifier (a rate-limited,
+    // model-calling gate that does not belong on every worker call).
+  };
 }
 
 /** A structured question the model can pose to the user (AskUserQuestion). */

@@ -26,9 +26,22 @@ import {
 import { pushTaskNotification } from "./tools/notifications.js";
 import type { AskUserFn, Message, ModelConfig, PermissionMode, SubAgentProgress } from "./types.js";
 import { CancellationScope } from "./utils/cancellation.js";
+import { Semaphore } from "./utils/semaphore.js";
 import { createSubAgentApprover } from "./utils/subagent-security.js";
 
 const AGENT_MAX_TURNS = 10;
+
+// Max team agents running a turn at once. The Task and Agent tools each cap
+// their own fan-out; team had no cap, so N `send_message` calls in one turn
+// opened N concurrent agentLoops straight at the provider. Deliberately a
+// SEPARATE semaphore from Task's/Agent's so a mixed fan-out doesn't starve
+// either kind — same reasoning as agent.ts. Override via TEAM_MAX_CONCURRENCY.
+const MAX_CONCURRENCY = (() => {
+  const raw = Number(process.env.TEAM_MAX_CONCURRENCY);
+  return Number.isInteger(raw) && raw > 0 ? raw : 3;
+})();
+
+const teamSlots = new Semaphore(MAX_CONCURRENCY, "Team agent");
 
 export type AgentStatus = "idle" | "running" | "done" | "error" | "stopped";
 
@@ -179,6 +192,15 @@ export function deleteAgent(sessionId: string, id: string): boolean {
 /** Test/util. */
 export function resetTeams(): void {
   teams.clear();
+  // The semaphore is a module singleton, so a test whose turn was aborted
+  // mid-flight (or that deliberately over-subscribes) would otherwise leak
+  // slots into the next case and make later ones hang on acquire().
+  teamSlots.reset();
+}
+
+/** Current team concurrency cap (exported for tests and /status). */
+export function teamConcurrencyLimit(): number {
+  return MAX_CONCURRENCY;
 }
 
 // Core tools for team-agent resolution come from the subagents registry (CLI
@@ -218,17 +240,37 @@ export async function runAgentTurn(
   const scope = new CancellationScope(ctx.parentSignal);
   agent.scope = scope;
 
-  const caller = createModelCaller(ctx.modelConfig);
-  const systemPrompt = buildSubagentSystemPrompt(
-    role,
-    [role.systemPrompt, "", `You are team member "${agent.id}" (role: ${agent.role}).`].join("\n"),
-    { workspaceRoot: ctx.workspaceRoot },
-  );
+  // Bound the fan-out. Acquired AFTER the scope exists so a queued turn still
+  // aborts cleanly (Ctrl+C / task_stop while waiting for a slot), and released
+  // in the finally below so an early throw can never strand a slot.
+  let slotHeld = false;
+  try {
+    await teamSlots.acquire(scope.signal);
+    slotHeld = true;
+  } catch (e) {
+    scope.dispose();
+    agent.scope = undefined;
+    agent.status = "stopped";
+    agent.updatedAt = Date.now();
+    return {
+      output: "",
+      toolCalls: 0,
+      error: e instanceof Error ? e.message : String(e),
+    };
+  }
 
   let toolCalls = 0;
   let error: string | undefined;
 
   try {
+    const caller = createModelCaller(ctx.modelConfig);
+    const systemPrompt = buildSubagentSystemPrompt(
+      role,
+      [role.systemPrompt, "", `You are team member "${agent.id}" (role: ${agent.role}).`].join(
+        "\n",
+      ),
+      { workspaceRoot: ctx.workspaceRoot },
+    );
     const coreTools = await getCoreToolsForSubagents();
     const tools = resolveSubagentTools(role, coreTools);
 
@@ -284,6 +326,13 @@ export async function runAgentTurn(
     }
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
+  } finally {
+    if (slotHeld) {
+      teamSlots.release();
+      slotHeld = false;
+    }
+    scope.dispose();
+    agent.scope = undefined;
   }
 
   // Context protection (kernel §4): the agent's output is ONLY its final
@@ -293,8 +342,6 @@ export async function runAgentTurn(
   agent.toolCalls += toolCalls;
   agent.lastOutput = output;
   agent.updatedAt = Date.now();
-  scope.dispose();
-  agent.scope = undefined;
   // A stop requested mid-run wins over done.
   if ((agent.status as AgentStatus) !== "stopped") {
     agent.status = error && !output ? "error" : "done";

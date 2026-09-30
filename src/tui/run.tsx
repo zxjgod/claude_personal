@@ -78,7 +78,11 @@ import { buildPermissionDiff } from "./tool-output.js";
 // Debug monitoring - enabled via DEBUG_STREAM env var
 const DEBUG_STREAM = process.env.DEBUG_STREAM;
 
-export interface TuiDeps {
+/**
+ * The agent-loop wiring the TUI needs: model access, tool set, and the
+ * per-turn prompt.
+ */
+export interface TuiAgentDeps {
   messages: Message[];
   tools: Tool[];
   callModel: ModelCaller;
@@ -93,6 +97,23 @@ export interface TuiDeps {
    * sections including the tool-set fingerprint. Falls back to `systemPrompt`.
    */
   buildTurnSystemPrompt?: () => string;
+  /** M5: optional fast-model factory (resolved per turn; null = use main). */
+  fastModelFactory?: () => import("../auto-compact.js").FastModelOption | null;
+  /** M36: background memory/skill prefetch (returns a <system-reminder> or null). */
+  prefetch?: (latestUserText: string) => Promise<string | null>;
+  /** M36: opt-in tool-batch digest (undefined = disabled). */
+  summarizeToolBatch?: (prompt: string) => Promise<string | null>;
+  /** Persist the turn's task state + terminal reason. */
+  onSave: (taskState?: TaskState, lastTerminalReason?: string) => void;
+}
+
+/**
+ * Session identity. `getSessionId` / `getWorkspaceRoot` are live readers
+ * because /resume rewrites `session.id` in place and /cd moves the root —
+ * a captured string goes stale and splits checkpoint buckets from /rewind's
+ * (live) ctx.sessionId.
+ */
+export interface TuiSessionDeps {
   workspaceRoot: string;
   /** Live workspace-root reader (for /cd). Falls back to `workspaceRoot` when absent. */
   getWorkspaceRoot?: () => string;
@@ -104,8 +125,16 @@ export interface TuiDeps {
    */
   getSessionId?: () => string;
   sessionId: string;
-  permissionMode: PermissionMode;
+  allowedDirectories?: string[];
+}
+
+/**
+ * What the TUI renders and how it gates: command palette entries, the
+ * approval surface, and the optional LLM risk classifier.
+ */
+export interface TuiUiDeps {
   commands: CommandInfo[];
+  permissionMode: PermissionMode;
   hooks?: HookRunner;
   makeCommandContext: () => CommandContext;
   alwaysAllow: Set<string>;
@@ -113,18 +142,21 @@ export interface TuiDeps {
   /** M15.3: optional LLM permission classifier (opt-in via CLI flag). */
   permissionClassifier?: PermissionClassifier;
   permissionPolicy?: import("../permission-policy.js").PermissionPolicy;
-  allowedDirectories?: string[];
-  /** M36: background memory/skill prefetch (returns a <system-reminder> or null). */
-  prefetch?: (latestUserText: string) => Promise<string | null>;
-  /** M36: opt-in tool-batch digest (undefined = disabled). */
-  summarizeToolBatch?: (prompt: string) => Promise<string | null>;
-  /** M5: optional fast-model factory (resolved per turn; null = use main). */
-  fastModelFactory?: () => import("../auto-compact.js").FastModelOption | null;
   /** M25.2: opt-in full-screen alt-screen layout (default off). */
   fullscreen?: boolean;
-  onSave: (taskState?: TaskState, lastTerminalReason?: string) => void;
   setupElicitation?: (store: TuiStore) => void;
 }
+
+/**
+ * The TUI's dependency contract, grouped by concern.
+ *
+ * It was one flat 24-field object, which read as an unstructured bag: nothing
+ * said which fields are the model wiring, which are session identity, and
+ * which are the approval surface. The groups are structural (extends, no
+ * renames), so every call site and every `deps.x` read is unchanged — this
+ * makes the contract legible without a 40-file migration.
+ */
+export interface TuiDeps extends TuiAgentDeps, TuiSessionDeps, TuiUiDeps {}
 
 /** Run one user turn through the agent loop, pushing events into the store. */
 export async function runTurn(
