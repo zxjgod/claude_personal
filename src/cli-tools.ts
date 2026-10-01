@@ -176,7 +176,9 @@ export async function setupTools(deps: {
   return {
     toolRegistry,
     mcpManager,
-    toolSources: toolRegistry.listSources(),
+    get toolSources() {
+      return toolRegistry.listSources();
+    },
     tools,
   };
 }

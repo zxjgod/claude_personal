@@ -13,7 +13,8 @@
 //         that turn's start (the file was mid-flight by then).
 //
 // Turn ↔ message binding: beginUserTurn() optionally tags the user MESSAGE
-// object (WeakMap) with its turn number, and turnOfMessage() reads it back.
+// object with its turn number and session id; user messages persist this
+// association so turnOfMessage() can read it after a restart.
 // The rewind UIs key off the message tag directly — no ordinal arithmetic
 // that synthetic agent-loop injections, /clear, auto-compaction or /resume
 // could desynchronize.
@@ -61,6 +62,14 @@ const sessions = new Map<string, SessionCheckpoints>();
 // Message object → its 1-based checkpoint turn (see header). Weak so tagged
 // messages can be GC'd with the conversation they belong to.
 const turnTags = new WeakMap<object, number>();
+const storageRoots = new Map<string, string>();
+
+let workspaceRootResolver: (() => string) | undefined;
+
+/** Default storage resolver for newly encountered sessions; existing buckets stay pinned. */
+export function setCheckpointWorkspaceRootResolver(resolver: (() => string) | undefined): void {
+  workspaceRootResolver = resolver;
+}
 
 // ============================================================
 // Disk persistence (Top10 follow-up C8)
@@ -80,15 +89,31 @@ interface PersistedBucket {
  *  restoreToTurn re-reads them lazily). */
 const MAX_CHECKPOINT_MEMORY_BYTES = 64 * 1024 * 1024;
 
-/** Root for persisted checkpoints. Same workspace resolution as the CLI
- *  (WORKSPACE_ROOT env, else cwd) — checkpoint APIs only carry sessionId. */
+/** Fallback root for unbound sessions. The CLI binds each session explicitly. */
 function checkpointRoot(): string {
-  const ws = process.env.WORKSPACE_ROOT || process.cwd();
+  const ws = workspaceRootResolver?.() || process.env.WORKSPACE_ROOT || process.cwd();
   return nodePath.join(ws, ".claude", "checkpoints");
 }
 
 function bucketDir(key: string): string {
-  return nodePath.join(checkpointRoot(), key.replace(/[^a-zA-Z0-9_.-]/g, "_"));
+  let root = storageRoots.get(key);
+  if (!root) {
+    root = nodePath.dirname(checkpointRoot());
+    storageRoots.set(key, root);
+  }
+  return nodePath.join(root, "checkpoints", key.replace(/[^a-zA-Z0-9_.-]/g, "_"));
+}
+
+/** Session storage follows the session file, independently of /cd and worktrees. */
+export function bindCheckpointSession(sessionId: string, workspaceRoot: string): void {
+  const key = bucketKey(sessionId);
+  const root = nodePath.join(nodePath.resolve(workspaceRoot), ".claude");
+  const previous = storageRoots.get(key);
+  if (previous && previous !== root) {
+    sessions.delete(key);
+    diskMirrors.delete(key);
+  }
+  storageRoots.set(key, root);
 }
 
 function writeBlob(key: string, content: string | null): string | null {
@@ -426,13 +451,29 @@ export function beginUserTurn(sessionId: string, msg?: object): number {
   } catch {
     // best-effort
   }
-  if (msg !== undefined) turnTags.set(msg, s.currentTurn);
+  if (msg !== undefined) {
+    turnTags.set(msg, s.currentTurn);
+    if ("role" in msg && msg.role === "user") {
+      Object.assign(msg, { checkpoint: { sessionId: key, turn: s.currentTurn } });
+    }
+  }
   return s.currentTurn;
 }
 
-/** The checkpoint turn a user message was tagged with (null = untagged,
- *  e.g. loaded by /resume or injected without a boundary). */
-export function turnOfMessage(msg: object): number | null {
+/** Resolve a live or persisted tag; untagged legacy and synthetic messages return null. */
+export function turnOfMessage(msg: object, sessionId?: string): number | null {
+  if ("checkpoint" in msg) {
+    const tag = msg.checkpoint as { sessionId?: unknown; turn?: unknown } | undefined;
+    if (
+      tag &&
+      typeof tag.sessionId === "string" &&
+      Number.isSafeInteger(tag.turn) &&
+      Number(tag.turn) > 0
+    ) {
+      if (sessionId !== undefined && tag.sessionId !== bucketKey(sessionId)) return null;
+      return Number(tag.turn);
+    }
+  }
   return turnTags.get(msg) ?? null;
 }
 
@@ -487,6 +528,12 @@ export function restoreToTurn(sessionId: string, turn: number): RestoreResult {
   const deleted: string[] = [];
   const failures: Array<{ path: string; error: string }> = [];
 
+  for (const path of s.firstWriteTurn.keys()) {
+    if (!s.originals.has(path)) {
+      failures.push({ path, error: "Checkpoint original content is missing or unreadable." });
+    }
+  }
+
   for (const [path, original] of s.originals) {
     const firstTurn = s.firstWriteTurn.get(path) ?? target;
     let content: string | null | undefined;
@@ -495,7 +542,10 @@ export function restoreToTurn(sessionId: string, turn: number): RestoreResult {
     } else {
       content = boundary?.get(path);
     }
-    if (content === undefined) continue; // not tracked at that boundary
+    if (content === undefined) {
+      failures.push({ path, error: "Checkpoint boundary content is missing or unreadable." });
+      continue;
+    }
     try {
       if (content === null) {
         // Original did not exist — remove the session-created file. Only
@@ -623,6 +673,7 @@ export function resetCheckpoints(sessionId: string): void {
   } catch {
     // best-effort cleanup
   }
+  storageRoots.delete(key);
 }
 
 /** Test/util: clear everything — memory buckets, disk mirrors, and the
@@ -635,6 +686,7 @@ export function resetAllCheckpoints(): void {
   } catch {
     // best-effort cleanup
   }
+  storageRoots.clear();
 }
 
 /** Test-only: drop in-memory state WITHOUT touching disk — simulates a
@@ -642,6 +694,7 @@ export function resetAllCheckpoints(): void {
 export function __clearCheckpointMemoryForTests(): void {
   sessions.clear();
   diskMirrors.clear();
+  storageRoots.clear();
 }
 
 function dirname(p: string): string {

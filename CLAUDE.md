@@ -32,6 +32,10 @@ CLI Entry --> Config/API Client --> System Prompt Builder --> Agent Loop --> Too
 - `reference/` — Claude Code decompiled source (reference implementation, gitignored)
 - `Claude Code 源码架构深度分析.pdf` — architecture analysis (gitignored, kept at repo root)
 - `docs/` — project documentation
+  - `项目架构.md` — current architecture and invariants (updated 2026-10-01).
+  - `architecture/decisions.md` — accepted decisions and runtime ownership.
+  - Root `CONTEXT.md` — domain glossary. June/September snapshots in `docs/archive/`
+    are historical; use current architecture and maintenance docs for verification.
   - `快速开始.md` — install / config / run / smoke-test flow
   - `项目总览.md` — architecture, module list, completion status
   - `项目评审报告.md` — source-level review with findings & fixes

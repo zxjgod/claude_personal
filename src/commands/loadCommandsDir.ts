@@ -31,9 +31,8 @@
 // trustedShell:false explicitly).
 // ============================================================
 
-import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
+import { loadDiskEntries } from "../utils/disk-loader.js";
 import { expandDiskTemplate } from "../utils/disk-template.js";
 import { parseFrontmatter } from "../utils/frontmatter.js";
 import { ccrPath } from "../workspace-config.js";
@@ -122,34 +121,21 @@ export function resetCustomCommands(): void {
  * roots are skipped silently — disk commands are optional.
  */
 export function loadCommandsDir(workspaceRoot: string): string[] {
-  const loaded: string[] = [];
-  for (const root of commandDirRoots(workspaceRoot)) {
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(root, { withFileTypes: true });
-    } catch {
-      continue; // root doesn't exist — fine
-    }
-    for (const entry of entries) {
-      if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
+  return loadDiskEntries({
+    roots: commandDirRoots(workspaceRoot),
+    accepts: (entry) => entry.isFile() && entry.name.endsWith(".md"),
+    nameOf: (entry) => {
       const name = entry.name.slice(0, -".md".length);
-      if (!isSafeCommandName(name)) continue;
-      const file = path.join(root, entry.name);
-      let raw: string;
-      try {
-        raw = fs.readFileSync(file, "utf8");
-      } catch {
-        continue;
-      }
-      const { frontmatter, body } = parseFrontmatter(raw);
-      if (!body) continue; // a command with no prompt body is useless
-      // trustedShell: true for every root — the old `index === 0` heuristic
-      // claimed "user-scope only" but silently trusted the project root in the
-      // default environment (no CCR_USER_COMMANDS_DIR set). Install-is-trust
-      // is now the explicit, documented policy (Top10 #2 decision).
-      registerCustomCommand(commandFromFile(name, body, frontmatter, true));
-      loaded.push(name);
-    }
-  }
-  return loaded;
+      return isSafeCommandName(name) ? name : undefined;
+    },
+    fileOf: (root, entry) => path.join(root, entry.name),
+    parse: (entry) => {
+      const { frontmatter, body } = parseFrontmatter(entry.raw);
+      if (!body) return undefined;
+      // Install-is-trust is the explicit policy for project, user, and plugin
+      // templates; the loader keeps the trust choice in one visible place.
+      return commandFromFile(entry.name, body, frontmatter, true);
+    },
+    register: registerCustomCommand,
+  });
 }

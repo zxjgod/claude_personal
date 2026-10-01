@@ -27,17 +27,17 @@ function loopPrompt(task: string): string {
 export const loopCommand: SlashCommand = {
   name: "loop",
   description: "Run a task in self-paced iterations via ScheduleWakeup (/loop <task> | stop)",
-  run: (args) => {
+  run: (args, ctx) => {
     const trimmed = args.trim();
 
     if (trimmed === "stop") {
-      const n = cancelAllWakeupJobs();
+      const n = cancelAllWakeupJobs(ctx);
       console.log(chalk.gray(`  Loop stopped — cancelled ${n} pending wakeup(s).`));
       return;
     }
 
     if (!trimmed) {
-      const wakeups = listWakeupJobs();
+      const wakeups = listWakeupJobs(ctx);
       console.log(chalk.gray("  Usage: /loop <task>  — run the task in self-paced iterations"));
       console.log(chalk.gray("         /loop stop   — cancel all pending wakeups"));
       if (wakeups.length > 0) {

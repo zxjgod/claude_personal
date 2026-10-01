@@ -16,8 +16,14 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import {
+  cancelScheduledInputs,
+  matchesScheduleScope,
+  type ScheduleScope,
+  scheduleWorkspaceKey,
+} from "./schedule-scope.js";
 
-export interface ScheduledJob {
+export interface ScheduledJob extends ScheduleScope {
   id: string;
   /**
    * Either a 5-field cron expression (local time) or a relative delay
@@ -38,7 +44,17 @@ export interface ScheduledJob {
 export const MAX_SCHEDULED_JOBS = 50;
 
 const JOBS = new Map<string, ScheduledJob>();
+const loadedWorkspaces = new Set<string>();
 let jobCounter = 0;
+
+function deleteJobEntry(job: ScheduledJob): void {
+  for (const [key, entry] of JOBS) {
+    if (entry === job) {
+      JOBS.delete(key);
+      break;
+    }
+  }
+}
 
 /** Generate next job ID */
 function nextJobId(): string {
@@ -165,7 +181,10 @@ export function registerScheduledJob(input: {
   prompt: string;
   recurring: boolean;
   durable: boolean;
+  workspaceRoot?: string;
+  sessionId?: string;
 }): ScheduledJob | null {
+  if (input.workspaceRoot) ensureDurableJobsLoaded(input.workspaceRoot);
   if (JOBS.size >= MAX_SCHEDULED_JOBS) return null;
   const job: ScheduledJob = {
     id: nextJobId(),
@@ -173,26 +192,34 @@ export function registerScheduledJob(input: {
     prompt: input.prompt,
     recurring: input.recurring,
     durable: input.durable,
+    workspaceRoot: input.workspaceRoot ? path.resolve(input.workspaceRoot) : undefined,
+    sessionId: input.durable ? undefined : input.sessionId,
     createdAt: process.hrtime.bigint(),
     createdAtMs: Date.now(),
   };
   JOBS.set(job.id, job);
+  if (job.durable && job.workspaceRoot) persistDurableJobs(job.workspaceRoot);
   return job;
 }
 
 /** List all scheduled jobs */
-export function listScheduledJobs(): ScheduledJob[] {
-  return [...JOBS.values()];
+export function listScheduledJobs(scope?: ScheduleScope): ScheduledJob[] {
+  return [...JOBS.values()].filter((job) => matchesScheduleScope(job, scope));
 }
 
 /** Get a job by id */
-export function getScheduledJob(id: string): ScheduledJob | undefined {
-  return JOBS.get(id);
+export function getScheduledJob(id: string, scope?: ScheduleScope): ScheduledJob | undefined {
+  return [...JOBS.values()].find((job) => job.id === id && matchesScheduleScope(job, scope));
 }
 
 /** Remove a job. Returns true if it existed. */
-export function removeScheduledJob(id: string): boolean {
-  return JOBS.delete(id);
+export function removeScheduledJob(id: string, scope?: ScheduleScope): boolean {
+  const job = getScheduledJob(id, scope);
+  const cancelled = cancelScheduledInputs("cron", id, scope) > 0;
+  if (!job) return cancelled;
+  deleteJobEntry(job);
+  if (job.durable && job.workspaceRoot) persistDurableJobs(job.workspaceRoot);
+  return true;
 }
 
 /**
@@ -201,16 +228,23 @@ export function removeScheduledJob(id: string): boolean {
  * jobs fire once when the delay elapsed; one-shots are removed after firing.
  * The caller owns delivery (inject as user input while the REPL is idle).
  */
-export function collectDueCronJobs(now: Date): Array<{ job: ScheduledJob; prompt: string }> {
+export function collectDueCronJobs(
+  now: Date,
+  scope?: ScheduleScope,
+): Array<{ job: ScheduledJob; prompt: string }> {
   const due: Array<{ job: ScheduledJob; prompt: string }> = [];
   const minuteMarker = Math.floor(now.getTime() / 60_000);
   for (const job of [...JOBS.values()]) {
+    if (!matchesScheduleScope(job, scope)) continue;
+    if (scope?.workspaceRoot && !job.workspaceRoot)
+      job.workspaceRoot = path.resolve(scope.workspaceRoot);
+    if (!job.durable && !job.sessionId && scope?.sessionId) job.sessionId = scope.sessionId;
     if (job.cron.startsWith("+")) {
       const delaySec = Number(job.cron.slice(1));
       const elapsedSec = (now.getTime() - job.createdAtMs) / 1000;
       if (elapsedSec >= delaySec) {
         due.push({ job, prompt: `[Sleep elapsed (${job.cron}s)] ${job.prompt}` });
-        JOBS.delete(job.id); // relative delays are always one-shot
+        deleteJobEntry(job); // relative delays are always one-shot
       }
       continue;
     }
@@ -218,8 +252,13 @@ export function collectDueCronJobs(now: Date): Array<{ job: ScheduledJob; prompt
     if (cronMatches(now, job.cron)) {
       job.lastFiredMinute = minuteMarker;
       due.push({ job, prompt: `[Scheduled job ${job.id}] ${job.prompt}` });
-      if (!job.recurring) JOBS.delete(job.id);
+      if (!job.recurring) deleteJobEntry(job);
     }
+  }
+  for (const root of new Set(
+    due.filter(({ job }) => job.durable).map(({ job }) => job.workspaceRoot),
+  )) {
+    if (root) persistDurableJobs(root);
   }
   return due;
 }
@@ -245,8 +284,12 @@ function durablePath(root: string): string {
  */
 export function persistDurableJobs(root: string): void {
   try {
+    ensureDurableJobsLoaded(root);
+    for (const job of JOBS.values()) {
+      if (job.durable && !job.workspaceRoot) job.workspaceRoot = path.resolve(root);
+    }
     const jobs: DurableJobRecord[] = [...JOBS.values()]
-      .filter((j) => j.durable)
+      .filter((j) => j.durable && matchesScheduleScope(j, { workspaceRoot: root }))
       .map((j) => ({
         id: j.id,
         cron: j.cron,
@@ -256,7 +299,10 @@ export function persistDurableJobs(root: string): void {
       }));
     const dir = path.dirname(durablePath(root));
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(durablePath(root), `${JSON.stringify({ version: 1, jobs }, null, 2)}\n`);
+    const file = durablePath(root);
+    const tmp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, `${JSON.stringify({ version: 1, jobs }, null, 2)}\n`);
+    fs.renameSync(tmp, file);
   } catch {
     /* best-effort */
   }
@@ -268,6 +314,7 @@ export function persistDurableJobs(root: string): void {
  * ids are preserved so CronDelete keeps working across restarts.
  */
 export function loadDurableJobs(root: string): { loaded: number; skipped: number } {
+  loadedWorkspaces.add(scheduleWorkspaceKey(root));
   let raw: string;
   try {
     raw = fs.readFileSync(durablePath(root), "utf8");
@@ -282,24 +329,25 @@ export function loadDurableJobs(root: string): { loaded: number; skipped: number
   }
   let loaded = 0;
   let skipped = 0;
-  for (const record of parsed.jobs ?? []) {
+  for (const record of Array.isArray(parsed?.jobs) ? parsed.jobs : []) {
     if (
       typeof record?.id !== "string" ||
       typeof record?.cron !== "string" ||
       typeof record?.prompt !== "string" ||
       validateCron(record.cron) !== null ||
-      JOBS.has(record.id) ||
+      getScheduledJob(record.id, { workspaceRoot: root }) ||
       JOBS.size >= MAX_SCHEDULED_JOBS
     ) {
       skipped++;
       continue;
     }
-    JOBS.set(record.id, {
+    JOBS.set(`${scheduleWorkspaceKey(root)}:${record.id}`, {
       id: record.id,
       cron: record.cron.trim(),
       prompt: record.prompt,
       recurring: record.recurring !== false,
       durable: true,
+      workspaceRoot: path.resolve(root),
       createdAt: process.hrtime.bigint(),
       createdAtMs: typeof record.createdAtMs === "number" ? record.createdAtMs : Date.now(),
     });
@@ -308,8 +356,15 @@ export function loadDurableJobs(root: string): { loaded: number; skipped: number
   return { loaded, skipped };
 }
 
+/** Load a newly selected workspace before any registry write can overwrite its file. */
+export function ensureDurableJobsLoaded(root: string): void {
+  if (!loadedWorkspaces.has(scheduleWorkspaceKey(root))) loadDurableJobs(root);
+}
+
 /** Test/util: clear all scheduled jobs. */
 export function resetScheduledJobs(): void {
   JOBS.clear();
+  cancelScheduledInputs("cron");
+  loadedWorkspaces.clear();
   jobCounter = 0;
 }

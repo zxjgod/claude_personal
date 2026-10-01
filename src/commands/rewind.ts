@@ -38,10 +38,10 @@ export const rewindCommand: SlashCommand = {
 
     // P0-3: the FIRST message this rewind removes is the (length - n + 1)-th
     // user turn (1-based). Its checkpoint tag — read straight off the message
-    // object — identifies the boundary to restore. Turns loaded by /resume
-    // carry no tag: the conversation still rewinds, files honestly don't.
+    // object — identifies the boundary to restore, including resumed turns.
+    // Untagged legacy messages can only rewind the conversation.
     const targetMsgIndex = userIdx[Math.max(0, userIdx.length - n)]!;
-    const cpTurn = turnOfMessage(messages[targetMsgIndex] as Message);
+    const cpTurn = turnOfMessage(messages[targetMsgIndex] as Message, ctx.sessionId);
     let restored = 0;
     let deleted = 0;
     if (cpTurn !== null) {
@@ -87,9 +87,7 @@ export const rewindCommand: SlashCommand = {
       }
     }
     if (cpTurn === null) {
-      console.log(
-        chalk.gray("  (This turn predates the current process — no file checkpoint to restore.)"),
-      );
+      console.log(chalk.gray("  (This turn has no file checkpoint to restore.)"));
     } else if (restored > 0 || deleted > 0) {
       console.log(
         chalk.gray(

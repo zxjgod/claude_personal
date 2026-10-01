@@ -8,6 +8,7 @@ import {
   getWakeupJob,
   listWakeupJobs,
   resetWakeupJobs,
+  ScheduleWakeupTool,
   scheduleWakeup,
 } from "../tools/extended/schedule-wakeup.js";
 
@@ -124,6 +125,18 @@ describe("ScheduleWakeup", () => {
       // This is tested at the tool level, not core logic
       const job = scheduleWakeup(300, "Edge case", "Exactly 5 min");
       expect(job.delaySeconds).toBe(300);
+    });
+  });
+
+  describe("tool input contract", () => {
+    it("accepts stop=true without scheduling fields", () => {
+      expect(ScheduleWakeupTool.validateInput?.({ stop: true })).toEqual({ stop: true });
+    });
+
+    it("rejects an incomplete scheduling request", () => {
+      expect(() => ScheduleWakeupTool.validateInput?.({ prompt: "check" })).toThrow(
+        /delaySeconds: Required unless stop=true/,
+      );
     });
   });
 });

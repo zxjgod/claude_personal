@@ -24,7 +24,15 @@ import {
   resolveSubagentTools,
 } from "./subagents.js";
 import { pushTaskNotification } from "./tools/notifications.js";
-import type { AskUserFn, Message, ModelConfig, PermissionMode, SubAgentProgress } from "./types.js";
+import {
+  type AskUserFn,
+  deriveSubContext,
+  type Message,
+  type ModelConfig,
+  type PermissionMode,
+  type SubAgentProgress,
+  type ToolContext,
+} from "./types.js";
 import { CancellationScope } from "./utils/cancellation.js";
 import { Semaphore } from "./utils/semaphore.js";
 import { createSubAgentApprover } from "./utils/subagent-security.js";
@@ -65,6 +73,7 @@ export interface TeamRunContext {
   workspaceRoot: string;
   sessionId: string;
   permissionMode: PermissionMode;
+  permissionPolicy?: ToolContext["permissionPolicy"];
   onProgress?: (event: SubAgentProgress) => void;
   /**
    * Parent loop's interactive approver, forwarded into each agent's sub-loop so
@@ -283,14 +292,11 @@ export async function runAgentTurn(
       maxTurns: role.maxTurns ?? AGENT_MAX_TURNS,
       autoCompactThreshold: WORKER_COMPACT_THRESHOLD,
       abortSignal: scope.signal,
-      toolContext: {
-        workspaceRoot: ctx.workspaceRoot,
-        sessionId: ctx.sessionId,
-        permissionMode: ctx.permissionMode,
-        modelConfig: ctx.modelConfig,
-        // Use restricted approver to prevent dangerous tool bypass
+      toolContext: deriveSubContext(ctx, {
         askUser: subApprover,
-      },
+        abortSignal: scope.signal,
+        hooks: ctx.hooks,
+      }),
       // Also pass restricted askUser at the LoopOptions level
       askUser: subApprover,
     });

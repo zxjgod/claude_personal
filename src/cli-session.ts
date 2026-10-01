@@ -7,6 +7,7 @@
 // ============================================================
 
 import chalk from "chalk";
+import { bindCheckpointSession } from "./checkpoint.js";
 import { parseCliArgs } from "./cli-args.js";
 import { formatCliError } from "./cli-errors.js";
 import { PersistenceManager } from "./persistence.js";
@@ -112,6 +113,7 @@ export async function initSession(deps: {
   }
 
   const session = { id: sessionId };
+  bindCheckpointSession(session.id, workspaceRoot);
   const recordTranscript: SessionState["recordTranscript"] = (entry) => {
     transcript.append(session.id, entry).catch((err) => {
       console.error("Warning: transcript append failed:", formatCliError(err));
@@ -138,6 +140,7 @@ export function createResumeSession(deps: {
     const existing = await persistence.load(matches[0]!.sessionId);
     if (!existing) return false;
     session.id = existing.sessionId;
+    bindCheckpointSession(session.id, persistence.workspaceRoot);
     messages.length = 0;
     // F5: same idle-time clearing as startup resume.
     messages.push(

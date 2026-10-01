@@ -28,6 +28,8 @@ import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
+import { checkArchitectureDocs } from "./architecture-docs.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const src = join(root, "src");
@@ -68,10 +70,35 @@ try {
   commands = COMMANDS.length;
   tools = CORE_TOOLS.length;
 } catch {
-  const reg = readFileSync(join(src, "commands", "registry.ts"), "utf8");
-  const coreTools = readFileSync(join(src, "tools", "core-tools.ts"), "utf8");
-  commands = (reg.match(/^\s*\w+Command,$/gm) ?? []).length;
-  tools = (coreTools.match(/^\s{2}\w+Tool,$/gm) ?? []).length + 12; // + TEAM_TOOLS + M14_TOOLS
+  // Read the actual array expressions; no hard-coded bundle size or comment-sensitive regex.
+  const countArray = (relative, name) => {
+    const file = join(src, relative);
+    const ast = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
+    for (const statement of ast.statements) {
+      if (!ts.isVariableStatement(statement)) continue;
+      for (const declaration of statement.declarationList.declarations) {
+        if (
+          declaration.name.getText(ast) !== name ||
+          !declaration.initializer ||
+          !ts.isArrayLiteralExpression(declaration.initializer)
+        )
+          continue;
+        return declaration.initializer.elements.reduce((count, element) => {
+          if (!ts.isSpreadElement(element)) return count + 1;
+          const bundle = element.expression.getText(ast);
+          const bundles = {
+            TEAM_TOOLS: "tools/breadth/team.ts",
+            ORCHESTRATION_TOOLS: "tools/breadth/orchestration.ts",
+          };
+          if (!bundles[bundle]) throw new Error(`Unknown tool bundle ${bundle}`);
+          return count + countArray(bundles[bundle], bundle);
+        }, 0);
+      }
+    }
+    throw new Error(`Array ${name} not found in ${relative}`);
+  };
+  commands = countArray("commands/registry.ts", "COMMANDS");
+  tools = countArray("tools/core-tools.ts", "CORE_TOOLS");
 }
 
 // --- Test-case count ----------------------------------------------------
@@ -130,6 +157,9 @@ function checkAgainstDocs(metrics) {
   const docPath = join(root, "docs", "项目总览.md");
   const doc = readFileSync(docPath, "utf8");
   let failures = 0;
+  const architectureErrors = checkArchitectureDocs(root);
+  for (const error of architectureErrors) console.warn(`✗ ${error}`);
+  failures += architectureErrors.length;
 
   const expect = (label, actual, pattern) => {
     const m = doc.match(pattern);

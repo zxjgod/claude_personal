@@ -319,7 +319,7 @@ export const ScheduleCronTool: Tool = buildTool({
   isReadOnly: false,
   isConcurrencySafe: true,
 
-  async call(input): Promise<ToolResult> {
+  async call(input, context): Promise<ToolResult> {
     const err = validateCron(input.cron);
     if (err) return { content: "", error: err };
 
@@ -328,6 +328,8 @@ export const ScheduleCronTool: Tool = buildTool({
       prompt: input.prompt,
       recurring: input.recurring ?? true,
       durable: input.durable ?? false,
+      workspaceRoot: context.workspaceRoot,
+      sessionId: context.sessionId,
     });
     if (!job) {
       return {
@@ -363,7 +365,7 @@ export const SleepTool: Tool = buildTool({
   isReadOnly: true,
   isConcurrencySafe: true,
 
-  async call(input): Promise<ToolResult> {
+  async call(input, context): Promise<ToolResult> {
     const raw = Number(input.delaySeconds);
     if (!Number.isFinite(raw) || raw <= 0) {
       return { content: "", error: "delaySeconds must be a positive number" };
@@ -375,6 +377,8 @@ export const SleepTool: Tool = buildTool({
         prompt: input.prompt,
         recurring: false,
         durable: false,
+        workspaceRoot: context.workspaceRoot,
+        sessionId: context.sessionId,
       });
       if (!job) {
         return {

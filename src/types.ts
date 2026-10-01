@@ -26,6 +26,8 @@ export type Message = UserMessage | AssistantMessage | ToolResultMessage | Syste
 export interface UserMessage {
   role: "user";
   content: ContentBlock[];
+  /** Local persistence metadata; provider adapters send only the content. */
+  checkpoint?: { sessionId: string; turn: number };
 }
 
 export interface AssistantMessage {
@@ -334,6 +336,9 @@ export function deriveSubContext(
     workspaceRoot: overrides.workspaceRoot ?? parent.workspaceRoot,
     sessionId: overrides.sessionId ?? parent.sessionId,
     permissionMode: overrides.permissionMode ?? parent.permissionMode,
+    // Restrictions survive delegation even though human-facing capabilities
+    // and additional writable directories are deliberately not inherited.
+    permissionPolicy: parent.permissionPolicy,
     modelConfig: parent.modelConfig,
     // The caller's approver, never the parent's raw one.
     askUser: overrides.askUser,

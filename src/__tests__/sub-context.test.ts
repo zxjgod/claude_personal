@@ -129,6 +129,7 @@ describe("deriveSubContext", () => {
         "modelConfig",
         "onSubAgentProgress",
         "permissionMode",
+        "permissionPolicy",
         "sessionId",
         "subagentDepth",
         "workspaceRoot",

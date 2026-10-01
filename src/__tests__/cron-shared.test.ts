@@ -452,5 +452,25 @@ describe("Cron Shared Logic", () => {
     it("should return zeros when no persistence file exists", () => {
       expect(loadDurableJobs(tmpDir)).toEqual({ loaded: 0, skipped: 0 });
     });
+    it("preserves identical saved task ids in different workspaces", () => {
+      const second = path.join(tmpDir, "second");
+      for (const [root, prompt] of [
+        [tmpDir, "A task"],
+        [second, "B task"],
+      ]) {
+        fs.mkdirSync(path.join(root, ".claude"), { recursive: true });
+        fs.writeFileSync(
+          path.join(root, ".claude", "scheduled_tasks.json"),
+          JSON.stringify({
+            version: 1,
+            jobs: [{ id: "shared-id", cron: "* * * * *", prompt, recurring: true, createdAtMs: 1 }],
+          }),
+        );
+        expect(loadDurableJobs(root).loaded).toBe(1);
+      }
+      expect(getScheduledJob("shared-id", { workspaceRoot: second })?.prompt).toBe("B task");
+      removeScheduledJob("shared-id", { workspaceRoot: tmpDir });
+      expect(getScheduledJob("shared-id", { workspaceRoot: second })?.prompt).toBe("B task");
+    });
   });
 });

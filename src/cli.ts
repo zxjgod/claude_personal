@@ -20,6 +20,7 @@ import * as readline from "node:readline";
 import chalk from "chalk";
 import { agentLoop } from "./agent-loop.js";
 import { listChanges } from "./change-tracker.js";
+import { setCheckpointWorkspaceRootResolver } from "./checkpoint.js";
 import {
   DEFAULT_CLASSIFIER_RULES,
   mergeClassifierRules,
@@ -102,6 +103,8 @@ async function main() {
   // no-key path deterministic for the smoke test.
   if (!modelConfig.provider) return;
   let workspaceRoot = getWorkspaceRoot();
+  const sessionStorageRoot = workspaceRoot;
+  setCheckpointWorkspaceRootResolver(() => sessionStorageRoot);
   let permissionMode = getPermissionMode(workspaceRoot);
   // A3 trust gate: a cloned repo's project allow rules need a one-time
   // fingerprint confirmation BEFORE the policy is assembled (untrusted allow
@@ -133,7 +136,7 @@ async function main() {
 
   // --- Tool Setup ---
 
-  const { toolRegistry, mcpManager, toolSources, tools } = await setupTools({
+  const { toolRegistry, mcpManager, tools } = await setupTools({
     workspaceRoot,
     verbose,
   });
@@ -600,7 +603,7 @@ async function main() {
     },
     resumeSession,
     stats: state.stats,
-    tools: toolSources,
+    tools: toolRegistry.listSources(),
     permissionMode,
     getPermissionMode: permissionModeState.get,
     setPermissionMode: (mode: string) => permissionModeState.set(mode as PermissionMode),

@@ -11,9 +11,10 @@
 import { agentLoop, WORKER_COMPACT_THRESHOLD } from "./agent-loop.js";
 import { createModelCaller } from "./llm-adapter.js";
 import { extractLastAssistantText, getCoreToolsForSubagents } from "./subagents.js";
-import type { Message, ToolContext } from "./types.js";
+import { deriveSubContext, type Message, type ToolContext } from "./types.js";
 import { CancellationScope } from "./utils/cancellation.js";
 import { Semaphore } from "./utils/semaphore.js";
+import { createSubAgentApprover } from "./utils/subagent-security.js";
 import {
   collectText,
   parseWorkflowPlan,
@@ -65,6 +66,7 @@ export async function runWorkerAgent(
   const tools = coreTools.filter((t) => ["read", "glob", "grep", "bash"].includes(t.name));
   const subMessages: Message[] = [{ role: "user", content: [{ type: "text", text: prompt }] }];
   const subCaller = createModelCaller(context.modelConfig);
+  const approver = createSubAgentApprover(context.askUser);
   let errorMessage: string | undefined;
 
   await acquireWorkerSlot(abortSignal);
@@ -73,15 +75,12 @@ export async function runWorkerAgent(
       systemPrompt: WORKER_PROMPT,
       maxTurns: WORKER_MAX_TURNS,
       autoCompactThreshold: WORKER_COMPACT_THRESHOLD,
-      toolContext: {
-        workspaceRoot: context.workspaceRoot,
-        sessionId: context.sessionId,
-        permissionMode: context.permissionMode,
-        modelConfig: context.modelConfig,
-        askUser: context.askUser,
+      toolContext: deriveSubContext(context, {
+        askUser: approver,
         abortSignal,
-      },
-      askUser: context.askUser,
+        hooks: context.hooks,
+      }),
+      askUser: approver,
       abortSignal,
     })) {
       if (event.type === "error") errorMessage = String(event.error);

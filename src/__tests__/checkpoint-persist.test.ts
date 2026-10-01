@@ -17,8 +17,13 @@ import {
   listTurns,
   resetCheckpoints,
   restoreToTurn,
+  setCheckpointWorkspaceRootResolver,
   shadowBeforeWrite,
 } from "../checkpoint.js";
+import { createResumeSession } from "../cli-session.js";
+import { rewindCommand } from "../commands/rewind.js";
+import { PersistenceManager } from "../persistence.js";
+import type { Message } from "../types.js";
 
 let root: string;
 
@@ -31,12 +36,31 @@ beforeEach(() => {
   vi.stubEnv("WORKSPACE_ROOT", root);
 });
 afterEach(() => {
+  setCheckpointWorkspaceRootResolver(undefined);
   __clearCheckpointMemoryForTests();
   vi.unstubAllEnvs();
   fs.rmSync(root, { recursive: true, force: true });
 });
 
 describe("checkpoint persistence (C8)", () => {
+  it("uses the host application's live workspace root", () => {
+    const liveRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-ckpt-live-"));
+    try {
+      setCheckpointWorkspaceRootResolver(() => liveRoot);
+      beginUserTurn("sess-live");
+      const file = path.join(liveRoot, "live.txt");
+      shadowBeforeWrite("sess-live", file);
+      expect(
+        fs.existsSync(path.join(liveRoot, ".claude", "checkpoints", "sess-live", "state.json")),
+      ).toBe(true);
+      expect(
+        fs.existsSync(path.join(root, ".claude", "checkpoints", "sess-live", "state.json")),
+      ).toBe(false);
+    } finally {
+      fs.rmSync(liveRoot, { recursive: true, force: true });
+    }
+  });
+
   it("rewinds files across a simulated process restart", () => {
     const file = path.join(root, "a.txt");
     fs.writeFileSync(file, "original");
@@ -66,6 +90,52 @@ describe("checkpoint persistence (C8)", () => {
     __clearCheckpointMemoryForTests();
     restoreToTurn("sess-p", t1);
     expect(fs.readFileSync(file, "utf-8")).toBe("original");
+  });
+  it("keeps old blobs reachable when the tool workspace changes and old turns leave memory", () => {
+    const secondRoot = path.join(root, "second");
+    fs.mkdirSync(secondRoot);
+    let liveRoot = root;
+    setCheckpointWorkspaceRootResolver(() => liveRoot);
+    const file = path.join(root, "move.txt");
+    fs.writeFileSync(file, "original");
+    beginUserTurn("sess-move");
+    shadowBeforeWrite("sess-move", file);
+    fs.writeFileSync(file, "first edit");
+    const target = beginUserTurn("sess-move");
+    for (let i = 0; i < 102; i++) {
+      fs.writeFileSync(file, "later edit");
+      beginUserTurn("sess-move");
+    }
+    liveRoot = secondRoot;
+    beginUserTurn("sess-move");
+    const result = restoreToTurn("sess-move", target);
+    expect(result.failures).toBeUndefined();
+    expect(fs.readFileSync(file, "utf8")).toBe("first edit");
+  });
+  it("restores files through /resume followed by /rewind after restarting", async () => {
+    const file = path.join(root, "resumed.txt");
+    fs.writeFileSync(file, "original");
+    const msg: Message = { role: "user", content: [{ type: "text", text: "edit this file" }] };
+    const sid = "sess-resume-rewind";
+    beginUserTurn(sid, msg);
+    shadowBeforeWrite(sid, file);
+    fs.writeFileSync(file, "edited");
+    const persistence = new PersistenceManager(root);
+    await persistence.save(sid, [msg]);
+    __clearCheckpointMemoryForTests();
+    const messages: Message[] = [];
+    const session = { id: "other" };
+    expect(await createResumeSession({ persistence, messages, session })(sid)).toBe(true);
+    await rewindCommand.run("", {
+      workspaceRoot: root,
+      sessionId: session.id,
+      messages,
+      persistence,
+      modelConfig: { provider: "custom", model: "test", apiKey: "unused" },
+      callModel: async function* () {},
+    });
+    expect(fs.readFileSync(file, "utf8")).toBe("original");
+    expect(messages).toEqual([]);
   });
 
   it("deletes session-created files on rewind across a restart", () => {
@@ -199,6 +269,7 @@ describe("checkpoint persistence (C8)", () => {
     expect(fs.readFileSync(file, "utf-8")).toBe("edited");
     expect(r.deleted).not.toContain(file);
     expect(r.restored).not.toContain(file);
+    expect(r.failures).toHaveLength(1);
   });
 
   it("memory-capacity pruning keeps turns listed and rewound-able from disk (#R7②)", () => {

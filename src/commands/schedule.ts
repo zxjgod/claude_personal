@@ -3,23 +3,27 @@
 // The schedule_cron / sleep tools register jobs that fire while the REPL is
 // idle (see breadth/orchestration.ts). This command surfaces those jobs and lets the user
 // cancel one by id (or all). Read by default; "/schedule cancel <id>" or
-// "/schedule clear" mutate. The jobs registry is process-global, so no extra
-// context plumbing is needed.
+// "/schedule clear" mutate. Both waiting and queued jobs are scoped to the
+// current workspace and session; durable tasks are workspace-wide.
 // ============================================================
 import chalk from "chalk";
 import { listScheduledJobs, removeScheduledJob } from "../tools/breadth/orchestration.js";
+import { ensureDurableJobsLoaded } from "../tools/extended/cron-shared.js";
+import { cancelScheduledInputs } from "../tools/extended/schedule-scope.js";
 import type { SlashCommand } from "./types.js";
 
 export const scheduleCommand: SlashCommand = {
   name: "schedule",
   description: "List or cancel cron-scheduled prompts (/schedule [cancel <id> | clear])",
-  run: (args): undefined => {
+  run: (args, ctx): undefined => {
+    ensureDurableJobsLoaded(ctx.workspaceRoot);
     const [sub, target] = args.trim().split(/\s+/);
 
     if (sub === "clear") {
-      const jobs = listScheduledJobs();
-      for (const j of jobs) removeScheduledJob(j.id);
-      console.log(chalk.gray(`  Cancelled ${jobs.length} scheduled job(s).`));
+      const jobs = listScheduledJobs(ctx);
+      for (const j of jobs) removeScheduledJob(j.id, ctx);
+      const queued = cancelScheduledInputs("cron", undefined, ctx);
+      console.log(chalk.gray(`  Cancelled ${jobs.length + queued} scheduled job(s).`));
       return;
     }
 
@@ -28,14 +32,14 @@ export const scheduleCommand: SlashCommand = {
         console.log(chalk.yellow("  Usage: /schedule cancel <id>"));
         return;
       }
-      const ok = removeScheduledJob(target);
+      const ok = removeScheduledJob(target, ctx);
       console.log(
         ok ? chalk.gray(`  Cancelled job ${target}.`) : chalk.yellow(`  No job with id ${target}.`),
       );
       return;
     }
 
-    const jobs = listScheduledJobs();
+    const jobs = listScheduledJobs(ctx);
     console.log("");
     console.log(chalk.bold(`  Scheduled jobs (${jobs.length}):`));
     if (jobs.length === 0) {

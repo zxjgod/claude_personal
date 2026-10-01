@@ -16,10 +16,16 @@
 // ============================================================
 
 import { type TaskNotificationInput, takeUnseenForDisplay } from "../notifications.js";
-import { collectDueCronJobs, persistDurableJobs } from "./cron-shared.js";
+import { collectDueCronJobs, ensureDurableJobsLoaded } from "./cron-shared.js";
+import {
+  enqueueScheduledInput,
+  type PendingScheduledInput,
+  type ScheduleScope,
+  takeScheduledInput,
+} from "./schedule-scope.js";
 import { cancelWakeup, listWakeupJobs } from "./schedule-wakeup.js";
 
-export interface ScheduledPrompt {
+export interface ScheduledPrompt extends PendingScheduledInput {
   source: "cron" | "wakeup";
   jobId: string;
   /** Full text to inject as synthetic user input. */
@@ -48,11 +54,14 @@ export interface SchedulerHost {
  * the prompts to deliver now. Mutates the cron/wakeup registries (marks
  * fired, removes one-shots) exactly like the live loop does.
  */
-export function schedulerTick(now: Date): ScheduledPrompt[] {
+export function schedulerTick(now: Date, scope?: ScheduleScope): ScheduledPrompt[] {
   const prompts: ScheduledPrompt[] = [];
-  for (const { job, prompt } of collectDueCronJobs(now)) {
+  for (const { job, prompt } of collectDueCronJobs(now, scope)) {
     prompts.push({
       source: job.cron.startsWith("+") ? "wakeup" : "cron",
+      registry: "cron",
+      workspaceRoot: job.workspaceRoot,
+      sessionId: job.sessionId,
       jobId: job.id,
       prompt,
       label: `定时任务 ${job.id} 触发`,
@@ -61,11 +70,14 @@ export function schedulerTick(now: Date): ScheduledPrompt[] {
   // Wakeups: due when the hrtime delay elapsed; fire once and remove — the
   // /loop protocol is that the agent reschedules the next iteration itself.
   const nowHr = process.hrtime.bigint();
-  for (const job of listWakeupJobs()) {
+  for (const job of listWakeupJobs(scope)) {
     if (nowHr >= job.fireAt) {
       cancelWakeup(job.id);
       prompts.push({
         source: "wakeup",
+        registry: "wakeup",
+        workspaceRoot: job.workspaceRoot ?? scope?.workspaceRoot,
+        sessionId: job.sessionId ?? scope?.sessionId,
         jobId: job.id,
         prompt: `[Scheduled wakeup] ${job.prompt}`,
         label: `唤醒任务触发`,
@@ -82,7 +94,6 @@ export function schedulerTick(now: Date): ScheduledPrompt[] {
 export function startScheduler(host: SchedulerHost): () => void {
   let stopped = false;
   /** Schedules that fell due mid-turn, delivered at the busy→idle flip. */
-  const parked: string[] = [];
   const timer = setInterval(() => {
     if (stopped) return;
     // Surface background completions to the user first (peek-only; the model
@@ -91,27 +102,29 @@ export function startScheduler(host: SchedulerHost): () => void {
     const unseen = takeUnseenForDisplay(sessionId);
     if (unseen.length > 0) host.displayNotifications(unseen);
 
-    const prompts = schedulerTick(new Date());
-    // collectDueCronJobs removes one-shot durable entries as they fire. Rewrite
-    // the durable file after every firing pass so a consumed one-shot never
-    // resurrects on restart. Recurring entries are emitted unchanged.
-    if (prompts.length > 0) {
-      const root =
-        typeof host.workspaceRoot === "function" ? host.workspaceRoot() : host.workspaceRoot;
-      persistDurableJobs(root);
-    }
+    const root =
+      typeof host.workspaceRoot === "function" ? host.workspaceRoot() : host.workspaceRoot;
+    ensureDurableJobsLoaded(root);
+    const prompts = schedulerTick(new Date(), { workspaceRoot: root, sessionId });
+    for (const prompt of prompts) enqueueScheduledInput(prompt);
 
     if (host.isBusy()) {
       for (const p of prompts) {
-        parked.push(p.prompt);
         host.displayParked?.(p);
       }
       return;
     }
     // Idle: deliver parked schedules first (FIFO), even on a tick where no new
     // schedule became due. This is what closes the busy→idle delivery edge.
-    while (parked.length > 0) host.deliver(parked.shift()!);
-    for (const p of prompts) host.deliver(p.prompt);
+    while (!host.isBusy()) {
+      const next = takeScheduledInput({
+        workspaceRoot:
+          typeof host.workspaceRoot === "function" ? host.workspaceRoot() : host.workspaceRoot,
+        sessionId: typeof host.sessionId === "function" ? host.sessionId() : host.sessionId,
+      });
+      if (!next) break;
+      host.deliver(next.prompt);
+    }
   }, 1000);
   // Hygiene: the timer must not hold the event loop open at shutdown.
   (timer as { unref?: () => void }).unref?.();

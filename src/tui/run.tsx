@@ -107,6 +107,16 @@ export interface TuiAgentDeps {
   onSave: (taskState?: TaskState, lastTerminalReason?: string) => void;
 }
 
+/** Resolve one complete turn prompt. The live builder owns dynamic sections. */
+export function resolveTurnSystemPrompt(
+  deps: Pick<TuiAgentDeps, "systemPrompt" | "buildTurnSystemPrompt">,
+  goal?: string,
+): string {
+  const prompt = deps.buildTurnSystemPrompt?.() ?? deps.systemPrompt;
+  if (deps.buildTurnSystemPrompt || !goal) return prompt;
+  return `${prompt}\n\n[SESSION GOAL]\nThe user set this objective for the session. Keep it in view and steer toward it:\n${goal}`;
+}
+
 /**
  * Session identity. `getSessionId` / `getWorkspaceRoot` are live readers
  * because /resume rewrites `session.id` in place and /cd moves the root —
@@ -183,15 +193,11 @@ export async function runTurn(
   // Previously a MIN_TOOL_DISPLAY_MS delay made abort responsiveness lag by up to
   // 800ms × N tools; removing it also makes single-tool turns feel snappier.
 
-  // M18.12: append the session goal (if set) to this turn's system prompt.
-  // B1: rebuild the base prompt per turn when a live builder is wired —
+  // B1: rebuild the complete prompt per turn when a live builder is wired —
   // MCP tool changes, /memory edits and git refreshes reach the model instead
   // of being frozen at startup. Memoized sections keep this cheap.
   const goal = deps.makeCommandContext().goal?.value;
-  const baseSystemPrompt = deps.buildTurnSystemPrompt?.() ?? deps.systemPrompt;
-  const turnSystemPrompt = goal
-    ? `${baseSystemPrompt}\n\n[SESSION GOAL]\nThe user set this objective for the session. Keep it in view and steer toward it:\n${goal}`
-    : baseSystemPrompt;
+  const turnSystemPrompt = resolveTurnSystemPrompt(deps, goal);
   // Live session id (see TuiDeps.getSessionId): reads session.id at turn
   // start so /resume's in-place rewrite can't leave checkpoint buckets split.
   const sid = deps.getSessionId?.() ?? deps.sessionId;
@@ -1030,7 +1036,7 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
               .filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text")
               .map((b) => b.text)
               .join(" ");
-      userTurns.push({ index: i, text, cpTurn: turnOfMessage(m) });
+      userTurns.push({ index: i, text, cpTurn: turnOfMessage(m, sid) });
     });
     if (userTurns.length === 0) {
       store.addNotice("  Nothing to rewind — no user turns yet.");
@@ -1090,9 +1096,7 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
       store.addNotice(`  ⏪ Code restored to before message #${turnIndex} (conversation kept)`);
     }
     if (restoreFiles && target.cpTurn === null) {
-      store.addNotice(
-        "  ⎿ no checkpoint boundary for this turn (loaded before startup) — files not restored",
-      );
+      store.addNotice("  ⎿ no file checkpoint for this turn — files not restored");
     } else if (restored.length > 0 || deleted.length > 0) {
       store.addNotice(
         `  ⎿ files restored: ${restored.length} rewritten · ${deleted.length} deleted (Bash-side edits are not checkpointed)`,

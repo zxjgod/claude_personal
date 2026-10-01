@@ -146,7 +146,7 @@ export async function* agentLoop(
     abortSignal,
     toolContext,
     askUser = defaultAskUser,
-    hooks,
+    hooks = toolContext?.hooks,
     speculation = true,
     turnOutputBudget = 0,
     drainQueuedInput,
@@ -241,7 +241,7 @@ export async function* agentLoop(
     // approval overlay never opens and the user never gets a say.
     requestPlanApproval: toolContext?.requestPlanApproval,
     permissionClassifier: toolContext?.permissionClassifier,
-    hooks: toolContext?.hooks,
+    hooks,
     permissionPolicy: toolContext?.permissionPolicy,
     askUser: toolContext?.askUser ?? askUser,
     abortSignal,

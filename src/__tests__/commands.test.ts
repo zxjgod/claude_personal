@@ -715,7 +715,7 @@ describe("handleSlashCommand", () => {
       resetScheduledJobs();
       await ScheduleCronTool.call(
         { cron: "5 9 * * 1", prompt: "weekly recap", recurring: true } as any,
-        { workspaceRoot: "/tmp/ws", sessionId: "s" } as any,
+        { workspaceRoot: "/tmp/ws", sessionId: "sess1234" } as any,
       );
       const [job] = listScheduledJobs();
       expect(job).toBeTruthy();

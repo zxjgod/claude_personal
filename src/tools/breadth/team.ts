@@ -32,6 +32,7 @@ function runCtx(context: ToolContext, notifyResults = false): TeamRunContext | {
     workspaceRoot: context.workspaceRoot,
     sessionId: context.sessionId,
     permissionMode: context.permissionMode,
+    permissionPolicy: context.permissionPolicy,
     onProgress: context.onSubAgentProgress,
     // Forward the parent loop's approver into team agent sub-loops so their
     // destructive tool calls prompt the user instead of auto-approving.

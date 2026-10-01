@@ -220,6 +220,7 @@ export const TaskTool: Tool = buildTool({
           abortSignal: scope.signal,
           // Thread the nesting depth so a fork-of-a-fork is capped.
           subagentDepth: depth + 1,
+          hooks: context.hooks,
         }),
         // Also pass restricted askUser at the LoopOptions level
         askUser: subApprover,

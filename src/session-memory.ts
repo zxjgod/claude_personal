@@ -177,6 +177,10 @@ export interface SessionCatalogEntry extends SessionMeta {
 // --- Session memory store ---
 
 export class SessionMemory {
+  /** Stable workspace owning session files, unaffected by the tools' current cwd. */
+  get workspaceRoot(): string {
+    return path.resolve(this.sessionsDir, "..", "..");
+  }
   private sessionsDir: string;
   /**
    * Save serialization queue. `save()` does a read-modify-write (load existing

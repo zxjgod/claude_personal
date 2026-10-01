@@ -12,9 +12,9 @@ import type { Tool, ToolResult } from "../../types.js";
 import { buildTool } from "../registry.js";
 // Re-export the shared job registration from cron-shared.js
 import {
+  ensureDurableJobsLoaded,
   listScheduledJobs,
   MAX_SCHEDULED_JOBS,
-  persistDurableJobs,
   registerScheduledJob,
   removeScheduledJob,
   validateCron,
@@ -59,6 +59,8 @@ export const CronCreateTool: Tool = buildTool({
       prompt: input.prompt,
       recurring: input.recurring ?? true,
       durable: input.durable ?? false,
+      workspaceRoot: context.workspaceRoot,
+      sessionId: context.sessionId,
     });
     if (!job) {
       return {
@@ -66,7 +68,6 @@ export const CronCreateTool: Tool = buildTool({
         error: `Scheduled-job limit reached (${MAX_SCHEDULED_JOBS}). Delete some with CronDelete first.`,
       };
     }
-    if (job.durable) persistDurableJobs(context.workspaceRoot);
 
     return {
       content:
@@ -97,13 +98,11 @@ export const CronDeleteTool: Tool = buildTool({
   isConcurrencySafe: true,
 
   async call(input, context): Promise<ToolResult> {
-    const removed = removeScheduledJob(input.id);
+    const removed = removeScheduledJob(input.id, context);
     if (!removed) {
       return { content: "", error: `Job ${input.id} not found` };
     }
-    // A durable job may have been removed — rewrite the persistence file so
-    // it doesn't resurrect on the next start.
-    persistDurableJobs(context.workspaceRoot);
+    // The registry writes back to the removed job's owning workspace.
     return { content: `Job ${input.id} cancelled and removed.` };
   },
 });
@@ -124,8 +123,9 @@ export const CronListTool: Tool = buildTool({
   isReadOnly: true,
   isConcurrencySafe: true,
 
-  async call(): Promise<ToolResult> {
-    const jobs = listScheduledJobs();
+  async call(_input, context): Promise<ToolResult> {
+    ensureDurableJobsLoaded(context.workspaceRoot);
+    const jobs = listScheduledJobs(context);
     if (jobs.length === 0) {
       return { content: "No scheduled jobs. Create one with CronCreate." };
     }

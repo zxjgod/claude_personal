@@ -30,10 +30,9 @@
 // (callers can still pass trustedShell:false explicitly).
 // ============================================================
 
-import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { registerSkill, type SkillContext, type SkillDefinition } from "../skills.js";
+import { loadDiskEntries } from "../utils/disk-loader.js";
 import { expandDiskTemplate } from "../utils/disk-template.js";
 import { type ParsedFrontmatter, parseFrontmatter } from "../utils/frontmatter.js";
 import { ccrPath } from "../workspace-config.js";
@@ -117,31 +116,13 @@ function defFromFile(
  * Missing roots are skipped silently — disk skills are optional.
  */
 export function loadSkillsDir(workspaceRoot: string): string[] {
-  const loaded: string[] = [];
-  for (const root of skillDirRoots(workspaceRoot)) {
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(root, { withFileTypes: true });
-    } catch {
-      continue; // root doesn't exist — fine
-    }
-    for (const entry of entries) {
-      if (!entry.isDirectory() || !isSafeSkillName(entry.name)) continue;
-      const file = path.join(root, entry.name, "SKILL.md");
-      let raw: string;
-      try {
-        raw = fs.readFileSync(file, "utf8");
-      } catch {
-        continue; // no SKILL.md in this dir
-      }
-      const parsed = parseFrontmatter(raw);
-      // trustedShell: true for every root — the old `index === 0` heuristic
-      // claimed "user-scope only" but silently trusted the project root in the
-      // default environment (no CCR_USER_SKILLS_DIR set). Install-is-trust is
-      // now the explicit, documented policy (Top10 #2 decision).
-      registerSkill(defFromFile(entry.name, parsed, true));
-      loaded.push(asString(parsed.frontmatter.name) || entry.name);
-    }
-  }
-  return loaded;
+  return loadDiskEntries({
+    roots: skillDirRoots(workspaceRoot),
+    accepts: (entry) => entry.isDirectory() && isSafeSkillName(entry.name),
+    nameOf: (entry) => entry.name,
+    fileOf: (root, entry) => path.join(root, entry.name, "SKILL.md"),
+    parse: (entry) => defFromFile(entry.name, parseFrontmatter(entry.raw), true),
+    register: registerSkill,
+    loadedName: (value, entry) => value.name || entry.name,
+  });
 }

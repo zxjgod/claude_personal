@@ -14,6 +14,7 @@ import {
   resetScheduledJobs,
 } from "../tools/extended/cron-shared.js";
 import {
+  cancelAllWakeupJobs,
   listWakeupJobs,
   resetWakeupJobs,
   scheduleWakeup,
@@ -130,6 +131,18 @@ describe("startScheduler", () => {
     expect(host.parkedNotices).toHaveLength(1);
     expect(host.parkedNotices[0]?.prompt).toContain("parked one");
   });
+  it("cancels a due wakeup already parked while the session is busy", () => {
+    const busy = { busy: true };
+    const host = makeHost(busy);
+    scheduleWakeup(0, "cancel this loop", "test");
+    stop = startScheduler(host);
+    vi.advanceTimersByTime(1100);
+    expect(host.parkedNotices).toHaveLength(1);
+    expect(cancelAllWakeupJobs()).toBe(1);
+    busy.busy = false;
+    vi.advanceTimersByTime(1100);
+    expect(host.delivered).toEqual([]);
+  });
 
   it("drains the parked buffer FIFO at the busy→idle flip, even with nothing newly due", () => {
     const busy = { busy: true };
@@ -224,6 +237,44 @@ describe("startScheduler", () => {
     vi.advanceTimersByTime(1000);
     expect(host.shown).toBe(2);
   });
+  it("keeps a parked session-only cron input out of another resumed session", () => {
+    const busy = { busy: true };
+    const host = makeHost(busy);
+    let sessionId = "original";
+    host.sessionId = () => sessionId;
+    registerScheduledJob({
+      cron: "+1",
+      prompt: "original session only",
+      recurring: false,
+      durable: false,
+      workspaceRoot: dir,
+      sessionId,
+    });
+    stop = startScheduler(host);
+    vi.advanceTimersByTime(1100);
+    sessionId = "resumed";
+    busy.busy = false;
+    vi.advanceTimersByTime(1100);
+    expect(host.delivered).toEqual([]);
+    sessionId = "original";
+    vi.advanceTimersByTime(1100);
+    expect(host.delivered).toHaveLength(1);
+    expect(host.delivered[0]).toContain("original session only");
+  });
+  it("leaves another session's not-yet-due wakeup untouched", () => {
+    const host = makeHost({ busy: false });
+    let sessionId = "original";
+    host.sessionId = () => sessionId;
+    scheduleWakeup(0, "original wakeup", "test", { workspaceRoot: dir, sessionId });
+    stop = startScheduler(host);
+    sessionId = "resumed";
+    vi.advanceTimersByTime(1100);
+    expect(host.delivered).toEqual([]);
+    expect(listWakeupJobs()).toHaveLength(1);
+    sessionId = "original";
+    vi.advanceTimersByTime(1100);
+    expect(host.delivered).toHaveLength(1);
+  });
 
   it("does not reload a completed durable relative delay after restart", () => {
     const host = makeHost({ busy: false });
@@ -235,5 +286,32 @@ describe("startScheduler", () => {
     stop();
     resetScheduledJobs();
     expect(loadDurableJobs(dir).loaded).toBe(0);
+  });
+  it("does not overwrite another workspace's durable tasks after /cd", () => {
+    const other = path.join(dir, "other");
+    fs.mkdirSync(path.join(other, ".claude"), { recursive: true });
+    const file = path.join(other, ".claude", "scheduled_tasks.json");
+    const original = JSON.stringify({
+      version: 1,
+      jobs: [
+        {
+          id: "existing-b",
+          cron: "* * * * *",
+          prompt: "B original",
+          recurring: true,
+          createdAtMs: Date.now(),
+        },
+      ],
+    });
+    fs.writeFileSync(file, original);
+    const host = makeHost({ busy: false });
+    registerScheduledJob({ cron: "* * * * *", prompt: "A job", recurring: true, durable: true });
+    persistDurableJobs(dir);
+    host.workspaceRoot = () => other;
+    stop = startScheduler(host);
+    vi.advanceTimersByTime(1100);
+    const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+    expect(saved.jobs.map((j: { prompt: string }) => j.prompt)).toEqual(["B original"]);
+    expect(host.delivered.some((p) => p.includes("A job"))).toBe(false);
   });
 });

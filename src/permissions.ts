@@ -889,7 +889,11 @@ export async function checkPermission(
   }
 
   logPermissionDecision(6, tool.name, action, { allowed: true }, { stage: "awaiting-user" });
-  const allowed = await options.askUser(tool, input);
+  const allowed = await options.askUser(
+    tool,
+    input,
+    configured === "ask" ? "Approval required by the configured permission rule." : undefined,
+  );
   const result = allowed
     ? { allowed: true, userConfirmed: true as const }
     : {
