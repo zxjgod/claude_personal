@@ -32,9 +32,10 @@
 // ============================================================
 
 import * as path from "node:path";
+import { userConfigRoot } from "../settings.js";
 import { loadDiskEntries } from "../utils/disk-loader.js";
 import { expandDiskTemplate } from "../utils/disk-template.js";
-import { parseFrontmatter } from "../utils/frontmatter.js";
+import { frontmatterList, frontmatterString, parseFrontmatter } from "../utils/frontmatter.js";
 import { ccrPath } from "../workspace-config.js";
 import type { SlashCommand } from "./types.js";
 
@@ -44,7 +45,7 @@ const USER_COMMANDS_ENV = "CCR_USER_COMMANDS_DIR";
 /** Roots scanned for disk commands, lowest → highest precedence (project wins). */
 export function commandDirRoots(workspaceRoot: string): string[] {
   const roots = [ccrPath(workspaceRoot, "commands")];
-  if (process.env[USER_COMMANDS_ENV]) roots.unshift(process.env[USER_COMMANDS_ENV]!);
+  roots.unshift(process.env[USER_COMMANDS_ENV] || path.join(userConfigRoot(), "commands"));
   return roots;
 }
 
@@ -53,10 +54,7 @@ function isSafeCommandName(name: string): boolean {
   return /^[a-zA-Z0-9_-]+$/.test(name) && name !== "." && name !== "..";
 }
 
-function asString(v: string | string[] | undefined): string | undefined {
-  if (v === undefined) return undefined;
-  return Array.isArray(v) ? v.join(", ") : v;
-}
+const asString = frontmatterString;
 
 /** Expand a command body. trustedShell defaults to false at the API level;
  *  loadCommandsDir passes true for every disk template (install-is-trust). */
@@ -75,7 +73,7 @@ export async function expandCommandBody(
 function commandFromFile(
   name: string,
   body: string,
-  frontmatter: Record<string, string | string[]>,
+  frontmatter: Record<string, unknown>,
   trustedShell: boolean,
 ): SlashCommand {
   const description = asString(frontmatter.description) || `Custom command "${name}"`;
@@ -120,9 +118,13 @@ export function resetCustomCommands(): void {
  * names registered (project entries override same-named user entries). Missing
  * roots are skipped silently — disk commands are optional.
  */
-export function loadCommandsDir(workspaceRoot: string): string[] {
+export function loadCommandsDir(
+  workspaceRoot: string,
+  options: { roots?: string[]; namespace?: string } = {},
+): string[] {
   return loadDiskEntries({
-    roots: commandDirRoots(workspaceRoot),
+    roots: options.roots ?? commandDirRoots(workspaceRoot),
+    recursive: true,
     accepts: (entry) => entry.isFile() && entry.name.endsWith(".md"),
     nameOf: (entry) => {
       const name = entry.name.slice(0, -".md".length);
@@ -136,6 +138,9 @@ export function loadCommandsDir(workspaceRoot: string): string[] {
       // templates; the loader keeps the trust choice in one visible place.
       return commandFromFile(entry.name, body, frontmatter, true);
     },
-    register: registerCustomCommand,
+    register: (command) =>
+      registerCustomCommand(
+        options.namespace ? { ...command, name: `${options.namespace}:${command.name}` } : command,
+      ),
   });
 }

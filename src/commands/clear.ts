@@ -2,6 +2,7 @@
 import chalk from "chalk";
 import { clearChanges } from "../change-tracker.js";
 import { resetCheckpoints } from "../checkpoint.js";
+import { releaseSessionGoal } from "../goal-runtime.js";
 import { resetSystemPromptCache } from "../system-prompt.js";
 import { clearTodos } from "../tools/extended/todo.js";
 import { clearJobs } from "../tools/job-store.js";
@@ -13,6 +14,8 @@ export const clearCommand: SlashCommand = {
   description: "Clear the conversation history",
   run: (_args, ctx): undefined => {
     ctx.messages.length = 0;
+    releaseSessionGoal(ctx.sessionId);
+    if (ctx.goal) ctx.goal.value = "";
     clearChanges(ctx.sessionId);
     // P0-3: the rewind checkpoints belong to the cleared conversation — drop
     // them too, or their turn count would outlive the (now empty) message

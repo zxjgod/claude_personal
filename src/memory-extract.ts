@@ -19,7 +19,10 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { FileChange } from "./change-tracker.js";
+import { memoryProjectRoot } from "./project-memory.js";
+import { userConfigRoot } from "./settings.js";
 import type { Message, ModelCaller, ModelConfig } from "./types.js";
+import { atomicWriteFile, withFileLock } from "./utils/file-lock.js";
 
 export type MemorySource = "heuristic" | "model" | "manual";
 
@@ -213,8 +216,13 @@ export class MemoryStore {
    */
   private dedupeCache: Set<string> | null = null;
 
-  constructor(workspaceRoot: string) {
-    this.filePath = path.join(workspaceRoot, ".claude", "memories.jsonl");
+  constructor(workspaceRoot: string, scope: "project" | "user" | "local" = "project") {
+    this.filePath =
+      scope === "user"
+        ? path.join(userConfigRoot(), "memories.jsonl")
+        : scope === "local"
+          ? path.join(workspaceRoot, ".claude", "memory-local", "memories.jsonl")
+          : path.join(memoryProjectRoot(workspaceRoot), ".claude", "memories.jsonl");
   }
 
   get path(): string {
@@ -252,6 +260,11 @@ export class MemoryStore {
    */
   append(memories: MemoryInput[]): ExtractedMemory[] {
     if (memories.length === 0) return [];
+    return withFileLock(this.filePath, () => this.appendLocked(memories));
+  }
+  private appendLocked(memories: MemoryInput[]): ExtractedMemory[] {
+    // Another process may have written since this instance's last append.
+    this.dedupeCache = null;
 
     if (!this.dedupeCache) {
       this.dedupeCache = new Set(this.list().map((m) => normalize(m.text)));
@@ -275,6 +288,20 @@ export class MemoryStore {
     fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
     const lines = toWrite.map((m) => JSON.stringify(m)).join("\n");
     fs.appendFileSync(this.filePath, `${lines}\n`, "utf-8");
+    const directory = path.join(path.dirname(this.filePath), "memory");
+    fs.mkdirSync(directory, { recursive: true });
+    for (const entry of toWrite)
+      fs.writeFileSync(
+        path.join(directory, `${entry.id.replace(/[^a-zA-Z0-9_-]/g, "_")}.md`),
+        `# ${entry.text.slice(0, 100)}\n\n${entry.text}\n\nTags: ${(entry.tags ?? []).join(", ")}\n`,
+      );
+    const index = this.list()
+      .slice(-150)
+      .map(
+        (entry) =>
+          `- [${entry.text.slice(0, 160)}](${entry.id.replace(/[^a-zA-Z0-9_-]/g, "_")}.md)`,
+      );
+    atomicWriteFile(path.join(directory, "MEMORY.md"), `# Project memory\n\n${index.join("\n")}\n`);
     return toWrite;
   }
 }

@@ -23,9 +23,37 @@ export interface WakeupJob extends ScheduleScope {
   reason: string;
   scheduledAt: bigint;
   fireAt: bigint;
+  scheduledAtMs?: number;
 }
 
 const WAKEUP_JOBS = new Map<string, WakeupJob>();
+export function restoreWakeups(root: string, sessionId: string, values: unknown[]): void {
+  for (const value of values) {
+    if (!value || typeof value !== "object") continue;
+    const entry = value as Partial<WakeupJob> & { fireAtMs?: number };
+    if (
+      typeof entry.id !== "string" ||
+      WAKEUP_JOBS.has(entry.id) ||
+      typeof entry.prompt !== "string" ||
+      typeof entry.fireAtMs !== "number" ||
+      entry.fireAtMs < Date.now() - 7 * 86400000
+    )
+      continue;
+    const delaySeconds = Math.max(0, Math.ceil((entry.fireAtMs - Date.now()) / 1000));
+    const now = process.hrtime.bigint();
+    WAKEUP_JOBS.set(entry.id, {
+      id: entry.id,
+      prompt: entry.prompt,
+      reason: entry.reason ?? "restored wakeup",
+      delaySeconds,
+      scheduledAt: now,
+      fireAt: now + BigInt(delaySeconds) * 1000000000n,
+      workspaceRoot: root,
+      sessionId,
+      scheduledAtMs: entry.scheduledAtMs,
+    });
+  }
+}
 let wakeupCounter = 0;
 
 function nextWakeupId(): string {
@@ -52,6 +80,7 @@ export function scheduleWakeup(
     reason,
     scheduledAt: now,
     fireAt: now + delayNs,
+    scheduledAtMs: Date.now(),
     workspaceRoot: scope.workspaceRoot,
     sessionId: scope.sessionId,
   };

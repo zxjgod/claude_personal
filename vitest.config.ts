@@ -2,6 +2,9 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
+    // Bound fork count: coverage plus ZIP/process fixtures can otherwise starve
+    // short tests on Windows and consume memory proportional to CPU count.
+    maxWorkers: 4,
     // Only run tests in src directory, exclude the reference implementation.
     // Includes TUI component tests (`.test.tsx`) — previously they were authored
     // but excluded from `npm test` because the include only matched `.test.ts`.
@@ -26,15 +29,16 @@ export default defineConfig({
         "src/types.ts",
         "src/**/*.d.ts",
       ],
-      // Thresholds are pinned ~3 points below the measured baseline (2026-09-02
-      // full-suite run: stmts 78.5 / branches 77.5 / funcs 81.2 / lines 78.5)
-      // so the gate catches regressions without flaky failures. Raise them as
-      // coverage improves.
+      // Vitest 4 uses a different V8 remapper. Same-toolchain HEAD baseline
+      // (2026-10-02): 70.56 statements / 61.83 branches / 74.38 functions /
+      // 72.17 lines. Keep the previous ~3 point margin against this measured
+      // baseline; the upgrade measured 70.71 / 61.49 / 74.43 / 72.46.
+      // Evidence and migration rationale: docs/更新日志/20261002-comprehensive-upgrade.md.
       thresholds: {
-        statements: 75,
-        branches: 74,
-        functions: 78,
-        lines: 75,
+        statements: 68,
+        branches: 59,
+        functions: 72,
+        lines: 70,
       },
     },
   },

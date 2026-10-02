@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { inflateRawSync } from "node:zlib";
+import { userConfigRoot } from "./settings.js";
 import { ccrPath } from "./workspace-config.js";
 
 export interface PluginManifest {
@@ -14,6 +15,8 @@ export interface PluginManifest {
   agents?: string;
   hooks?: string;
   mcp?: string;
+  mcpServers?: string | Record<string, unknown>;
+  lspServers?: string | Record<string, unknown>;
   disabled?: boolean;
 }
 export interface MarketplaceIndex {
@@ -36,9 +39,24 @@ export function validatePluginManifest(value: unknown): PluginManifest {
   const v = value as Partial<PluginManifest>;
   if (!validName(v.name)) throw new Error("Invalid plugin name");
   if (!validVersion(v.version)) throw new Error("Plugin version must use semver (x.y.z)");
-  for (const key of ["skills", "commands", "agents", "hooks", "mcp"] as const)
+  for (const key of [
+    "skills",
+    "commands",
+    "agents",
+    "hooks",
+    "mcp",
+    "mcpServers",
+    "lspServers",
+  ] as const)
     if (v[key] !== undefined) {
       const p = v[key];
+      if (
+        (key === "mcpServers" || key === "lspServers") &&
+        p &&
+        typeof p === "object" &&
+        !Array.isArray(p)
+      )
+        continue;
       // `path.isAbsolute("../x")` is false — dot segments must be rejected
       // explicitly or a manifest could stage component files outside the
       // plugin directory (install-time traversal).
@@ -51,13 +69,33 @@ export function validatePluginManifest(value: unknown): PluginManifest {
     }
   return { ...v, name: v.name, version: v.version, disabled: v.disabled === true };
 }
-function readManifest(dir: string): PluginManifest | null {
+export function readManifest(dir: string): PluginManifest | null {
   try {
     return validatePluginManifest(
-      JSON.parse(fs.readFileSync(path.join(dir, "plugin.json"), "utf8")),
+      JSON.parse(
+        fs.readFileSync(
+          fs.existsSync(path.join(dir, ".claude-plugin", "plugin.json"))
+            ? path.join(dir, ".claude-plugin", "plugin.json")
+            : path.join(dir, "plugin.json"),
+          "utf8",
+        ),
+      ),
     );
   } catch {
     return null;
+  }
+}
+export function pluginHookSettings(dir: string): Record<string, unknown> {
+  const manifest = readManifest(dir);
+  const file =
+    typeof manifest?.hooks === "string"
+      ? path.resolve(dir, manifest.hooks)
+      : path.join(dir, "hooks", "hooks.json");
+  try {
+    const value = JSON.parse(fs.readFileSync(file, "utf8"));
+    return value.hooks ? value : { hooks: value };
+  } catch {
+    return {};
   }
 }
 export function listPlugins(workspaceRoot: string): PluginManifest[] {
@@ -72,9 +110,35 @@ export function listPlugins(workspaceRoot: string): PluginManifest[] {
   }
 }
 export function pluginDirs(workspaceRoot: string): string[] {
-  return listPlugins(workspaceRoot)
+  const project = listPlugins(workspaceRoot)
     .filter((p) => !p.disabled)
     .map((p) => path.join(pluginRoot(workspaceRoot), p.name));
+  const user = path.join(userConfigRoot(), "plugins");
+  const personal = fs.existsSync(user)
+    ? fs
+        .readdirSync(user, { withFileTypes: true })
+        .filter((item) => item.isDirectory())
+        .map((item) => path.join(user, item.name))
+        .filter((dir) => {
+          const manifest = readManifest(dir);
+          return manifest && !manifest.disabled;
+        })
+    : [];
+  const explicit: string[] = [];
+  for (let index = 0; index < process.argv.length; index++)
+    if (process.argv[index] === "--plugin-dir" && process.argv[index + 1])
+      explicit.push(path.resolve(process.argv[++index]!));
+  return [...new Set([...personal, ...project, ...explicit])];
+}
+export function pluginComponentRoots(
+  dir: string,
+  kind: "skills" | "agents" | "commands",
+): string[] {
+  const manifest = readManifest(dir);
+  const declared = manifest?.[kind];
+  const values = [path.join(dir, ".claude", kind), path.join(dir, kind)];
+  if (declared) values.push(path.resolve(dir, declared));
+  return [...new Set(values)].filter((file) => fs.existsSync(file));
 }
 export function installPlugin(workspaceRoot: string, sourceDir: string): PluginManifest {
   const manifest = readManifest(sourceDir);
@@ -204,10 +268,10 @@ export async function installRemotePlugin(
       extractZip(bytes, temp);
       // Archives commonly wrap the payload in one top-level folder
       // (Compress-Archive, GitHub codeload) — descend to the dir with plugin.json.
-      if (!fs.existsSync(path.join(temp, "plugin.json"))) {
+      if (!readManifest(temp)) {
         const sub = fs
           .readdirSync(temp, { withFileTypes: true })
-          .find((e) => e.isDirectory() && fs.existsSync(path.join(temp, e.name, "plugin.json")));
+          .find((e) => e.isDirectory() && readManifest(path.join(temp, e.name)));
         if (!sub) throw new Error("ZIP archive contains no plugin.json");
         dir = path.join(temp, sub.name);
       }
@@ -249,7 +313,12 @@ export function setPluginDisabled(
   const m = readManifest(dir);
   if (!m) throw new Error(`Plugin not found: ${name}`);
   m.disabled = disabled;
-  fs.writeFileSync(path.join(dir, "plugin.json"), JSON.stringify(m, null, 2));
+  fs.writeFileSync(
+    fs.existsSync(path.join(dir, ".claude-plugin", "plugin.json"))
+      ? path.join(dir, ".claude-plugin", "plugin.json")
+      : path.join(dir, "plugin.json"),
+    JSON.stringify(m, null, 2),
+  );
   return m;
 }
 export function checkPluginDependencies(workspaceRoot: string): string[] {

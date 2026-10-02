@@ -44,7 +44,46 @@ export interface ScheduledJob extends ScheduleScope {
 export const MAX_SCHEDULED_JOBS = 50;
 
 const JOBS = new Map<string, ScheduledJob>();
+export function releaseSessionCronJobs(sessionId: string): void {
+  for (const [key, job] of JOBS)
+    if (!job.durable && job.sessionId === sessionId) {
+      JOBS.delete(key);
+      cancelScheduledInputs("cron", job.id, { sessionId });
+    }
+}
 const loadedWorkspaces = new Set<string>();
+export function restoreSessionJobs(root: string, sessionId: string, values: unknown[]): void {
+  for (const value of values) {
+    if (!value || typeof value !== "object") continue;
+    const entry = value as Partial<ScheduledJob>;
+    if (
+      typeof entry.id !== "string" ||
+      JOBS.has(entry.id) ||
+      typeof entry.cron !== "string" ||
+      validateCron(entry.cron) ||
+      typeof entry.prompt !== "string" ||
+      typeof entry.createdAtMs !== "number" ||
+      Date.now() - entry.createdAtMs > 7 * 86400000
+    )
+      continue;
+    JOBS.set(entry.id, {
+      id: entry.id,
+      cron: entry.cron,
+      prompt: entry.prompt,
+      createdAtMs: entry.createdAtMs,
+      createdAt: process.hrtime.bigint(),
+      workspaceRoot:
+        typeof entry.workspaceRoot === "string"
+          ? path.resolve(entry.workspaceRoot)
+          : path.resolve(root),
+      sessionId,
+      recurring: entry.recurring === true,
+      durable: false,
+      lastFiredMinute:
+        typeof entry.lastFiredMinute === "number" ? entry.lastFiredMinute : undefined,
+    });
+  }
+}
 let jobCounter = 0;
 
 function deleteJobEntry(job: ScheduledJob): void {
@@ -235,10 +274,10 @@ export function collectDueCronJobs(
   const due: Array<{ job: ScheduledJob; prompt: string }> = [];
   const minuteMarker = Math.floor(now.getTime() / 60_000);
   for (const job of [...JOBS.values()]) {
+    if (scope?.sessionId && !job.durable && !job.sessionId) continue;
     if (!matchesScheduleScope(job, scope)) continue;
     if (scope?.workspaceRoot && !job.workspaceRoot)
       job.workspaceRoot = path.resolve(scope.workspaceRoot);
-    if (!job.durable && !job.sessionId && scope?.sessionId) job.sessionId = scope.sessionId;
     if (job.cron.startsWith("+")) {
       const delaySec = Number(job.cron.slice(1));
       const elapsedSec = (now.getTime() - job.createdAtMs) / 1000;

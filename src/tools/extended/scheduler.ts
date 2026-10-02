@@ -16,14 +16,25 @@
 // ============================================================
 
 import { type TaskNotificationInput, takeUnseenForDisplay } from "../notifications.js";
-import { collectDueCronJobs, ensureDurableJobsLoaded } from "./cron-shared.js";
+import {
+  collectDueCronJobs,
+  ensureDurableJobsLoaded,
+  releaseSessionCronJobs,
+} from "./cron-shared.js";
 import {
   enqueueScheduledInput,
   type PendingScheduledInput,
+  releaseSessionInputs,
   type ScheduleScope,
   takeScheduledInput,
 } from "./schedule-scope.js";
 import { cancelWakeup, listWakeupJobs } from "./schedule-wakeup.js";
+export function releaseSessionSchedules(sessionId: string): void {
+  releaseSessionCronJobs(sessionId);
+  for (const job of listWakeupJobs({ sessionId }))
+    if (job.sessionId === sessionId) cancelWakeup(job.id, { sessionId });
+  releaseSessionInputs(sessionId);
+}
 
 export interface ScheduledPrompt extends PendingScheduledInput {
   source: "cron" | "wakeup";
@@ -71,6 +82,7 @@ export function schedulerTick(now: Date, scope?: ScheduleScope): ScheduledPrompt
   // /loop protocol is that the agent reschedules the next iteration itself.
   const nowHr = process.hrtime.bigint();
   for (const job of listWakeupJobs(scope)) {
+    if (scope?.sessionId && !job.sessionId) continue;
     if (nowHr >= job.fireAt) {
       cancelWakeup(job.id);
       prompts.push({

@@ -16,7 +16,9 @@
 import { z } from "zod";
 import { appendAgentMemory } from "../../agent-memory.js";
 import { MemoryStore } from "../../memory-extract.js";
+import { policyDecision } from "../../permission-policy.js";
 import { listSubagentNames } from "../../subagents.js";
+import type { PermissionResult, Tool, ToolResult } from "../../types.js";
 import { buildTool } from "../registry.js";
 
 const MAX_CONTENT_CHARS = 2000;
@@ -37,9 +39,13 @@ const MemorySaveSchema = z.strictObject({
         `on every future run). Available types: ${listSubagentNames().join(", ")}. ` +
         `Omit to store for the main session only.`,
     ),
+  scope: z
+    .enum(["user", "project", "local"])
+    .optional()
+    .describe("Agent memory scope; user persists across projects"),
 });
 
-export const MemorySaveTool = buildTool({
+export const MemorySaveTool: Tool<z.infer<typeof MemorySaveSchema>> = buildTool({
   name: "MemorySave",
   description: "Save a durable fact, preference, or lesson that should persist across sessions",
   promptDescription:
@@ -50,9 +56,46 @@ export const MemorySaveTool = buildTool({
   isReadOnly: false,
   requiresApproval: false,
   isConcurrencySafe: true,
+  async checkPermissions(input, context): Promise<PermissionResult> {
+    if (context.permissionMode === "plan")
+      return { allowed: false, reason: "Plan mode: memory writes are disabled" };
+    if (input.scope !== "user") return { allowed: true };
+    const decision = policyDecision(context.permissionPolicy, "MemorySave", input);
+    if (decision === "deny")
+      return { allowed: false, reason: "User memory denied by permission rule" };
+    const allowed =
+      decision === "allow" ||
+      (context.askUser
+        ? await context.askUser(
+            MemorySaveTool,
+            { ...input, __approvalFingerprint: "user-memory-scope" },
+            "Persist a memory across all projects in the user scope",
+          )
+        : false);
+    if (allowed)
+      context.approvedUserMemoryWrite = JSON.stringify([
+        input.content,
+        input.agent_type,
+        input.scope,
+      ]);
+    return allowed
+      ? { allowed: true }
+      : { allowed: false, reason: "Cross-project user memory requires explicit approval" };
+  },
 
-  async call(input, context) {
-    const store = new MemoryStore(context.workspaceRoot);
+  async call(input, context): Promise<ToolResult> {
+    if (context.permissionMode === "plan")
+      return { content: "", error: "Plan mode: memory writes are disabled" };
+    if (
+      input.scope === "user" &&
+      context.approvedUserMemoryWrite !==
+        JSON.stringify([input.content, input.agent_type, input.scope])
+    ) {
+      const permission = await MemorySaveTool.checkPermissions(input, context);
+      if (!permission.allowed) return { content: "", error: permission.reason };
+    }
+    delete context.approvedUserMemoryWrite;
+    const store = new MemoryStore(context.workspaceRoot, input.scope ?? "project");
     const written = store.append([
       { source: "manual", text: input.content, tags: ["agent-saved"] },
     ]);
@@ -67,14 +110,14 @@ export const MemorySaveTool = buildTool({
       // Also merge into the sub-agent type's MEMORY.md so ITS system prompt
       // carries the lesson on every future run. Best-effort like the store.
       const ok = appendAgentMemory(
-        "project",
+        input.scope ?? "project",
         input.agent_type,
         context.workspaceRoot,
         input.content,
       );
       lines.push(
         ok
-          ? `Appended to agent memory for "${input.agent_type}" (project scope).`
+          ? `Appended to agent memory for "${input.agent_type}" (${input.scope ?? "project"} scope).`
           : `Could not write agent memory for "${input.agent_type}" (check the type name).`,
       );
     }

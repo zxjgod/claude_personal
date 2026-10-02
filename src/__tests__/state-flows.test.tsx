@@ -95,11 +95,11 @@ describe("C2 — ExitPlanMode approval flow", () => {
     expect(r.content).toContain("EDITED PLAN");
   });
 
-  it("legacy fallback (no approval surface): direct switch still works", async () => {
+  it("missing approval surface preserves plan mode", async () => {
     const c = ctx("plan");
     const r = await ExitPlanModeTool.call({ plan: "p", to: "acceptEdits" }, c as never);
-    expect(r.error).toBeUndefined();
-    expect(c.permissionMode).toBe("acceptEdits");
+    expect(r.error).toContain("approval is unavailable");
+    expect(c.permissionMode).toBe("plan");
   });
 
   it("plan-mode permission gate exempts exit_plan_mode but blocks others", async () => {

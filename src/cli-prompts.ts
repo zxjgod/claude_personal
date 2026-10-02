@@ -36,7 +36,7 @@ export const permissionKey = (toolName: string, input: Record<string, unknown>):
     (typeof input.command === "string" && input.command) ||
     (typeof input.url === "string" && input.url) ||
     "";
-  return `${toolName}::${target}`;
+  return `${toolName}::${target}${typeof input.__approvalFingerprint === "string" ? `::${input.__approvalFingerprint}` : ""}`;
 };
 
 export interface UserPrompters {
@@ -75,6 +75,8 @@ export function createUserPrompters(deps: {
     const key = permissionKey(tool.name, input);
     // Already approved as "always" for this tool+target this session.
     if (alwaysAllow.has(key)) return true;
+    input = { ...input };
+    delete input.__approvalFingerprint;
 
     if (isInteractive) {
       const detail =

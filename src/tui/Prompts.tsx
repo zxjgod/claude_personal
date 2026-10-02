@@ -274,6 +274,11 @@ export function QuestionPrompt({ overlay }: { overlay: Extract<Overlay, { kind: 
                   <Text color={palette.secondary}>{opt.description}</Text>
                 </Box>
               ) : null}
+              {i === cursor && opt.preview ? (
+                <Box paddingLeft={5} marginY={1}>
+                  <Text>{opt.preview}</Text>
+                </Box>
+              ) : null}
             </Box>
           ))}
         </Box>
@@ -297,8 +302,8 @@ export function ElicitationPrompt({
     else if (key.downArrow || key.tab) setIndex((i) => Math.min(overlay.fields.length - 1, i + 1));
     else if (key.escape) overlay.resolve({ action: "cancel" });
     else if (key.return) {
-      if (overlay.fields.some((f) => f.required && !values[f.name])) {
-        overlay.resolve({ action: "decline" });
+      if (overlay.fields.some((f) => f.required && !(values[f.name] ?? "").trim())) {
+        setError("Complete the required fields before submitting.");
         return;
       }
       // Validate against the schema the server declared before submitting —

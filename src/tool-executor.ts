@@ -7,7 +7,10 @@
 import * as path from "node:path";
 import type { OperationOutcome } from "./audit-log.js";
 import { logBashOperation, logFileOperation, logToolExecution } from "./audit-log.js";
+import { languageServerFor } from "./language-servers.js";
+import { mergePermissionPolicies, policyDecision } from "./permission-policy.js";
 import { checkPermission } from "./permissions.js";
+import { instructionAttachment } from "./project-instructions.js";
 import { markRead } from "./read-tracker.js";
 import type { SpeculationCache } from "./speculation.js";
 import type { StreamingToolExecutor } from "./streaming-tool-executor.js";
@@ -24,6 +27,7 @@ import type {
 } from "./types.js";
 import { combineAbortSignals } from "./utils/cancellation.js";
 import { all, maxToolConcurrency } from "./utils/generators.js";
+import { activeWorkspace } from "./worktrees.js";
 
 // Sentinel thrown so a pending Promise.race can be interrupted by an abort
 // without relying on every individual tool promise rejecting.
@@ -231,11 +235,18 @@ export async function executeSingleTool(
     deferSpecPromotion?: boolean;
   },
 ): Promise<ToolExecutionResult> {
+  context = {
+    ...context,
+    workspaceRoot: activeWorkspace(context.sessionId, context.workspaceRoot),
+  };
+  hooks = context.hooks ?? hooks;
   const tool = tools.find((t) => t.name === toolCall.function.name);
   // Captured once the call is cleared to execute, so the outer catch can
   // invalidate speculative entries even when the tool THREW or timed out
   // (review follow-up: the invalidation below only ran on returned results).
   let executedMutating: { tool: Tool; input: Record<string, unknown> } | undefined;
+  let hookContext = "";
+  let hookPermission: "allow" | "ask" | "deny" | undefined;
 
   if (!tool) {
     return {
@@ -324,6 +335,8 @@ export async function executeSingleTool(
           input = pre.input;
         }
       }
+      hookContext = pre.additionalContext ?? "";
+      hookPermission = pre.permissionDecision;
     }
 
     // === Permission check (before any side effect) ===
@@ -375,6 +388,12 @@ export async function executeSingleTool(
     };
 
     context.permissionMode = context.getPermissionMode?.() ?? context.permissionMode;
+    if (hookPermission)
+      context.permissionPolicy = mergePermissionPolicies(context.permissionPolicy, {
+        allow: hookPermission === "allow" ? [tool.name] : [],
+        ask: hookPermission === "ask" ? [tool.name] : [],
+        deny: hookPermission === "deny" ? [tool.name] : [],
+      });
     const toolLevel = await tool.checkPermissions(input, context);
     if (!toolLevel.allowed) {
       const reason = toolLevel.reason ?? `denied by ${tool.name} policy`;
@@ -386,12 +405,49 @@ export async function executeSingleTool(
         isError: true,
       };
     }
+    const rule = policyDecision(context.permissionPolicy, tool.name, input);
+    if (hooks?.runEvent && (rule === "ask" || (tool.requiresApproval?.() && rule !== "allow"))) {
+      const outcome = await hooks.runEvent("PermissionRequest", {
+        tool_name: tool.name,
+        tool_input: input,
+      });
+      if (outcome?.block || outcome?.permissionDecision === "deny")
+        return {
+          toolName: tool.name,
+          isError: true,
+          error: outcome.reason ?? "Permission hook denied tool",
+          formatted: outcome.reason ?? "Permission hook denied tool",
+        };
+      if (outcome?.input)
+        input = tool.validateInput
+          ? (tool.validateInput(outcome.input) as Record<string, unknown>)
+          : outcome.input;
+      if (outcome?.input) {
+        const rewrittenPolicy = await tool.checkPermissions(input, context);
+        if (!rewrittenPolicy.allowed)
+          return {
+            toolName: tool.name,
+            isError: true,
+            error: rewrittenPolicy.reason ?? "Rewritten hook input violates tool policy",
+            formatted: rewrittenPolicy.reason ?? "Rewritten hook input violates tool policy",
+          };
+      }
+      if (outcome?.permissionDecision === "allow")
+        context.permissionPolicy = mergePermissionPolicies(context.permissionPolicy, {
+          allow: [tool.name],
+        });
+    }
     const permission = await checkPermission(tool, input, context, {
       askUser,
       classifier: context.permissionClassifier,
     });
 
     if (!permission.allowed) {
+      await hooks?.runEvent?.("PermissionDenied", {
+        tool_name: tool.name,
+        tool_input: input,
+        reason: permission.reason,
+      });
       const reason = permission.reason ?? "denied by permission policy";
       recordAudit("denied", { userConfirmed: permission.userConfirmed, reason });
       return {
@@ -438,6 +494,12 @@ export async function executeSingleTool(
       );
     }
     const duration = Date.now() - startTime;
+    if (result.error)
+      await hooks?.runEvent?.("PostToolUseFailure", {
+        tool_name: tool.name,
+        tool_input: input,
+        error: result.error,
+      });
 
     // Top10 #6: a mutating tool that just COMPLETED (success OR failure — a
     // failed `sed -i` may still have half-written the file) invalidates any
@@ -466,10 +528,43 @@ export async function executeSingleTool(
       if (post.result) result = post.result;
     }
 
-    const formatted = tool.formatResult({
+    let formatted = tool.formatResult({
       ...result,
       metadata: { ...result.metadata, durationMs: duration },
     });
+    if (hookContext) formatted += `\n\n${hookContext}`;
+    if (
+      !result.error &&
+      ["edit", "write", "multi_edit"].includes(tool.name) &&
+      typeof input.filePath === "string"
+    ) {
+      try {
+        const connection = await languageServerFor(context.workspaceRoot, input.filePath);
+        if (connection) {
+          const diagnostics = await connection.server.waitForDiagnostics(connection.file);
+          if (diagnostics.length)
+            formatted += `\n\n[LANGUAGE DIAGNOSTICS]\n${JSON.stringify(diagnostics).slice(0, 6000)}`;
+        }
+      } catch (error) {
+        console.warn(`Language server update failed: ${String(error)}`);
+      }
+    }
+    if (
+      !result.error &&
+      !context.speculative &&
+      ["read", "grep", "glob", "edit", "write"].includes(tool.name)
+    ) {
+      const file = tool.getPath?.(input) ?? input.filePath;
+      if (typeof file === "string") {
+        const attachment = instructionAttachment(context.sessionId, context.workspaceRoot, file);
+        formatted += attachment;
+        if (attachment)
+          await hooks?.runEvent?.("InstructionsLoaded", {
+            file_path: file,
+            cwd: context.workspaceRoot,
+          });
+      }
+    }
     // P0-1 Fix: do NOT truncate or spill here. The full formatted result is stored
     // in message history. Truncation for the API call is handled by the adapters.
     return {

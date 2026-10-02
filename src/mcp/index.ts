@@ -20,7 +20,8 @@ import {
   type TextContent,
   ToolListChangedNotificationSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { pluginDirs } from "../plugins.js";
+import { pluginDirs, readManifest } from "../plugins.js";
+import { userConfigRoot } from "../settings.js";
 import type { PermissionResult, Tool, ToolContext, ToolResult } from "../types.js";
 import { ccrPath } from "../workspace-config.js";
 import { FileTokenOAuthProvider, type MCPOAuthConfig } from "./auth.js";
@@ -146,6 +147,7 @@ export interface MCPConfig {
 }
 
 export interface MCPLoadOptions {
+  namespace?: string;
   /** Require explicit approval before connecting servers from a project file. */
   requireTrust?: boolean;
   confirm?: (descriptions: string[]) => Promise<boolean>;
@@ -247,7 +249,15 @@ export class MCPManager {
    * Keyed by the synthetic tool name `mcp__<server>__<tool>`. Subsequent calls
    * skip the prompt so a trusted tool doesn't nag every turn.
    */
-  private confirmedMcpTools: Set<string> = new Set();
+  private confirmedMcpTools: Map<string, string> = new Map();
+  private toolDefinitions: Map<string, string> = new Map();
+  clearApprovals(): void {
+    this.confirmedMcpTools.clear();
+  }
+  private clearToolApprovals(toolName: string): void {
+    for (const key of this.confirmedMcpTools.keys())
+      if (key.split("\0")[1] === toolName) this.confirmedMcpTools.delete(key);
+  }
   private elicitationHandler: ElicitationHandler | null = null;
   /**
    * S2: listeners fired after a server's tool set changes (toolsListChanged
@@ -274,7 +284,7 @@ export class MCPManager {
   async loadConfig(configPath: string, options: MCPLoadOptions = {}): Promise<void> {
     let raw: string;
     try {
-      raw = fs.readFileSync(configPath, "utf-8");
+      raw = configPath.trim().startsWith("{") ? configPath : fs.readFileSync(configPath, "utf-8");
     } catch (error) {
       // Config file doesn't exist — fine
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
@@ -288,6 +298,21 @@ export class MCPManager {
     let config: MCPConfig;
     try {
       config = JSON.parse(raw);
+      if (
+        !config ||
+        typeof config !== "object" ||
+        Array.isArray(config) ||
+        !config.mcpServers ||
+        typeof config.mcpServers !== "object" ||
+        Array.isArray(config.mcpServers)
+      )
+        throw new Error("Expected an object with mcpServers object");
+      for (const [name, server] of Object.entries(config.mcpServers)) {
+        if (!server || typeof server !== "object" || Array.isArray(server)) {
+          console.warn(`Invalid MCP server ${name}; skipping`);
+          delete config.mcpServers[name];
+        }
+      }
     } catch (error) {
       console.error(
         `Error parsing MCP config from ${configPath}:`,
@@ -322,7 +347,10 @@ export class MCPManager {
 
     for (const [name, serverConfig] of Object.entries(config.mcpServers)) {
       if (serverConfig.disabled) continue;
-      await this.connectServer(name, serverConfig);
+      await this.connectServer(options.namespace ? `${options.namespace}__${name}` : name, {
+        ...serverConfig,
+        type: serverConfig.type ?? (serverConfig.command ? "stdio" : "http"),
+      });
     }
   }
 
@@ -511,6 +539,12 @@ export class MCPManager {
         };
 
         const toolName = `mcp__${name}__${remoteTool.name}`;
+        const definition = crypto
+          .createHash("sha256")
+          .update(JSON.stringify(remoteTool))
+          .digest("hex");
+        if (this.toolDefinitions.get(toolName) !== definition) this.clearToolApprovals(toolName);
+        this.toolDefinitions.set(toolName, definition);
 
         return {
           name: toolName,
@@ -580,18 +614,24 @@ export class MCPManager {
             if (context.permissionMode === "bypassPermissions") {
               return { allowed: true };
             }
-            if (this.confirmedMcpTools.has(toolName)) {
+            const approvalKey = `${context.sessionId}\0${toolName}`;
+            if (this.toolDefinitions.get(toolName) !== definition)
+              return {
+                allowed: false,
+                reason: "MCP tool definition changed; request the refreshed tool",
+              };
+            if (this.confirmedMcpTools.get(approvalKey) === definition) {
               return { allowed: true };
             }
             const allowed = context.askUser
               ? await context.askUser(
-                  { name: toolName } as Tool,
-                  _input,
+                  { name: toolName, isReadOnly: () => false, requiresApproval: () => true } as Tool,
+                  { ..._input, __approvalFingerprint: definition },
                   `First call to MCP tool "${toolName}" — confirm to trust this server action`,
                 )
-              : true;
+              : false;
             if (allowed) {
-              this.confirmedMcpTools.add(toolName);
+              this.confirmedMcpTools.set(approvalKey, definition);
               return { allowed: true };
             }
             return {
@@ -619,6 +659,9 @@ export class MCPManager {
       entry.client.listTools(),
       LIST_TOOLS_TIMEOUT_MS,
     );
+    const refreshed = new Set(toolsResult.tools.map((tool) => `mcp__${name}__${tool.name}`));
+    for (const key of this.toolDefinitions.keys())
+      if (key.startsWith(`mcp__${name}__`) && !refreshed.has(key)) this.toolDefinitions.delete(key);
     entry.tools = this.wrapRemoteTools(name, toolsResult.tools, entry.client);
     this.notifyToolsChanged(name);
     return entry.tools.length;
@@ -835,6 +878,8 @@ export class MCPManager {
    * Disconnect all MCP servers
    */
   async disconnectAll(): Promise<void> {
+    this.clearApprovals();
+    this.toolDefinitions.clear();
     const entries = [...this.servers.entries()];
     this.servers.clear();
     await Promise.all(
@@ -849,6 +894,10 @@ export class MCPManager {
    * Disconnect a single server by name
    */
   async disconnectServer(name: string): Promise<void> {
+    for (const key of this.toolDefinitions.keys())
+      if (key.startsWith(`mcp__${name}__`)) this.toolDefinitions.delete(key);
+    for (const key of this.confirmedMcpTools.keys())
+      if (key.split("\0")[1]?.startsWith(`mcp__${name}__`)) this.confirmedMcpTools.delete(key);
     const server = this.servers.get(name);
     if (!server) return;
     try {
@@ -893,7 +942,7 @@ export type ElicitationHandler = (request: ElicitationRequest) => Promise<Elicit
  *   decision 2026-09): installing the plugin already vouched for its servers,
  *   the same policy as disk command/skill templates. Not gated.
  */
-export type McpConfigScope = "project" | "plugin";
+export type McpConfigScope = "project" | "plugin" | "user" | "explicit";
 
 export interface DiscoveredMcpConfig {
   path: string;
@@ -910,6 +959,23 @@ export interface DiscoveredMcpConfig {
  */
 export function discoverMCPConfigs(workspaceRoot: string): DiscoveredMcpConfig[] {
   const configs: DiscoveredMcpConfig[] = [];
+  if (process.argv.includes("--safe-mode") || process.argv.includes("--bare")) return configs;
+  const strict = process.argv.includes("--strict-mcp-config");
+  for (let index = 0; index < process.argv.length; index++)
+    if (process.argv[index] === "--mcp-config" && process.argv[index + 1])
+      configs.push({
+        path: process.argv[index + 1]!.trim().startsWith("{")
+          ? process.argv[++index]!
+          : path.resolve(workspaceRoot, process.argv[++index]!),
+        scope: "explicit",
+      });
+  if (strict) return configs;
+  const user = path.join(userConfigRoot(), "mcp.json");
+  if (fs.existsSync(user)) configs.push({ path: user, scope: "user" });
+  if (process.env.CCR_COMPAT_CLAUDE === "1") {
+    const official = path.join(workspaceRoot, ".mcp.json");
+    if (fs.existsSync(official)) configs.push({ path: official, scope: "project" });
+  }
 
   // CCR-only workspace config: <root>/.claude/mcp.json
   const projectConfig = ccrPath(workspaceRoot, "mcp.json");
@@ -917,11 +983,17 @@ export function discoverMCPConfigs(workspaceRoot: string): DiscoveredMcpConfig[]
     configs.push({ path: projectConfig, scope: "project" });
   }
   for (const dir of pluginDirs(workspaceRoot)) {
+    const manifest = readManifest(dir);
+    const declared =
+      manifest?.mcp ?? (typeof manifest?.mcpServers === "string" ? manifest.mcpServers : undefined);
+    if (declared) configs.push({ path: path.resolve(dir, declared), scope: "plugin" });
+    const standard = path.join(dir, ".mcp.json");
+    if (fs.existsSync(standard)) configs.push({ path: standard, scope: "plugin" });
     const file = path.join(dir, "mcp.json");
     if (fs.existsSync(file)) configs.push({ path: file, scope: "plugin" });
     const nested = ccrPath(dir, "mcp.json");
     if (fs.existsSync(nested)) configs.push({ path: nested, scope: "plugin" });
   }
 
-  return configs;
+  return [...new Map(configs.map((entry) => [entry.path, entry])).values()];
 }

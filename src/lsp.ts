@@ -19,6 +19,7 @@ import * as fs from "node:fs";
 import { createRequire } from "node:module";
 import * as path from "node:path";
 import fg from "fast-glob";
+import { disposeLanguageServers } from "./language-servers.js";
 import { resolveAllowedWorkspaceFile } from "./tools/utils/path.js";
 
 export interface Diagnostic {
@@ -99,10 +100,16 @@ export class LspClient {
 
   /** Spawn (once) and confirm the server is responding. */
   async ensureInitialized(): Promise<void> {
-    if (this.ready) return;
+    if (this.ready && this.proc && this.proc.exitCode === null && !this.proc.killed) return;
+    if (this.ready) await this.dispose();
     if (this.initPromise) return this.initPromise;
     this.initPromise = this.initialize();
-    await this.initPromise;
+    try {
+      await this.initPromise;
+    } catch (error) {
+      await this.dispose();
+      throw error;
+    }
   }
 
   private initialize(): Promise<void> {
@@ -120,17 +127,35 @@ export class LspClient {
       }
 
       const onErr = (err: Error) => {
+        if (this.proc !== child) return;
         if (!this.ready) reject(err);
+        for (const request of this.pending.values()) request.reject(err);
+        this.pending.clear();
+        this.ready = false;
+        void this.dispose();
       };
+      const child = this.proc;
       this.proc.on("error", onErr);
+      this.proc.stdin?.on("error", onErr);
+      this.proc.stderr?.resume();
       this.proc.on("exit", (code) => {
+        if (this.proc !== child) return;
         if (!this.ready) {
           reject(new Error(`tsserver exited before ready (code ${code})`));
         }
+        this.ready = false;
+        this.proc = null;
+        this.initPromise = null;
+        this.buffer = "";
+        for (const request of this.pending.values())
+          request.reject(new Error(`tsserver exited (code ${code})`));
+        this.pending.clear();
       });
 
       this.proc.stdout!.setEncoding("utf-8");
-      this.proc.stdout!.on("data", (chunk: string) => this.onData(chunk));
+      this.proc.stdout!.on("data", (chunk: string) => {
+        if (this.proc === child) this.onData(chunk);
+      });
 
       // `configure` primes the server (host settings). A round-trip confirms
       // the protocol is alive before we declare ready.
@@ -139,6 +164,10 @@ export class LspClient {
         preferences: { providePrefixAndSuffixTextForRename: true },
       })
         .then(() => {
+          if (this.proc !== child || child.exitCode !== null) {
+            reject(new Error("tsserver exited during initialization"));
+            return;
+          }
           this.ready = true;
           resolve();
         })
@@ -179,6 +208,28 @@ export class LspClient {
       out.push(toDiagnostic(abs, d));
     }
     return out;
+  }
+  async navigate(
+    operation: string,
+    filePath: string,
+    line: number,
+    column: number,
+  ): Promise<unknown> {
+    const resolution = resolveAllowedWorkspaceFile(filePath, this.rootPath);
+    if (!resolution.ok) throw new Error(resolution.error);
+    if (operation === "diagnostics") return this.getDiagnostics(resolution.path);
+    await this.ensureInitialized();
+    await this.request("open", {
+      file: resolution.path,
+      fileContent: fs.readFileSync(resolution.path, "utf8"),
+    }).catch(() => undefined);
+    const commands: Record<string, string> = {
+      definition: "definition",
+      references: "references",
+      hover: "quickinfo",
+      symbols: "navtree",
+    };
+    return this.request(commands[operation]!, { file: resolution.path, line, offset: column });
   }
 
   /**
@@ -405,6 +456,13 @@ export class LspClient {
         }
       } else if (msg.event === "requestCompleted") {
         const seq = (msg.body as { request_seq?: number } | undefined)?.request_seq;
+        if (seq !== undefined) {
+          const request = this.pending.get(seq);
+          if (request) {
+            this.pending.delete(seq);
+            request.resolve(undefined);
+          }
+        }
         if (seq !== undefined && this.projectDiagWaiter?.seq === seq) {
           const waiter = this.projectDiagWaiter;
           this.projectDiagWaiter = null;
@@ -421,12 +479,17 @@ export class LspClient {
     sent?: (seq: number) => void,
   ): Promise<unknown> {
     return new Promise((resolve, reject) => {
+      if (!this.proc?.stdin?.writable || this.proc.exitCode !== null || this.proc.killed) {
+        reject(new Error("tsserver is not running"));
+        return;
+      }
       const seq = this.nextSeq++;
       sent?.(seq);
       // Safety timeout so a hung request doesn't pin the caller forever.
       const timer = setTimeout(() => {
         if (this.pending.delete(seq)) {
           reject(new Error(`tsserver "${command}" timed out`));
+          if (command !== "geterrForProject") void this.dispose();
         }
       }, timeoutMs);
       this.pending.set(seq, {
@@ -454,7 +517,11 @@ export class LspClient {
 
   /** Shutdown the server cleanly. Idempotent. */
   async dispose(): Promise<void> {
-    if (!this.proc) return;
+    if (!this.proc) {
+      this.ready = false;
+      this.initPromise = null;
+      return;
+    }
     const proc = this.proc;
     // tsserver exits without acknowledging this command. Wait for process
     // closure with a short bound instead of a request that always times out.
@@ -682,6 +749,7 @@ export function getLspClient(workspaceRoot: string): LspClient | null {
 
 /** Dispose all cached clients (CLI shutdown hook). */
 export async function disposeAllLspClients(): Promise<void> {
+  await disposeLanguageServers();
   const all = [...CLIENTS.values()];
   CLIENTS.clear();
   await Promise.all(all.map((c) => c.dispose()));

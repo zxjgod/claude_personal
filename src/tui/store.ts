@@ -163,7 +163,7 @@ export type Overlay =
       kind: "question";
       header: string;
       question: string;
-      options: Array<{ label: string; description?: string }>;
+      options: Array<{ label: string; description?: string; preview?: string }>;
       multiSelect: boolean;
       resolve: (labels: string[] | null) => void;
     }
@@ -814,7 +814,7 @@ export class TuiStore {
   askQuestion(
     header: string,
     question: string,
-    options: Array<{ label: string; description?: string }>,
+    options: Array<{ label: string; description?: string; preview?: string }>,
     multiSelect: boolean,
   ): Promise<string[] | null> {
     return new Promise((resolve) => {

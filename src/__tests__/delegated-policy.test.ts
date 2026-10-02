@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
+import { runForkSkill } from "../skills/forkSkill.js";
 import { registerSubagentType, setCoreToolsForSubagents } from "../subagents.js";
 import { createAgents, resetTeams, runAgentTurn } from "../team.js";
 import { AgentTool } from "../tools/extended/agent.js";
@@ -78,6 +79,21 @@ const runners: Array<
     },
   ],
   ["Workflow", (ctx) => runWorkerAgent("read", ctx)],
+  [
+    "Fork Skill",
+    (ctx) =>
+      runForkSkill(
+        {
+          name: "policy-skill",
+          description: "Read",
+          context: "fork",
+          agent: "policy-reader",
+          getPromptForCommand: async () => "read",
+        },
+        "read",
+        ctx,
+      ),
+  ],
 ];
 
 describe("delegated execution constraints", () => {

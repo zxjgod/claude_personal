@@ -18,11 +18,13 @@ let workspace: string;
 
 beforeEach(() => {
   workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-agent-mem-"));
+  process.env.CCR_AGENT_MEMORY_USER_DIR = path.join(workspace, "user-memory");
 });
 
 afterEach(() => {
   fs.rmSync(workspace, { recursive: true, force: true });
   delete process.env.CCR_AGENT_MEMORY_LOCAL_DIR;
+  delete process.env.CCR_AGENT_MEMORY_USER_DIR;
 });
 
 describe("assertSafeAgentType", () => {
@@ -44,9 +46,10 @@ describe("agentMemoryDir scopes", () => {
     expect(dir).toBe(path.join(workspace, ".claude", "agent-memory", "general"));
   });
 
-  it("legacy user scope is workspace-local and never reads the user profile", () => {
+  it("user scope is independent of workspace and can be redirected", () => {
     const dir = agentMemoryDir("user", "general", workspace);
-    expect(dir).toBe(path.join(workspace, ".claude", "agent-memory", "general"));
+    expect(dir).toBe(path.join(workspace, "user-memory", "general"));
+    expect(agentMemoryDir("user", "general", path.join(workspace, "other"))).toBe(dir);
     expect(dir).not.toBe(path.join(os.homedir(), ".claude", "agent-memory", "general"));
   });
 

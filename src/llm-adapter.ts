@@ -1,3 +1,4 @@
+import { withModelBudget } from "./model-budget.js";
 // ============================================================
 // Multi-Provider LLM Client Adapter
 // ============================================================
@@ -366,10 +367,10 @@ function formatToolsForOpenAI(tools: Tool[]): OpenAI.Chat.Completions.ChatComple
 
 export function createModelCaller(cfg: ModelConfig): ModelCaller {
   if (cfg.provider === "anthropic") {
-    return anthropicCaller;
+    return withModelBudget(anthropicCaller);
   }
   // All non-Anthropic providers use OpenAI-compatible API for now.
-  return openAICompatibleCaller;
+  return withModelBudget(openAICompatibleCaller);
 }
 
 // --- Error Detection Helpers ---

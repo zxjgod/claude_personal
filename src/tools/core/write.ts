@@ -60,7 +60,7 @@ export const WriteTool: Tool = buildTool({
     }
     const filePath = resolution.path;
 
-    if (isBlockedPath(filePath)) {
+    if (isBlockedPath(filePath, context.workspaceRoot)) {
       return {
         content: "",
         error: `Access denied: "${input.filePath}" is a blocked path`,

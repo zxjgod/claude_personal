@@ -1,3 +1,4 @@
+import { scopedHooks } from "./scoped-execution.js";
 // ============================================================
 // Team — stateful multi-agent collaboration (M10)
 // ============================================================
@@ -21,7 +22,9 @@ import {
   extractLastAssistantText,
   getCoreToolsForSubagents,
   getSubagentType,
+  preloadAgentSkills,
   resolveSubagentTools,
+  subagentModelConfig,
 } from "./subagents.js";
 import { pushTaskNotification } from "./tools/notifications.js";
 import {
@@ -100,6 +103,39 @@ export interface TeamRunContext {
 
 // sessionId -> (agentId -> agent)
 const teams = new Map<string, Map<string, TeamAgent>>();
+export function restoreTeam(sessionId: string, values: unknown[]): void {
+  const members = bucket(sessionId);
+  for (const value of values) {
+    if (!value || typeof value !== "object") continue;
+    const entry = value as Partial<TeamAgent>;
+    if (
+      typeof entry.id !== "string" ||
+      typeof entry.role !== "string" ||
+      !Array.isArray(entry.messages)
+    )
+      continue;
+    const interrupted = entry.status === "running";
+    members.set(entry.id, {
+      id: entry.id,
+      role: entry.role,
+      messages: entry.messages.filter(
+        (message) => message && ["user", "assistant", "system", "tool"].includes(message.role),
+      ),
+      status: interrupted
+        ? "stopped"
+        : ["idle", "done", "error", "stopped"].includes(String(entry.status))
+          ? entry.status!
+          : "idle",
+      lastOutput: entry.lastOutput ?? "",
+      toolCalls: entry.toolCalls ?? 0,
+      createdAt: entry.createdAt ?? Date.now(),
+      updatedAt: Date.now(),
+      error: interrupted
+        ? "Previous process ended during this agent turn; send a follow-up to continue."
+        : entry.error,
+    });
+  }
+}
 
 function bucket(sessionId: string): Map<string, TeamAgent> {
   let m = teams.get(sessionId);
@@ -277,12 +313,16 @@ export async function runAgentTurn(
   let error: string | undefined;
 
   try {
-    const caller = createModelCaller(ctx.modelConfig);
+    const config = subagentModelConfig(role, ctx.modelConfig);
+    const caller = createModelCaller(config);
     const systemPrompt = buildSubagentSystemPrompt(
       role,
-      [role.systemPrompt, "", `You are team member "${agent.id}" (role: ${agent.role}).`].join(
-        "\n",
-      ),
+      [
+        role.systemPrompt,
+        "",
+        `You are team member "${agent.id}" (role: ${agent.role}).`,
+        await preloadAgentSkills(role, ctx.workspaceRoot),
+      ].join("\n"),
       { workspaceRoot: ctx.workspaceRoot },
     );
     const coreTools = await getCoreToolsForSubagents();
@@ -292,15 +332,22 @@ export async function runAgentTurn(
     // from bypassing permissions on dangerous tools (bash/write/edit)
     const subApprover = createSubAgentApprover(ctx.askUser, true);
 
-    const loop = agentLoop(agent.messages, tools, caller, ctx.modelConfig, {
+    const loop = agentLoop(agent.messages, tools, caller, config, {
       systemPrompt,
       maxTurns: role.maxTurns ?? AGENT_MAX_TURNS,
       autoCompactThreshold: WORKER_COMPACT_THRESHOLD,
       abortSignal: scope.signal,
       toolContext: deriveSubContext(ctx, {
+        modelConfig: config,
         askUser: subApprover,
         abortSignal: scope.signal,
-        hooks: ctx.hooks,
+        hooks: scopedHooks(ctx.hooks, role.hooks, ctx.sessionId, ctx.workspaceRoot),
+        permissionMode:
+          ctx.permissionMode === "plan"
+            ? "plan"
+            : role.permissionMode === "plan" || role.permissionMode === "dontAsk"
+              ? role.permissionMode
+              : ctx.permissionMode,
       }),
       // Also pass restricted askUser at the LoopOptions level
       askUser: subApprover,

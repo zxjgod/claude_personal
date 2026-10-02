@@ -31,10 +31,16 @@
 // ============================================================
 
 import * as path from "node:path";
+import { userConfigRoot } from "../settings.js";
 import { registerSkill, type SkillContext, type SkillDefinition } from "../skills.js";
 import { loadDiskEntries } from "../utils/disk-loader.js";
 import { expandDiskTemplate } from "../utils/disk-template.js";
-import { type ParsedFrontmatter, parseFrontmatter } from "../utils/frontmatter.js";
+import {
+  frontmatterList,
+  frontmatterString,
+  type ParsedFrontmatter,
+  parseFrontmatter,
+} from "../utils/frontmatter.js";
 import { ccrPath } from "../workspace-config.js";
 
 // Back-compat alias: the shared parser was previously defined in this module.
@@ -52,24 +58,13 @@ const USER_SKILLS_ENV = "CCR_USER_SKILLS_DIR";
 /** Roots scanned for disk skills, lowest → highest precedence (project wins). */
 export function skillDirRoots(workspaceRoot: string): string[] {
   const roots = [ccrPath(workspaceRoot, "skills")];
-  if (process.env[USER_SKILLS_ENV]) roots.unshift(process.env[USER_SKILLS_ENV]!);
+  roots.unshift(process.env[USER_SKILLS_ENV] || path.join(userConfigRoot(), "skills"));
   return roots;
 }
 
-function asString(v: string | string[] | undefined): string | undefined {
-  if (v === undefined) return undefined;
-  return Array.isArray(v) ? v.join(", ") : v;
-}
+const asString = frontmatterString;
 
-function asList(v: string | string[] | undefined): string[] | undefined {
-  if (v === undefined) return undefined;
-  return Array.isArray(v)
-    ? v
-    : v
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
-}
+const asList = frontmatterList;
 
 /**
  * Expand a disk skill template. trustedShell controls !`cmd` and ${ENV}
@@ -78,7 +73,7 @@ function asList(v: string | string[] | undefined): string[] | undefined {
  */
 export async function expandSkillBody(
   body: string,
-  opts: { args?: string; workspaceRoot?: string; trustedShell: boolean },
+  opts: { args?: string; workspaceRoot?: string; trustedShell: boolean; positional?: boolean },
 ): Promise<string> {
   return expandDiskTemplate(body, opts);
 }
@@ -99,13 +94,21 @@ function defFromFile(
     source: "disk",
     context: context as SkillContext,
     agent: asString(fm.agent),
-    allowedTools: asList(fm.allowedTools),
+    allowedTools: asList(fm["allowed-tools"] ?? fm.allowedTools),
+    toolPermissionGrant: fm["allowed-tools"] !== undefined,
+    disallowedTools: asList(fm["disallowed-tools"] ?? fm.disallowedTools),
+    disableModelInvocation: asString(fm["disable-model-invocation"]) === "true",
+    userInvocable: asString(fm["user-invocable"]) !== "false",
+    model: asString(fm.model),
+    effort: asString(fm.effort),
+    hooks: fm.hooks,
     // Lazy: the template is expanded only when the skill is actually invoked.
     getPromptForCommand: (ctx) =>
       expandSkillBody(parsed.body, {
         args: ctx.args,
         workspaceRoot: ctx.workspaceRoot,
         trustedShell,
+        positional: true,
       }),
   };
 }
@@ -115,14 +118,20 @@ function defFromFile(
  * the names registered (project entries override same-named user entries).
  * Missing roots are skipped silently — disk skills are optional.
  */
-export function loadSkillsDir(workspaceRoot: string): string[] {
+export function loadSkillsDir(
+  workspaceRoot: string,
+  options: { roots?: string[]; namespace?: string } = {},
+): string[] {
   return loadDiskEntries({
-    roots: skillDirRoots(workspaceRoot),
+    roots: options.roots ?? skillDirRoots(workspaceRoot),
     accepts: (entry) => entry.isDirectory() && isSafeSkillName(entry.name),
     nameOf: (entry) => entry.name,
     fileOf: (root, entry) => path.join(root, entry.name, "SKILL.md"),
     parse: (entry) => defFromFile(entry.name, parseFrontmatter(entry.raw), true),
-    register: registerSkill,
+    register: (skill) =>
+      registerSkill(
+        options.namespace ? { ...skill, name: `${options.namespace}:${skill.name}` } : skill,
+      ),
     loadedName: (value, entry) => value.name || entry.name,
   });
 }

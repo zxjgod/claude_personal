@@ -17,6 +17,7 @@ import {
   isFallbackableModelError,
   type ModelErrorRecovery,
 } from "./error-recovery.js";
+import { evaluateSessionGoal, sessionGoal, suspendGoal } from "./goal-runtime.js";
 import { modelContextWindow } from "./model-metadata.js";
 import {
   buildContinuationNudge,
@@ -26,6 +27,13 @@ import {
   recordOutput,
   type TokenBudgetState,
 } from "./query/token-budget.js";
+import {
+  activeSkill,
+  activeSkillModel,
+  activeSkillPolicy,
+  clearSkillActivation,
+  scopedHooks,
+} from "./scoped-execution.js";
 import { predictReads, SpeculationCache } from "./speculation.js";
 import { StreamingToolExecutor } from "./streaming-tool-executor.js";
 import { estimateTokens, providerPromptTokens } from "./token-estimator.js";
@@ -52,6 +60,7 @@ import type {
   ToolExecutionResult,
 } from "./types.js";
 import { isInterrupt } from "./utils/cancellation.js";
+import { activeWorkspace } from "./worktrees.js";
 
 // Default approver used when the caller (CLI) does not supply one.
 const defaultAskUser: AskUserFn = async () => true;
@@ -191,6 +200,11 @@ export async function* agentLoop(
   // path used by adapters that report failures mid-stream.
   const safeCallModel: ModelCaller = async function* (...args) {
     try {
+      const root = toolContext?.workspaceRoot ?? process.cwd();
+      const active = activeWorkspace(toolContext?.sessionId ?? "default", root);
+      if (active !== root)
+        args[2] += `\n\n[ACTIVE WORKSPACE]\nWorking directory: ${active}\nResolve all file and shell operations inside this worktree. Session storage remains at its original location.`;
+      args[3] = activeSkillModel(toolContext?.sessionId ?? "default", args[3]);
       yield* callModel(...args);
     } catch (error) {
       yield {
@@ -226,6 +240,8 @@ export async function* agentLoop(
   const collapseStore = new CollapseStore();
 
   // Build the full ToolContext from caller-provided values.
+  let contextModel = toolContext?.modelConfig ?? modelConfig;
+  let goalContinuations = 0;
   const baseContext: ToolContext = {
     workspaceRoot: toolContext?.workspaceRoot ?? process.cwd(),
     allowedDirectories: toolContext?.allowedDirectories,
@@ -233,7 +249,12 @@ export async function* agentLoop(
     permissionMode: toolContext?.getPermissionMode?.() ?? toolContext?.permissionMode ?? "default",
     getPermissionMode: toolContext?.getPermissionMode,
     setPermissionMode: toolContext?.setPermissionMode,
-    modelConfig: toolContext?.modelConfig ?? modelConfig,
+    get modelConfig() {
+      return activeSkillModel(toolContext?.sessionId ?? "default", contextModel);
+    },
+    set modelConfig(value) {
+      if (value) contextModel = value;
+    },
     onSubAgentProgress: toolContext?.onSubAgentProgress,
     askUserQuestion: toolContext?.askUserQuestion,
     // Without this passthrough the ExitPlanMode tool sees no approval channel
@@ -241,8 +262,17 @@ export async function* agentLoop(
     // approval overlay never opens and the user never gets a say.
     requestPlanApproval: toolContext?.requestPlanApproval,
     permissionClassifier: toolContext?.permissionClassifier,
-    hooks,
-    permissionPolicy: toolContext?.permissionPolicy,
+    get hooks() {
+      return scopedHooks(
+        hooks,
+        activeSkill(toolContext?.sessionId ?? "default")?.hooks,
+        toolContext?.sessionId ?? "default",
+        toolContext?.workspaceRoot ?? process.cwd(),
+      );
+    },
+    get permissionPolicy() {
+      return activeSkillPolicy(toolContext?.sessionId ?? "default", toolContext?.permissionPolicy);
+    },
     askUser: toolContext?.askUser ?? askUser,
     abortSignal,
     getParentMessages: () => messages.slice(),
@@ -252,6 +282,18 @@ export async function* agentLoop(
   };
 
   const MAX_RATE_LIMIT_RETRIES = 3;
+  if (hooks?.runEvent) {
+    const outcome = await hooks.runEvent("UserPromptSubmit", {
+      prompt: latestUserText(messages),
+      session_id: baseContext.sessionId,
+    });
+    if (outcome?.block) {
+      yield { type: "aborted", reason: outcome.reason || "User prompt blocked by hook" };
+      return { reason: "hook_stopped", turns: 0 };
+    }
+    if (outcome?.additionalContext)
+      messages.push({ role: "system", content: outcome.additionalContext });
+  }
   const MAX_CONTEXT_LENGTH_RETRIES = 3;
   const MAX_TRANSIENT_RETRIES = 3;
 
@@ -737,8 +779,11 @@ export async function* agentLoop(
           });
         }
 
-        if (hooks?.runStop) {
-          const stop = await hooks.runStop({ messages, stopHookActive: state.stopHookActive });
+        if (baseContext.hooks?.runStop) {
+          const stop = await baseContext.hooks.runStop({
+            messages,
+            stopHookActive: state.stopHookActive,
+          });
           if (stop.preventContinuation) {
             yield {
               type: "done",
@@ -857,6 +902,58 @@ export async function* agentLoop(
           continue;
         }
 
+        const goal = sessionGoal(baseContext.sessionId);
+        if (goal && !goal.complete && !goal.suspended && goalContinuations < 12) {
+          try {
+            const evaluated = await evaluateSessionGoal(
+              baseContext.sessionId,
+              messages,
+              options.fastModel?.callModel ?? callModel,
+              options.fastModel?.modelConfig ?? modelConfig,
+              abortSignal,
+            );
+            if (evaluated && !evaluated.complete) {
+              goalContinuations++;
+              messages.push({
+                role: "user",
+                content: [
+                  {
+                    type: "text",
+                    text: `[GOAL EVALUATOR]\nThe objective is not complete: ${evaluated.reason}. Continue working toward ${evaluated.objective}.`,
+                  },
+                ],
+              });
+              state = { ...state, turnCount: turnCount + 1, transition: { reason: "model_retry" } };
+              continue;
+            }
+          } catch (error) {
+            if (abortSignal?.aborted) {
+              yield {
+                type: "aborted",
+                reason: String(abortSignal.reason ?? "Goal evaluation cancelled"),
+              };
+              return terminal(isInterrupt(abortSignal) ? "aborted_interrupt" : "aborted_streaming");
+            }
+            suspendGoal(baseContext.sessionId, `Goal evaluation unavailable: ${String(error)}`);
+            yield {
+              type: "done",
+              finishReason: "end_turn",
+              turns: turnCount,
+              message:
+                "Goal evaluation is unavailable. The goal remains incomplete and automatic continuation is paused; set /goal again to resume.",
+            };
+            return terminal("completed");
+          }
+        }
+        if (goal && !goal.complete && !goal.suspended) {
+          yield {
+            type: "done",
+            finishReason: "max_turns",
+            turns: turnCount,
+            message: "Goal remains incomplete after 12 evaluator continuations.",
+          };
+          return terminal("max_turns");
+        }
         yield {
           type: "done",
           finishReason: "end_turn",
@@ -1014,6 +1111,7 @@ export async function* agentLoop(
     return terminal("max_turns");
   } finally {
     streamExecutor.clear();
+    clearSkillActivation(toolContext?.sessionId ?? "default");
   }
 }
 

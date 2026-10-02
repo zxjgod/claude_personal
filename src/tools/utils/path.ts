@@ -14,7 +14,7 @@ export function resolveAllowedWorkspaceFile(
 ) {
   const resolution = resolveInWorkspace(inputPath, workspaceRoot, allowedDirectories);
   if (!resolution.ok) return resolution;
-  if (isBlockedPath(inputPath) || isBlockedPath(resolution.path)) {
+  if (isBlockedPath(inputPath, workspaceRoot) || isBlockedPath(resolution.path, workspaceRoot)) {
     return { ok: false as const, error: "Access denied: path is blocked for security reasons." };
   }
   return resolution;
@@ -62,13 +62,22 @@ export function resolveInWorkspace(
 
   const normalizeForContainment = (value: string): string =>
     process.platform === "win32" ? value.toLowerCase() : value;
-  const normalizedRoots = [rootReal, ...allowedDirectories.map((d) => path.resolve(d))].map(
-    normalizeForContainment,
-  );
+  const normalizedRoots = [
+    rootReal,
+    ...allowedDirectories.map((d) => {
+      try {
+        return fs.realpathSync(path.resolve(d));
+      } catch {
+        return path.resolve(d);
+      }
+    }),
+  ].map(normalizeForContainment);
   const normalizedReal = normalizeForContainment(real.path);
   if (
     !normalizedRoots.some(
-      (root) => normalizedReal === root || normalizedReal.startsWith(root + path.sep),
+      (root) =>
+        normalizedReal === root ||
+        normalizedReal.startsWith(root.endsWith(path.sep) ? root : root + path.sep),
     )
   ) {
     return {

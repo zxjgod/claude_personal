@@ -4,7 +4,7 @@
 // Optional persistence that lets a repeatedly-used agent TYPE accumulate
 // experience across sessions. Three scopes:
 //
-//   user    .claude/agent-memory/<type>/MEMORY.md     legacy alias of project
+//   user    <userConfigRoot>/agent-memory/<type>/MEMORY.md  shared across projects
 //   project .claude/agent-memory/<type>/MEMORY.md     shared via VCS
 //   local   .claude/agent-memory-local/<type>/MEMORY.md  gitignored, env-redirectable
 //
@@ -16,6 +16,8 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { userConfigRoot } from "./settings.js";
+import { atomicWriteFile, withFileLock } from "./utils/file-lock.js";
 import { ccrPath } from "./workspace-config.js";
 
 export type MemoryScope = "user" | "project" | "local";
@@ -46,7 +48,7 @@ export function agentMemoryDir(
   let root: string;
   switch (scope) {
     case "user":
-      root = ccrPath(workspaceRoot, "agent-memory");
+      root = process.env.CCR_AGENT_MEMORY_USER_DIR || path.join(userConfigRoot(), "agent-memory");
       break;
     case "project":
       root = path.join(workspaceRoot, ".claude", "agent-memory");
@@ -130,7 +132,8 @@ export function saveAgentMemory(
   try {
     const dir = agentMemoryDir(scope, agentType, workspaceRoot);
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, "MEMORY.md"), content, "utf-8");
+    const file = path.join(dir, "MEMORY.md");
+    withFileLock(file, () => atomicWriteFile(file, content));
     return true;
   } catch {
     return false;
@@ -145,6 +148,20 @@ export function saveAgentMemory(
  * memory write — returns false instead of throwing.
  */
 export function appendAgentMemory(
+  scope: MemoryScope,
+  agentType: string,
+  workspaceRoot: string,
+  line: string,
+): boolean {
+  try {
+    return withFileLock(agentMemoryFile(scope, agentType, workspaceRoot), () =>
+      appendAgentMemoryLocked(scope, agentType, workspaceRoot, line),
+    );
+  } catch {
+    return false;
+  }
+}
+function appendAgentMemoryLocked(
   scope: MemoryScope,
   agentType: string,
   workspaceRoot: string,
@@ -173,5 +190,6 @@ export function appendAgentMemory(
     const prefix = normalized.trim() ? `${normalized.replace(/\s*$/, "\n\n")}` : "";
     next = `${prefix}${HEADING}\n${bullet}\n`;
   }
-  return saveAgentMemory(scope, agentType, workspaceRoot, next);
+  atomicWriteFile(agentMemoryFile(scope, agentType, workspaceRoot), next);
+  return true;
 }

@@ -44,16 +44,31 @@ import { runRepl } from "./cli-repl.js";
 import { createResumeSession, initSession } from "./cli-session.js";
 import { setupTools } from "./cli-tools.js";
 import { COMMANDS } from "./commands.js";
+import { handleUrlElicitation, openExternalUrl } from "./external-url.js";
 import { formatGitContext, gatherGitContext } from "./git-context.js";
+import { sessionGoal } from "./goal-runtime.js";
+import { runHeadless } from "./headless.js";
 import { HookRegistry } from "./hooks.js";
-import { loadHooksFromSettingsTrusted, readSettings, warnUnknownSettings } from "./hooks-config.js";
+import {
+  configureHookServices,
+  loadHooksConfigTrusted,
+  loadHooksFromSettingsTrusted,
+  parseHooksConfig,
+  readSettings,
+  registerHooksFromConfig,
+  warnUnknownSettings,
+} from "./hooks-config.js";
+import { confirmProjectLspConfig } from "./language-servers.js";
 import { createModelCaller } from "./llm-adapter.js";
+import { disposeAllLspClients } from "./lsp.js";
 import { autoExtractMemoriesOnExit, MemoryStore } from "./memory-extract.js";
 import { savePersistentAlwaysAllow } from "./permission-policy.js";
-import { pluginDirs } from "./plugins.js";
+import { pluginDirs, pluginHookSettings } from "./plugins.js";
 import { renderPrefetchAttachment, startPrefetch } from "./prefetch.js";
+import { memoryIndex } from "./project-memory.js";
 import { resolveFastModelConfig } from "./provider-profiles.js";
 import { normalizeFinishReason } from "./session-memory.js";
+import { settingSources } from "./settings.js";
 import { listSkills } from "./skills.js";
 import { buildSystemPrompt, renderSystemPrompt } from "./system-prompt.js";
 import { loadDurableJobs } from "./tools/extended/cron-shared.js";
@@ -74,8 +89,10 @@ async function main() {
   // Info flags first — print + return before touching config / API key / stdin.
   if (maybeHandleInfoFlags(process.argv)) return;
 
+  const startupArgs = parseCliArgs(process.argv);
+  if (startupArgs.print) console.log = (...args: unknown[]) => console.error(...args);
   // P0-1: First-run onboarding - guide user to create .env if missing
-  if (!(await checkOrCreateEnv())) {
+  if (!startupArgs.print && !(await checkOrCreateEnv())) {
     return;
   }
 
@@ -110,6 +127,16 @@ async function main() {
   // fingerprint confirmation BEFORE the policy is assembled (untrusted allow
   // rules are stripped inside getPermissionPolicy).
   await confirmProjectAllowRules(workspaceRoot);
+  if (!process.argv.includes("--safe-mode") && !process.argv.includes("--bare"))
+    await confirmProjectLspConfig(
+      workspaceRoot,
+      process.stdin.isTTY && process.stdout.isTTY
+        ? async (description) => {
+            console.log(description);
+            return askYesNo("Trust these project language server commands? [y/N] ");
+          }
+        : undefined,
+    );
   const permissionPolicy = getPermissionPolicy(workspaceRoot);
   warnUnknownSettings(readSettings(workspaceRoot));
   const permissionModeState = {
@@ -155,7 +182,7 @@ async function main() {
   // Mutable session holders read by both the system-prompt builder and the
   // corresponding slash commands (/goal, /output-style). Stored as `{ value }`
   // references so a command and the REPL share the same cell.
-  const goalHolder = { value: "" };
+  const goalHolder = { value: sessionGoal(session.id)?.objective ?? "" };
   const editorModeHolder = { value: "default" } as { value: "default" | "vim" };
   const outputStyleHolder = { value: "default" };
 
@@ -216,9 +243,14 @@ async function main() {
         permissionPolicy,
       }),
     );
+    const memory = memoryIndex(workspaceRoot);
+    const withMemory =
+      memory && !process.argv.includes("--safe-mode")
+        ? `${base}\n\n[PROJECT MEMORY INDEX]\n${memory}`
+        : base;
     return goalHolder.value
-      ? `${base}\n\n[SESSION GOAL]\nThe user set this objective for the session. Keep it in view and steer toward it:\n${goalHolder.value}`
-      : base;
+      ? `${withMemory}\n\n[SESSION GOAL]\nThe user set this objective for the session. Keep it in view and steer toward it:\n${goalHolder.value}`
+      : withMemory;
   };
 
   const systemPrompt = buildTurnSystemPrompt();
@@ -241,7 +273,7 @@ async function main() {
   const prefetchMemories = (latestUserText: string): Promise<string | null> =>
     startPrefetch({
       query: latestUserText,
-      memories: () => memoryStore.list(),
+      memories: () => [...memoryStore.list(), ...new MemoryStore(workspaceRoot, "user").list()],
       skills: () => listSkills(),
     }).then(renderPrefetchAttachment);
 
@@ -250,6 +282,8 @@ async function main() {
   // picked up. Null when unset — callers then use the main model.
   const getFastModel = (): { callModel: ModelCaller; modelConfig: ModelConfig } | null => {
     const fastConfig = resolveFastModelConfig(modelConfig);
+    if (fastConfig && modelConfig.options?.ccrBudget)
+      fastConfig.options = { ...fastConfig.options, ccrBudget: modelConfig.options.ccrBudget };
     return fastConfig
       ? {
           callModel: (m, t, s, c, a) => createModelCaller(c)(m, t, s, c, a),
@@ -326,12 +360,76 @@ async function main() {
   // trusted, or that the user confirms right now (interactive only — piped/CI
   // sessions skip untrusted hooks, fail-closed).
   const hooks = new HookRegistry();
-  const unregisterNotificationHook = registerNotificationHook((payload) =>
-    hooks.runEvent("Notification", payload),
-  );
+  const customizations = !process.argv.includes("--safe-mode") && !process.argv.includes("--bare");
+  configureHookServices({
+    async evaluate(prompt, payload, useAgent) {
+      const input = prompt.replaceAll("$ARGUMENTS", JSON.stringify(payload));
+      const hookMessages: Message[] = [{ role: "user", content: [{ type: "text", text: input }] }];
+      const config = getFastModel()?.modelConfig ?? modelConfig;
+      let response = "";
+      if (useAgent) {
+        const readonly = tools.filter((tool) => ["read", "glob", "grep"].includes(tool.name));
+        for await (const event of agentLoop(hookMessages, readonly, callModel, config, {
+          systemPrompt:
+            'Evaluate the hook condition. Return only JSON {"ok":true} or {"ok":false,"reason":"..."}.',
+          maxTurns: 8,
+          askUser: async () => false,
+          toolContext: {
+            workspaceRoot,
+            sessionId: `${session.id}-hook`,
+            permissionMode: "plan",
+            permissionPolicy,
+          },
+        }))
+          if (event.type === "text_delta") response += event.delta;
+      } else
+        for await (const event of callModel(
+          hookMessages,
+          [],
+          'Return only JSON {"ok":true} or {"ok":false,"reason":"..."}.',
+          config,
+        ))
+          if (event.type === "text_delta") response += event.delta;
+      return JSON.parse(response.replace(/^```(?:json)?\s*|\s*```$/g, "")) as Record<
+        string,
+        unknown
+      >;
+    },
+    async callMcpTool(name, input) {
+      const tool = mcpManager.getAllTools().find((candidate) => candidate.name === name);
+      if (!tool) throw new Error(`Unknown hook MCP tool: ${name}`);
+      const result = await tool.call(input, {
+        workspaceRoot,
+        sessionId: session.id,
+        permissionMode,
+        permissionPolicy,
+      });
+      if (result.error) throw new Error(result.error);
+      return JSON.parse(result.content) as Record<string, unknown>;
+    },
+  });
+  const unregisterNotificationHook = registerNotificationHook(async (payload) => {
+    await hooks.runEvent("Notification", payload);
+  });
   // Session context for the official hook stdin envelope (session_id /
   // transcript_path / cwd) and the directory hook commands run in.
-  const hookCtx = { sessionId: session.id, workspaceRoot };
+  const hookCtx = {
+    get sessionId() {
+      return session.id;
+    },
+    get workspaceRoot() {
+      return workspaceRoot;
+    },
+    transcriptRoot: sessionStorageRoot,
+  };
+  if (customizations)
+    registerHooksFromConfig(
+      hooks,
+      parseHooksConfig(
+        readSettings(workspaceRoot, settingSources().includes("user") ? ["user"] : []),
+      ),
+      hookCtx,
+    );
   const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
   const confirmHooks = (label: string) => {
     const ask = async (descriptions: string[]): Promise<boolean> => {
@@ -344,12 +442,14 @@ async function main() {
     return ask;
   };
   try {
-    const hookResult = await loadHooksFromSettingsTrusted(
-      workspaceRoot,
-      hooks,
-      interactive ? confirmHooks("This project") : null,
-      hookCtx,
-    );
+    const hookResult = customizations
+      ? await loadHooksFromSettingsTrusted(
+          workspaceRoot,
+          hooks,
+          interactive ? confirmHooks("This project") : null,
+          hookCtx,
+        )
+      : { loaded: 0, skippedUntrusted: false };
     if (hookResult.loaded > 0 && verbose) {
       console.log(`Hooks loaded: ${hookResult.loaded} from .claude/settings.json`);
     }
@@ -362,7 +462,7 @@ async function main() {
   } catch {
     // Hooks are optional; a malformed settings.json never blocks startup.
   }
-  for (const pluginDir of pluginDirs(workspaceRoot)) {
+  for (const pluginDir of customizations ? pluginDirs(workspaceRoot) : []) {
     try {
       // Plugin hooks get the SAME trust gate as project hooks. The confirm
       // callback used to be null, so a plugin shipping hooks could never be
@@ -375,7 +475,14 @@ async function main() {
         interactive ? confirmHooks(`Plugin ${name}`) : null,
         hookCtx,
       );
-      if (result.skippedUntrusted) {
+      const standard = await loadHooksConfigTrusted(
+        pluginDir,
+        parseHooksConfig(pluginHookSettings(pluginDir)),
+        hooks,
+        interactive ? confirmHooks(`Plugin ${name}`) : null,
+        hookCtx,
+      );
+      if (result.skippedUntrusted || standard.skippedUntrusted) {
         console.error(
           `Warning: hooks from plugin ${name} were NOT loaded (untrusted). ` +
             "Run interactively to review and trust them.",
@@ -385,7 +492,13 @@ async function main() {
       /* isolated plugin */
     }
   }
-  await hooks.runEvent("SessionStart", { session_id: session.id, workspace_root: workspaceRoot });
+  const startupHook = await hooks.runEvent("SessionStart", {
+    session_id: session.id,
+    workspace_root: workspaceRoot,
+    source: "startup",
+  });
+  if (startupHook?.additionalContext)
+    messages.push({ role: "system", content: startupHook.additionalContext });
 
   // Official-compatible one-shot/headless mode. It deliberately uses the same
   // agent loop and permission policy as the interactive clients, while never
@@ -393,83 +506,36 @@ async function main() {
   const cliArgs = parseCliArgs(process.argv);
   const allowedDirectories = cliArgs.addDirs.map((dir) => path.resolve(workspaceRoot, dir));
   if (cliArgs.print) {
-    let prompts: string[] = cliArgs.prompt ? [cliArgs.prompt] : [];
-    if (cliArgs.inputFormat === "stream-json") {
-      try {
-        prompts.push(
-          ...fs
-            .readFileSync(0, "utf8")
-            .split(/\r?\n/)
-            .filter(Boolean)
-            .map((line) => {
-              const value = JSON.parse(line) as {
-                prompt?: unknown;
-                content?: unknown;
-                message?: { content?: unknown };
-              };
-              return typeof value.prompt === "string"
-                ? value.prompt
-                : typeof value.content === "string"
-                  ? value.content
-                  : typeof value.message?.content === "string"
-                    ? value.message.content
-                    : "";
-            })
-            .filter(Boolean),
-        );
-      } catch {
-        /* malformed input is reported as an empty request */
-      }
-    } else if (prompts.length === 0 && !process.stdin.isTTY) {
-      try {
-        prompts = [fs.readFileSync(0, "utf8").trim()].filter(Boolean);
-      } catch {
-        prompts = [];
-      }
-    }
-    if (prompts.length === 0) prompts = [""];
-    for (const prompt of prompts) {
-      const headlessEvents: unknown[] = [];
-      messages.push({ role: "user", content: [{ type: "text", text: prompt }] });
-      for await (const event of agentLoop(messages, tools, callModel, modelConfig, {
-        systemPrompt: cliArgs.appendSystemPrompt
-          ? `${buildTurnSystemPrompt()}\n\n${cliArgs.appendSystemPrompt}`
-          : buildTurnSystemPrompt(),
-        maxTurns: resolveMaxTurns(),
-        askUser: async () => false,
-        hooks,
-        toolContext: {
+    try {
+      await runHeadless({
+        args: cliArgs,
+        input: process.stdin,
+        emit: (value) => process.stdout.write(value),
+        messages,
+        tools,
+        callModel,
+        config: modelConfig,
+        context: {
           workspaceRoot,
           allowedDirectories,
           sessionId: session.id,
           permissionMode,
-          modelConfig,
           permissionPolicy,
+          modelConfig,
         },
-      })) {
-        headlessEvents.push(event);
-        if (cliArgs.outputFormat === "stream-json")
-          process.stdout.write(`${JSON.stringify(event)}\n`);
-      }
-      const text = headlessEvents
-        .filter(
-          (e): e is { type: "text_delta"; delta: string } =>
-            typeof e === "object" && e !== null && (e as { type?: unknown }).type === "text_delta",
-        )
-        .map((e) => e.delta)
-        .join("");
-      if (cliArgs.outputFormat === "json") {
-        process.stdout.write(
-          `${JSON.stringify({ type: "result", id: session.id, result: text, events: headlessEvents })}\n`,
-        );
-      } else if (cliArgs.outputFormat === "text") {
-        if (text) process.stdout.write(`${text}\n`);
-      }
+        hooks,
+        systemPrompt: buildTurnSystemPrompt(),
+        save: (saved) => persistence.save(session.id, saved, { taskState: "paused" }),
+      });
+    } finally {
+      await mcpManager.disconnectAll();
+      await disposeAllLspClients();
     }
     await hooks
       .runEvent("SessionEnd", { session_id: session.id, workspace_root: workspaceRoot })
       .catch(() => {});
     await mcpManager.disconnectAll();
+    await disposeAllLspClients();
     unregisterNotificationHook();
     return;
   }
@@ -511,24 +577,18 @@ async function main() {
   // TUI/raw readers already own the terminal, while piped CI sessions receive
   // deterministic line prompts. Invalid or incomplete answers are declined.
   mcpManager.setElicitationHandler(async (request) => {
-    if (request.mode === "url") {
-      if (request.url) {
-        const { execFile } = await import("node:child_process");
-        const opener =
-          process.platform === "win32"
-            ? "cmd"
-            : process.platform === "darwin"
-              ? "open"
-              : "xdg-open";
-        const args =
-          process.platform === "win32" ? ["/c", "start", "", request.url] : [request.url];
-        execFile(opener, args, { windowsHide: true }, () => {});
-      }
-      const answer = await askQuestion(
-        `\n${request.message}\nOpen the URL above, then type 'accept' (or 'cancel'): `,
-      );
-      return { action: answer?.trim().toLowerCase() === "accept" ? "accept" : "cancel" };
-    }
+    if (request.mode === "url")
+      return handleUrlElicitation(request, {
+        confirmOpen: async (url) =>
+          /^y(?:es)?$/i.test(
+            (await askQuestion(`\n${request.message}\nOpen ${url}? [y/N] `))?.trim() ?? "",
+          ),
+        open: openExternalUrl,
+        confirmComplete: async () =>
+          (await askQuestion("After completing authentication, type accept (or cancel): "))
+            ?.trim()
+            .toLowerCase() === "accept",
+      });
     const schema = request.requestedSchema ?? {};
     const properties = (
       schema.properties && typeof schema.properties === "object" ? schema.properties : {}
@@ -582,7 +642,15 @@ async function main() {
     askQuestion,
   });
 
-  const resumeSession = createResumeSession({ persistence, session, messages });
+  const resumeSession = createResumeSession({
+    persistence,
+    session,
+    messages,
+    onResume: () => {
+      goalHolder.value = sessionGoal(session.id)?.objective ?? "";
+      mcpManager.clearApprovals();
+    },
+  });
 
   const makeCommandContext = () => ({
     messages,
@@ -681,25 +749,13 @@ async function main() {
       allowedDirectories,
       setupElicitation: (store) => {
         mcpManager.setElicitationHandler(async (request) => {
-          if (request.mode === "url") {
-            const { execFile } = await import("node:child_process");
-            if (request.url) {
-              const opener =
-                process.platform === "win32"
-                  ? "cmd"
-                  : process.platform === "darwin"
-                    ? "open"
-                    : "xdg-open";
-              const args =
-                process.platform === "win32" ? ["/c", "start", "", request.url] : [request.url];
-              execFile(opener, args, { windowsHide: true }, () => {});
-            }
-            store.showToast(`${request.message} — browser opened`);
-            const confirmed = await store.askConfirmation(
-              "After completing authentication in the browser, continue?",
-            );
-            return { action: confirmed ? "accept" : "cancel" };
-          }
+          if (request.mode === "url")
+            return handleUrlElicitation(request, {
+              confirmOpen: (url) => store.askConfirmation(`${request.message}\nOpen ${url}?`),
+              open: openExternalUrl,
+              confirmComplete: () =>
+                store.askConfirmation("After completing authentication in the browser, continue?"),
+            });
           const schema = request.requestedSchema ?? {};
           const properties = (
             schema.properties && typeof schema.properties === "object" ? schema.properties : {}
@@ -738,6 +794,7 @@ async function main() {
       },
     });
     await mcpManager.disconnectAll();
+    await disposeAllLspClients();
 
     // F1: session-exit auto-extraction. Heuristic pass is offline/cheap and on
     // by default; the model-assisted pass costs one call and is opt-in via

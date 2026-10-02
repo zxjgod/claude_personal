@@ -9,8 +9,9 @@
 // ============================================================
 
 /** A parsed `<name>.md` file: frontmatter keys + the (trimmed) body. */
+import { parseDocument } from "yaml";
 export interface ParsedFrontmatter {
-  frontmatter: Record<string, string | string[]>;
+  frontmatter: Record<string, unknown>;
   body: string;
 }
 
@@ -24,25 +25,29 @@ export function parseFrontmatter(raw: string): ParsedFrontmatter {
   const text = raw.replace(/^﻿/, "");
   const m = text.match(/^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*\r?\n?([\s\S]*)$/);
   if (!m) return { frontmatter: {}, body: text.trim() };
-  const frontmatter: Record<string, string | string[]> = {};
-  for (const line of m[1]!.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const idx = trimmed.indexOf(":");
-    if (idx < 0) continue;
-    const key = trimmed.slice(0, idx).trim();
-    let value = trimmed.slice(idx + 1).trim();
-    if (!key) continue;
-    if (value.startsWith("[") && value.endsWith("]")) {
-      frontmatter[key] = value
-        .slice(1, -1)
-        .split(",")
-        .map((s) => s.trim().replace(/^["']|["']$/g, ""))
-        .filter(Boolean);
-    } else {
-      value = value.replace(/^["']|["']$/g, "");
-      frontmatter[key] = value;
-    }
+  const document = parseDocument(m[1]!, { uniqueKeys: true });
+  if (document.errors.length)
+    throw new Error(`Invalid frontmatter: ${document.errors[0]!.message}`);
+  const value: unknown = document.toJS({ maxAliasCount: 0 });
+  const frontmatter =
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  // Retain the loader's string scalar convention, while supporting nested hook and MCP config.
+  for (const [key, entry] of Object.entries(frontmatter)) {
+    if (typeof entry === "boolean" || typeof entry === "number") frontmatter[key] = String(entry);
   }
   return { frontmatter, body: (m[2] ?? "").trim() };
+}
+
+export function frontmatterString(value: unknown): string | undefined {
+  return typeof value === "string"
+    ? value
+    : Array.isArray(value)
+      ? value.filter((item) => typeof item === "string").join(", ")
+      : undefined;
+}
+export function frontmatterList(value: unknown): string[] | undefined {
+  if (Array.isArray(value)) return value.filter((item): item is string => typeof item === "string");
+  return typeof value === "string" ? value.split(/[,\s]+/).filter(Boolean) : undefined;
 }

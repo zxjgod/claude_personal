@@ -325,9 +325,6 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
 
       // Run agent loop. Rebuild the turn system prompt so a /goal or /output-style
       // change made earlier this session takes effect next turn.
-      await hooks
-        .runEvent("UserPromptSubmit", { prompt: userInput, session_id: session.id })
-        .catch(() => {});
       const turnSystemPrompt = buildTurnSystemPrompt();
       const loop = agentLoop(messages, tools, callModel, modelConfig, {
         systemPrompt: turnSystemPrompt,

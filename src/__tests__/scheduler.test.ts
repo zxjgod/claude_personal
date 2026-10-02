@@ -123,7 +123,14 @@ describe("startScheduler", () => {
   it("parks due prompts while busy (no delivery, parked notice shown)", () => {
     const busy = { busy: true };
     const host = makeHost(busy);
-    registerScheduledJob({ cron: "+1", prompt: "parked one", recurring: false, durable: false });
+    registerScheduledJob({
+      cron: "+1",
+      prompt: "parked one",
+      recurring: false,
+      durable: false,
+      workspaceRoot: dir,
+      sessionId: "sched-test",
+    });
     stop = startScheduler(host);
 
     vi.advanceTimersByTime(1100);
@@ -134,7 +141,7 @@ describe("startScheduler", () => {
   it("cancels a due wakeup already parked while the session is busy", () => {
     const busy = { busy: true };
     const host = makeHost(busy);
-    scheduleWakeup(0, "cancel this loop", "test");
+    scheduleWakeup(0, "cancel this loop", "test", { workspaceRoot: dir, sessionId: "sched-test" });
     stop = startScheduler(host);
     vi.advanceTimersByTime(1100);
     expect(host.parkedNotices).toHaveLength(1);
@@ -147,8 +154,22 @@ describe("startScheduler", () => {
   it("drains the parked buffer FIFO at the busy→idle flip, even with nothing newly due", () => {
     const busy = { busy: true };
     const host = makeHost(busy);
-    registerScheduledJob({ cron: "+1", prompt: "first", recurring: false, durable: false });
-    registerScheduledJob({ cron: "+1", prompt: "second", recurring: false, durable: false });
+    registerScheduledJob({
+      cron: "+1",
+      prompt: "first",
+      recurring: false,
+      durable: false,
+      workspaceRoot: dir,
+      sessionId: "sched-test",
+    });
+    registerScheduledJob({
+      cron: "+1",
+      prompt: "second",
+      recurring: false,
+      durable: false,
+      workspaceRoot: dir,
+      sessionId: "sched-test",
+    });
     stop = startScheduler(host);
 
     // Both fall due mid-turn: parked, nothing delivered.

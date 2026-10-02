@@ -6,7 +6,9 @@
 // type by name and runs it in an isolated agent loop.
 // ============================================================
 
-import type { Message, Tool } from "./types.js";
+import { loadProjectInstructions, renderInstructions } from "./project-instructions.js";
+import { getSkill, resolveSkillPrompt } from "./skills.js";
+import type { Message, ModelConfig, Tool } from "./types.js";
 
 export interface SubagentType {
   name: string;
@@ -21,6 +23,15 @@ export interface SubagentType {
   whenToUse?: string;
   /** Names of core tools this sub-agent may use. */
   toolNames: string[];
+  inheritTools?: boolean;
+  disallowedTools?: string[];
+  model?: string;
+  effort?: string;
+  skills?: string[];
+  permissionMode?: string;
+  hooks?: unknown;
+  background?: boolean;
+  isolation?: "worktree";
   /** System prompt for the sub-agent's loop. */
   systemPrompt: string;
   /** Turn budget; falls back to the Task tool default when omitted. */
@@ -142,20 +153,55 @@ export function listSubagentSelectionHints(): Array<{ name: string; whenToUse: s
  * agents (.claude/agents/*.md `tools:` frontmatter) reach MCP tools.
  */
 export function resolveSubagentTools(type: SubagentType, available: Tool[]): Tool[] {
-  const byName = new Map(available.map((t) => [t.name, t]));
+  const canonical = (name: string) => name.replace(/([a-z])([A-Z])/g, "$1_$2").toLowerCase();
+  const byName = new Map(available.map((t) => [canonical(t.name), t]));
   const resolved = new Set<Tool>();
   for (const name of type.toolNames) {
     if (name.endsWith("*")) {
-      const prefix = name.slice(0, -1);
+      const prefix = canonical(name.slice(0, -1));
       for (const tool of available) {
-        if (tool.name.startsWith(prefix)) resolved.add(tool);
+        if (canonical(tool.name).startsWith(prefix)) resolved.add(tool);
       }
       continue;
     }
-    const tool = byName.get(name);
+    const tool = byName.get(canonical(name));
     if (tool) resolved.add(tool);
   }
-  return [...resolved];
+  const denied = new Set((type.disallowedTools ?? []).map(canonical));
+  return (type.inheritTools ? available : [...resolved]).filter(
+    (tool) => !denied.has(canonical(tool.name)),
+  );
+}
+
+export function subagentModelConfig(
+  type: SubagentType | undefined,
+  parent: ModelConfig,
+): ModelConfig {
+  const aliases: Record<string, string> = {
+    sonnet: "claude-sonnet-4-6",
+    opus: "claude-opus-4-6",
+    haiku: "claude-haiku-4-5",
+  };
+  const model =
+    type?.model && type.model !== "inherit"
+      ? parent.provider === "anthropic"
+        ? process.env[`CCR_MODEL_${type.model.toUpperCase()}`] || aliases[type.model] || type.model
+        : type.model
+      : undefined;
+  return {
+    ...parent,
+    ...(model ? { model } : {}),
+    ...(type?.effort ? { options: { ...parent.options, effort: type.effort } } : {}),
+  };
+}
+export async function preloadAgentSkills(type: SubagentType, root: string): Promise<string> {
+  const content: string[] = [];
+  for (const name of type.skills ?? []) {
+    const skill = getSkill(name);
+    if (skill && !skill.disableModelInvocation)
+      content.push(`Skill ${name}:\n${await resolveSkillPrompt(skill, { workspaceRoot: root })}`);
+  }
+  return content.join("\n\n");
 }
 
 // --- Core-tool injection (16.9) ---
@@ -260,6 +306,10 @@ export function buildSubagentSystemPrompt(
   env: { workspaceRoot?: string } = {},
 ): string {
   let prompt = enhanceSystemPromptWithEnvDetails(base, env);
+  const instructions = renderInstructions(
+    loadProjectInstructions(env.workspaceRoot ?? process.cwd()),
+  );
+  if (instructions) prompt += `\n\n${instructions}`;
   if (type.memory) {
     // Lazy import avoids loading node:fs in pure-registry consumers.
     const mem = loadMemoryBlock(type.memory, type.name, env.workspaceRoot ?? process.cwd());

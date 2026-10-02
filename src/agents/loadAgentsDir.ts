@@ -28,9 +28,10 @@
 // ============================================================
 
 import * as path from "node:path";
+import { userConfigRoot } from "../settings.js";
 import { registerSubagentType, type SubagentType } from "../subagents.js";
 import { loadDiskEntries } from "../utils/disk-loader.js";
-import { parseFrontmatter } from "../utils/frontmatter.js";
+import { frontmatterList, frontmatterString, parseFrontmatter } from "../utils/frontmatter.js";
 import { ccrPath } from "../workspace-config.js";
 
 /** User-scope agents root can be redirected for tests / sandboxes. */
@@ -39,7 +40,7 @@ const USER_AGENTS_ENV = "CCR_USER_AGENTS_DIR";
 /** Roots scanned for disk agents, lowest → highest precedence (project wins). */
 export function agentDirRoots(workspaceRoot: string): string[] {
   const roots = [ccrPath(workspaceRoot, "agents")];
-  if (process.env[USER_AGENTS_ENV]) roots.unshift(process.env[USER_AGENTS_ENV]!);
+  roots.unshift(process.env[USER_AGENTS_ENV] || path.join(userConfigRoot(), "agents"));
   return roots;
 }
 
@@ -48,22 +49,11 @@ function isSafeAgentName(name: string): boolean {
   return /^[a-zA-Z0-9_-]+$/.test(name) && name !== "." && name !== "..";
 }
 
-function asString(v: string | string[] | undefined): string | undefined {
-  if (v === undefined) return undefined;
-  return Array.isArray(v) ? v.join(", ") : v;
-}
+const asString = frontmatterString;
 
-function asList(v: string | string[] | undefined): string[] | undefined {
-  if (v === undefined) return undefined;
-  return Array.isArray(v)
-    ? v
-    : v
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
-}
+const asList = frontmatterList;
 
-function asNumber(v: string | string[] | undefined): number | undefined {
+function asNumber(v: unknown): number | undefined {
   if (v === undefined) return undefined;
   const s = Array.isArray(v) ? v[0] : v;
   const n = Number(s);
@@ -74,7 +64,7 @@ function asNumber(v: string | string[] | undefined): number | undefined {
 function agentFromFile(
   name: string,
   body: string,
-  frontmatter: Record<string, string | string[]>,
+  frontmatter: Record<string, unknown>,
 ): SubagentType {
   const memory = asString(frontmatter.memory);
   return {
@@ -82,6 +72,15 @@ function agentFromFile(
     description: asString(frontmatter.description) || `Sub-agent "${name}"`,
     whenToUse: asString(frontmatter.whenToUse),
     toolNames: asList(frontmatter.tools) ?? [],
+    inheritTools: frontmatter.tools === undefined,
+    disallowedTools: asList(frontmatter.disallowedTools ?? frontmatter["disallowed-tools"]),
+    model: asString(frontmatter.model),
+    effort: asString(frontmatter.effort),
+    skills: asList(frontmatter.skills),
+    permissionMode: asString(frontmatter.permissionMode),
+    hooks: frontmatter.hooks,
+    background: asString(frontmatter.background) === "true",
+    isolation: asString(frontmatter.isolation) === "worktree" ? "worktree" : undefined,
     systemPrompt: body,
     maxTurns: asNumber(frontmatter.maxTurns),
     // memory must be one of the supported scopes, or undefined.
@@ -94,9 +93,13 @@ function agentFromFile(
  * names registered (project entries override same-named user entries). Missing
  * roots are skipped silently — disk agents are optional.
  */
-export function loadAgentsDir(workspaceRoot: string): string[] {
+export function loadAgentsDir(
+  workspaceRoot: string,
+  options: { roots?: string[]; namespace?: string } = {},
+): string[] {
   return loadDiskEntries({
-    roots: agentDirRoots(workspaceRoot),
+    roots: options.roots ?? agentDirRoots(workspaceRoot),
+    recursive: true,
     accepts: (entry) => entry.isFile() && entry.name.endsWith(".md"),
     nameOf: (entry) => {
       const name = entry.name.slice(0, -".md".length);
@@ -107,6 +110,19 @@ export function loadAgentsDir(workspaceRoot: string): string[] {
       const { frontmatter, body } = parseFrontmatter(entry.raw);
       return body ? agentFromFile(entry.name, body, frontmatter) : undefined;
     },
-    register: registerSubagentType,
+    register: (agent) =>
+      registerSubagentType(
+        options.namespace
+          ? {
+              ...agent,
+              name: `${options.namespace}:${agent.name}`,
+              hooks: undefined,
+              permissionMode: undefined,
+              skills: agent.skills?.map((name) =>
+                name.includes(":") ? name : `${options.namespace}:${name}`,
+              ),
+            }
+          : agent,
+      ),
   });
 }

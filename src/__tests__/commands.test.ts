@@ -815,7 +815,7 @@ describe("handleSlashCommand", () => {
       expect(r.prompt).toContain("Arguments: extra args");
     });
 
-    it("does NOT expand a fork skill via slash sugar (must use the Skill tool)", async () => {
+    it("runs a fork skill via slash without injecting its body into the parent", async () => {
       registerSkill({
         name: "forky",
         description: "d",

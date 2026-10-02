@@ -37,33 +37,38 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { Hook, HookRegistry } from "./hooks.js";
+import { readProjectSettings, readSettings } from "./settings.js";
 import { sanitizeChildEnv } from "./utils/env-sanitize.js";
 import { ccrPath } from "./workspace-config.js";
 
 export interface HookCommandSpec {
-  type: "command";
-  command: string;
-  /** Per-command timeout in seconds (default 60). */
+  type: "command" | "http" | "prompt" | "agent" | "mcp_tool";
+  command?: string;
+  url?: string;
+  prompt?: string;
+  tool?: string;
+  server?: string;
+  headers?: Record<string, string>;
+  input?: Record<string, unknown>;
   timeout?: number;
+  async?: boolean;
 }
-
 export interface HookConfigEntry {
   matcher: string;
   hooks: HookCommandSpec[];
 }
-
-export interface HooksConfig {
-  PreToolUse?: HookConfigEntry[];
-  PostToolUse?: HookConfigEntry[];
-  Stop?: HookConfigEntry[];
-  UserPromptSubmit?: HookConfigEntry[];
-  Notification?: HookConfigEntry[];
-  SubagentStop?: HookConfigEntry[];
-  PreCompact?: HookConfigEntry[];
-  PostCompact?: HookConfigEntry[];
-  SessionStart?: HookConfigEntry[];
-  SessionEnd?: HookConfigEntry[];
-  TeammateIdle?: HookConfigEntry[];
+export type HooksConfig = Partial<Record<(typeof PHASES)[number], HookConfigEntry[]>>;
+export interface HookServices {
+  evaluate?(
+    prompt: string,
+    input: Record<string, unknown>,
+    agent: boolean,
+  ): Promise<Record<string, unknown>>;
+  callMcpTool?(tool: string, input: Record<string, unknown>): Promise<Record<string, unknown>>;
+}
+let services: HookServices = {};
+export function configureHookServices(next: HookServices): void {
+  services = next;
 }
 
 /**
@@ -74,6 +79,7 @@ export interface HooksConfig {
 export interface HookRunContext {
   sessionId: string;
   workspaceRoot: string;
+  transcriptRoot?: string;
 }
 
 const PHASES = [
@@ -88,6 +94,20 @@ const PHASES = [
   "SessionStart",
   "SessionEnd",
   "TeammateIdle",
+  "PermissionRequest",
+  "PermissionDenied",
+  "PostToolUseFailure",
+  "SubagentStart",
+  "TaskCreated",
+  "TaskCompleted",
+  "InstructionsLoaded",
+  "ConfigChange",
+  "CwdChanged",
+  "WorktreeCreate",
+  "WorktreeRemove",
+  "Elicitation",
+  "ElicitationResult",
+  "StopFailure",
 ] as const;
 
 const DEFAULT_HOOK_TIMEOUT_MS = 60_000;
@@ -97,28 +117,7 @@ const MAX_STDOUT_BYTES = 100_000;
 // Settings loading
 // ============================================================
 
-function readJsonFile(file: string): Record<string, unknown> | null {
-  try {
-    const raw = fs.readFileSync(file, "utf8");
-    const parsed = JSON.parse(raw);
-    return typeof parsed === "object" && parsed !== null
-      ? (parsed as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Read the merged project settings: `.claude/settings.json` overlaid by
- * `.claude/settings.local.json` (local wins on a per-key basis). Returns null
- * when neither file exists or is parseable.
- */
-export function readSettings(workspaceRoot: string): Record<string, unknown> | null {
-  const base = readJsonFile(ccrPath(workspaceRoot, "settings.json")) ?? {};
-  const local = readJsonFile(ccrPath(workspaceRoot, "settings.local.json"));
-  return local ? { ...base, ...local } : base;
-}
+export { readSettings } from "./settings.js";
 
 /**
  * Keys this replica ACTUALLY consumes — hooks/permissionMode/permissions/
@@ -172,12 +171,31 @@ export function parseHooksConfig(
       for (const spec of specs) {
         if (typeof spec !== "object" || spec === null) continue;
         const s = spec as Record<string, unknown>;
-        if (s.type !== "command" || typeof s.command !== "string" || !s.command) continue;
-        commands.push({
-          type: "command",
-          command: s.command,
+        if (!["command", "http", "prompt", "agent", "mcp_tool"].includes(String(s.type))) continue;
+        const required =
+          s.type === "command"
+            ? "command"
+            : s.type === "http"
+              ? "url"
+              : s.type === "mcp_tool"
+                ? "tool"
+                : "prompt";
+        if (typeof s[required] !== "string" || !s[required]) continue;
+        const parsed: HookCommandSpec = {
+          type: s.type as HookCommandSpec["type"],
           timeout: typeof s.timeout === "number" && s.timeout > 0 ? s.timeout : undefined,
-        });
+        };
+        if (typeof s.command === "string") parsed.command = s.command;
+        if (typeof s.url === "string") parsed.url = s.url;
+        if (typeof s.prompt === "string") parsed.prompt = s.prompt;
+        if (typeof s.tool === "string") parsed.tool = s.tool;
+        if (typeof s.server === "string") parsed.server = s.server;
+        if (s.headers && typeof s.headers === "object")
+          parsed.headers = s.headers as Record<string, string>;
+        if (s.input && typeof s.input === "object")
+          parsed.input = s.input as Record<string, unknown>;
+        if (s.async === true) parsed.async = true;
+        commands.push(parsed);
       }
       if (commands.length > 0) entries.push({ matcher: effectiveMatcher, hooks: commands });
     }
@@ -289,7 +307,13 @@ function runCommandHook(
         finish(reason ? { decision: "block", reason } : { decision: "block" });
         return;
       }
-      finish(parsed ?? {});
+      finish(
+        parsed ??
+          (stdout.trim() &&
+          ["UserPromptSubmit", "SessionStart"].includes(String(stdin.hook_event_name))
+            ? { hookSpecificOutput: { additionalContext: stdout.trim() } }
+            : {}),
+      );
     });
 
     child.stdin.on("error", () => finish({}));
@@ -304,16 +328,109 @@ async function runSpecs(
   stdin: Record<string, unknown>,
   cwd: string,
 ): Promise<Record<string, unknown>> {
+  let merged: Record<string, unknown> = {};
   for (const spec of specs) {
-    const out = await runCommandHook(
-      spec.command,
-      stdin,
-      cwd,
-      (spec.timeout ?? DEFAULT_HOOK_TIMEOUT_MS / 1000) * 1000,
-    );
-    if (out.decision === "block") return out;
+    const execute = async (): Promise<Record<string, unknown>> => {
+      const timeoutMs = (spec.timeout ?? DEFAULT_HOOK_TIMEOUT_MS / 1000) * 1000;
+      try {
+        if (spec.type === "command")
+          return await runCommandHook(spec.command!, stdin, cwd, timeoutMs);
+        if (spec.type === "http") {
+          const response = await fetch(spec.url!, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...spec.headers },
+            body: JSON.stringify(stdin),
+            signal: AbortSignal.timeout(timeoutMs),
+          });
+          if (!response.ok || !response.body) throw new Error(`Hook HTTP ${response.status}`);
+          const reader = response.body.getReader();
+          let body = "";
+          while (true) {
+            const chunk = await reader.read();
+            if (chunk.done) break;
+            body += Buffer.from(chunk.value).toString("utf8");
+            if (body.length > MAX_STDOUT_BYTES) {
+              await reader.cancel();
+              throw new Error("Hook output too large");
+            }
+          }
+          return parseJson(body) ?? {};
+        }
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const expand = (value: unknown): unknown =>
+          typeof value === "string"
+            ? value.replace(/\$\{([^}]+)\}/g, (_, key: string) => {
+                let item: unknown = stdin;
+                for (const part of key.split("."))
+                  item =
+                    item && typeof item === "object"
+                      ? (item as Record<string, unknown>)[part]
+                      : undefined;
+                return typeof item === "string"
+                  ? item
+                  : item === undefined
+                    ? ""
+                    : JSON.stringify(item);
+              })
+            : value;
+        const invocation =
+          spec.type === "mcp_tool"
+            ? services.callMcpTool?.(
+                spec.server ? `mcp__${spec.server}__${spec.tool}` : spec.tool!,
+                Object.fromEntries(
+                  Object.entries(spec.input ?? {}).map(([key, value]) => [key, expand(value)]),
+                ),
+              )
+            : services.evaluate?.(spec.prompt!, stdin, spec.type === "agent");
+        if (!invocation) throw new Error(`Hook ${spec.type} service is unavailable`);
+        try {
+          return await Promise.race([
+            invocation,
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(() => reject(new Error("Hook timed out")), timeoutMs);
+            }),
+          ]);
+        } finally {
+          clearTimeout(timer);
+        }
+      } catch (error) {
+        console.warn(`Hook failed: ${String(error)}`);
+        return {};
+      }
+    };
+    if (spec.async) {
+      void execute().catch(() => {});
+      continue;
+    }
+    const out = await execute();
+    const specific =
+      out.hookSpecificOutput && typeof out.hookSpecificOutput === "object"
+        ? (out.hookSpecificOutput as Record<string, unknown>)
+        : {};
+    const decision = specific.decision as
+      | { behavior?: unknown; updatedInput?: unknown }
+      | undefined;
+    if (decision?.behavior === "deny") {
+      specific.permissionDecision = "deny";
+    }
+    merged = {
+      ...merged,
+      ...out,
+      hookSpecificOutput: { ...(merged.hookSpecificOutput as object), ...specific },
+    };
+    if (
+      out.decision === "block" ||
+      out.ok === false ||
+      specific.permissionDecision === "deny" ||
+      out.continue === false
+    )
+      return {
+        ...merged,
+        decision: "block",
+        reason: out.reason || specific.permissionDecisionReason || out.stopReason,
+      };
   }
-  return {};
+  return merged;
 }
 
 // ============================================================
@@ -329,19 +446,26 @@ function buildPhaseHook(
   // startup cwd — the two diverge under WORKSPACE_ROOT, and a relative script
   // path would then resolve in the wrong directory (same drift class as the
   // mcp authDir bug fixed in a9e50bc).
-  const cwd = ctx?.workspaceRoot ?? process.cwd();
+  // Relative executable paths stay anchored to the configuration's trusted
+  // workspace; the runtime envelope still follows the current session/cwd.
+  const executionRoot = ctx?.workspaceRoot ?? process.cwd();
+  const cwd = () => executionRoot;
   // Official stdin envelope: every hook receives session/transcript/cwd
   // context plus hook_event_name, so scripts written for the official client
   // can orient themselves without parsing tool-specific fields. Undefined
   // values are dropped by JSON.stringify.
-  const envelope = {
+  const envelope = () => ({
     session_id: ctx?.sessionId,
     transcript_path: ctx
-      ? ccrPath(ctx.workspaceRoot, "sessions", `${ctx.sessionId}.json`)
+      ? ccrPath(
+          ctx.transcriptRoot ?? ctx.workspaceRoot,
+          "sessions",
+          `${ctx.sessionId}.transcript.jsonl`,
+        )
       : undefined,
-    cwd,
+    cwd: ctx?.workspaceRoot ?? executionRoot,
     hook_event_name: phase,
-  };
+  });
   switch (phase) {
     case "PreToolUse":
       return {
@@ -349,13 +473,24 @@ function buildPhaseHook(
         pre: async ({ toolName, input }) => {
           const out = await runSpecs(
             entry.hooks,
-            { ...envelope, tool_name: toolName, tool_input: input },
-            cwd,
+            { ...envelope(), tool_name: toolName, tool_input: input },
+            cwd(),
           );
           if (out.decision === "block") {
             return { block: true, reason: (out.reason as string) || "blocked by PreToolUse hook" };
           }
-          return {};
+          const specific = out.hookSpecificOutput as Record<string, unknown> | undefined;
+          return {
+            input: specific?.updatedInput as Record<string, unknown> | undefined,
+            permissionDecision:
+              specific?.permissionDecision === "allow" || specific?.permissionDecision === "ask"
+                ? specific.permissionDecision
+                : undefined,
+            additionalContext:
+              typeof specific?.additionalContext === "string"
+                ? specific.additionalContext
+                : undefined,
+          };
         },
       };
     case "PostToolUse":
@@ -365,12 +500,12 @@ function buildPhaseHook(
           const out = await runSpecs(
             entry.hooks,
             {
-              ...envelope,
+              ...envelope(),
               tool_name: toolName,
               tool_input: input,
               tool_response: result,
             },
-            cwd,
+            cwd(),
           );
           if (out.decision === "block") {
             return {
@@ -380,7 +515,11 @@ function buildPhaseHook(
               },
             };
           }
-          return {};
+          const extra = (out.hookSpecificOutput as { additionalContext?: unknown })
+            ?.additionalContext;
+          return typeof extra === "string"
+            ? { result: { ...result, content: `${result.content}\n\n${extra}` } }
+            : {};
         },
       };
     case "Stop":
@@ -389,8 +528,8 @@ function buildPhaseHook(
         stop: async ({ stopHookActive }) => {
           const out = await runSpecs(
             entry.hooks,
-            { ...envelope, stop_hook_active: stopHookActive },
-            cwd,
+            { ...envelope(), stop_hook_active: stopHookActive },
+            cwd(),
           );
           if (out.decision === "block") {
             return { blockingError: (out.reason as string) || "stop hook requested more work" };
@@ -401,9 +540,28 @@ function buildPhaseHook(
     default:
       return {
         matcher: entry.matcher,
+        eventName: phase,
         event: async (payload) => {
           if (payload.event !== phase) return;
-          await runSpecs(entry.hooks, { ...envelope, ...payload }, cwd);
+          const out = await runSpecs(entry.hooks, { ...envelope(), ...payload }, cwd());
+          const extra = (out.hookSpecificOutput as { additionalContext?: unknown })
+            ?.additionalContext;
+          const decision = (
+            out.hookSpecificOutput as { decision?: { behavior?: unknown; updatedInput?: unknown } }
+          )?.decision;
+          return {
+            block: out.decision === "block",
+            reason: typeof out.reason === "string" ? out.reason : undefined,
+            additionalContext: typeof extra === "string" ? extra : undefined,
+            permissionDecision:
+              decision?.behavior === "allow" || decision?.behavior === "deny"
+                ? decision.behavior
+                : undefined,
+            input:
+              decision?.updatedInput && typeof decision.updatedInput === "object"
+                ? (decision.updatedInput as Record<string, unknown>)
+                : undefined,
+          };
         },
       };
   }
@@ -472,7 +630,7 @@ export function hooksConfigFingerprint(config: HooksConfig): string {
   for (const phase of PHASES) {
     for (const entry of config[phase] ?? []) {
       for (const spec of entry.hooks) {
-        flat.push([phase, entry.matcher, spec.command].join("\u001f"));
+        flat.push([phase, entry.matcher, JSON.stringify(spec)].join("\u001f"));
       }
     }
   }
@@ -486,7 +644,9 @@ export function describeHooksConfig(config: HooksConfig): string[] {
   for (const phase of PHASES) {
     for (const entry of config[phase] ?? []) {
       for (const spec of entry.hooks) {
-        lines.push(`${phase} [${entry.matcher}]: ${spec.command}`);
+        lines.push(
+          `${phase} [${entry.matcher}]: ${spec.command ?? spec.url ?? spec.prompt ?? spec.tool}`,
+        );
       }
     }
   }
@@ -537,8 +697,17 @@ export async function loadHooksFromSettingsTrusted(
   confirm: ((descriptions: string[]) => Promise<boolean>) | null,
   ctx?: HookRunContext,
 ): Promise<TrustedHooksResult> {
-  const settings = readSettings(workspaceRoot);
+  const settings = readProjectSettings(workspaceRoot);
   const config = parseHooksConfig(settings);
+  return loadHooksConfigTrusted(workspaceRoot, config, registry, confirm, ctx);
+}
+export async function loadHooksConfigTrusted(
+  workspaceRoot: string,
+  config: HooksConfig,
+  registry: HookRegistry,
+  confirm: ((descriptions: string[]) => Promise<boolean>) | null,
+  ctx?: HookRunContext,
+): Promise<TrustedHooksResult> {
   const descriptions = describeHooksConfig(config);
   if (descriptions.length === 0) return { loaded: 0, skippedUntrusted: false };
 

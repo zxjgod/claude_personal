@@ -287,7 +287,7 @@ describe("official hook protocol (exit codes, stdin envelope, env)", () => {
     expect(seen.stdin.hook_event_name).toBe("PreToolUse");
     expect(seen.stdin.session_id).toBe("sess-e2e");
     expect(seen.stdin.transcript_path).toBe(
-      path.join(repo, ".claude", "sessions", "sess-e2e.json"),
+      path.join(repo, ".claude", "sessions", "sess-e2e.transcript.jsonl"),
     );
     expect(seen.stdin.cwd).toBe(repo);
     expect(seen.stdin.tool_name).toBe("Edit");

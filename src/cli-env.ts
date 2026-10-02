@@ -52,6 +52,7 @@ export function readPackageVersion(): string {
  * false if the user wants to exit.
  */
 export async function checkOrCreateEnv(): Promise<boolean> {
+  if (process.env.LLM_API_KEY) return true;
   const envPath = ".env";
   const envExamplePath = ".env.example";
   const installEnvPath = path.join(getInstallDir(), ".env");
@@ -151,10 +152,11 @@ export async function checkOrCreateEnv(): Promise<boolean> {
     return false;
   }
 
-  // Non-interactive mode - just copy the template
-  fs.copyFileSync(examplePath, envPath);
-  console.log(chalk.green("  ✓ 已复制 .env.example → .env"));
-  console.log(chalk.yellow("  请编辑 .env 文件填入 API Key 后重新启动。\n"));
+  console.log(
+    chalk.yellow(
+      "  Non-interactive setup will not create .env. Set LLM_API_KEY or configure it interactively.\n",
+    ),
+  );
   return false;
 }
 
@@ -184,7 +186,17 @@ Options:
   --no-tui                   Force the line-based REPL (skip the Ink TUI)
   --no-speculation           Disable speculative prefetch
   --llm-perm-classifier      Use the LLM permission-risk classifier
-  --safe-mode                Read-only session (force plan mode)
+  --safe-mode                Disable project customizations for troubleshooting
+  --read-only                Read-only session (force plan mode)
+  --bare                     Skip instructions, extensions and MCP auto-loading
+  --settings <file|json>      Additional settings, below managed policy
+  --setting-sources <list>    user,project,local (managed policy always applies)
+  --json-schema <json>       Validate the final headless JSON answer
+  --max-budget-usd <usd>     Stop requests when estimated budget is exhausted
+  --no-session-persistence   Do not save headless conversations
+  --mcp-config <file|json>    Explicit MCP configuration (repeatable)
+  --strict-mcp-config        Load only explicit MCP configurations
+  --plugin-dir <path>        Load a local plugin for this session
   --permission-mode <mode>   Set the permission mode (default/acceptEdits/bypassPermissions/plan/auto/dontAsk)
   --dangerously-skip-permissions
                              Pre-allow all ORDINARY tool prompts (allow "*").

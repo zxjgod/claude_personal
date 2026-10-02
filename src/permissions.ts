@@ -1,3 +1,4 @@
+import { isRegisteredWorktree } from "./worktrees.js";
 // ============================================================
 // Permission System — 4 modes + dangerous pattern detection
 //                          + LLM-assisted risk classifier (M15.3)
@@ -425,13 +426,20 @@ const BLOCKED_PATTERNS = [
   /(^|[/\\])\.git([/\\]|$)/,
   // --- the assistant's own project config / memory (kernel names .claude/) ---
   /(^|[/\\])\.claude([/\\]|$)/,
+  /(^|[/\\])\.claude-code-replica([/\\]|$)/,
+  /(^|[/\\])trusted-executable-configs\.json$/,
   // --- shell startup files: writing these grants arbitrary code execution
   //     on the next shell launch, a classic bypass-mode escalation. ---
   /(^|[/\\])\.(bashrc|bash_profile|zshrc|zprofile|profile|fish\/config\.fish)$/,
   /(^|[/\\])\.config[/\\]fish[/\\]config\.fish$/,
 ];
 
-export function isBlockedPath(filePath: string): boolean {
+export function isBlockedPath(filePath: string, workspaceRoot?: string): boolean {
+  if (workspaceRoot && isRegisteredWorktree(workspaceRoot) && path.isAbsolute(filePath)) {
+    const relative = path.relative(workspaceRoot, filePath);
+    if (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+      filePath = relative;
+  }
   // Windows paths are case-insensitive; normalize separators and case before
   // applying the platform-neutral safety rules.
   const normalized = filePath.replaceAll("\\", "/").toLowerCase();
@@ -673,7 +681,7 @@ export async function checkPermission(
   // Safety-floor blocked paths must run before the read-only fast path. A tool
   // being non-mutating does not make sensitive files safe to disclose.
   if (input.filePath && typeof input.filePath === "string") {
-    if (isBlockedPath(input.filePath as string)) {
+    if (isBlockedPath(input.filePath as string, context.workspaceRoot)) {
       const result = {
         allowed: false as const,
         reason: `Path "${input.filePath}" is blocked for security reasons.`,
@@ -713,7 +721,7 @@ export async function checkPermission(
 
   // Step 3a (safetyCheck): blocked paths — hard deny in every mode.
   if (input.filePath && typeof input.filePath === "string") {
-    if (isBlockedPath(input.filePath as string)) {
+    if (isBlockedPath(input.filePath as string, context.workspaceRoot)) {
       const result = {
         allowed: false as const,
         reason: `Path "${input.filePath}" is blocked for security reasons.`,

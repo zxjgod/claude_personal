@@ -60,6 +60,8 @@ docs/更新日志/
 | 日期 | 类型 | 模块 | 主题 | commit | 关联 |
 |---|---|---|---|---|---|
 | 2026-10-02 | style | TUI / 启动横幅 | [启动横幅文字配色](./20261002-banner-text-colors.md) | 本次提交 | [当前架构](../项目架构.md) |
+| 2026-10-02 | feature / fix | 核心执行 / 扩展 / 协议 / 恢复 | [v1.6.0 本地能力全面升级](./20261002-comprehensive-upgrade.md) | 工作区改动 | [升级实施](../升级实施-20261002.md) |
+| 2026-10-02 | fix | 权限 / LSP / MCP / goal / 恢复 | [v1.6.1 审查问题修复](./20261002-review-remediation.md) | 工作区改动 | [核验报告](../问题清单核验-20261002.md) |
 | 2026-10-02 | feature | TUI / 询问面板 | [开放询问布局与 Tab 补充回答](./20261002-open-asking-panel.md) | 本次提交 | [当前架构](../项目架构.md) |
 | 2026-10-01 | fix | 权限 / 会话 / 调度 / MCP / 文档 | [执行约束与运行时归属修复](./20261001-runtime-ownership-fix.md) | 本次提交 | [当前设计决策](../architecture/decisions.md) |
 | 2026-09-30 | feature / fix | TUI / EffortPrompt / 动画 | [/effort 灰紫布局与 Ultracode 紫色线性扩散波纹](./20260930-effort-layout-ultracode-ripple.md) | 待提交 | — |
@@ -102,6 +104,8 @@ docs/更新日志/
 ## 索引 ②：按模块（出 bug 时从这里查某子功能的历次改动）
 
 - **启动横幅 / 主题文字颜色**：[20261002-banner-text-colors](./20261002-banner-text-colors.md)（橙色品牌、亮灰正文、中灰信息及灰色斜体链接）。
+- **全面升级 / 配置 / Hooks / 自动化 / 运行状态 / 代码理解**：[20261002-comprehensive-upgrade](./20261002-comprehensive-upgrade.md)（v1.6.0 行为、迁移、验证与外部服务边界）。
+- **审查修复 / 权限 / LSP / MCP / 目标恢复**：[20261002-review-remediation](./20261002-review-remediation.md)（v1.6.1 已确认问题、条件性入口保护与永久回归）。
 
 - **询问面板 / 权限补充 / AI 自定义回答**：[20261002-open-asking-panel](./20261002-open-asking-panel.md)（开放布局、浅紫配色、编号选择、Tab 补充、连续请求重置）。
 

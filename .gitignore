@@ -40,3 +40,13 @@ tsc-output.txt
 # review-process temp artifacts (diffs, notes) — never commit
 .review-tmp/
 .claude/history/
+
+# Upgrade verification artifacts and the read-only comparison checkout
+.upgrade-*.txt
+.upgrade-*.json
+.claude/upgrade-baseline/
+.claude/upgrade-baseline-source.zip
+.claude/session-runtime/
+.claude/workflow-runs/
+.claude/memory/
+python/__pycache__/

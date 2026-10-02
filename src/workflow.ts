@@ -8,6 +8,9 @@
 // Fan-out concurrency is still bounded, and workers still run real agent
 // loops with a narrowed tool set.
 
+import { createHash } from "node:crypto";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { agentLoop, WORKER_COMPACT_THRESHOLD } from "./agent-loop.js";
 import { createModelCaller } from "./llm-adapter.js";
 import { extractLastAssistantText, getCoreToolsForSubagents } from "./subagents.js";
@@ -124,6 +127,7 @@ export function resetWorkflows(): void {
 }
 
 export interface WorkflowOptions {
+  resumeFromRunId?: string;
   args?: unknown;
   agentRunner?: (
     prompt: string,
@@ -139,7 +143,31 @@ export async function runWorkflow(
   options: WorkflowOptions = {},
 ): Promise<WorkflowRecord> {
   const agentRunner = options.agentRunner ?? runWorkerAgent;
-  const id = `wf-${++wfCounter}`;
+  const id = `wf-${Date.now().toString(36)}-${++wfCounter}`;
+  const cache = new Map<string, string>();
+  const occurrences = new Map<string, number>();
+  const runRoot = path.join(context.workspaceRoot, ".claude", "workflow-runs");
+  const snapshotPath = path.join(
+    runRoot,
+    `${context.sessionId.replace(/[^a-zA-Z0-9_-]/g, "_")}-${id}.json`,
+  );
+  if (options.resumeFromRunId) {
+    if (!/^[a-zA-Z0-9_-]+$/.test(options.resumeFromRunId))
+      throw new Error("Invalid workflow run id");
+    const source = path.join(
+      runRoot,
+      `${context.sessionId.replace(/[^a-zA-Z0-9_-]/g, "_")}-${options.resumeFromRunId}.json`,
+    );
+    const saved = JSON.parse(fs.readFileSync(source, "utf8"));
+    for (const [key, value] of Object.entries(saved.cache ?? {}))
+      if (typeof value === "string") cache.set(key, value);
+  }
+  const saveCache = () => {
+    fs.mkdirSync(runRoot, { recursive: true });
+    const temp = `${snapshotPath}.tmp`;
+    fs.writeFileSync(temp, JSON.stringify({ version: 1, cache: Object.fromEntries(cache) }));
+    fs.renameSync(temp, snapshotPath);
+  };
   const record: WorkflowRecord = {
     id,
     status: "running",
@@ -176,7 +204,26 @@ export async function runWorkflow(
           // The interpreter already logs "agent: <label>" per step; this adds
           // the "now running" breadcrumb so a long fan-out is traceable.
           if (label) record.logs.push(`running: ${label}`);
-          return agentRunner(prompt, context, workflowScope.signal);
+          const occurrence = occurrences.get(prompt) ?? 0;
+          occurrences.set(prompt, occurrence + 1);
+          const key = createHash("sha256")
+            .update(
+              JSON.stringify(
+                [prompt, context.modelConfig, options.args, occurrence],
+                (field, value) => (field === "apiKey" ? undefined : value),
+              ),
+            )
+            .digest("hex");
+          if (cache.has(key)) {
+            record.logs.push(`resumed: ${label ?? key.slice(0, 8)}`);
+            return cache.get(key)!;
+          }
+          const result = await agentRunner(prompt, context, workflowScope.signal);
+          if (!workflowScope.aborted) {
+            cache.set(key, result);
+            saveCache();
+          }
+          return result;
         },
         log: (line) => record.logs.push(line),
         signal: workflowScope.signal,

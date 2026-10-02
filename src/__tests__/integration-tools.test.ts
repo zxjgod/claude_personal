@@ -92,7 +92,7 @@ describe("Worktree lifecycle (real git)", () => {
     const dir = wtPath("feat-a");
     expect(fs.existsSync(dir)).toBe(true);
     // The worktree's HEAD is the new branch, not main.
-    expect(git(["rev-parse", "--abbrev-ref", "HEAD"], dir).trim()).toBe("feat-a");
+    expect(git(["rev-parse", "--abbrev-ref", "HEAD"], dir).trim()).toBe("codex/feat-a");
     expect(git(["rev-parse", "--abbrev-ref", "HEAD"], repo).trim()).toBe("main");
   });
 
@@ -108,7 +108,7 @@ describe("Worktree lifecycle (real git)", () => {
 
     // main is untouched; the branch advanced past it.
     expect(git(["rev-parse", "main"], repo).trim()).toBe(mainHeadBefore);
-    expect(git(["rev-parse", "feat-iso"], repo).trim()).not.toBe(mainHeadBefore);
+    expect(git(["rev-parse", "codex/feat-iso"], repo).trim()).not.toBe(mainHeadBefore);
     // The new file exists only in the worktree, never in the main checkout.
     expect(fs.existsSync(path.join(dir, "only-in-worktree.txt"))).toBe(true);
     expect(fs.existsSync(path.join(repo, "only-in-worktree.txt"))).toBe(false);
@@ -123,7 +123,7 @@ describe("Worktree lifecycle (real git)", () => {
     expect(r.content).toContain("Kept on disk");
     expect(fs.existsSync(dir)).toBe(true);
     // Branch still resolvable after keep.
-    expect(() => git(["rev-parse", "feat-keep"], repo)).not.toThrow();
+    expect(() => git(["rev-parse", "codex/feat-keep"], repo)).not.toThrow();
   });
 
   it("removes a clean worktree + its branch when exited with action=remove", async () => {
@@ -140,7 +140,7 @@ describe("Worktree lifecycle (real git)", () => {
     expect(r.content).toContain("deleted");
     expect(fs.existsSync(dir)).toBe(false);
     // Branch was force-deleted too.
-    expect(() => git(["rev-parse", "--verify", "feat-rm"], repo)).toThrow();
+    expect(() => git(["rev-parse", "--verify", "codex/feat-rm"], repo)).toThrow();
   });
 
   it("refuses remove with uncommitted changes, then honors discardChanges", async () => {

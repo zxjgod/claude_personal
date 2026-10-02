@@ -7,6 +7,7 @@
 // removes it; "/goal" with no args shows the current goal.
 // ============================================================
 import chalk from "chalk";
+import { sessionGoal, setSessionGoal } from "../goal-runtime.js";
 import type { SlashCommand } from "./types.js";
 
 export const goalCommand: SlashCommand = {
@@ -21,6 +22,10 @@ export const goalCommand: SlashCommand = {
 
     if (arg.toLowerCase() === "clear") {
       ctx.goal.value = "";
+      setSessionGoal(ctx.sessionId, "");
+      void ctx.persistence
+        ?.save(ctx.sessionId, ctx.messages)
+        .catch((error) => console.warn(`Goal persistence failed: ${String(error)}`));
       console.log(chalk.gray("  Session goal cleared."));
       return;
     }
@@ -28,6 +33,14 @@ export const goalCommand: SlashCommand = {
     if (!arg) {
       if (ctx.goal.value) {
         console.log(`  ${chalk.bold("Goal:")} ${ctx.goal.value}`);
+        const state = sessionGoal(ctx.sessionId);
+        if (state?.complete) console.log(chalk.gray("  Goal completed."));
+        else if (state?.suspended)
+          console.log(
+            chalk.yellow(
+              `  Automatic goal work paused: ${state.reason ?? "evaluation unavailable"}`,
+            ),
+          );
         console.log(chalk.gray("  Change it with /goal <text>, or /goal clear."));
       } else {
         console.log(chalk.gray("  No goal set. Set one with /goal <text>."));
@@ -36,6 +49,10 @@ export const goalCommand: SlashCommand = {
     }
 
     ctx.goal.value = arg;
+    setSessionGoal(ctx.sessionId, arg);
+    void ctx.persistence
+      ?.save(ctx.sessionId, ctx.messages)
+      .catch((error) => console.warn(`Goal persistence failed: ${String(error)}`));
     console.log(chalk.gray(`  Goal set: ${chalk.cyan(arg)}`));
     console.log(chalk.gray("  It will be injected into the system prompt on the next turn."));
   },

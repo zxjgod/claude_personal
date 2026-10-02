@@ -34,6 +34,28 @@ function overlay(
 }
 
 describe("ElicitationPrompt", () => {
+  it("keeps an incomplete required field open and accepts a corrected answer", async () => {
+    const resolve = vi.fn();
+    const { stdin, lastFrame, unmount } = render(
+      <ElicitationPrompt
+        overlay={overlay([{ name: "name", type: "string", required: true }], resolve)}
+      />,
+    );
+    try {
+      await flush();
+      stdin.write("\r");
+      await flush(30);
+      expect(resolve).not.toHaveBeenCalled();
+      expect(lastFrame()).toContain("required fields");
+      stdin.write("valid answer");
+      await flush();
+      stdin.write("\r");
+      await waitFor(() => resolve.mock.calls.length > 0);
+      expect(resolve).toHaveBeenCalledWith({ action: "accept", content: { name: "valid answer" } });
+    } finally {
+      unmount();
+    }
+  });
   it("blocks submit on an out-of-range number, then accepts a valid edit", async () => {
     const resolve = vi.fn();
     const { stdin, lastFrame } = render(

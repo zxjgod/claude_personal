@@ -1,3 +1,4 @@
+import { scopedHooks } from "../../scoped-execution.js";
 // ============================================================
 // Agent Tool — Enhanced sub-agent spawning with full API compatibility
 // ============================================================
@@ -6,9 +7,6 @@
 // effort levels, and schema-based structured output.
 // ============================================================
 
-import { execFile } from "node:child_process";
-import * as path from "node:path";
-import { promisify } from "node:util";
 import { z } from "zod";
 import { agentLoop } from "../../agent-loop.js";
 import { createModelCaller } from "../../llm-adapter.js";
@@ -19,16 +17,21 @@ import {
   getSubagentType,
   listSubagentNames,
   listSubagentSelectionHints,
+  preloadAgentSkills,
   resolveSubagentTools,
+  subagentModelConfig,
 } from "../../subagents.js";
 import { deriveSubContext, type Message, type Tool, type ToolResult } from "../../types.js";
 import { Semaphore } from "../../utils/semaphore.js";
 import { createSubAgentApprover } from "../../utils/subagent-security.js";
+import {
+  createIsolatedWorktree,
+  finishIsolatedWorktree,
+  type WorktreeInfo,
+} from "../../worktrees.js";
 import { createJob, settleJob } from "../job-store.js";
 import { buildTool } from "../registry.js";
 import { collectPartialReport } from "./subagent-report.js";
-
-const execFileAsync = promisify(execFile);
 
 // ============================================================
 // Guards — fork depth + concurrency
@@ -59,24 +62,6 @@ export function resetAgentSlots(): void {
 // Worktree isolation helpers
 // ============================================================
 
-interface WorktreeInfo {
-  path: string;
-  branch: string;
-}
-
-async function git(args: string[], cwd: string, timeoutMs = 8000): Promise<string | null> {
-  try {
-    const { stdout } = await execFileAsync("git", args, {
-      cwd,
-      timeout: timeoutMs,
-      windowsHide: true,
-    });
-    return stdout;
-  } catch {
-    return null;
-  }
-}
-
 function randomWorktreeName(): string {
   const t = process.hrtime.bigint().toString(16).slice(-8);
   return `agent-wt-${t}`;
@@ -84,32 +69,13 @@ function randomWorktreeName(): string {
 
 async function createWorktree(
   workspaceRoot: string,
-  sessionId: string,
+  _sessionId: string,
 ): Promise<WorktreeInfo | { error: string }> {
-  const inside = await git(["rev-parse", "--is-inside-work-tree"], workspaceRoot);
-  if (inside?.trim() !== "true") {
-    return { error: "Not a git repository — cannot create worktree for isolation." };
+  try {
+    return await createIsolatedWorktree(workspaceRoot, randomWorktreeName());
+  } catch (error) {
+    return { error: String(error) };
   }
-
-  // Branch from current HEAD
-  const branch = randomWorktreeName();
-  const wtPath = path.join(workspaceRoot, ".claude", "worktrees", sessionId, branch);
-
-  const out = await git(["worktree", "add", "-b", branch, wtPath, "HEAD"], workspaceRoot, 15_000);
-  if (out === null) {
-    return { error: `git worktree add failed for branch "${branch}"` };
-  }
-
-  return { path: wtPath, branch };
-}
-
-async function removeWorktree(
-  workspaceRoot: string,
-  wtPath: string,
-  branch: string,
-): Promise<void> {
-  await git(["worktree", "remove", "--force", wtPath], workspaceRoot, 15_000);
-  await git(["branch", "-D", branch], workspaceRoot, 8000);
 }
 
 // ============================================================
@@ -180,6 +146,8 @@ export const AgentTool: Tool = buildTool({
   timeoutMs: 15 * 60 * 1000,
 
   async call(input: AgentInput, context): Promise<ToolResult> {
+    if (context.permissionMode === "plan")
+      return { content: "", error: "Plan mode: Agent execution is disabled" };
     const startTime = Date.now();
 
     // Validate model config
@@ -272,6 +240,7 @@ export const AgentTool: Tool = buildTool({
     // first would orphan a fresh worktree+branch on the nested-agent
     // rejection path, whose early return bypasses the catch-block cleanup.
     let worktree: WorktreeInfo | null = null;
+    let worktreeRetained = false;
     let effectiveWorkspaceRoot = context.workspaceRoot;
 
     let slotAcquired = false;
@@ -294,7 +263,7 @@ export const AgentTool: Tool = buildTool({
         };
       }
 
-      if (input.isolation === "worktree") {
+      if (input.isolation === "worktree" || subagentType?.isolation === "worktree") {
         const result = await createWorktree(context.workspaceRoot, context.sessionId);
         if ("error" in result) {
           return { content: "", error: result.error };
@@ -304,8 +273,8 @@ export const AgentTool: Tool = buildTool({
       }
 
       // Build model config with overrides
-      let modelConfig = context.modelConfig;
-      if (input.model || input.effort) {
+      let modelConfig = subagentModelConfig(isFork ? undefined : subagentType, context.modelConfig);
+      if (!isFork && (input.model || input.effort)) {
         modelConfig = {
           ...modelConfig,
           ...(input.model && { model: input.model }),
@@ -328,7 +297,11 @@ export const AgentTool: Tool = buildTool({
       } else {
         systemPrompt = buildSubagentSystemPrompt(
           subagentType!,
-          input.description || "Sub-agent task",
+          [
+            input.description || "Sub-agent task",
+            await preloadAgentSkills(subagentType!, effectiveWorkspaceRoot),
+          ].join("\n"),
+          { workspaceRoot: effectiveWorkspaceRoot },
         );
         initialMessages = [];
         tools = resolveSubagentTools(subagentType!, availableTools);
@@ -364,6 +337,7 @@ export const AgentTool: Tool = buildTool({
         // the parent's fork hooks (making a typed Agent able to re-fork) and
         // its unrestricted approver.
         toolContext: deriveSubContext(context, {
+          modelConfig,
           // Worktree isolation moves the worker's cwd.
           workspaceRoot: effectiveWorkspaceRoot,
           // A fork runs under its own session id so its checkpoint bucket is
@@ -372,7 +346,16 @@ export const AgentTool: Tool = buildTool({
           askUser: approver,
           abortSignal: context.abortSignal,
           onSubAgentProgress: context.onSubAgentProgress,
-          hooks: context.hooks,
+          hooks: scopedHooks(
+            context.hooks,
+            isFork ? undefined : subagentType?.hooks,
+            context.sessionId,
+            effectiveWorkspaceRoot,
+          ),
+          permissionMode:
+            subagentType?.permissionMode === "plan" || subagentType?.permissionMode === "dontAsk"
+              ? subagentType.permissionMode
+              : context.permissionMode,
           // Thread the nesting depth so a fork-of-a-fork is capped.
           subagentDepth: forkDepth + 1,
         }),
@@ -436,8 +419,19 @@ export const AgentTool: Tool = buildTool({
 
       // Clean up worktree if successful
       if (worktree && terminal?.reason === "end_turn") {
-        await removeWorktree(context.workspaceRoot, worktree.path, worktree.branch);
+        worktreeRetained = !(await finishIsolatedWorktree(worktree));
       }
+      const worktreeMetadata = worktree
+        ? {
+            worktreePath: worktree.path,
+            worktreeBranch: worktree.branch,
+            worktreeRetained: terminal?.reason !== "end_turn" || worktreeRetained,
+          }
+        : {};
+      const worktreeNotice =
+        worktree && worktreeMetadata.worktreeRetained
+          ? `\n\nWorktree retained: ${worktree.path}\nBranch: ${worktree.branch}`
+          : "";
 
       if (terminal?.reason === "max_turns" && !context.abortSignal?.aborted) {
         // The bounded handoff call can come back empty (timeout, refusal, or
@@ -447,29 +441,37 @@ export const AgentTool: Tool = buildTool({
         const report = partialReport || finalText;
         if (report) {
           return {
-            content: `[Agent partial report — turn budget reached; task incomplete]\n${report}`,
-            metadata: { durationMs: duration, incomplete: true },
+            content: `[Agent partial report — turn budget reached; task incomplete]\n${report}${worktreeNotice}`,
+            metadata: { durationMs: duration, incomplete: true, ...worktreeMetadata },
           };
         }
       }
       if (terminal?.reason !== "end_turn" || !finalText) {
         return {
-          content: finalText || "",
+          content: (finalText || "") + worktreeNotice,
           error: `Agent incomplete: ${terminal?.error || terminal?.reason || "no terminal event"}${!finalText ? "; no final report" : ""}`,
-          metadata: { durationMs: duration },
+          metadata: { durationMs: duration, ...worktreeMetadata },
         };
       }
 
       return {
-        content: finalText || "(Agent completed with no output)",
+        content: (finalText || "(Agent completed with no output)") + worktreeNotice,
         metadata: {
           durationMs: duration,
+          ...worktreeMetadata,
         },
       };
     } catch (error) {
-      // Clean up worktree on error
       if (worktree) {
-        await removeWorktree(context.workspaceRoot, worktree.path, worktree.branch);
+        return {
+          content: `Worktree retained: ${worktree.path}\nBranch: ${worktree.branch}`,
+          error: String(error),
+          metadata: {
+            worktreePath: worktree.path,
+            worktreeBranch: worktree.branch,
+            worktreeRetained: true,
+          },
+        };
       }
       throw error;
     } finally {

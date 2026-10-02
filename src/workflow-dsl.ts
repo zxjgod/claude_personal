@@ -42,6 +42,8 @@
 
 /** One node of the orchestration tree. */
 export type WorkflowStep =
+  | { repeat: { times: number; steps: WorkflowStep[] } }
+  | { if: { from: number; includes: string; then: WorkflowStep[]; else?: WorkflowStep[] } }
   | { agent: string; label?: string }
   | { parallel: WorkflowStep[] }
   | { pipeline: { items: string[]; stages: string[] } }
@@ -187,6 +189,48 @@ function parseStep(
   const value = raw[key];
 
   switch (key) {
+    case "repeat": {
+      if (
+        !isRecord(value) ||
+        !Number.isInteger(value.times) ||
+        Number(value.times) < 1 ||
+        Number(value.times) > 16 ||
+        !Array.isArray(value.steps)
+      )
+        throw new WorkflowDslError(`${where}: repeat requires times 1..16 and steps`);
+      return {
+        repeat: {
+          times: Number(value.times),
+          steps: value.steps.map((step, i) =>
+            parseStep(step, depth + 1, `${where}.repeat[${i}]`, budget),
+          ),
+        },
+      };
+    }
+    case "if": {
+      if (
+        !isRecord(value) ||
+        !Number.isInteger(value.from) ||
+        Number(value.from) < 0 ||
+        typeof value.includes !== "string" ||
+        !Array.isArray(value.then) ||
+        (value.else !== undefined && !Array.isArray(value.else))
+      )
+        throw new WorkflowDslError(`${where}: if requires from, includes, then and optional else`);
+      return {
+        if: {
+          from: Number(value.from),
+          includes: value.includes,
+          // biome-ignore lint/suspicious/noThenProperty: declarative branch data, never a callable thenable.
+          then: value.then.map((step, i) =>
+            parseStep(step, depth + 1, `${where}.then[${i}]`, budget),
+          ),
+          else: Array.isArray(value.else)
+            ? value.else.map((step, i) => parseStep(step, depth + 1, `${where}.else[${i}]`, budget))
+            : undefined,
+        },
+      };
+    }
     case "agent":
       return { agent: asPrompt(value, where), label: asLabel(raw.label, where) };
 
@@ -309,6 +353,29 @@ async function runStep(
   prior: StepResult[],
 ): Promise<StepResult> {
   if (host.signal?.aborted) throw new WorkflowDslError(`${where}: workflow aborted`);
+  if ("repeat" in step) {
+    const output: StepResult[] = [];
+    for (let iteration = 0; iteration < step.repeat.times; iteration++)
+      for (const [index, child] of step.repeat.steps.entries())
+        output.push(
+          await runStep(child, `${where}.repeat[${iteration}][${index}]`, host, [
+            ...prior,
+            ...output,
+          ]),
+        );
+    return output;
+  }
+  if ("if" in step) {
+    if (step.if.from >= prior.length)
+      throw new WorkflowDslError(`${where}: conditional input has not completed`);
+    const branch = collectText(prior[step.if.from]).includes(step.if.includes)
+      ? step.if.then
+      : (step.if.else ?? []);
+    const output: StepResult[] = [];
+    for (const [index, child] of branch.entries())
+      output.push(await runStep(child, `${where}.branch[${index}]`, host, [...prior, ...output]));
+    return output;
+  }
 
   if ("agent" in step) {
     host.log(`agent: ${step.label ?? truncate(step.agent)}`);
@@ -391,6 +458,8 @@ export const WORKFLOW_DSL_DOC = [
   '  { "pipeline": { "items": ["<a>","<b>"], "stages": ["<uses {input}>"] } }',
   '  { "log": "<progress line>" }   { "phase": "<phase name>" }        → no result',
   '  { "synthesize": { "from": [<step index>,...], "prompt": "<how to combine>" } }',
+  '  { "repeat": { "times": 1..16, "steps": [<step>,...] } }',
+  '  { "if": { "from": <preceding step index>, "includes": "<text>", "then": [<step>,...], "else": [<step>,...] } }',
   "In a pipeline stage, {input} is replaced by that item's current text, so each",
   "item passes through every stage in order. Make the LAST step a synthesize:",
   "it receives the reports of the steps named in `from`, and one final worker",

@@ -11,6 +11,9 @@ export interface DiskEntry {
 }
 
 export interface DiskLoaderOptions<T> {
+  recursive?: boolean;
+  /** Internal shared registry for recursive duplicate diagnostics. */
+  seenNames?: Set<string>;
   roots: string[];
   accepts: (entry: fs.Dirent) => boolean;
   nameOf: (entry: fs.Dirent) => string | undefined;
@@ -27,16 +30,29 @@ export interface DiskLoaderOptions<T> {
  */
 export function loadDiskEntries<T>(options: DiskLoaderOptions<T>): string[] {
   const loaded: string[] = [];
+  const names = options.seenNames ?? new Set<string>();
 
   for (const root of options.roots) {
     let entries: fs.Dirent[];
     try {
-      entries = fs.readdirSync(root, { withFileTypes: true });
+      entries = fs
+        .readdirSync(root, { withFileTypes: true })
+        .sort((a, b) => a.name.localeCompare(b.name, "en"));
     } catch {
       continue;
     }
 
     for (const dirent of entries) {
+      if (options.recursive && dirent.isDirectory()) {
+        loaded.push(
+          ...loadDiskEntries({
+            ...options,
+            roots: [path.join(root, dirent.name)],
+            seenNames: names,
+          }),
+        );
+        continue;
+      }
       if (!options.accepts(dirent)) continue;
       const name = options.nameOf(dirent);
       if (!name) continue;
@@ -49,8 +65,20 @@ export function loadDiskEntries<T>(options: DiskLoaderOptions<T>): string[] {
       }
 
       const entry: DiskEntry = { root, dirent, name, file: path.resolve(file), raw };
-      const value = options.parse(entry);
+      let value: T | undefined;
+      try {
+        value = options.parse(entry);
+      } catch (error) {
+        console.warn(`Skipped invalid extension ${file}: ${String(error)}`);
+        continue;
+      }
       if (value === undefined) continue;
+      const registeredName = options.loadedName?.(value, entry) ?? name;
+      if (names.has(registeredName))
+        console.warn(
+          `Duplicate extension name ${registeredName} at ${file}; overriding with deterministic directory precedence`,
+        );
+      names.add(registeredName);
       options.register(value);
       loaded.push(options.loadedName?.(value, entry) ?? name);
     }

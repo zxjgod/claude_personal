@@ -51,6 +51,47 @@ export interface Job {
 
 const jobs = new Map<string, Map<string, Job>>();
 const counters = new Map<string, number>();
+export function restoreJobs(sessionId: string, values: unknown[]): void {
+  for (const value of values) {
+    if (!value || typeof value !== "object") continue;
+    const entry = value as Partial<Job>;
+    if (
+      typeof entry.id !== "string" ||
+      typeof entry.command !== "string" ||
+      !["bash", "agent"].includes(String(entry.kind))
+    )
+      continue;
+    const job: Job = {
+      id: entry.id,
+      sessionId,
+      command: entry.command,
+      kind: entry.kind!,
+      description: entry.description,
+      status:
+        entry.status === "running"
+          ? "error"
+          : ["done", "killed", "error"].includes(String(entry.status))
+            ? entry.status!
+            : "error",
+      stdout: String(entry.stdout ?? "").slice(-1000000),
+      stderr:
+        entry.status === "running"
+          ? "Process ended; this background job was interrupted and was not restarted."
+          : String(entry.stderr ?? "").slice(-1000000),
+      exitCode: entry.status === "running" ? null : (entry.exitCode ?? null),
+      startedAt: entry.startedAt ?? Date.now(),
+      endedAt: entry.endedAt ?? Date.now(),
+      truncated: entry.truncated === true,
+      settled: Promise.resolve(),
+      resolveSettled: () => {},
+    };
+    bucket(sessionId).set(job.id, job);
+    counters.set(
+      sessionId,
+      Math.max(counters.get(sessionId) ?? 0, Number(job.id.replace("job-", "")) || 0),
+    );
+  }
+}
 
 // Bound per-session retention: a long-lived process (or many sub-agent
 // sessions) must not accumulate completed job stdout/stderr forever.

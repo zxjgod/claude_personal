@@ -24,6 +24,8 @@ export interface PreToolUsePayload {
 }
 
 export interface PreToolUseOutcome {
+  permissionDecision?: "allow" | "ask" | "deny";
+  additionalContext?: string;
   /** Block the call entirely; `reason` is surfaced to the model. */
   block?: boolean;
   reason?: string;
@@ -66,6 +68,7 @@ export interface StopOutcome {
 }
 
 export interface Hook {
+  eventName?: string;
   /** Tool name to match, or "*" for every tool. */
   matcher: string;
   pre?: (
@@ -80,7 +83,16 @@ export interface Hook {
    * — every registered stop hook runs.
    */
   stop?: (payload: StopPayload) => Promise<StopOutcome | undefined> | StopOutcome | undefined;
-  event?: (payload: Record<string, unknown>) => Promise<void> | void;
+  event?: (
+    payload: Record<string, unknown>,
+  ) => Promise<HookEventOutcome | undefined> | Promise<void> | HookEventOutcome | void;
+}
+export interface HookEventOutcome {
+  permissionDecision?: "allow" | "ask" | "deny";
+  input?: Record<string, unknown>;
+  block?: boolean;
+  reason?: string;
+  additionalContext?: string;
 }
 
 export class HookRegistry {
@@ -117,6 +129,8 @@ export class HookRegistry {
    */
   async runPre(payload: PreToolUsePayload): Promise<PreToolUseOutcome> {
     let input = payload.input;
+    let permissionDecision: PreToolUseOutcome["permissionDecision"];
+    const context: string[] = [];
     for (const hook of this.matching(payload.toolName)) {
       if (!hook.pre) continue;
       const outcome = await hook.pre({
@@ -125,15 +139,25 @@ export class HookRegistry {
         speculative: payload.speculative,
       });
       if (!outcome) continue;
-      if (outcome.block) {
+      if (outcome.block || outcome.permissionDecision === "deny") {
         return { block: true, reason: outcome.reason ?? "blocked by hook" };
       }
       if (outcome.input) input = outcome.input;
+      if (
+        outcome.permissionDecision &&
+        (permissionDecision !== "ask" || outcome.permissionDecision !== "allow")
+      )
+        permissionDecision = outcome.permissionDecision;
+      if (outcome.additionalContext) context.push(outcome.additionalContext);
     }
     // NOTE: `input` is returned even when unchanged (the SAME reference as
     // payload.input) — consumers detecting a REWRITE must compare identity
     // (see SpeculationCache.prefetch), not truthiness.
-    return { input };
+    return {
+      input,
+      ...(permissionDecision && { permissionDecision }),
+      ...(context.length && { additionalContext: context.join("\n") }),
+    };
   }
 
   /**
@@ -183,14 +207,32 @@ export class HookRegistry {
     return blockingError ? { blockingError, reason } : {};
   }
 
-  async runEvent(event: string, payload: Record<string, unknown>): Promise<void> {
+  async runEvent(
+    event: string,
+    payload: Record<string, unknown>,
+  ): Promise<HookEventOutcome | undefined> {
+    const context: string[] = [];
+    let merged: HookEventOutcome | undefined;
     for (const hook of this.hooks) {
       if (!hook.event) continue;
-      if (hook.matcher !== "*" && hook.matcher !== event) continue;
+      if (hook.eventName && hook.eventName !== event) continue;
+      const matchValue = String(payload.source ?? payload.reason ?? payload.agent_type ?? event);
+      if (hook.matcher !== "*" && hook.matcher !== event) {
+        try {
+          if (!new RegExp(`^(?:${hook.matcher})$`).test(matchValue)) continue;
+        } catch {
+          continue;
+        }
+      }
       // event LAST: a payload field of the same name must not shadow the
       // actual event name — config-built lifecycle hooks branch on it.
-      await hook.event({ ...payload, event });
+      const outcome = await hook.event({ ...payload, event });
+      if (outcome?.block) return outcome;
+      if (outcome) merged = { ...merged, ...outcome };
+      if (outcome?.additionalContext) context.push(outcome.additionalContext);
     }
+    if (context.length) return { ...merged, additionalContext: context.join("\n") };
+    return merged;
   }
 
   /**

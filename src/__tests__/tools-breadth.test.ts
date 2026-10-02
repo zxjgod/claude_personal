@@ -222,14 +222,17 @@ describe("Plan mode tools", () => {
     expect(c.permissionMode).toBe("plan");
   });
 
-  it("exit_plan_mode returns to default", async () => {
+  it("exit_plan_mode preserves plan when approval is unavailable", async () => {
     const c = ctx({ permissionMode: "plan" });
     await ExitPlanModeTool.call({}, c);
-    expect(c.permissionMode).toBe("default");
+    expect(c.permissionMode).toBe("plan");
   });
 
   it("exit_plan_mode can target acceptEdits", async () => {
-    const c = ctx({ permissionMode: "plan" });
+    const c = ctx({
+      permissionMode: "plan",
+      requestPlanApproval: async () => ({ choice: "approve", plan: "approved" }),
+    });
     await ExitPlanModeTool.call({ to: "acceptEdits" }, c);
     expect(c.permissionMode).toBe("acceptEdits");
   });

@@ -14,6 +14,69 @@ export interface PermissionPolicy {
   deny: string[];
   ask: string[];
 }
+const TOOL_ALIASES: Record<string, string> = {
+  webfetch: "web_fetch",
+  websearch: "web_search",
+  askuserquestion: "ask_user_question",
+  enterplanmode: "enter_plan_mode",
+  exitplanmode: "exit_plan_mode",
+  notebookedit: "notebook_edit",
+  multiedit: "multi_edit",
+  enterworktree: "enter_worktree",
+  exitworktree: "exit_worktree",
+  joboutput: "job_output",
+  jobkill: "job_kill",
+  joblist: "job_list",
+};
+function canonicalToolName(value: string): string {
+  const name = value.trim().toLowerCase();
+  return TOOL_ALIASES[name] ?? name;
+}
+function urlRuleMatches(pattern: string, target: string): boolean {
+  const mode = pattern.endsWith(":*") ? "boundary" : pattern.endsWith("*") ? "prefix" : "exact";
+  const prefix =
+    mode === "boundary" ? pattern.slice(0, -2) : mode === "prefix" ? pattern.slice(0, -1) : pattern;
+  const absolute = /^[a-z][\w+.-]*:\/\//i.test(prefix);
+  try {
+    const actual = new URL(target);
+    const expected = new URL(absolute ? prefix : `https://${prefix}`);
+    if (expected.username || expected.password) return false;
+    if (absolute && actual.protocol !== expected.protocol) return false;
+    if (actual.hostname.replace(/\.$/, "") !== expected.hostname.replace(/\.$/, "")) return false;
+    const authority = absolute ? (prefix.split("://")[1]?.split(/[/?#]/)[0] ?? "") : prefix;
+    const explicitPort = /:(\d+)$/.exec(authority)?.[1];
+    const actualPort =
+      actual.port ||
+      (actual.protocol === "https:" ? "443" : actual.protocol === "http:" ? "80" : "");
+    if (explicitPort && Number(actualPort) !== Number(explicitPort)) return false;
+    if (!absolute)
+      return (
+        mode === "boundary" &&
+        expected.pathname === "/" &&
+        !expected.search &&
+        !expected.hash &&
+        !prefix.endsWith(":")
+      );
+    if (
+      mode === "exact" &&
+      actualPort !==
+        (expected.port ||
+          (expected.protocol === "https:" ? "443" : expected.protocol === "http:" ? "80" : ""))
+    )
+      return false;
+    const expectedPath = `${expected.pathname}${expected.search}${expected.hash}`;
+    const actualPath = `${actual.pathname}${actual.search}${actual.hash}`;
+    if (mode === "exact") return actualPath === expectedPath;
+    if (mode === "prefix") return actualPath.startsWith(expectedPath);
+    return (
+      actualPath === expectedPath ||
+      (actualPath.startsWith(expectedPath) &&
+        (expectedPath.endsWith("/") || /[/?#]/.test(actualPath[expectedPath.length] ?? "")))
+    );
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Fresh empty policy. Deliberately a FACTORY, not a shared `{...EMPTY}`
@@ -46,7 +109,11 @@ export function mergePermissionPolicies(...values: unknown[]): PermissionPolicy 
     out.deny.push(...p.deny);
     out.ask.push(...p.ask);
   }
-  return out;
+  return {
+    allow: [...new Set(out.allow)],
+    deny: [...new Set(out.deny)],
+    ask: [...new Set(out.ask)],
+  };
 }
 
 /**
@@ -77,17 +144,18 @@ export function permissionRuleMatches(
           : "";
   const trimmed = rule.trim();
   if (trimmed === "*") return true;
-  const name = toolName.toLowerCase();
+  const name = canonicalToolName(toolName);
   // Split "Name(pattern)"; a rule without parens is a bare tool name.
   const m = /^([^(]*)\((.*)\)$/s.exec(trimmed);
   const ruleTool = (m ? m[1]! : trimmed).trim();
   if (!m) {
-    if (ruleTool.endsWith("*")) return name.startsWith(ruleTool.slice(0, -1).toLowerCase());
-    return ruleTool.toLowerCase() === name;
+    if (ruleTool.endsWith("*")) return name.startsWith(canonicalToolName(ruleTool.slice(0, -1)));
+    return canonicalToolName(ruleTool) === name;
   }
-  if (ruleTool.toLowerCase() !== name) return false;
+  if (canonicalToolName(ruleTool) !== name) return false;
   const pattern = m[2]!;
   if (pattern === "*") return true;
+  if (typeof input.url === "string" && target === input.url) return urlRuleMatches(pattern, target);
   // Official colon-prefix form: prefix match at a boundary. COMMAND rules
   // require a space after the prefix (`Bash(git:*)` must not also allow
   // "github-cli"). URL-shaped prefixes (scheme:// or a space-less token with
@@ -103,8 +171,28 @@ export function permissionRuleMatches(
       // Bare-host rule (`WebFetch(domain.com:*)`): the target carries a
       // scheme, so compare against the URL's host part instead of a plain
       // prefix (which would never match "https://domain.com/a").
-      const host = /^[a-zA-Z][\w+.-]*:\/\/([^/?#]+)/.exec(target)?.[1];
-      return host === prefix;
+      try {
+        const url = new URL(target);
+        const expected = new URL(`https://${prefix}`);
+        if (
+          expected.pathname !== "/" ||
+          expected.search ||
+          expected.hash ||
+          expected.username ||
+          expected.password ||
+          prefix.endsWith(":")
+        )
+          return false;
+        const explicitPort = /:(\d+)$/.exec(prefix)?.[1];
+        const actualPort =
+          url.port || (url.protocol === "https:" ? "443" : url.protocol === "http:" ? "80" : "");
+        return (
+          url.hostname.replace(/\.$/, "") === expected.hostname.replace(/\.$/, "") &&
+          (!explicitPort || Number(actualPort) === Number(explicitPort))
+        );
+      } catch {
+        return false;
+      }
     }
     if (!target.startsWith(prefix)) return false;
     if (prefix.endsWith(" ")) return true;
@@ -138,15 +226,15 @@ export function policyDecision(
  */
 function denyRuleHidesTool(rule: string, toolName: string): boolean {
   const trimmed = rule.trim();
-  const name = toolName.toLowerCase();
+  const name = canonicalToolName(toolName);
   if (trimmed === "*") return true;
   const m = /^([^(]*)\((.*)\)$/s.exec(trimmed);
   if (!m) {
     // Bare name, optionally with a trailing-star prefix wildcard.
-    if (trimmed.endsWith("*")) return name.startsWith(trimmed.slice(0, -1).toLowerCase());
-    return trimmed.toLowerCase() === name;
+    if (trimmed.endsWith("*")) return name.startsWith(canonicalToolName(trimmed.slice(0, -1)));
+    return canonicalToolName(trimmed) === name;
   }
-  if (m[1]!.trim().toLowerCase() !== name) return false;
+  if (canonicalToolName(m[1]!) !== name) return false;
   return m[2]!.trim() === "*";
 }
 

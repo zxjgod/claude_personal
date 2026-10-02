@@ -32,8 +32,24 @@ export interface PendingScheduledInput extends ScheduleScope {
 
 // Identity survives the busy queue, so cancellation reaches due inputs too.
 const pendingInputs: PendingScheduledInput[] = [];
+export function pendingSessionInputs(sessionId: string): PendingScheduledInput[] {
+  return pendingInputs.filter((item) => item.sessionId === sessionId).map((item) => ({ ...item }));
+}
+export function releaseSessionInputs(sessionId: string): void {
+  for (let index = pendingInputs.length - 1; index >= 0; index--)
+    if (pendingInputs[index].sessionId === sessionId) pendingInputs.splice(index, 1);
+}
 
 export function enqueueScheduledInput(input: PendingScheduledInput): void {
+  if (
+    pendingInputs.some(
+      (entry) =>
+        entry.registry === input.registry &&
+        entry.jobId === input.jobId &&
+        entry.sessionId === input.sessionId,
+    )
+  )
+    return;
   pendingInputs.push(input);
 }
 

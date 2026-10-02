@@ -49,6 +49,8 @@ const WebSearchSchema = z.strictObject({
     .max(5)
     .optional()
     .describe('Restrict results to these domains (e.g. ["docs.python.org"])'),
+  allowed_domains: z.array(z.string().min(1)).max(5).optional(),
+  blocked_domains: z.array(z.string().min(1)).max(20).optional(),
   freshness: z
     .enum(["week", "month", "year"])
     .optional()
@@ -305,9 +307,22 @@ export const WebSearchTool: Tool = buildTool({
     const errors: string[] = [];
     const limit = input.max_results ?? MAX_RESULTS;
     // S7: domain restriction rides DDG's site: operator; freshness maps to df.
-    const effectiveQuery = input.domains?.length
-      ? `${input.query} ${input.domains.map((d) => `site:${d}`).join(" OR ")}`
-      : input.query;
+    const domains = input.allowed_domains ?? input.domains;
+    const effectiveQuery = `${domains?.length ? `${input.query} ${domains.map((d) => `site:${d}`).join(" OR ")}` : input.query}${input.blocked_domains?.map((domain) => ` -site:${domain}`).join("") ?? ""}`;
+    const format = (results: SearchResult[]) =>
+      formatResults(
+        input.query,
+        results.filter((result) => {
+          try {
+            const hostname = new URL(result.url).hostname;
+            return !input.blocked_domains?.some(
+              (domain) => hostname === domain || hostname.endsWith(`.${domain}`),
+            );
+          } catch {
+            return false;
+          }
+        }),
+      );
     const df = input.freshness ? FRESHNESS_DF[input.freshness] : undefined;
 
     // DuckDuckGo lite first (stable table markup), then the html endpoint,
@@ -317,7 +332,7 @@ export const WebSearchTool: Tool = buildTool({
       if (!lite.ok) {
         errors.push(`DuckDuckGo(lite): ${lite.error}`);
       } else if (lite.results.length > 0 || ENGINE_PREF === "duckduckgo") {
-        return formatResults(input.query, lite.results);
+        return format(lite.results);
       }
       // Empty lite page → try the html endpoint before giving up on DDG.
       if (lite.ok && lite.results.length === 0) {
@@ -325,7 +340,7 @@ export const WebSearchTool: Tool = buildTool({
         if (!html.ok) {
           errors.push(`DuckDuckGo(html): ${html.error}`);
         } else if (html.results.length > 0 || ENGINE_PREF === "duckduckgo") {
-          return formatResults(input.query, html.results);
+          return format(html.results);
         }
       }
       // A NETWORK-level failure latches; an empty-but-valid page does not.
@@ -340,7 +355,7 @@ export const WebSearchTool: Tool = buildTool({
       if (!bing.ok) {
         errors.push(`Bing: ${bing.error}`);
       } else {
-        return formatResults(input.query, bing.results);
+        return format(bing.results);
       }
     }
 

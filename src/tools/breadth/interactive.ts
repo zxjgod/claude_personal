@@ -74,11 +74,10 @@ export const ExitPlanModeTool: Tool = buildTool({
   isConcurrencySafe: false,
   async call(input, context): Promise<ToolResult> {
     if (!context.requestPlanApproval) {
-      // Legacy/non-interactive fallback: direct switch, no approval gate.
-      const target: PermissionMode = input.to === "acceptEdits" ? "acceptEdits" : "default";
-      context.setPermissionMode?.(target);
-      (context as { permissionMode: PermissionMode }).permissionMode = target;
-      return { content: `Exited plan mode. Now in "${target}" mode.` };
+      return {
+        content: input.plan ?? "",
+        error: "Plan approval is unavailable; the session remains in plan mode.",
+      };
     }
     const verdict = await context.requestPlanApproval(input.plan);
     if (verdict.choice === "approve") {
@@ -120,9 +119,10 @@ ${verdict.plan}`
 const AskUserQuestionOptionSchema = z.strictObject({
   label: z.string().describe("Option label shown to the user"),
   description: z.string().optional().describe("Additional context about this option"),
+  preview: z.string().optional().describe("Text or code preview shown while the option is focused"),
 });
 
-const AskUserQuestionSchema = z.strictObject({
+const SingleQuestionSchema = z.strictObject({
   question: z.string().describe("The question to ask"),
   header: z.string().optional().describe("Short category label"),
   options: z
@@ -132,6 +132,10 @@ const AskUserQuestionSchema = z.strictObject({
     .describe("Selectable options (objects with label/description, or strings)"),
   multiSelect: z.boolean().optional().describe("Allow choosing more than one"),
 });
+const AskUserQuestionSchema = z.union([
+  SingleQuestionSchema,
+  z.strictObject({ questions: z.array(SingleQuestionSchema).min(1).max(4) }),
+]);
 
 export const AskUserQuestionTool: Tool = buildTool({
   name: "ask_user_question",
@@ -145,8 +149,33 @@ export const AskUserQuestionTool: Tool = buildTool({
   isReadOnly: true,
   isConcurrencySafe: false,
   async call(input, context): Promise<ToolResult> {
-    const options = (input.options ?? []).map((o) =>
-      typeof o === "string" ? { label: o } : { label: o.label, description: o.description },
+    if ("questions" in input && Array.isArray(input.questions)) {
+      const batch = input.questions as Array<z.infer<typeof SingleQuestionSchema>>;
+      const answers: Record<string, string[]> = {};
+      for (const [index, question] of batch.entries()) {
+        if (!context.askUserQuestion)
+          return {
+            content: "Interactive questions are unavailable.",
+            error: "No interactive question channel",
+          };
+        const answer = await context.askUserQuestion({
+          ...question,
+          header: `${index + 1}/${batch.length} · ${question.header ?? "Question"}`,
+          multiSelect: question.multiSelect === true,
+          options: question.options.map((option) =>
+            typeof option === "string" ? { label: option } : option,
+          ),
+        });
+        if (answer === null) return { content: JSON.stringify({ answers, cancelled: true }) };
+        answers[question.question] = answer;
+      }
+      return { content: JSON.stringify({ answers }) };
+    }
+    const single = input as z.infer<typeof SingleQuestionSchema>;
+    const options = (single.options ?? []).map((o) =>
+      typeof o === "string"
+        ? { label: o }
+        : { label: o.label, description: o.description, preview: o.preview },
     );
     if (options.length === 0) {
       return { content: "", error: "ask_user_question requires at least one option" };
@@ -156,14 +185,14 @@ export const AskUserQuestionTool: Tool = buildTool({
       return {
         content:
           `[Interactive questions are unavailable in this context.]\n` +
-          `Question: ${input.question}\nOptions:\n${list}`,
+          `Question: ${single.question}\nOptions:\n${list}`,
       };
     }
     const answer = await context.askUserQuestion({
-      question: input.question,
-      header: input.header ?? "Question",
+      question: single.question,
+      header: single.header ?? "Question",
       options,
-      multiSelect: input.multiSelect === true,
+      multiSelect: single.multiSelect === true,
     });
     if (answer === null) {
       return { content: "User cancelled the question without selecting an option." };

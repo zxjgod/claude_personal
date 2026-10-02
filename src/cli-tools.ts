@@ -4,13 +4,14 @@
 // gating), MCP resource tools, and ToolSearch.
 // ============================================================
 
+import * as path from "node:path";
 import chalk from "chalk";
 
 import { loadAgentsDir } from "./agents/loadAgentsDir.js";
 import { askYesNo } from "./cli-prompts.js";
 import { loadCommandsDir } from "./commands.js";
 import { discoverMCPConfigs, MCPManager } from "./mcp/index.js";
-import { pluginDirs } from "./plugins.js";
+import { pluginComponentRoots, pluginDirs, readManifest } from "./plugins.js";
 import { loadSkillsDir } from "./skills/loadSkillsDir.js";
 import { setCoreToolsForSubagents } from "./subagents.js";
 import { createMcpResourceTools, createToolSearchTool } from "./tools/breadth/index.js";
@@ -32,6 +33,7 @@ export async function setupTools(deps: {
   verbose: boolean;
 }): Promise<ToolSetup> {
   const { workspaceRoot, verbose } = deps;
+  const customizations = !process.argv.includes("--safe-mode") && !process.argv.includes("--bare");
 
   const toolRegistry = new ToolRegistry();
   for (const tool of CORE_TOOLS) {
@@ -46,7 +48,7 @@ export async function setupTools(deps: {
   // user-level equivalent). Cheap — only frontmatter is read here; each skill's
   // body stays lazy until the Skill tool or /<name> sugar invokes it.
   try {
-    const loaded = loadSkillsDir(workspaceRoot);
+    const loaded = customizations ? loadSkillsDir(workspaceRoot) : [];
     if (loaded.length > 0) {
       console.log(chalk.gray(`Loaded ${loaded.length} disk skill(s): ${loaded.join(", ")}`));
     }
@@ -55,19 +57,20 @@ export async function setupTools(deps: {
   }
   // Plugin manifests are workspace-local. Their declared component folders
   // are copied into the same loaders, preserving one source of truth.
-  for (const dir of pluginDirs(workspaceRoot)) {
+  for (const dir of customizations ? pluginDirs(workspaceRoot) : []) {
+    const namespace = readManifest(dir)?.name;
     try {
-      loadSkillsDir(dir);
+      loadSkillsDir(dir, { roots: pluginComponentRoots(dir, "skills"), namespace });
     } catch {
       /* malformed plugin is isolated */
     }
     try {
-      loadCommandsDir(dir);
+      loadCommandsDir(dir, { roots: pluginComponentRoots(dir, "commands"), namespace });
     } catch {
       /* optional */
     }
     try {
-      loadAgentsDir(dir);
+      loadAgentsDir(dir, { roots: pluginComponentRoots(dir, "agents"), namespace });
     } catch {
       /* optional */
     }
@@ -76,7 +79,7 @@ export async function setupTools(deps: {
   // Custom slash commands (<root>/.claude/commands/<name>.md and the user-level
   // equivalent). Each file's body is a prompt template injected via /<name>.
   try {
-    const loadedCommands = loadCommandsDir(workspaceRoot);
+    const loadedCommands = customizations ? loadCommandsDir(workspaceRoot) : [];
     if (loadedCommands.length > 0) {
       console.log(
         chalk.gray(
@@ -92,7 +95,7 @@ export async function setupTools(deps: {
   // equivalent). Registered into the sub-agent type registry so the Task tool's
   // `subagent_name` enum and /agents pick them up.
   try {
-    const loadedAgents = loadAgentsDir(workspaceRoot);
+    const loadedAgents = customizations ? loadAgentsDir(workspaceRoot) : [];
     if (loadedAgents.length > 0) {
       console.log(
         chalk.gray(`Loaded ${loadedAgents.length} custom agent(s): ${loadedAgents.join(", ")}`),
@@ -113,6 +116,13 @@ export async function setupTools(deps: {
     // confirmation; plugin configs are install-is-trust (see McpConfigScope).
     const gated = cfg.scope === "project";
     await mcpManager.loadConfig(cfg.path, {
+      namespace:
+        cfg.scope === "plugin"
+          ? readManifest(
+              pluginDirs(workspaceRoot).find((dir) => cfg.path.startsWith(`${dir}${path.sep}`)) ??
+                "",
+            )?.name
+          : undefined,
       requireTrust: gated,
       confirm:
         gated && process.stdin.isTTY && process.stdout.isTTY
@@ -127,6 +137,16 @@ export async function setupTools(deps: {
             }
           : undefined,
     });
+  }
+  for (const dir of customizations ? pluginDirs(workspaceRoot) : []) {
+    const manifest = readManifest(dir);
+    if (manifest?.mcpServers && typeof manifest.mcpServers === "object") {
+      for (const [name, config] of Object.entries(manifest.mcpServers))
+        await mcpManager.connectServer(
+          `${manifest.name}__${name}`,
+          config as import("./mcp/index.js").MCPServerConfig,
+        );
+    }
   }
   for (const mcpTool of mcpManager.getAllTools()) {
     toolRegistry.register(mcpTool, "mcp");

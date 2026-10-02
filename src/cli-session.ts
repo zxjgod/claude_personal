@@ -10,9 +10,12 @@ import chalk from "chalk";
 import { bindCheckpointSession } from "./checkpoint.js";
 import { parseCliArgs } from "./cli-args.js";
 import { formatCliError } from "./cli-errors.js";
+import { releaseSessionGoal } from "./goal-runtime.js";
 import { PersistenceManager } from "./persistence.js";
 import { microCompactByTime } from "./services/time-micro-compact.js";
+import { restoreSessionRuntime, saveSessionRuntime } from "./session-runtime.js";
 import { Telemetry } from "./telemetry.js";
+import { releaseSessionSchedules } from "./tools/extended/scheduler.js";
 import { SessionStats } from "./tui/session-stats.js";
 import { SessionTranscript } from "./tui/session-transcript.js";
 import type { Message } from "./types.js";
@@ -113,6 +116,7 @@ export async function initSession(deps: {
   }
 
   const session = { id: sessionId };
+  if (!cliArgs.forkSession) restoreSessionRuntime(workspaceRoot, sessionId);
   bindCheckpointSession(session.id, workspaceRoot);
   const recordTranscript: SessionState["recordTranscript"] = (entry) => {
     transcript.append(session.id, entry).catch((err) => {
@@ -131,6 +135,7 @@ export function createResumeSession(deps: {
   persistence: PersistenceManager;
   session: { id: string };
   messages: Message[];
+  onResume?: () => void;
 }): (idOrPrefix: string) => Promise<boolean> {
   const { persistence, session, messages } = deps;
   return async (idOrPrefix: string): Promise<boolean> => {
@@ -139,8 +144,15 @@ export function createResumeSession(deps: {
     if (matches.length !== 1) return false;
     const existing = await persistence.load(matches[0]!.sessionId);
     if (!existing) return false;
+    if (session.id !== existing.sessionId) {
+      saveSessionRuntime(persistence.workspaceRoot, session.id);
+      releaseSessionGoal(session.id);
+      releaseSessionSchedules(session.id);
+    }
     session.id = existing.sessionId;
     bindCheckpointSession(session.id, persistence.workspaceRoot);
+    restoreSessionRuntime(persistence.workspaceRoot, session.id);
+    deps.onResume?.();
     messages.length = 0;
     // F5: same idle-time clearing as startup resume.
     messages.push(

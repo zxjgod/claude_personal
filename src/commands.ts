@@ -11,7 +11,10 @@ import chalk from "chalk";
 import { getCustomCommands } from "./commands/loadCommandsDir.js";
 import { COMMANDS } from "./commands/registry.js";
 import type { CommandContext, CommandResult } from "./commands/types.js";
+import { activateSkill } from "./scoped-execution.js";
+import { runForkSkill } from "./skills/forkSkill.js";
 import { getSkill, resolveSkillPrompt } from "./skills.js";
+import type { PermissionMode } from "./types.js";
 
 export {
   getCustomCommands,
@@ -57,12 +60,38 @@ export async function handleSlashCommand(
     // exactly what the model would get from the Skill tool. Inline skills only;
     // fork skills must go through the Skill tool (they spawn a sub-agent).
     const skill = getSkill(name);
-    if (skill && skill.context !== "fork") {
+    if (skill && skill.userInvocable !== false) {
       try {
         const prompt = await resolveSkillPrompt(skill, {
           args,
           workspaceRoot: ctx.workspaceRoot,
         });
+        if (skill.context === "fork") {
+          const result = await runForkSkill(
+            skill,
+            prompt,
+            {
+              workspaceRoot: ctx.workspaceRoot,
+              sessionId: `${ctx.sessionId}-skill-${Date.now()}`,
+              permissionMode: (ctx.getPermissionMode?.() ??
+                ctx.permissionMode ??
+                "default") as PermissionMode,
+              permissionPolicy: ctx.permissionPolicy,
+              modelConfig: ctx.modelConfig,
+              hooks: ctx.hooks,
+              askUser: async (tool, input) =>
+                ctx.input
+                  ? ctx.input.askConfirmation(
+                      `Allow skill tool ${tool.name}: ${JSON.stringify(input)}? [y/N]`,
+                    )
+                  : false,
+            },
+            ctx.callModel,
+          );
+          console.log(result.error ? `${result.error}\n${result.content}` : result.content);
+          return { handled: true };
+        }
+        activateSkill(ctx.sessionId, skill);
         return { handled: true, prompt };
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);

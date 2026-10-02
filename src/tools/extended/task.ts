@@ -1,3 +1,4 @@
+import { scopedHooks } from "../../scoped-execution.js";
 // ============================================================
 // Task Tool — Sub-agent system for complex multi-step tasks
 // ============================================================
@@ -18,8 +19,10 @@ import {
   getSubagentType,
   listSubagentNames,
   listSubagentSelectionHints,
+  preloadAgentSkills,
   resolveSubagentTools,
   setAgentMemoryLoader,
+  subagentModelConfig,
 } from "../../subagents.js";
 import { deriveSubContext, type Message, type Tool, type ToolResult } from "../../types.js";
 import { CancellationScope } from "../../utils/cancellation.js";
@@ -165,14 +168,20 @@ export const TaskTool: Tool = buildTool({
     // compaction and a completed fork reads as "no final report".
     const seedSet = new Set<Message>(seed);
 
-    const subCaller = createModelCaller(context.modelConfig);
+    const config = subagentModelConfig(isFork ? undefined : subagentType, context.modelConfig);
+    const subCaller = createModelCaller(config);
     // Fork reuses the parent prompt verbatim (shared cache); a typed sub-agent
     // gets its own type-specific prompt + env footnote.
     const subSystemPrompt = isFork
       ? context.parentSystemPrompt!
       : buildSubagentSystemPrompt(
           subagentType!,
-          [subagentType!.systemPrompt, "", `Your task: ${input.description}`].join("\n"),
+          [
+            subagentType!.systemPrompt,
+            "",
+            `Your task: ${input.description}`,
+            await preloadAgentSkills(subagentType!, context.workspaceRoot),
+          ].join("\n"),
           { workspaceRoot: context.workspaceRoot },
         );
 
@@ -202,7 +211,7 @@ export const TaskTool: Tool = buildTool({
       // Dangerous tools (bash/write/edit) require parent approval
       const subApprover = createSubAgentApprover(context.askUser, true);
 
-      const loop = agentLoop(subMessages, subagentTools, subCaller, context.modelConfig, {
+      const loop = agentLoop(subMessages, subagentTools, subCaller, config, {
         systemPrompt: subSystemPrompt,
         // Forks must preserve the parent's prompt byte-for-byte for prompt
         // cache reuse. The parent loop already applied the effort contract.
@@ -214,13 +223,26 @@ export const TaskTool: Tool = buildTool({
         // deriveSubContext is an explicit allow-list — a spread here would
         // hand the worker the parent's fork hooks and full approver.
         toolContext: deriveSubContext(context, {
+          modelConfig: config,
           // Restricted approver: a sub-agent must not bypass permissions.
           askUser: subApprover,
           // The worker's own scope, so a Ctrl+C in the worker cancels it.
           abortSignal: scope.signal,
           // Thread the nesting depth so a fork-of-a-fork is capped.
           subagentDepth: depth + 1,
-          hooks: context.hooks,
+          hooks: scopedHooks(
+            context.hooks,
+            isFork ? undefined : subagentType?.hooks,
+            context.sessionId,
+            context.workspaceRoot,
+          ),
+          permissionMode:
+            context.permissionMode === "plan"
+              ? "plan"
+              : subagentType?.permissionMode === "plan" ||
+                  subagentType?.permissionMode === "dontAsk"
+                ? subagentType.permissionMode
+                : context.permissionMode,
         }),
         // Also pass restricted askUser at the LoopOptions level
         askUser: subApprover,

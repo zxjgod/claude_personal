@@ -1,0 +1,22 @@
+{
+  "cases": [
+    {
+      "name": "instruction-loading",
+      "prompt": "Read src/project-instructions.ts. Identify the implementation that discovers instructions in ancestor directories and the guard that limits import recursion. Answer with the function names and the exact recursion limit.",
+      "assertions": [
+        { "type": "contains", "text": "parents" },
+        { "type": "contains", "text": "readInstruction" },
+        { "type": "contains", "text": "4" }
+      ]
+    },
+    {
+      "name": "worktree-data-protection",
+      "prompt": "Read src/worktrees.ts. Explain which two state fields prevent automatic deletion of a worker worktree with useful results. Include their exact identifiers and identify the cleanup function.",
+      "assertions": [
+        { "type": "contains", "text": "dirty" },
+        { "type": "contains", "text": "uniqueCommits" },
+        { "type": "contains", "text": "finishIsolatedWorktree" }
+      ]
+    }
+  ]
+}

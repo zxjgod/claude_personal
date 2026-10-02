@@ -18,6 +18,10 @@ const WorkflowSchema = z.strictObject({
         "full step grammar. End with a synthesize step to produce the summary.",
     ),
   args: z.string().optional().describe("Optional input recorded with the workflow for context"),
+  resumeFromRunId: z
+    .string()
+    .optional()
+    .describe("Reuse completed unchanged worker calls from a previous run of this session"),
 });
 
 export const WorkflowTool: Tool = buildTool({
@@ -39,7 +43,10 @@ export const WorkflowTool: Tool = buildTool({
       return { content: "", error: "plan is required" };
     }
 
-    const record = await runWorkflow(input.plan, context, { args: input.args });
+    const record = await runWorkflow(input.plan, context, {
+      args: input.args,
+      resumeFromRunId: input.resumeFromRunId,
+    });
 
     const header =
       `[Workflow ${record.id} ${record.status}]` +

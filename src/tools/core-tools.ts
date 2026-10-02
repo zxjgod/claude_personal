@@ -27,6 +27,8 @@ import { AgentTool } from "./extended/agent.js";
 import { CronCreateTool, CronDeleteTool, CronListTool } from "./extended/cron-tools.js";
 import { DesignSyncTool } from "./extended/design-sync.js";
 import { JobKillTool, JobListTool, JobOutputTool } from "./extended/jobs.js";
+import { LspNavigationTool } from "./extended/lsp-navigation.js";
+import { MemoryRecallTool } from "./extended/memory-recall.js";
 import { MemorySaveTool } from "./extended/memory-save.js";
 import { ReplTool } from "./extended/repl.js";
 import { ReportFindingsTool } from "./extended/report-findings.js";
@@ -66,6 +68,7 @@ export const CORE_TOOLS: Tool[] = [
   NotebookEditTool,
   LspDiagnosticsTool,
   LspCompletionsTool,
+  LspNavigationTool,
   EnterPlanModeTool,
   ExitPlanModeTool,
   AskUserQuestionTool,
@@ -84,6 +87,7 @@ export const CORE_TOOLS: Tool[] = [
   RestoreContextTool,
   // Durable cross-session memory write path (F1)
   MemorySaveTool,
+  MemoryRecallTool,
   // Code review
   ReportFindingsTool,
   // Design system integration

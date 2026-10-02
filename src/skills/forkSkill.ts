@@ -14,16 +14,27 @@
 
 import { agentLoop } from "../agent-loop.js";
 import { createModelCaller } from "../llm-adapter.js";
+import { mergePermissionPolicies } from "../permission-policy.js";
+import { scopedHooks } from "../scoped-execution.js";
 import type { SkillDefinition } from "../skills.js";
 import {
   buildSubagentSystemPrompt,
   extractLastAssistantText,
   getCoreToolsForSubagents,
   getSubagentType,
+  preloadAgentSkills,
   resolveSubagentTools,
   type SubagentType,
+  subagentModelConfig,
 } from "../subagents.js";
-import type { Message, ToolContext, ToolResult } from "../types.js";
+import {
+  deriveSubContext,
+  type Message,
+  type ModelCaller,
+  type ToolContext,
+  type ToolResult,
+} from "../types.js";
+import { createSubAgentApprover } from "../utils/subagent-security.js";
 
 const FORK_MAX_TURNS = 10;
 const FORK_COMPACT_THRESHOLD = 50_000;
@@ -36,6 +47,7 @@ export async function runForkSkill(
   skill: SkillDefinition,
   resolvedBody: string,
   context: ToolContext,
+  caller?: ModelCaller,
 ): Promise<ToolResult> {
   if (!context.modelConfig) {
     return { content: "", error: "Fork skill requires modelConfig in context." };
@@ -51,45 +63,74 @@ export async function runForkSkill(
   const subMessages: Message[] = [
     { role: "user", content: [{ type: "text", text: resolvedBody }] },
   ];
-  const subCaller = createModelCaller(context.modelConfig);
+  const config = subagentModelConfig(
+    { ...type, model: skill.model ?? type.model, effort: skill.effort ?? type.effort },
+    context.modelConfig,
+  );
+  const subCaller = caller ?? createModelCaller(config);
   const subSystemPrompt = buildSubagentSystemPrompt(
     type,
-    [type.systemPrompt, "", `You are running the "${skill.name}" skill.`].join("\n"),
+    [
+      type.systemPrompt,
+      "",
+      `You are running the "${skill.name}" skill.`,
+      await preloadAgentSkills(type, context.workspaceRoot),
+    ].join("\n"),
     { workspaceRoot: context.workspaceRoot },
   );
 
   const startTime = Date.now();
   let toolCallCount = 0;
   let errorMessage: string | undefined;
+  let terminalReason: string | undefined;
 
   try {
     const coreTools = await getCoreToolsForSubagents();
     let tools = resolveSubagentTools(type, coreTools);
     // skill.allowedTools further narrows the resolved set (kernel: allowedTools).
-    if (skill.allowedTools && skill.allowedTools.length > 0) {
+    if (!skill.toolPermissionGrant && skill.allowedTools && skill.allowedTools.length > 0) {
       const allow = new Set(skill.allowedTools);
       tools = tools.filter((t) => allow.has(t.name));
     }
 
-    const loop = agentLoop(subMessages, tools, subCaller, context.modelConfig, {
+    const approver = createSubAgentApprover(context.askUser);
+    const runner = scopedHooks(
+      scopedHooks(context.hooks, type.hooks, context.sessionId, context.workspaceRoot),
+      skill.hooks,
+      context.sessionId,
+      context.workspaceRoot,
+    );
+    const childContext = deriveSubContext(context, {
+      askUser: approver,
+      hooks: runner,
+      abortSignal: context.abortSignal,
+      subagentDepth: (context.subagentDepth ?? 0) + 1,
+      permissionMode:
+        context.permissionMode === "plan"
+          ? "plan"
+          : type.permissionMode === "plan" || type.permissionMode === "dontAsk"
+            ? type.permissionMode
+            : context.permissionMode,
+    });
+    childContext.modelConfig = config;
+    childContext.permissionPolicy = mergePermissionPolicies(context.permissionPolicy, {
+      allow: skill.toolPermissionGrant ? skill.allowedTools : [],
+      deny: skill.disallowedTools,
+    });
+    const loop = agentLoop(subMessages, tools, subCaller, config, {
       systemPrompt: subSystemPrompt,
       maxTurns: type.maxTurns ?? FORK_MAX_TURNS,
       autoCompactThreshold: FORK_COMPACT_THRESHOLD,
       abortSignal: context.abortSignal,
-      toolContext: {
-        workspaceRoot: context.workspaceRoot,
-        sessionId: context.sessionId,
-        permissionMode: context.permissionMode,
-        modelConfig: context.modelConfig,
-        askUser: context.askUser,
-      },
-      askUser: context.askUser,
+      toolContext: childContext,
+      askUser: approver,
     });
 
     for await (const event of loop) {
       if (event.type === "tool_use") toolCallCount++;
       else if (event.type === "aborted") errorMessage = event.reason;
       else if (event.type === "error") errorMessage = String(event.error);
+      else if (event.type === "done") terminalReason = event.finishReason;
     }
   } catch (error) {
     errorMessage = error instanceof Error ? error.message : String(error);
@@ -98,11 +139,11 @@ export async function runForkSkill(
   const duration = Date.now() - startTime;
   const output = extractLastAssistantText(subMessages);
 
-  if (errorMessage && !output) {
+  if (errorMessage || terminalReason !== "end_turn") {
     return {
-      content: "",
-      error: `Fork skill "${skill.name}" failed: ${errorMessage}`,
-      metadata: { durationMs: duration },
+      content: output,
+      error: `Fork skill "${skill.name}" incomplete: ${errorMessage || terminalReason || "no terminal event"}`,
+      metadata: { durationMs: duration, incomplete: true },
     };
   }
 

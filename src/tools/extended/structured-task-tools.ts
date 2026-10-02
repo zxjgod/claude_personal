@@ -125,6 +125,14 @@ export const TaskUpdateTool: Tool = buildTool({
 
   async call(input, context): Promise<ToolResult> {
     const { taskId, ...updates } = input;
+    if (input.status === "completed") {
+      const outcome = await context.hooks?.runEvent?.("TaskCompleted", {
+        task_id: taskId,
+        session_id: context.sessionId,
+      });
+      if (outcome?.block)
+        return { content: "", error: outcome.reason ?? "Task completion blocked by hook" };
+    }
     const task = updateTask(context.sessionId, taskId, updates);
     if (!task) {
       return { content: "", error: `Task ${taskId} not found` };

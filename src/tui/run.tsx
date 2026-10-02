@@ -1124,6 +1124,8 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
     async (tool, input, riskHint) => {
       const key = deps.permissionKey(tool.name, input);
       if (deps.alwaysAllow.has(key)) return true;
+      input = { ...input };
+      delete input.__approvalFingerprint;
       // Official tool-aware "always" wording: bash offers "…for commands in
       // <cwd>", the edit family offers "…allow all edits this session",
       // everything else falls back to the session-generic label.

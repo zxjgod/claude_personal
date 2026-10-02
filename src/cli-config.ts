@@ -11,6 +11,8 @@ import * as path from "node:path";
 import { readSettings } from "./hooks-config.js";
 import { resolveProviderConfig } from "./llm-adapter.js";
 import { mergePermissionPolicies, type PermissionPolicy } from "./permission-policy.js";
+import { loadProjectInstructions, renderInstructions } from "./project-instructions.js";
+import { readManagedSettings, readProjectSettings, settingSources } from "./settings.js";
 import type { ModelConfig, PermissionMode } from "./types.js";
 
 export function loadConfig(): ModelConfig {
@@ -44,6 +46,7 @@ export function loadConfig(): ModelConfig {
     provider,
     apiKey,
     model:
+      flagValues("--model")[0] ||
       process.env.LLM_MODEL ||
       (typeof modelSettings === "string"
         ? modelSettings
@@ -89,6 +92,10 @@ const VALID_PERMISSION_MODES: PermissionMode[] = [
 ];
 
 export function getPermissionMode(workspaceRoot: string): PermissionMode {
+  const managed = readManagedSettings();
+  const managedMode = (managed.permissionMode ??
+    (managed.permissions as { defaultMode?: unknown })?.defaultMode) as PermissionMode;
+  if (VALID_PERMISSION_MODES.includes(managedMode)) return managedMode;
   // Precedence (highest → lowest): CLI flag → --safe-mode → env → project
   // settings (settings.local.json > settings.json) → user settings (~/.claude).
   const flagIdx = process.argv.indexOf("--permission-mode");
@@ -97,7 +104,7 @@ export function getPermissionMode(workspaceRoot: string): PermissionMode {
     if (m && VALID_PERMISSION_MODES.includes(m)) return m;
   }
   // --safe-mode: force a read-only (plan) session regardless of env/config.
-  if (process.argv.includes("--safe-mode")) {
+  if (process.argv.includes("--read-only")) {
     return "plan";
   }
   const envMode = process.env.PERMISSION_MODE as PermissionMode | undefined;
@@ -109,8 +116,9 @@ export function getPermissionMode(workspaceRoot: string): PermissionMode {
   // a no-confirmation mode. Privileged modes are only honored from sources the
   // user controls directly — the CLI flag, PERMISSION_MODE, or user settings.
   const PROJECT_FORBIDDEN_MODES: PermissionMode[] = ["bypassPermissions", "auto"];
-  const project = readSettings(workspaceRoot);
-  const projectMode = project?.permissionMode as PermissionMode | undefined;
+  const project = readProjectSettings(workspaceRoot);
+  const projectMode = (project?.permissionMode ??
+    (project?.permissions as { defaultMode?: unknown })?.defaultMode) as PermissionMode | undefined;
   if (projectMode && VALID_PERMISSION_MODES.includes(projectMode)) {
     if (PROJECT_FORBIDDEN_MODES.includes(projectMode)) {
       console.error(
@@ -122,7 +130,10 @@ export function getPermissionMode(workspaceRoot: string): PermissionMode {
       return projectMode;
     }
   }
-  return "default";
+  const trusted = readSettings(workspaceRoot, settingSources().includes("user") ? ["user"] : []);
+  const mode = (trusted.permissionMode ??
+    (trusted.permissions as { defaultMode?: unknown })?.defaultMode) as PermissionMode;
+  return VALID_PERMISSION_MODES.includes(mode) ? mode : "default";
 }
 
 function flagValues(flag: string): string[] {
@@ -160,7 +171,7 @@ function projectAllowTrustStorePath(): string {
 
 /** The project's allow rules + their content fingerprint, or null when none. */
 function projectAllowFingerprint(workspaceRoot: string): { allow: string[]; fp: string } | null {
-  const perms = readSettings(workspaceRoot)?.permissions as { allow?: unknown } | undefined;
+  const perms = readProjectSettings(workspaceRoot)?.permissions as { allow?: unknown } | undefined;
   const allow = Array.isArray(perms?.allow)
     ? (perms!.allow as unknown[]).filter((x): x is string => typeof x === "string")
     : [];
@@ -235,7 +246,7 @@ export async function confirmProjectAllowRules(workspaceRoot: string): Promise<v
 
 /** Resolve durable permission rules: user settings, project settings, then CLI flags. */
 export function getPermissionPolicy(workspaceRoot: string): PermissionPolicy {
-  const project = readSettings(workspaceRoot);
+  const project = readProjectSettings(workspaceRoot);
   // Untrusted project allow rules are stripped before the merge (A3 gate);
   // confirmProjectAllowRules() at startup is what flips the fingerprint.
   const found = projectAllowFingerprint(workspaceRoot);
@@ -243,7 +254,12 @@ export function getPermissionPolicy(workspaceRoot: string): PermissionPolicy {
     found && !isProjectAllowTrusted(workspaceRoot, found.fp)
       ? { ...(project?.permissions as object), allow: [] }
       : project?.permissions;
-  const policy = mergePermissionPolicies(projectPerms);
+  const trusted = readSettings(workspaceRoot, settingSources().includes("user") ? ["user"] : []);
+  const policy = mergePermissionPolicies(
+    trusted.permissions,
+    projectPerms,
+    readManagedSettings().permissions,
+  );
   policy.allow.push(...flagValues("--allowedTools"), ...flagValues("--allowed-tools"));
   policy.deny.push(...flagValues("--disallowedTools"), ...flagValues("--disallowed-tools"));
   if (process.argv.includes("--dangerously-skip-permissions")) {
@@ -293,10 +309,5 @@ export function resolveMaxTurns(): number {
 // --- Load CLAUDE.md ---
 
 export function loadClaudeMd(workspaceRoot: string): string | undefined {
-  const claudeMdPath = path.join(workspaceRoot, "CLAUDE.md");
-  try {
-    return fs.readFileSync(claudeMdPath, "utf-8");
-  } catch {
-    return undefined;
-  }
+  return renderInstructions(loadProjectInstructions(workspaceRoot)) || undefined;
 }

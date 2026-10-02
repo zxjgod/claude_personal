@@ -40,6 +40,8 @@ export interface SkillPromptContext {
  * model sees until a skill is actually invoked.
  */
 export interface SkillInfo {
+  disableModelInvocation?: boolean;
+  userInvocable?: boolean;
   /** Unique kebab-case skill name, e.g. "deep-research". */
   name: string;
   /** One-line description shown in /skills and the Skill tool prompt. */
@@ -61,6 +63,12 @@ export interface SkillInfo {
  * runs during discovery.
  */
 export interface SkillDefinition extends SkillInfo {
+  model?: string;
+  effort?: string;
+  hooks?: unknown;
+  disallowedTools?: string[];
+  /** Standard allowed-tools grants permission; legacy allowedTools narrows fork tools. */
+  toolPermissionGrant?: boolean;
   /**
    * Lazily produce the prompt body to inject. Called once, at invocation.
    * Async so disk/MCP/shell-backed bodies can do I/O here (never at discovery).
@@ -166,13 +174,17 @@ export function getSkill(name: string): SkillDefinition | undefined {
 /** List registered skills as catalog entries (discovery fields only). */
 export function listSkills(): SkillInfo[] {
   ensureSeeded();
-  return [...SKILLS.values()].map(({ name, description, group, whenToUse, source }) => ({
-    name,
-    description,
-    group,
-    whenToUse,
-    source,
-  }));
+  return [...SKILLS.values()].map(
+    ({ name, description, group, whenToUse, source, disableModelInvocation, userInvocable }) => ({
+      name,
+      description,
+      group,
+      whenToUse,
+      source,
+      disableModelInvocation,
+      userInvocable,
+    }),
+  );
 }
 
 /**
@@ -219,7 +231,7 @@ export function renderSkillCatalog(windowTokens: number = DEFAULT_SKILL_DISCOVER
   shown: number;
   omitted: number;
 } {
-  const all = listSkills();
+  const all = listSkills().filter((skill) => !skill.disableModelInvocation);
   const budgetChars = Math.floor(windowTokens * SKILL_DISCOVERY_FRACTION * 4);
   const lines: string[] = [];
   let used = 0;

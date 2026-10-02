@@ -24,6 +24,37 @@ export interface StructuredTask {
 
 // Session-scoped task registry
 const TASK_REGISTRY = new Map<string, Map<string, StructuredTask>>();
+export function restoreStructuredTasks(sessionId: string, values: unknown[]): void {
+  const tasks = getTaskMap(sessionId);
+  for (const value of values) {
+    if (!value || typeof value !== "object") continue;
+    const entry = value as Partial<StructuredTask>;
+    if (
+      typeof entry.id !== "string" ||
+      typeof entry.subject !== "string" ||
+      !["pending", "in_progress", "completed", "deleted"].includes(String(entry.status))
+    )
+      continue;
+    const task: StructuredTask = {
+      id: entry.id,
+      subject: entry.subject,
+      description: entry.description ?? "",
+      status: entry.status === "in_progress" ? "pending" : entry.status!,
+      blocks: Array.isArray(entry.blocks)
+        ? entry.blocks.filter((id) => typeof id === "string")
+        : [],
+      blockedBy: Array.isArray(entry.blockedBy)
+        ? entry.blockedBy.filter((id) => typeof id === "string")
+        : [],
+      owner: entry.owner,
+      metadata: entry.metadata,
+      createdAt: process.hrtime.bigint(),
+      updatedAt: process.hrtime.bigint(),
+    };
+    tasks.set(task.id, task);
+    taskIdCounter = Math.max(taskIdCounter, Number(task.id) || 0);
+  }
+}
 
 let taskIdCounter = 0;
 

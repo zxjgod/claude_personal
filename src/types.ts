@@ -136,6 +136,9 @@ export interface TodoDisplayItem {
 }
 
 export interface ToolResultMetadata {
+  worktreePath?: string;
+  worktreeBranch?: string;
+  worktreeRetained?: boolean;
   durationMs?: number;
   linesRead?: number;
   fileSize?: number;
@@ -260,6 +263,8 @@ export interface ToolContext extends ToolInteraction {
   hooks?: HookRunner;
   /** Rules loaded from settings.json and CLI permission flags. */
   permissionPolicy?: import("./permission-policy.js").PermissionPolicy;
+  /** Call-specific user-memory approval; never inherited by deriveSubContext. */
+  approvedUserMemoryWrite?: string;
   /**
    * The current turn's AbortSignal (set when the agent loop is created). Tools
    * that spawn long-running subprocesses (Bash, Grep, ...) should observe it
@@ -330,6 +335,7 @@ export function deriveSubContext(
     onSubAgentProgress?: (event: SubAgentProgress) => void;
     /** Hooks, when the worker must run under the session's hook policy. */
     hooks?: HookRunner;
+    modelConfig?: ModelConfig;
   } = {},
 ): ToolContext {
   return {
@@ -339,7 +345,7 @@ export function deriveSubContext(
     // Restrictions survive delegation even though human-facing capabilities
     // and additional writable directories are deliberately not inherited.
     permissionPolicy: parent.permissionPolicy,
-    modelConfig: parent.modelConfig,
+    modelConfig: overrides.modelConfig ?? parent.modelConfig,
     // The caller's approver, never the parent's raw one.
     askUser: overrides.askUser,
     onSubAgentProgress: overrides.onSubAgentProgress,
@@ -365,7 +371,7 @@ export interface UserQuestion {
   /** Short header/category label. */
   header: string;
   /** Selectable options. */
-  options: Array<{ label: string; description?: string }>;
+  options: Array<{ label: string; description?: string; preview?: string }>;
   /** Allow choosing more than one option. */
   multiSelect?: boolean;
 }
@@ -808,6 +814,8 @@ export interface HookRunner {
     /** True for SpeculationCache background prefetches (see hooks.ts). */
     speculative?: boolean;
   }): Promise<{
+    permissionDecision?: "allow" | "ask" | "deny";
+    additionalContext?: string;
     block?: boolean;
     reason?: string;
     input?: Record<string, unknown>;
@@ -827,7 +835,10 @@ export interface HookRunner {
     preventContinuation?: boolean;
     reason?: string;
   }>;
-  runEvent?(event: string, payload: Record<string, unknown>): Promise<void>;
+  runEvent?(
+    event: string,
+    payload: Record<string, unknown>,
+  ): Promise<import("./hooks.js").HookEventOutcome | undefined> | Promise<void>;
 }
 
 /** Prompts the user to approve a destructive/dangerous tool call. */

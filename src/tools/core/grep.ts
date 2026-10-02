@@ -135,7 +135,7 @@ export const GrepTool: Tool = buildTool({
     } else {
       searchDir = context.workspaceRoot;
     }
-    if (isBlockedPath(searchDir)) {
+    if (isBlockedPath(searchDir, context.workspaceRoot)) {
       return { content: "", error: "Access denied: search target is a blocked path" };
     }
     if (!fs.existsSync(searchDir)) {
@@ -318,7 +318,9 @@ async function runRipgrep(
     ...new Set(
       candidates.flatMap((file) => {
         const resolved = resolveInWorkspace(file, workspaceRoot, allowedDirectories);
-        return resolved.ok && !isBlockedPath(file) && !isBlockedPath(resolved.path)
+        return resolved.ok &&
+          !isBlockedPath(file, workspaceRoot) &&
+          !isBlockedPath(resolved.path, workspaceRoot)
           ? [resolved.path]
           : [];
       }),
@@ -449,7 +451,12 @@ async function runNodeFallback(
         context.workspaceRoot,
         context.allowedDirectories,
       );
-      if (!resolved.ok || isBlockedPath(candidate) || isBlockedPath(resolved.path)) continue;
+      if (
+        !resolved.ok ||
+        isBlockedPath(candidate, context.workspaceRoot) ||
+        isBlockedPath(resolved.path, context.workspaceRoot)
+      )
+        continue;
       const file = resolved.path;
       const stat = fs.statSync(file);
       if (stat.isDirectory() || stat.size > 1024 * 1024) continue;

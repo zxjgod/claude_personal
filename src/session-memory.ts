@@ -26,6 +26,8 @@ import * as fsPromises from "node:fs/promises";
 import * as path from "node:path";
 import lockfile from "proper-lockfile";
 import { resetCheckpoints } from "./checkpoint.js";
+import { releaseSessionGoal } from "./goal-runtime.js";
+import { saveSessionRuntime } from "./session-runtime.js";
 import { firstUserPreview } from "./tui/history-replay.js";
 import type { Message } from "./types.js";
 import { ccrPath } from "./workspace-config.js";
@@ -435,6 +437,15 @@ export class SessionMemory {
     // A deleted session's cached last-written object must go too, or a later
     // save would resurrect its createdAt/version from the stale cache.
     this.lastSaved.delete(sessionId);
+    releaseSessionGoal(sessionId);
+    try {
+      fs.unlinkSync(
+        path.join(path.dirname(this.sessionsDir), "session-runtime", `${sessionId}.json`),
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT")
+        console.warn(`Could not delete session runtime: ${String(error)}`);
+    }
     this.lastPreviewWritten.delete(sessionId);
     this.warnedDivergence.delete(sessionId);
     this.warnedLockSkip.delete(sessionId);
@@ -674,6 +685,11 @@ export class SessionMemory {
       const tmpPath = `${filePath}.${process.pid}.tmp`;
       await fsPromises.writeFile(tmpPath, json, "utf-8");
       await fsPromises.rename(tmpPath, filePath);
+      try {
+        saveSessionRuntime(path.dirname(path.dirname(this.sessionsDir)), sessionId);
+      } catch (error) {
+        console.warn(`Session runtime save failed: ${String(error)}`);
+      }
       // Record the mtime we just produced — the divergence check above
       // compares against it on the next save.
       const writtenMtime = await fsPromises.stat(filePath).then(

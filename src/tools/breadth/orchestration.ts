@@ -21,194 +21,107 @@
 // interactive callbacks are absent.
 // ============================================================
 
-import { execFile } from "node:child_process";
-import * as path from "node:path";
-import { promisify } from "node:util";
 import { z } from "zod";
+import { activateSkill } from "../../scoped-execution.js";
 import { runForkSkill } from "../../skills/forkSkill.js";
 import { getSkill, listSkills, resolveSkillPrompt } from "../../skills.js";
 import type { Tool, ToolResult } from "../../types.js";
+import {
+  createIsolatedWorktree,
+  currentWorktree,
+  openExistingWorktree,
+  popWorktree,
+  pushWorktree,
+  removeIsolatedWorktree,
+  worktreeGit,
+} from "../../worktrees.js";
 import { buildTool } from "../registry.js";
 import { clearCwd, setCwd } from "../session-cwd.js";
 
-const execFileAsync = promisify(execFile);
-
-// ============================================================
-// 14.1 Worktree isolation — session-scoped worktree stack
-// ============================================================
-// Real Claude Code tracks an active worktree per session and rewrites
-// the cwd the agent operates in. Here we keep an in-process stack
-// (session id -> array of created worktree paths) so EnterWorktree can
-// create one and ExitWorktree can keep/remove it. The cwd switch itself
-// is surfaced in the tool result for the agent loop / user to act on;
-// mutating process.cwd() globally would be unsafe across concurrent
-// sub-agents, so we report the path instead.
-
-interface WorktreeEntry {
-  /** Absolute path to the created worktree. */
-  path: string;
-  /** Branch created for the worktree. */
-  branch: string;
-}
-
-const WORKTREES = new Map<string, WorktreeEntry[]>();
-
-// NOTE: sessionId is accepted for API symmetry but intentionally ignored —
-// git worktrees are per-repository state, so all sessions share one root.
-function worktreeDir(_sessionId: string): string {
-  return path.join(".claude", "worktrees");
-}
-
-export function resetWorktrees(sessionId: string): void {
-  WORKTREES.delete(sessionId);
-}
-
-async function git(args: string[], cwd: string, timeoutMs = 8000): Promise<string | null> {
-  try {
-    const { stdout } = await execFileAsync("git", args, {
-      cwd,
-      timeout: timeoutMs,
-      windowsHide: true,
-    });
-    return stdout;
-  } catch {
-    return null;
-  }
-}
-
-function randomName(): string {
-  const t = process.hrtime.bigint().toString(16).slice(-8);
-  return `wt-${t}`;
-}
+export { resetWorktrees } from "../../worktrees.js";
 
 const EnterWorktreeSchema = z.strictObject({
-  name: z.string().optional().describe("Branch/worktree name (optional)"),
-  baseRef: z
-    .enum(["fresh", "head"])
-    .optional()
-    .describe("fresh = origin default branch, head = current HEAD (default: fresh)"),
+  name: z.string().optional(),
+  path: z.string().optional(),
+  baseRef: z.enum(["fresh", "head"]).optional(),
 });
-
 export const EnterWorktreeTool: Tool = buildTool({
   name: "enter_worktree",
-  description: "Create a git worktree and switch the session into it",
+  description: "Create or enter an isolated git worktree",
   promptDescription:
-    "Create an isolated git worktree on a new branch so you can make changes " +
-    "without touching the main working tree. name sets the branch name " +
-    "(a random one is used otherwise); baseRef=fresh branches from the " +
-    "upstream default branch, head from current HEAD. Returns the worktree " +
-    "path — operate there until exit_worktree.",
+    "Create a worktree or enter an existing registered worktree with path. All subsequent file and shell tools use it. Exit with exit_worktree.",
   schema: EnterWorktreeSchema,
   isReadOnly: false,
   isConcurrencySafe: false,
-
   async call(input, context): Promise<ToolResult> {
-    const root = context.workspaceRoot;
-    const inside = await git(["rev-parse", "--is-inside-work-tree"], root);
-    if (inside?.trim() !== "true") {
-      return { content: "", error: "Not a git repository — cannot create a worktree." };
-    }
-
-    const baseRef = input.baseRef ?? "fresh";
-    let startPoint = "HEAD";
-    if (baseRef === "fresh") {
-      const def = await git(["rev-parse", "--abbrev-ref", "refs/remotes/origin/HEAD"], root);
-      if (def) {
-        const resolved = await git(["rev-parse", def.trim()], root);
-        if (resolved) startPoint = resolved.trim();
+    try {
+      if (input.path && input.name) throw new Error("Specify name or path, not both");
+      const root = context.workspaceRoot;
+      let base = "HEAD";
+      if (input.baseRef !== "head") {
+        try {
+          base = await worktreeGit(["symbolic-ref", "refs/remotes/origin/HEAD"], root);
+        } catch {
+          /* local repository */
+        }
       }
-    }
-
-    const branch = (input.name?.trim() || randomName()).replace(/[^A-Za-z0-9._-]/g, "-");
-    const wtPath = path.join(root, worktreeDir(context.sessionId), branch);
-
-    const out = await git(["worktree", "add", "-b", branch, wtPath, startPoint], root, 15_000);
-    if (out === null) {
+      const entry = input.path
+        ? await openExistingWorktree(root, input.path)
+        : await createIsolatedWorktree(
+            root,
+            (input.name || `wt-${Date.now().toString(36)}`).replace(/[^A-Za-z0-9._-]/g, "-"),
+            base,
+          );
+      pushWorktree(context.sessionId, entry);
+      setCwd(context.sessionId, entry.path);
+      await context.hooks?.runEvent?.("WorktreeCreate", { worktree_path: entry.path, cwd: root });
       return {
-        content: "",
-        error: `git worktree add failed for branch "${branch}" (it may already exist).`,
+        content: `Created or entered worktree (from ${input.baseRef ?? "fresh"}).\nPath: ${entry.path}\nBranch: ${entry.branch}\nSession cwd switched. File and shell tools now use this workspace.`,
+        metadata: { worktreePath: entry.path, worktreeBranch: entry.branch },
       };
+    } catch (error) {
+      return { content: "", error: String(error) };
     }
-
-    const stack = WORKTREES.get(context.sessionId) ?? [];
-    stack.push({ path: wtPath, branch });
-    WORKTREES.set(context.sessionId, stack);
-
-    // S5: actually switch the session cwd — the same mechanism a successful
-    // `cd` uses — so subsequent bash/powershell commands run inside the
-    // worktree instead of silently operating on the main tree.
-    setCwd(context.sessionId, wtPath);
-
-    return {
-      content:
-        `Created worktree on branch "${branch}" (from ${baseRef}).\n` +
-        `Path: ${wtPath}\n` +
-        `Session cwd switched to the worktree — shell commands now run there. ` +
-        `File tools still resolve against the workspace root, so pass paths under the worktree. ` +
-        `Call exit_worktree to return.`,
-      metadata: {},
-    };
   },
 });
-
 const ExitWorktreeSchema = z.strictObject({
-  action: z.enum(["keep", "remove"]).optional().describe("keep (default) or remove"),
-  discardChanges: z.boolean().optional().describe("Force-remove with uncommitted changes"),
+  action: z.enum(["keep", "remove"]).optional(),
+  discardChanges: z.boolean().optional(),
+  discard_changes: z.boolean().optional(),
 });
-
 export const ExitWorktreeTool: Tool = buildTool({
   name: "exit_worktree",
-  description: "Leave the active worktree, keeping or removing it",
+  description: "Leave a worktree, preserving its changes by default",
   promptDescription:
-    "Exit the current worktree session. action=keep leaves the branch and " +
-    "directory on disk; action=remove deletes them (use discardChanges=true " +
-    "to force-remove even with uncommitted changes). Returns to the main " +
-    "working tree.",
+    "Leave the active worktree. keep preserves files and branch; remove refuses uncommitted files and unique commits unless discard_changes:true is explicit.",
   schema: ExitWorktreeSchema,
   isReadOnly: false,
   isConcurrencySafe: false,
-
   async call(input, context): Promise<ToolResult> {
-    const stack = WORKTREES.get(context.sessionId);
-    if (!stack || stack.length === 0) {
-      return { content: "No active worktree to exit.", error: undefined };
+    const entry = currentWorktree(context.sessionId);
+    if (!entry) return { content: "No active worktree to exit." };
+    try {
+      const removalWarning =
+        input.action === "remove"
+          ? await removeIsolatedWorktree(
+              entry,
+              input.discardChanges === true || input.discard_changes === true,
+            )
+          : undefined;
+      popWorktree(context.sessionId);
+      const enclosing = currentWorktree(context.sessionId);
+      if (enclosing) setCwd(context.sessionId, enclosing.path);
+      else clearCwd(context.sessionId);
+      await context.hooks?.runEvent?.("WorktreeRemove", {
+        worktree_path: entry.path,
+        removed: input.action === "remove",
+      });
+      return {
+        content: `Exited worktree: ${entry.path}\n${removalWarning ?? (input.action === "remove" ? "Worktree and branch deleted." : "Kept on disk with files and branch.")}`,
+      };
+    } catch (error) {
+      return { content: "", error: String(error) };
     }
-    const entry = stack[stack.length - 1]!;
-    const action = input.action ?? "keep";
-    const root = context.workspaceRoot;
-
-    if (action === "remove") {
-      const dirty = await git(["status", "--porcelain"], entry.path);
-      const hasChanges = !!dirty && dirty.trim().length > 0;
-      if (hasChanges && !input.discardChanges) {
-        return {
-          content: "",
-          error:
-            `Worktree "${entry.branch}" has uncommitted changes. ` +
-            `Re-run with discardChanges=true to force-remove, or action=keep.`,
-        };
-      }
-      const removed = await git(["worktree", "remove", "--force", entry.path], root, 15_000);
-      await git(["branch", "-D", entry.branch], root, 8000);
-      if (removed === null) {
-        return { content: "", error: `git worktree remove failed for ${entry.path}` };
-      }
-    }
-
-    stack.pop();
-    if (stack.length === 0) WORKTREES.delete(context.sessionId);
-
-    // S5: restore the session cwd — to the enclosing worktree when nested,
-    // otherwise clear it so spawns fall back to the workspace root.
-    const enclosing = stack[stack.length - 1];
-    if (enclosing) setCwd(context.sessionId, enclosing.path);
-    else clearCwd(context.sessionId);
-
-    return {
-      content:
-        `Exited worktree "${entry.branch}" — session cwd restored. ` +
-        (action === "remove" ? "Worktree and branch deleted." : "Kept on disk at " + entry.path),
-    };
   },
 });
 
@@ -250,6 +163,8 @@ export const SkillTool: Tool = buildTool({
         error: `Unknown skill "${name}". Available skills:\n${available}`,
       };
     }
+    if (skill.disableModelInvocation)
+      return { content: "", error: `Skill ${name} can only be invoked explicitly by the user.` };
 
     // Resolve the body now (kernel: discovery cheap, loading expensive — the
     // template/shell expansion happens here, at invocation, not at discovery).
@@ -270,6 +185,7 @@ export const SkillTool: Tool = buildTool({
     if (skill.context === "fork" && context.modelConfig) {
       return runForkSkill(skill, resolved, context);
     }
+    activateSkill(context.sessionId, skill);
 
     return {
       content: `Skill "${skill.name}" loaded.\n\n` + `Instructions:\n${resolved}`,
