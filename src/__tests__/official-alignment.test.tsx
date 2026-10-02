@@ -169,10 +169,10 @@ describe("PermissionPrompt (official dialog)", () => {
     const { lastFrame } = render(<PermissionPrompt overlay={overlay} />);
     await flush();
     const frame = lastFrame()!;
-    expect(frame).toContain("▔"); // permission-blue divider row
+    expect(frame).toMatch(/─{20,}/); // thin lavender divider, open panel
     expect(frame).toContain("1. Yes");
     expect(frame).toContain("2. Yes, and don't ask again this session");
-    expect(frame).toContain("3. No, and tell Claude what to do differently");
+    expect(frame).toContain("3. No");
   });
 
   it("uses the tool-aware always label when provided", async () => {

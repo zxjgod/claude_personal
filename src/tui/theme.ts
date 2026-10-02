@@ -50,6 +50,8 @@ interface PaletteShape {
   bashBorder: string;
   /** Permission dialogs + their ▔ divider (official permission blue). */
   permission: string;
+  /** Soft lavender title, divider and selection in asking dialogs. */
+  promptAccent: string;
   /** Dim chrome replacement where dimColor can't be threaded (official subtle). */
   subtle: string;
   /** Permission mode colors. */
@@ -94,6 +96,7 @@ const DARK: PaletteShape = {
   promptBorder: "#999999",
   bashBorder: "#ff0087",
   permission: "#5769f7",
+  promptAccent: "#b1b9f9",
   subtle: "#afafaf",
   /** The official LIGHT-theme literals (teal #006666, purple #8700ff) measure
    *  ~2.5:1 on dark terminals — the official dark theme swaps them for ANSI
@@ -147,6 +150,7 @@ const LIGHT: PaletteShape = {
   promptBorder: "#6e6e6e",
   bashBorder: "#d0006f",
   permission: "#3f4ed8",
+  promptAccent: "#4b50a8",
   subtle: "#595959",
   modeColors: {
     default: "#595959",

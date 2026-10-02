@@ -38,6 +38,11 @@ function selectFooter(s: StoreState) {
     queuedInputs: s.queuedInputs,
     showExitHint: s.showExitHint,
     effortOverlay: s.overlay?.kind === "effort",
+    askingOverlay: s.overlay
+      ? ["permission", "question", "confirm", "elicitation", "planApproval"].includes(
+          s.overlay.kind,
+        )
+      : false,
   };
 }
 
@@ -60,7 +65,7 @@ export function ctxRemainingText(usedFraction: number): string {
 export function PromptFooter({ store }: { store: TuiStore }) {
   const s = useStoreSelector(store, selectFooter);
   const columns = terminalColumns();
-  if (s.effortOverlay) return null;
+  if (s.effortOverlay || s.askingOverlay) return null;
 
   // --- Left column: first match in the priority chain wins ---
   let leftNode: ReactNode;

@@ -7,7 +7,7 @@
 //   2. Edit in editor (ctrl+g) → revise the plan in $VISUAL/$EDITOR, then
 //                                approve carries the EDITED plan back
 //   3. No                      → reject (agent stays in plan mode)
-// The panel colors itself with the official planMode teal.
+// The open panel shares the asking-dialog layout and preserves plan editing.
 // ============================================================
 
 import { Box, Text, useInput } from "ink";
@@ -15,13 +15,8 @@ import { useState } from "react";
 import { t } from "./i18n.js";
 import { renderMarkdown } from "./markdown.js";
 import { editInEditor } from "./open-editor.js";
+import { PromptOption, PromptPanel } from "./PromptPanel.js";
 import type { Overlay } from "./store.js";
-import { palette } from "./theme.js";
-
-// Read at render time (see theme.ts header): module-scope snapshots freeze the dark palette.
-function planColor(): string {
-  return palette.modeColors.plan ?? "#4ec9b0";
-}
 
 export function PlanApproval({ overlay }: { overlay: Extract<Overlay, { kind: "planApproval" }> }) {
   // The plan mutates when the user revises it in the editor — approval must
@@ -70,11 +65,8 @@ export function PlanApproval({ overlay }: { overlay: Extract<Overlay, { kind: "p
   });
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={planColor()} paddingX={1}>
-      <Text bold color={planColor()}>
-        {t("ui.plan.title")}
-      </Text>
-      <Box marginTop={1} flexDirection="column">
+    <PromptPanel title={t("ui.plan.title")} footer={t("ui.plan.hint")}>
+      <Box marginTop={1} flexDirection="column" paddingLeft={2}>
         {(() => {
           // Cap the rendered plan at 15 rows, but NEVER silently: an
           // overflow counter line keeps "approving what you can't see"
@@ -103,14 +95,12 @@ export function PlanApproval({ overlay }: { overlay: Extract<Overlay, { kind: "p
         <Box marginTop={1} flexDirection="column">
           <Text>{t("ui.plan.proceed")}</Text>
           {options.map((opt, i) => (
-            <Text key={opt.value} color={i === selected ? planColor() : undefined}>
-              {i === selected ? "❯ " : "  "}
-              {i + 1}. {opt.label}
-            </Text>
+            <PromptOption key={opt.value} index={i} selected={i === selected}>
+              {opt.label}
+            </PromptOption>
           ))}
         </Box>
       )}
-      <Text dimColor>{t("ui.plan.hint")}</Text>
-    </Box>
+    </PromptPanel>
   );
 }

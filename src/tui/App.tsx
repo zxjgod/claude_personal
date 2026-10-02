@@ -29,6 +29,7 @@ import { ModelPicker } from "./ModelPicker.js";
 import { renderMarkdown } from "./markdown.js";
 import { PlanApproval } from "./PlanApproval.js";
 import { PromptFooter } from "./PromptFooter.js";
+import { promptRequestKey } from "./PromptPanel.js";
 import { ConfirmPrompt, ElicitationPrompt, PermissionPrompt, QuestionPrompt } from "./Prompts.js";
 import { ProviderPicker } from "./ProviderPicker.js";
 import { QueuedMessages } from "./QueuedMessages.js";
@@ -480,11 +481,11 @@ function InteractionRegion({
   if (overlay) {
     switch (overlay.kind) {
       case "permission":
-        return <PermissionPrompt overlay={overlay} store={store} />;
+        return <PermissionPrompt key={promptRequestKey(overlay)} overlay={overlay} store={store} />;
       case "question":
-        return <QuestionPrompt overlay={overlay} />;
+        return <QuestionPrompt key={promptRequestKey(overlay)} overlay={overlay} />;
       case "elicitation":
-        return <ElicitationPrompt overlay={overlay} />;
+        return <ElicitationPrompt key={promptRequestKey(overlay)} overlay={overlay} />;
       case "sessionPicker":
         return <SessionPicker overlay={overlay} />;
       case "providerPicker":
@@ -492,13 +493,13 @@ function InteractionRegion({
       case "modelPicker":
         return <ModelPicker overlay={overlay} />;
       case "planApproval":
-        return <PlanApproval overlay={overlay} />;
+        return <PlanApproval key={promptRequestKey(overlay)} overlay={overlay} />;
       case "commandPicker":
         return <CommandPicker overlay={overlay} />;
       case "rewind":
         return <RewindPicker overlay={overlay} />;
       case "confirm":
-        return <ConfirmPrompt overlay={overlay} />;
+        return <ConfirmPrompt key={promptRequestKey(overlay)} overlay={overlay} />;
       default:
         return <EffortPrompt overlay={overlay} />;
     }

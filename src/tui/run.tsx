@@ -62,6 +62,7 @@ import { appendHistory, loadHistory } from "./input-history.js";
 import { InputQueue } from "./input-queue.js";
 import { runModelPicker } from "./model-picker-flow.js";
 import { expandPastedChips, makePasteChip } from "./paste-chip.js";
+import { permissionPresentation } from "./permission-presentation.js";
 import { lookupContextWindow } from "./session-stats.js";
 import {
   EXIT_DOUBLE_PRESS_MS,
@@ -74,6 +75,7 @@ import { StreamBuffer } from "./stream-buffer.js";
 import { truncateVisual } from "./terminal-width.js";
 import { applyTheme } from "./theme.js";
 import { buildPermissionDiff } from "./tool-output.js";
+import { useStoreSelector } from "./useStoreSelector.js";
 
 // Debug monitoring - enabled via DEBUG_STREAM env var
 const DEBUG_STREAM = process.env.DEBUG_STREAM;
@@ -928,6 +930,11 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
   // M36: one type-ahead queue per session. Stable across renders so a message
   // typed while the agent is busy survives until the loop drains it.
   const queueRef = useRef<InputQueue>(new InputQueue());
+  const idleFeedbackRef = useRef<string[]>([]);
+  const askingState = useStoreSelector(store, (state) => ({
+    busy: state.busy,
+    overlay: state.overlay !== null,
+  }));
   // The AbortController of the in-flight turn, so the Ctrl+C hotkey can
   // interrupt it. Ink keeps stdin in raw mode, so Ctrl+C never raises SIGINT —
   // the process-level handler below only covers non-TUI fallbacks.
@@ -1129,12 +1136,26 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
             ? t("ui.permission.alwaysEdits")
             : undefined;
       const detail = toolDetail(input);
+      const presentation = permissionPresentation(tool, input);
       const choice = await store.askPermission(
-        `${tool.name[0]!.toUpperCase()}${tool.name.slice(1)} request`,
-        detail || undefined,
+        presentation.header,
+        detail && detail !== presentation.description ? detail : undefined,
         riskHint,
         alwaysLabel,
         buildPermissionDiff(tool.name, input),
+        {
+          ...presentation,
+          onAmend: (feedback) => {
+            const message = t("ui.prompt.feedbackMessage", { tool: tool.name, feedback });
+            if (store.getSnapshot().busy) {
+              queueRef.current.push(message);
+              store.setQueuedInputs(queueRef.current.size);
+              store.setQueuedMessages(queueRef.current.snapshot());
+            } else {
+              idleFeedbackRef.current.push(message);
+            }
+          },
+        },
       );
       if (choice === "always") {
         deps.alwaysAllow.add(key);
@@ -1376,6 +1397,12 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
     },
     [store, deps, askUser, askUserQuestion, buildUserContent, sessionId],
   );
+
+  // Feedback on a background request starts only after all overlays close.
+  useEffect(() => {
+    if (askingState.busy || askingState.overlay) return;
+    for (const feedback of idleFeedbackRef.current.splice(0)) onSubmit(feedback);
+  }, [askingState.busy, askingState.overlay, onSubmit]);
 
   // M41: keep the scheduler alive for the whole TUI session. A due prompt is
   // submitted through the same path as user input, while background

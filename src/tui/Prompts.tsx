@@ -4,25 +4,24 @@
 // Arrow-key selectable menus rendered as Ink overlays. They call the
 // overlay's resolve() with the choice; the store clears the overlay.
 //
-// Official alignment (2026-09): dialogs use the official permission blue
-// (rgb(87,105,247)) with a ▔ divider row above, the permission menu carries
-// the official option wording (tool-aware "always" label built by run.tsx),
-// single-key y/a/n shortcuts, and Shift+Tab cycles the permission mode
-// IN-dialog — the official confirmation-context key.
+// Reference-style asking: one lavender rule, an open explanation and numbered
+// choices. Tab opens an amended answer; y/a/n and Shift+Tab remain available.
 // ============================================================
 
 import { Box, Text, useInput } from "ink";
 import { useState } from "react";
-import { HORIZONTAL_BAR } from "./figures.js";
 import { t } from "./i18n.js";
+import { PromptAnswerInput, PromptOption, PromptPanel } from "./PromptPanel.js";
 import type { Overlay, TuiStore } from "./store.js";
-import { terminalColumns } from "./terminal-width.js";
-import { palette } from "./theme.js";
+import { modeColor, modeFooterText, palette } from "./theme.js";
 import { DIFF_PREVIEW_MAX } from "./tool-output.js";
+import { useStoreSelector } from "./useStoreSelector.js";
 
 // Read at render time (see theme.ts header): module-scope snapshots freeze the dark palette.
-function accent(): string {
-  return palette.permission;
+function PermissionModeHint({ store }: { store: TuiStore }) {
+  const mode = useStoreSelector(store, (state) => state.permissionMode);
+  const label = modeFooterText(mode);
+  return label ? <Text color={modeColor(mode)}>{` · ${label}`}</Text> : null;
 }
 
 /** Risk level visual indicators. Colors come from the LIVE palette at render
@@ -78,15 +77,21 @@ export function PermissionPrompt({
   const options: Array<{ label: string; value: "yes" | "always" | "no" }> = [
     { label: t("ui.permission.yes"), value: "yes" },
     { label: overlay.alwaysLabel ?? t("ui.permission.always"), value: "always" },
-    { label: t("ui.permission.no"), value: "no" },
+    { label: t("ui.prompt.no"), value: "no" },
   ];
   const [selected, setSelected] = useState(0);
+  const [editing, setEditing] = useState(false);
 
   useInput((input, key) => {
     // Official confirmation-context key: cycle the permission mode without
     // leaving the dialog (the dialog stays; the footer mode line updates).
     if (key.tab && key.shift) {
       store?.cyclePermissionMode();
+      return;
+    }
+    if (editing) return;
+    if (key.tab && overlay.onAmend) {
+      setEditing(true);
       return;
     }
     if (key.upArrow) setSelected((s) => (s - 1 + options.length) % options.length);
@@ -104,56 +109,84 @@ export function PermissionPrompt({
   const riskLevel = getRiskLevel(overlay.riskHint);
 
   return (
-    <Box flexDirection="column">
-      {/* Official modal divider: a ▔ rule in permission blue above the dialog. */}
-      <Text color={accent()}>{HORIZONTAL_BAR.repeat(Math.max(20, terminalColumns() - 1))}</Text>
-      <Box flexDirection="column" borderStyle="round" borderColor={accent()} paddingX={1}>
-        <Box>
-          <Text bold color={accent()}>
-            {overlay.header}
-          </Text>
-          {riskLevel && (
-            <Text color={riskColor(riskLevel)} bold>
-              {" "}
-              {RISK_LEVELS[riskLevel].icon}
-            </Text>
+    <PromptPanel
+      title={
+        <>
+          {overlay.header}
+          {riskLevel ? (
+            <Text color={riskColor(riskLevel)}>{` ${RISK_LEVELS[riskLevel].icon}`}</Text>
+          ) : null}
+        </>
+      }
+      subtitle={overlay.subtitle}
+      footer={
+        <>
+          {t(
+            editing
+              ? "ui.prompt.editHint"
+              : overlay.onAmend
+                ? "ui.prompt.hint"
+                : "ui.prompt.cancelHint",
           )}
+          {store ? <PermissionModeHint store={store} /> : null}
+        </>
+      }
+    >
+      {overlay.description || overlay.detail ? (
+        <Box flexDirection="column" marginTop={1} paddingLeft={2}>
+          {overlay.description ? (
+            <Text color={palette.secondary}>{overlay.description}</Text>
+          ) : null}
+          {overlay.detail ? <Text color={palette.secondary}>{overlay.detail}</Text> : null}
         </Box>
-        {overlay.detail ? <Text>{overlay.detail}</Text> : null}
-        {riskLevel ? (
-          <Box>
-            <Text color={riskColor(riskLevel)}>{RISK_LEVELS[riskLevel].label}</Text>
-            <Text dimColor>: {overlay.riskHint}</Text>
-          </Box>
-        ) : overlay.riskHint ? (
-          <Text color="#e0af68">{overlay.riskHint}</Text>
-        ) : null}
-        {/* #33 diff preview: caller-built lines (already colored by
+      ) : null}
+      {riskLevel ? (
+        <Box>
+          <Text color={riskColor(riskLevel)}>{RISK_LEVELS[riskLevel].label}</Text>
+          <Text dimColor>: {overlay.riskHint}</Text>
+        </Box>
+      ) : overlay.riskHint ? (
+        <Text color="#e0af68">{overlay.riskHint}</Text>
+      ) : null}
+      {/* #33 diff preview: caller-built lines (already colored by
             renderDiffLine), height-capped so a huge edit can't push the
             option row off-screen. */}
-        {overlay.diff && overlay.diff.length > 0 ? (
-          <Box flexDirection="column" marginTop={1}>
-            {overlay.diff.slice(0, DIFF_PREVIEW_MAX).map((line, i) => (
-              // biome-ignore lint/suspicious/noArrayIndexKey: static preview lines
-              <Text key={i}>{line}</Text>
-            ))}
-            {overlay.diff.length > DIFF_PREVIEW_MAX ? (
-              <Text dimColor>…{overlay.diff.length - DIFF_PREVIEW_MAX} more lines</Text>
-            ) : null}
-          </Box>
-        ) : null}
+      {overlay.diff && overlay.diff.length > 0 ? (
+        <Box flexDirection="column" marginTop={1}>
+          {overlay.diff.slice(0, DIFF_PREVIEW_MAX).map((line, i) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: static preview lines
+            <Text key={i}>{line}</Text>
+          ))}
+          {overlay.diff.length > DIFF_PREVIEW_MAX ? (
+            <Text dimColor>…{overlay.diff.length - DIFF_PREVIEW_MAX} more lines</Text>
+          ) : null}
+        </Box>
+      ) : null}
+      {editing ? (
+        <Box marginTop={1} flexDirection="column">
+          <Text>{t("ui.prompt.feedback")}</Text>
+          <PromptAnswerInput
+            onCancel={() => setEditing(false)}
+            onSubmit={(feedback) => {
+              try {
+                overlay.onAmend?.(feedback);
+              } finally {
+                overlay.resolve("no");
+              }
+            }}
+          />
+        </Box>
+      ) : (
         <Box marginTop={1} flexDirection="column">
           <Text>{t("ui.permission.proceed")}</Text>
           {options.map((opt, i) => (
-            <Text key={opt.value} color={i === selected ? accent() : undefined}>
-              {i === selected ? "❯ " : "  "}
-              {i + 1}. {opt.label}
-            </Text>
+            <PromptOption key={opt.value} index={i} selected={i === selected}>
+              {opt.label}
+            </PromptOption>
           ))}
         </Box>
-        <Text dimColor>{`${t("ui.permission.hint")} · Shift+Tab mode`}</Text>
-      </Box>
-    </Box>
+      )}
+    </PromptPanel>
   );
 }
 
@@ -161,6 +194,7 @@ export function QuestionPrompt({ overlay }: { overlay: Extract<Overlay, { kind: 
   const { options, multiSelect } = overlay;
   const [cursor, setCursor] = useState(0);
   const [checked, setChecked] = useState<Set<number>>(new Set());
+  const [editing, setEditing] = useState(false);
 
   const toggle = (i: number) => {
     setChecked((prev) => {
@@ -172,6 +206,11 @@ export function QuestionPrompt({ overlay }: { overlay: Extract<Overlay, { kind: 
   };
 
   useInput((input, key) => {
+    if (editing) return;
+    if (key.tab) {
+      setEditing(true);
+      return;
+    }
     if (key.upArrow) setCursor((c) => (c - 1 + options.length) % options.length);
     else if (key.downArrow) setCursor((c) => (c + 1) % options.length);
     else if (input === " " && multiSelect) toggle(cursor);
@@ -197,29 +236,49 @@ export function QuestionPrompt({ overlay }: { overlay: Extract<Overlay, { kind: 
   });
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={accent()} paddingX={1}>
-      <Text bold color={accent()}>
-        {overlay.header}
-      </Text>
-      <Text>{overlay.question}</Text>
-      <Box marginTop={1} flexDirection="column">
-        {options.map((opt, i) => (
-          <Box key={i} flexDirection="column">
-            <Text color={i === cursor ? accent() : undefined}>
-              {i === cursor ? "❯ " : "  "}
-              {multiSelect ? (checked.has(i) ? "[x] " : "[ ] ") : ""}
-              {opt.label}
-            </Text>
-            {opt.description ? <Text dimColor>{"    " + opt.description}</Text> : null}
+    <PromptPanel
+      title={overlay.header}
+      subtitle={overlay.question}
+      footer={t(
+        editing ? "ui.prompt.editHint" : multiSelect ? "ui.prompt.multiHint" : "ui.prompt.hint",
+      )}
+    >
+      {editing ? (
+        <>
+          <Box marginTop={1}>
+            <Text>{t("ui.prompt.answer")}</Text>
           </Box>
-        ))}
-      </Box>
-      <Text dimColor>
-        {multiSelect
-          ? "↑↓ move · Space toggle · Enter confirm · Esc cancel"
-          : "↑↓ move · Enter select · Esc cancel"}
-      </Text>
-    </Box>
+          <PromptAnswerInput
+            onCancel={() => setEditing(false)}
+            onSubmit={(answer) => {
+              const chosen = multiSelect
+                ? [...checked].sort((a, b) => a - b).map((i) => options[i]!.label)
+                : [];
+              overlay.resolve([...new Set([...chosen, answer])]);
+            }}
+          />
+        </>
+      ) : (
+        <Box marginTop={1} flexDirection="column">
+          {options.map((opt, i) => (
+            <Box key={i} flexDirection="column">
+              <PromptOption
+                index={i}
+                selected={i === cursor}
+                prefix={multiSelect ? (checked.has(i) ? "[x] " : "[ ] ") : ""}
+              >
+                {opt.label}
+              </PromptOption>
+              {opt.description ? (
+                <Box paddingLeft={5}>
+                  <Text color={palette.secondary}>{opt.description}</Text>
+                </Box>
+              ) : null}
+            </Box>
+          ))}
+        </Box>
+      )}
+    </PromptPanel>
   );
 }
 
@@ -299,21 +358,20 @@ export function ElicitationPrompt({
     setError(null);
   });
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={accent()} paddingX={1}>
-      <Text bold color={accent()}>
-        MCP request
-      </Text>
-      <Text>{overlay.message}</Text>
+    <PromptPanel
+      title="MCP request"
+      subtitle={overlay.message}
+      footer="↑↓/Tab field · type or paste · Enter submit · Esc cancel"
+    >
       {overlay.fields.map((f, i) => (
-        <Text key={f.name} color={i === index ? accent() : undefined}>
+        <Text key={f.name} color={i === index ? palette.promptAccent : undefined}>
           {i === index ? "❯ " : "  "}
           {f.title ?? f.name}: {values[f.name] ?? ""}
           {f.enum?.length ? ` [${f.enum.join("/")}]` : ""}
         </Text>
       ))}
       {error ? <Text color={palette.error}>{error}</Text> : null}
-      <Text dimColor>↑↓/Tab field · type or paste · Enter submit · Esc cancel</Text>
-    </Box>
+    </PromptPanel>
   );
 }
 
@@ -325,7 +383,7 @@ export function ConfirmPrompt({ overlay }: { overlay: Extract<Overlay, { kind: "
   ];
 
   useInput((input, key) => {
-    if (key.leftArrow || key.rightArrow) {
+    if (key.leftArrow || key.rightArrow || key.upArrow || key.downArrow) {
       setSelected((s) => (s + 1) % options.length);
     } else if (key.return) {
       overlay.resolve(options[selected]!.value);
@@ -337,20 +395,14 @@ export function ConfirmPrompt({ overlay }: { overlay: Extract<Overlay, { kind: "
   });
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={accent()} paddingX={1}>
-      <Text bold color={accent()}>
-        {overlay.header}
-      </Text>
-      <Box marginTop={1}>
+    <PromptPanel title={overlay.header} footer={t("ui.prompt.cancelHint")}>
+      <Box marginTop={1} flexDirection="column">
         {options.map((opt, i) => (
-          <Text key={opt.label} color={i === selected ? accent() : undefined}>
-            {i === selected ? "❯ " : "  "}
+          <PromptOption key={opt.label} index={i} selected={i === selected}>
             {opt.label}
-            {"  "}
-          </Text>
+          </PromptOption>
         ))}
       </Box>
-      <Text dimColor>←→ choose · Enter confirm · Esc cancel</Text>
-    </Box>
+    </PromptPanel>
   );
 }

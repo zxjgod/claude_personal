@@ -72,6 +72,19 @@ const translations: Record<Language, Record<string, string>> = {
     "ui.permission.hint": "↑↓ choose · Enter confirm · Esc cancel",
     "ui.permission.title": "Permission request",
     "ui.permission.textHint": "type y allow / a always / n deny (Esc cancels)",
+    "ui.prompt.no": "No",
+    "ui.prompt.hint": "Esc to cancel · Tab to amend",
+    "ui.prompt.cancelHint": "Esc to cancel · ↑↓ select · Enter confirm",
+    "ui.prompt.editHint": "Enter to submit · Esc to go back",
+    "ui.prompt.feedback": "Tell Claude what to do differently:",
+    "ui.prompt.answer": "Type your answer:",
+    "ui.prompt.multiHint": "Space to toggle · Enter to confirm · Esc to cancel · Tab to amend",
+    "ui.prompt.commandTitle": "Run this command?",
+    "ui.prompt.commandSubtitle": "Claude wants to run this command.",
+    "ui.prompt.skillTitle": 'Use skill "{skill}"?',
+    "ui.prompt.skillSubtitle": "Claude may use instructions, code, or files from this Skill.",
+    "ui.prompt.feedbackMessage":
+      "The user declined the {tool} request and provided instructions:\n{feedback}",
 
     // Permission prompt tool labels (line-CLI text fallback)
     "ui.tool.bash": "Shell command",
@@ -317,6 +330,18 @@ const translations: Record<Language, Record<string, string>> = {
     "ui.permission.hint": "↑↓ 选择 · Enter 确认 · Esc 取消",
     "ui.permission.title": "权限请求",
     "ui.permission.textHint": "输入 y 允许 / a 始终允许 / n 拒绝 (Esc 取消)",
+    "ui.prompt.no": "拒绝",
+    "ui.prompt.hint": "Esc 取消 · Tab 补充或修改",
+    "ui.prompt.cancelHint": "Esc 取消 · ↑↓ 选择 · Enter 确认",
+    "ui.prompt.editHint": "Enter 提交 · Esc 返回选项",
+    "ui.prompt.feedback": "告诉 Claude 接下来应该怎么做：",
+    "ui.prompt.answer": "输入你的回答：",
+    "ui.prompt.multiHint": "Space 切换选中 · Enter 确认 · Esc 取消 · Tab 补充或修改",
+    "ui.prompt.commandTitle": "是否运行此命令？",
+    "ui.prompt.commandSubtitle": "Claude 希望运行以下命令。",
+    "ui.prompt.skillTitle": "是否使用技能“{skill}”？",
+    "ui.prompt.skillSubtitle": "Claude 可以使用此技能中的说明、代码或文件。",
+    "ui.prompt.feedbackMessage": "用户拒绝了 {tool} 请求，并补充了说明：\n{feedback}",
 
     // 权限提示工具标签（行式文本回退路径）
     "ui.tool.bash": "Shell 命令",

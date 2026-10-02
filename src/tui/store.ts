@@ -127,6 +127,10 @@ export type Overlay =
       header: string;
       detail?: string;
       riskHint?: string;
+      subtitle?: string;
+      description?: string;
+      /** Entering feedback declines this request and forwards the user's instructions. */
+      onAmend?: (feedback: string) => void;
       /** Official-style "always" option label, e.g. "Yes, and don't ask
        *  again for commands in <dir>" — built by the caller (run.tsx) from
        *  the tool + cwd. Falls back to the generic session label. */
@@ -782,6 +786,11 @@ export class TuiStore {
     riskHint?: string,
     alwaysLabel?: string,
     diff?: string[],
+    presentation?: {
+      subtitle?: string;
+      description?: string;
+      onAmend?: (feedback: string) => void;
+    },
   ): Promise<"yes" | "always" | "no"> {
     return new Promise((resolve) => {
       this.openOverlay({
@@ -791,6 +800,9 @@ export class TuiStore {
         riskHint,
         alwaysLabel,
         diff,
+        subtitle: presentation?.subtitle,
+        description: presentation?.description,
+        onAmend: presentation?.onAmend,
         resolve: (choice) => {
           this.set({ overlay: null });
           resolve(choice);
@@ -966,6 +978,12 @@ export class TuiStore {
         if (next) this.openOverlay(next);
       },
     } as Overlay;
+    if (overlay.kind === "permission" && overlay.onAmend) {
+      const amend = overlay.onAmend;
+      (visible as Extract<Overlay, { kind: "permission" }>).onAmend = (feedback) => {
+        if (!settled && this.state.overlay === visible) amend(feedback);
+      };
+    }
     this.set({ overlay: visible, reviewing: false });
   }
 
