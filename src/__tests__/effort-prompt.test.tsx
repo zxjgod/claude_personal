@@ -8,6 +8,7 @@ import { TuiStore } from "../tui/store.js";
 import { stripAnsi } from "../tui/terminal-width.js";
 
 let previousColorLevel: typeof chalk.level;
+const scheduleInterval = globalThis.setInterval;
 const wait = (milliseconds = 30) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const backgrounds = (frame: string | undefined) => (frame?.match(/48;2;/g) ?? []).length;
 
@@ -20,14 +21,18 @@ const backgrounds = (frame: string | undefined) => (frame?.match(/48;2;/g) ?? []
  * timers past the assertion, so the frame genuinely had not advanced yet and
  * the test failed for reasons unrelated to the code under test — a flake that
  * only surfaced at CI scale. Firing the captured callback makes "the animation
- * advanced" a fact rather than a race, and asserts the SAME thing.
+ * advanced" a fact rather than a race. Disable the real interval as well:
+ * otherwise delayed repaints add extra ticks and can miss the highlight.
  */
 async function advanceAnimation(
   interval: { mock: { calls: unknown[][] } },
   ticks: number,
   stepMs: number,
 ): Promise<void> {
-  const entry = interval.mock.calls.find((call) => call[1] === stepMs);
+  const entry = interval.mock.calls
+    .slice()
+    .reverse()
+    .find((call) => call[1] === stepMs);
   const fn = entry?.[0];
   if (typeof fn !== "function") throw new Error(`no interval registered with ${stepMs}ms`);
   for (let i = 0; i < ticks; i++) {
@@ -42,6 +47,11 @@ beforeEach(() => {
   chalk.level = 3;
   vi.stubEnv("CCR_REDUCED_MOTION", "0");
   setLanguage("en");
+  vi.spyOn(globalThis, "setInterval").mockImplementation((callback, delay, ...args) => {
+    const timer = scheduleInterval(callback, delay, ...args);
+    clearInterval(timer);
+    return timer;
+  });
 });
 
 afterEach(() => {
@@ -60,8 +70,10 @@ describe("effort reference animation interaction", () => {
       const initial = lastFrame();
       expect(interval).toHaveBeenCalledWith(expect.any(Function), 160);
       await advanceAnimation(interval, 5, 160);
-      expect(lastFrame()).not.toBe(initial);
-      expect(lastFrame()).toContain("38;2;208;180;232");
+      await vi.waitFor(() => {
+        expect(lastFrame()).not.toBe(initial);
+        expect(lastFrame()).toContain("38;2;208;180;232");
+      });
       expect(lastFrame()).not.toContain("38;2;255;255;255");
       expect(stripAnsi(lastFrame() ?? "")).toBe(stripAnsi(initial ?? ""));
     } finally {
@@ -78,7 +90,7 @@ describe("effort reference animation interaction", () => {
       expect(interval).toHaveBeenCalledWith(expect.any(Function), 60);
       const initial = lastFrame();
       await advanceAnimation(interval, 3, 60);
-      expect(lastFrame()).not.toBe(initial);
+      await vi.waitFor(() => expect(lastFrame()).not.toBe(initial));
       expect(stripAnsi(lastFrame() ?? "")).toBe(stripAnsi(initial ?? ""));
     } finally {
       unmount();
@@ -96,8 +108,9 @@ describe("effort reference animation interaction", () => {
       stdin.write("\x1b[C");
       await wait();
       const initial = backgrounds(lastFrame());
-      // FADE_FRAMES steps of the 60ms clock grows the highlight span.
-      await advanceAnimation(interval, 5, 60);
+      // Advance the active ultracode clock, not the cleared max-tier callback.
+      await advanceAnimation(interval, 5, 70);
+      await vi.waitFor(() => expect(backgrounds(lastFrame())).toBeGreaterThan(initial));
       const expanded = backgrounds(lastFrame());
       expect(initial).toBeGreaterThan(0);
       expect(expanded).toBeGreaterThan(initial);

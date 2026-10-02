@@ -74,7 +74,7 @@ describe("speculative reads vs read-before-edit (Top10 #6)", () => {
   it("a speculative ReadTool call does NOT open the gate, and reports promotion metadata", async () => {
     const res = await ReadTool.call({ filePath: file }, { ...ctx, speculative: true });
     expect(res.error).toBeUndefined();
-    expect(res.metadata?.readPath).toBe(file);
+    expect(res.metadata?.readPath).toBe(fs.realpathSync.native(file));
     expect(typeof res.metadata?.readMtimeMs).toBe("number");
     const { mtimeMs } = fs.statSync(file);
     expect(checkReadBeforeEdit(ctx.sessionId, file, mtimeMs).ok).toBe(false);

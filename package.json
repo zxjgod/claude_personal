@@ -3,6 +3,9 @@
   "version": "1.6.1",
   "description": "A local AI coding assistant that replicates Claude Code's agentic workflow with third-party LLM APIs",
   "type": "module",
+  "engines": {
+    "node": ">=22.22.1"
+  },
   "main": "dist/index.js",
   "bin": {
     "ccr": "./dist/cli.js"

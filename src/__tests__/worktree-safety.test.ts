@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -5,9 +6,12 @@ import { afterEach, beforeEach, expect, it } from "vitest";
 import { executeSingleTool } from "../tool-executor.js";
 import { EnterWorktreeTool, ExitWorktreeTool } from "../tools/breadth/orchestration.js";
 import { ReadTool } from "../tools/core/read.js";
+import { resolveInWorkspace } from "../tools/utils/path.js";
 import {
   createIsolatedWorktree,
   finishIsolatedWorktree,
+  isRegisteredWorktree,
+  openExistingWorktree,
   removeIsolatedWorktree,
   resetWorktrees,
   worktreeGit,
@@ -27,6 +31,47 @@ afterEach(() => {
   resetWorktrees("safe-wt");
   fs.rmSync(root, { recursive: true, force: true });
 });
+it.skipIf(process.platform !== "win32")(
+  "reopens and safely cleans worktrees created through a Windows short path",
+  async ({ skip }) => {
+    const shortRoot = execFileSync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "(New-Object -ComObject Scripting.FileSystemObject).GetFolder($env:CCR_WORKTREE_TEST_ROOT).ShortPath",
+      ],
+      {
+        env: { ...process.env, CCR_WORKTREE_TEST_ROOT: root },
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 5000,
+      },
+    ).trim();
+    if (shortRoot.toLowerCase() === fs.realpathSync.native(root).toLowerCase()) skip();
+    const fullRoot = fs.realpathSync.native(root);
+    expect(resolveInWorkspace(path.join(shortRoot, "a.txt"), fullRoot)).toEqual({
+      ok: true,
+      path: path.join(fullRoot, "a.txt"),
+    });
+    expect(resolveInWorkspace(path.join(shortRoot, "new-file.txt"), fullRoot)).toEqual({
+      ok: true,
+      path: path.join(fullRoot, "new-file.txt"),
+    });
+    expect(resolveInWorkspace(path.join(fullRoot, "a.txt"), shortRoot).ok).toBe(true);
+    const tree = await createIsolatedWorktree(shortRoot, "short-path");
+    const fullPath = fs.realpathSync.native(tree.path);
+    expect((await openExistingWorktree(shortRoot, tree.path)).path).toBe(fullPath);
+    expect(isRegisteredWorktree(fullPath)).toBe(true);
+    await expect(openExistingWorktree(shortRoot, fs.realpathSync.native(root))).rejects.toThrow(
+      "primary checkout",
+    );
+    expect(await finishIsolatedWorktree(tree)).toBe(true);
+    expect(fs.existsSync(fullPath)).toBe(false);
+    expect(isRegisteredWorktree(fullPath)).toBe(false);
+  },
+);
 it("keeps edits and independent commits while cleaning truly empty workers", async () => {
   const modified = await createIsolatedWorktree(root, "dirty");
   fs.writeFileSync(path.join(modified.path, "a.txt"), "worker result");

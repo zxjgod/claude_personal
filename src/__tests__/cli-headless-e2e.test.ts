@@ -114,7 +114,10 @@ it("emits only JSON and resumes the saved session through a real CLI subprocess"
     expect(JSON.parse(navigated.stdout).is_error).toBe(false);
   } finally {
     vi.unstubAllEnvs();
+    server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     fs.rmSync(root, { recursive: true, force: true });
   }
-}, 30000);
+  // Three sequential CLI cold starts each have a 15s process timeout. The test
+  // budget must cover all three plus fixture setup/cleanup on Windows CI.
+}, 60000);

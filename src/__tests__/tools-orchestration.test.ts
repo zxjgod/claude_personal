@@ -88,7 +88,7 @@ describe("EnterWorktree / ExitWorktree", () => {
     const sid = "sess-s5";
     await EnterWorktreeTool.call({ name: "cwd-1", baseRef: "head" }, ctx({ sessionId: sid }));
     const wt = path.join(repo, ".claude", "worktrees", "cwd-1");
-    expect(getCwd(sid)).toBe(wt);
+    expect(getCwd(sid)).toBe(fs.realpathSync.native(wt));
     const r = await ExitWorktreeTool.call({ action: "keep" }, ctx({ sessionId: sid }));
     expect(r.error).toBeUndefined();
     expect(getCwd(sid)).toBeUndefined(); // cleared → falls back to workspace root
@@ -101,9 +101,9 @@ describe("EnterWorktree / ExitWorktree", () => {
     await EnterWorktreeTool.call({ name: "inner-1", baseRef: "head" }, ctx({ sessionId: sid }));
     const outer = path.join(repo, ".claude", "worktrees", "outer-1");
     const inner = path.join(repo, ".claude", "worktrees", "inner-1");
-    expect(getCwd(sid)).toBe(inner);
+    expect(getCwd(sid)).toBe(fs.realpathSync.native(inner));
     await ExitWorktreeTool.call({ action: "keep" }, ctx({ sessionId: sid }));
-    expect(getCwd(sid)).toBe(outer);
+    expect(getCwd(sid)).toBe(fs.realpathSync.native(outer));
     await ExitWorktreeTool.call({ action: "keep" }, ctx({ sessionId: sid }));
     expect(getCwd(sid)).toBeUndefined();
   });

@@ -5,6 +5,7 @@ import { isRegisteredWorktree } from "./worktrees.js";
 // ============================================================
 
 import { createHash } from "node:crypto";
+import * as fs from "node:fs";
 import * as path from "node:path";
 import { buildClassifierPrompt } from "./classifier-rules.js";
 import { policyDecision } from "./permission-policy.js";
@@ -436,9 +437,17 @@ const BLOCKED_PATTERNS = [
 
 export function isBlockedPath(filePath: string, workspaceRoot?: string): boolean {
   if (workspaceRoot && isRegisteredWorktree(workspaceRoot) && path.isAbsolute(filePath)) {
-    const relative = path.relative(workspaceRoot, filePath);
-    if (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
-      filePath = relative;
+    for (const root of [workspaceRoot, fs.realpathSync.native(workspaceRoot)]) {
+      const relative = path.relative(root, filePath);
+      if (
+        relative !== ".." &&
+        !relative.startsWith(`..${path.sep}`) &&
+        !path.isAbsolute(relative)
+      ) {
+        filePath = relative;
+        break;
+      }
+    }
   }
   // Windows paths are case-insensitive; normalize separators and case before
   // applying the platform-neutral safety rules.

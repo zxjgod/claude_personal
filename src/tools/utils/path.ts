@@ -44,7 +44,7 @@ export function resolveInWorkspace(
   const root = path.resolve(workspaceRoot);
   const rootReal = (() => {
     try {
-      return fs.realpathSync(root);
+      return fs.realpathSync.native(root);
     } catch {
       return root;
     }
@@ -66,7 +66,7 @@ export function resolveInWorkspace(
     rootReal,
     ...allowedDirectories.map((d) => {
       try {
-        return fs.realpathSync(path.resolve(d));
+        return fs.realpathSync.native(path.resolve(d));
       } catch {
         return path.resolve(d);
       }
@@ -106,7 +106,7 @@ function resolveRealPathOrError(
   resolved: string,
 ): { ok: true; path: string } | { ok: false; error: string } {
   try {
-    return { ok: true, path: fs.realpathSync(resolved) };
+    return { ok: true, path: fs.realpathSync.native(resolved) };
   } catch {
     // Path does not fully exist — fall through to the ancestor walk below.
   }
@@ -145,7 +145,7 @@ function resolveRealPathOrError(
       continue;
     }
     // Deepest existing non-symlink ancestor: resolve and re-append the tail.
-    return { ok: true, path: path.join(fs.realpathSync(cur), ...suffix) };
+    return { ok: true, path: path.join(fs.realpathSync.native(cur), ...suffix) };
   }
 }
 

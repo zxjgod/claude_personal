@@ -12,8 +12,12 @@ export interface WorktreeInfo {
 }
 const active = new Map<string, WorktreeInfo[]>();
 const registeredRoots = new Set<string>();
-const rootKey = (root: string): string =>
-  process.platform === "win32" ? path.resolve(root).toLowerCase() : path.resolve(root);
+const rootKey = (root: string): string => {
+  // Git expands Windows 8.3 aliases (for example RUNNER~1). The JS realpath
+  // implementation preserves those aliases, so use the native filesystem path.
+  const resolved = fs.existsSync(root) ? fs.realpathSync.native(root) : path.resolve(root);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+};
 export function isRegisteredWorktree(root: string): boolean {
   return registeredRoots.has(rootKey(root));
 }
@@ -65,14 +69,19 @@ export async function createIsolatedWorktree(
   );
   await worktreeGit(["worktree", "add", "-b", branch, wtPath, baseCommit], repository);
   registeredRoots.add(rootKey(wtPath));
-  return { path: wtPath, branch, repository: path.resolve(repository), baseCommit };
+  return {
+    path: fs.realpathSync.native(wtPath),
+    branch,
+    repository: fs.realpathSync.native(repository),
+    baseCommit,
+  };
 }
 
 export async function openExistingWorktree(
   repository: string,
   target: string,
 ): Promise<WorktreeInfo> {
-  const resolved = fs.realpathSync(path.resolve(repository, target));
+  const resolved = fs.realpathSync.native(path.resolve(repository, target));
   const entries = (
     await worktreeGit(
       ["-c", "core.quotePath=false", "worktree", "list", "--porcelain", "-z"],
@@ -82,14 +91,10 @@ export async function openExistingWorktree(
   const entry = entries.find((item) =>
     item
       .split("\0")
-      .some(
-        (line) =>
-          line.startsWith("worktree ") &&
-          rootKey(fs.realpathSync(line.slice(9))) === rootKey(resolved),
-      ),
+      .some((line) => line.startsWith("worktree ") && rootKey(line.slice(9)) === rootKey(resolved)),
   );
   if (!entry) throw new Error("Path is not a registered worktree of this repository");
-  if (resolved === fs.realpathSync(repository))
+  if (rootKey(resolved) === rootKey(repository))
     throw new Error("The primary checkout is already the workspace");
   const branch =
     entry

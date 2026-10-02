@@ -14,7 +14,10 @@ describe("resolveInWorkspace", () => {
     const extra = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-extra-"));
     const file = path.join(extra, "x.txt");
     fs.writeFileSync(file, "x");
-    expect(resolveInWorkspace(file, root, [extra])).toEqual({ ok: true, path: file });
+    expect(resolveInWorkspace(file, root, [extra])).toEqual({
+      ok: true,
+      path: fs.realpathSync.native(file),
+    });
   });
   describe("basic boundary checks", () => {
     it("should accept paths inside workspace", () => {

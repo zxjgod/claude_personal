@@ -92,10 +92,12 @@ export class LspClient {
   private rootPath: string;
 
   constructor(
-    private readonly workspaceRoot: string,
+    workspaceRoot: string,
     private readonly tsserverPath: string,
   ) {
-    this.rootPath = path.resolve(workspaceRoot);
+    this.rootPath = fs.existsSync(workspaceRoot)
+      ? fs.realpathSync.native(workspaceRoot)
+      : path.resolve(workspaceRoot);
   }
 
   /** Spawn (once) and confirm the server is responding. */
@@ -116,7 +118,7 @@ export class LspClient {
     return new Promise((resolve, reject) => {
       try {
         this.proc = spawn(process.execPath, [this.tsserverPath, "--stdio"], {
-          cwd: this.workspaceRoot,
+          cwd: this.rootPath,
           stdio: ["pipe", "pipe", "pipe"],
           windowsHide: true,
         });

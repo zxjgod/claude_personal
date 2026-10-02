@@ -2,6 +2,7 @@
 // Tests: LSP real connection + legacy helpers (M14.5)
 // ============================================================
 
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -155,8 +156,28 @@ describe("LspClient.getProjectDiagnostics (S4, real tsserver)", () => {
       fs.writeFileSync(path.join(dir, "ok.ts"), "export const y = 1;\n");
       fs.mkdirSync(path.join(dir, "node_modules"), { recursive: true });
       fs.writeFileSync(path.join(dir, "node_modules", "skipped.ts"), "const z: string = 456;\n");
-      clearLspClientCache(dir);
-      const client = getLspClient(dir)!;
+      // Windows CI uses an 8.3 alias in TEMP. Exercise the same filesystem
+      // identity even on machines whose default TEMP has no short component.
+      const workspace =
+        process.platform === "win32"
+          ? execFileSync(
+              "powershell.exe",
+              [
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "(New-Object -ComObject Scripting.FileSystemObject).GetFolder($env:CCR_LSP_TEST_ROOT).ShortPath",
+              ],
+              {
+                env: { ...process.env, CCR_LSP_TEST_ROOT: dir },
+                encoding: "utf8",
+                windowsHide: true,
+                timeout: 5000,
+              },
+            ).trim()
+          : dir;
+      clearLspClientCache(workspace);
+      const client = getLspClient(workspace)!;
       const diags = await client.getProjectDiagnostics(50, 60_000);
       const errors = diags.filter((d) => d.severity === "error");
       // The bad file reports the assignment error…

@@ -10,10 +10,16 @@
 // time; an edit re-checks the current mtime and rejects on mismatch.
 // ============================================================
 
+import * as fs from "node:fs";
+
 const readState = new Map<string, number>();
 
 function key(sessionId: string, resolvedPath: string): string {
-  return `${sessionId}\x00${resolvedPath}`;
+  const canonical = fs.existsSync(resolvedPath)
+    ? fs.realpathSync.native(resolvedPath)
+    : resolvedPath;
+  const identity = process.platform === "win32" ? canonical.toLowerCase() : canonical;
+  return `${sessionId}\x00${identity}`;
 }
 
 /** Record that a file was read at the given mtime. */
