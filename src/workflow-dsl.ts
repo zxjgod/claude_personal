@@ -128,7 +128,32 @@ export function parseWorkflowPlan(input: unknown): WorkflowPlan {
   if (raw.steps.length === 0) throw new WorkflowDslError("steps must not be empty");
   const budget = { nodes: 0 };
   const steps = raw.steps.map((s, i) => parseStep(s, 0, `steps[${i}]`, budget));
+  // A synthesize reads the results of PRECEDING top-level steps, so every
+  // "from" index must point strictly before the step containing it — without
+  // this check an out-of-range index silently resolves to no text at runtime.
+  steps.forEach((step, i) => {
+    validateSynthesizeRefs(step, i, `steps[${i}]`);
+  });
   return { phase: raw.phase as string | undefined, steps };
+}
+
+function validateSynthesizeRefs(step: WorkflowStep, selfIndex: number, where: string): void {
+  if ("synthesize" in step) {
+    for (const idx of step.synthesize.from) {
+      if (idx >= selfIndex) {
+        throw new WorkflowDslError(
+          `${where}.synthesize: "from" index ${idx} does not reference a preceding step ` +
+            `(only steps[0..${selfIndex - 1}] complete before this step)`,
+        );
+      }
+    }
+    return;
+  }
+  if ("parallel" in step) {
+    step.parallel.forEach((child, i) => {
+      validateSynthesizeRefs(child, selfIndex, `${where}.parallel[${i}]`);
+    });
+  }
 }
 
 function parseStep(

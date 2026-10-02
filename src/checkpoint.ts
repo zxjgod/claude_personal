@@ -208,7 +208,13 @@ function persistState(key: string, s: SessionCheckpoints): void {
     mirror.currentTurn = s.currentTurn;
     for (const [path, firstTurn] of s.firstWriteTurn) {
       if (!mirror.originals[path]) {
-        const content = s.originals.get(path) ?? null;
+        const content = s.originals.get(path);
+        // Tracked in firstWriteTurn but content UNKNOWN (e.g. hydrated after
+        // its blob was lost — hydration deliberately keeps the bookkeeping
+        // without the originals entry). Writing blob:null here would tell a
+        // later rewind "file did not exist pre-session" and get it DELETED
+        // (#7③). Skip; a re-capture or the next persistState can retry.
+        if (content === undefined) continue;
         const blob = writeBlob(key, content);
         // A FAILED blob write (non-null content, null hash) must not persist
         // as blob:null — hydration would read that as "file did not exist

@@ -261,6 +261,11 @@ export async function runAgentTurn(
     agent.scope = undefined;
     agent.status = "stopped";
     agent.updatedAt = Date.now();
+    // The turn never ran — retract the queued user message so the history
+    // isn't left holding an unanswered message the model would see (and
+    // treat as acknowledged) on the next send_message. Safe to pop: the
+    // busy guard rejects concurrent turns, so ours is the last entry.
+    agent.messages.pop();
     return {
       output: "",
       toolCalls: 0,

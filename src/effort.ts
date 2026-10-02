@@ -216,7 +216,10 @@ export function parseEffort(value: string): EffortLevel | null {
 /** Read the active tier off a config's options bag (falls back to default). */
 export function getEffort(options?: Record<string, unknown>): EffortLevel {
   const raw = options?.effort;
-  return typeof raw === "string" && parseEffort(raw) ? (raw as EffortLevel) : DEFAULT_EFFORT;
+  // Return the NORMALIZED tier, not the raw string: a hand-edited profile or
+  // session file may carry "Max"/"XHigh", and downstream lookups
+  // (EFFORT_STRATEGIES[...] etc.) are keyed by the canonical lowercase tier.
+  return typeof raw === "string" ? (parseEffort(raw) ?? DEFAULT_EFFORT) : DEFAULT_EFFORT;
 }
 
 /**
