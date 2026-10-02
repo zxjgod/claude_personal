@@ -12,6 +12,7 @@
 import * as os from "node:os";
 import chalk from "chalk";
 import { graphemes, padAligned, terminalColumns, visualWidth } from "./terminal-width.js";
+import { palette } from "./theme.js";
 
 const ORANGE = chalk.rgb(215, 119, 87);
 const ORANGE_DIM = chalk.rgb(150, 82, 60);
@@ -67,25 +68,28 @@ export function renderBannerLines(info: BannerInfo): string[] {
   const rightW = inner - leftW - 5;
 
   // --- Left column (centered) ---
-  const modelLine = `${chalk.bold(info.model)} ${chalk.dim("·")} ${chalk.dim(info.provider)}`;
+  const modelLine = chalk.hex(palette.bannerMuted)(`${info.model} · ${info.provider}`);
   const modelW = visualWidth(`${info.model} · ${info.provider}`);
   const cwd = displayCwd(info.workspaceRoot);
 
   const left: Cell[] = [
     cell("", 0),
-    plainCell(chalk.bold("Welcome back!")),
+    plainCell(chalk.hex(palette.bannerWelcome).bold("Welcome back!")),
     cell("", 0),
     ...MASCOT.map((m) => cell(ORANGE(m), visualWidth(m))),
     cell("", 0),
     cell(modelLine, modelW),
-    cell(chalk.dim(truncateVisual(cwd, leftW).text), Math.min(visualWidth(cwd), leftW)),
+    cell(
+      chalk.hex(palette.bannerMuted)(truncateVisual(cwd, leftW).text),
+      Math.min(visualWidth(cwd), leftW),
+    ),
   ];
 
   // --- Right column (left-aligned) ---
   const heading = (s: string): Cell => cell(ORANGE.bold(s), visualWidth(s));
   const note = (s: string): Cell => {
     const t = truncateVisual(s, rightW);
-    return cell(chalk.dim(t.text), t.width);
+    return cell(chalk.hex(palette.bannerText)(t.text), t.width);
   };
 
   const right: Cell[] = [
@@ -98,13 +102,13 @@ export function renderBannerLines(info: BannerInfo): string[] {
     note("• Cursor editing in the input box (←/→, Home/End)"),
     note("• / + Enter runs the highlighted command"),
     cell(
-      `${chalk.cyan("/release-notes")} ${chalk.dim("for more")}`,
+      chalk.hex(palette.bannerMuted).italic("/release-notes for more"),
       visualWidth("/release-notes for more"),
     ),
   ];
 
   // --- Top border with the title embedded ---
-  const title = ` ${chalk.bold("Claude Code")} ${chalk.dim("v" + info.version)} `;
+  const title = ` ${ORANGE("Claude Code")} ${chalk.hex(palette.bannerMuted)("v" + info.version)} `;
   const titleW = visualWidth(title);
   const lead = 3; // "───" before the title, matching the real CLI
   const top =

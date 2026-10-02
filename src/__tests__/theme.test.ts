@@ -19,6 +19,7 @@ describe("applyTheme", () => {
     applyTheme("light");
     expect(currentTheme()).toBe("light");
     expect(palette.commandSelected).toBe("#4b50a8");
+    expect(palette.promptAccent).toBe("#4b50a8");
     expect(palette.success).toBe("#2c7a39"); // official light rgb(44,122,57)
     expect(palette.error).toBe("#ab2b3f");
     expect(palette.modeColors.plan).toBe("#006666"); // official light teal
@@ -32,6 +33,7 @@ describe("applyTheme", () => {
     expect(currentTheme()).toBe("dark");
     expect(palette.success).toBe(darkSuccess);
     expect(palette.commandSelected).toBe("#b1b9f9");
+    expect(palette.promptAccent).toBe("#b1b9f9");
     expect(palette.modeColors.plan).toBe("#4ec9b0");
   });
 
