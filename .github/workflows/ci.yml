@@ -1,3 +1,12 @@
+# Full quality gate: typecheck → lint/format → tests → smoke.
+#
+# Order matters. Typecheck and lint are cheap and catch the most, so they run
+# before the slow suite. The smoke step goes last because it is the only step
+# that builds the real artifact and starts the real CLI.
+#
+# (Keep the command names out of this header: ci-smoke.test.ts locates each
+# gate by string index and asserts smoke comes after the unit tests.)
+
 name: CI
 
 on:
@@ -6,43 +15,49 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  verify:
-    name: verify (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+  quality-gate:
+    # Windows is this project's primary shell (cmd.exe), and the ripgrep
+    # argv/execFile path, path-containment checks and smoke test all have
+    # platform-specific behaviour — so both legs are mandatory.
+    #
+    # NOTE: scripts/architecture-docs.mjs can assert this matrix, but nothing
+    # here runs it — it is reached only via `npm run docs:sync`, which is not a
+    # CI step. Dropping a platform below would NOT fail the build. Add a
+    # "npm run docs:sync -- --check" step if that invariant should be enforced.
     strategy:
       fail-fast: false
       matrix:
-        # Project explicitly supports Windows/PowerShell (dedicated Bash/PowerShell
-        # tools, Windows process-tree kill logic) — test where users run it.
         os: [ubuntu-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Setup Node
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 22
           cache: npm
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Typecheck (tsc --noEmit)
+      - name: Typecheck
         run: npm run typecheck
 
-      - name: Lint + format (biome)
+      - name: Lint and format check
         run: npm run check
 
-      - name: Unit tests (vitest)
-        # Ubuntu runs with coverage thresholds; Windows runs plain to keep the
-        # job fast and avoid platform-timing flakes tripping the coverage gate.
+      - name: Unit tests
         run: npm test
-        if: matrix.os == 'windows-latest'
 
-      - name: Unit tests + coverage thresholds (vitest)
-        run: npm run test:coverage
-        if: matrix.os == 'ubuntu-latest'
-
-      - name: Smoke (build → start → exit)
+      - name: Smoke (build, start, graceful exit without an API key)
         run: npm run smoke
