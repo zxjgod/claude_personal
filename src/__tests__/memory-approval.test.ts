@@ -174,4 +174,80 @@ describe("memory-approval — persistence follows the target", () => {
     expect(written.memory.requireApproval).toBe(true);
     expect(written.theme).toBe("dark"); // untouched
   });
+
+  it("off-toggle clears a stale user-level true pinning the gate ON (OR read)", () => {
+    // Reproduces the 2026-10-05 "can't switch the gate off" report: the write
+    // target is the PROJECT layer (it owns the `memory` key), while a stale
+    // requireApproval:true sits in the user's own user-level settings. The OR
+    // read used to keep the gate pinned ON forever.
+    fs.mkdirSync(path.join(workspace, ".claude"), { recursive: true });
+    fs.writeFileSync(
+      path.join(workspace, ".claude", "settings.json"),
+      JSON.stringify({ memory: { requireApproval: false } }),
+      "utf-8",
+    );
+    fs.writeFileSync(
+      path.join(userDir, "settings.json"),
+      JSON.stringify({ memory: { requireApproval: true } }),
+      "utf-8",
+    );
+    initMemoryApproval(workspace);
+    expect(isMemoryApprovalRequired()).toBe(true); // pinned by the user layer
+
+    const result = persistMemoryApproval(false, workspace);
+    expect(result.effective).toBe(false);
+    expect(result.pinnedBy).toBeUndefined();
+    expect(isMemoryApprovalRequired()).toBe(false);
+    // Both layers now hold the explicit off.
+    const userWritten = JSON.parse(
+      fs.readFileSync(path.join(userDir, "settings.json"), "utf-8"),
+    ) as Record<string, any>;
+    expect(userWritten.memory.requireApproval).toBe(false);
+    const projectWritten = JSON.parse(
+      fs.readFileSync(path.join(workspace, ".claude", "settings.json"), "utf-8"),
+    ) as Record<string, any>;
+    expect(projectWritten.memory.requireApproval).toBe(false);
+  });
+
+  it("off-toggle stays pinned by a project-layer true and says which layer", () => {
+    // A checked-in project file may TIGHTEN (fail-safe 拍板) — the explicit
+    // toggle must not silently strip a repo's requireApproval:true. The write
+    // target here is the LOCAL layer (it owns the `memory` key), so the
+    // project-layer true survives the write and keeps the gate pinned.
+    fs.mkdirSync(path.join(workspace, ".claude"), { recursive: true });
+    fs.writeFileSync(
+      path.join(workspace, ".claude", "settings.json"),
+      JSON.stringify({ memory: { requireApproval: true } }),
+      "utf-8",
+    );
+    fs.writeFileSync(
+      path.join(workspace, ".claude", "settings.local.json"),
+      JSON.stringify({ memory: {} }),
+      "utf-8",
+    );
+    const result = persistMemoryApproval(false, workspace);
+    expect(result.effective).toBe(true);
+    expect(result.pinnedBy).toContain("project");
+    expect(isMemoryApprovalRequired()).toBe(true);
+    // The local layer did get the explicit off…
+    const localWritten = JSON.parse(
+      fs.readFileSync(path.join(workspace, ".claude", "settings.local.json"), "utf-8"),
+    ) as Record<string, any>;
+    expect(localWritten.memory.requireApproval).toBe(false);
+    // …but the project's tightening true is untouched.
+    const projectWritten = JSON.parse(
+      fs.readFileSync(path.join(workspace, ".claude", "settings.json"), "utf-8"),
+    ) as Record<string, any>;
+    expect(projectWritten.memory.requireApproval).toBe(true);
+  });
+
+  it("off-toggle stays pinned by managed settings and says so", () => {
+    const managed = path.join(tmp("memgate-managed-"), "managed.json");
+    fs.writeFileSync(managed, JSON.stringify({ memory: { requireApproval: true } }), "utf-8");
+    process.env.CCR_MANAGED_SETTINGS = managed;
+    const result = persistMemoryApproval(false, workspace);
+    expect(result.effective).toBe(true);
+    expect(result.pinnedBy).toContain("managed");
+    expect(isMemoryApprovalRequired()).toBe(true);
+  });
 });

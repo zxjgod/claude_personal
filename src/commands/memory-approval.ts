@@ -22,12 +22,20 @@ export const memoryApprovalCommand: SlashCommand = {
     if (value === "on" || value === "off") {
       // The write can legitimately refuse (corrupt settings.json) — report it
       // instead of throwing out of the command dispatcher.
-      let required: boolean;
+      let result: ReturnType<typeof persistMemoryApproval>;
       try {
-        required = persistMemoryApproval(value === "on", ctx.workspaceRoot);
+        result = persistMemoryApproval(value === "on", ctx.workspaceRoot);
       } catch (error) {
         console.log(
           chalk.red(`  切换失败: ${error instanceof Error ? error.message : String(error)}`),
+        );
+        return;
+      }
+      const { effective: required, pinnedBy } = result;
+      if (pinnedBy) {
+        console.log(chalk.yellow(`  已写入 off，但审批门仍为 on —— ${pinnedBy} 强制开启`));
+        console.log(
+          chalk.gray(`  该层的 memory.requireApproval=true 优先级更高；如需关闭请编辑该文件。`),
         );
         return;
       }

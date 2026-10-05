@@ -70,7 +70,11 @@ export async function runMemoryApprovalMenu(store: TuiStore, workspaceRoot: stri
     ],
     (_rowId, value) => {
       try {
-        persistMemoryApproval(value === "on", workspaceRoot);
+        const { pinnedBy } = persistMemoryApproval(value === "on", workspaceRoot);
+        // An off-toggle can still lose to a higher-precedence true (project/
+        // local/managed layer). The picker's local state flipped — say why the
+        // gate itself did not.
+        if (pinnedBy) console.error(`审批门仍被 ${pinnedBy} 强制开启（off 已写入但未生效）`);
       } catch (error) {
         console.error(`设置未保存: ${error instanceof Error ? error.message : String(error)}`);
       }
