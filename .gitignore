@@ -1,52 +1,63 @@
+# Dependencies
 node_modules/
+
+# Build output
 dist/
-.env
 *.tsbuildinfo
 
-# IDE
-.vscode/
-.idea/
-
-# OS
-.DS_Store
-Thumbs.db
-Desktop.ini
-
-# Logs
-*.log
-
-# Test coverage
+# Test / coverage artifacts
 coverage/
+.vitest/
 
-# Local session state (runtime artifacts, not source) — at any depth, so
-# nested sandboxes (e.g. sandbox/.claude/) are covered too
-**/.claude/sessions/
-**/.claude/worktrees/
-**/.claude/checkpoints/
-
-# Spilled tool results (M30) — runtime artifacts written when output exceeds the cap
-.ccr/
+# Local environment
+.env
+.env.local
+.env.*.local
 
 # Provider profiles — contains plaintext API keys (commit providers.json.example instead)
 .claude/providers.json
 
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Logs
+*.log
+npm-debug.log*
+
+# Session state (runtime artifacts, not source) — anchored at any depth so
+# nested sandboxes (e.g. sandbox/.claude/) are covered too.
+**/.claude/sessions/
+**/.claude/session-runtime/
+**/.claude/workflow-runs/
+**/.claude/memory/
+**/.claude/history/
+**/.claude/checkpoints/
+**/.claude/memories.jsonl
+**/.claude/worktrees/
+
+# Spilled tool results (M30) — runtime artifacts written when output exceeds the cap
+.ccr/
+
 # Bundled reference materials (large files)
 reference/
 *.pdf
-
 claude-code-参考标准/
-tsc-output.txt
 
-# review-process temp artifacts (diffs, notes) — never commit
+# Python bytecode
+__pycache__/
+
+# Loop iteration scratch space (.review-tmp/ holds throwaway parity probes)
 .review-tmp/
-.claude/history/
 
-# Upgrade verification artifacts and the read-only comparison checkout
-.upgrade-*.txt
-.upgrade-*.json
+# Agent scratch trees. `upgrade-baseline/` is a full frozen copy of the
+# project — including its own node_modules — so it must never be committed.
 .claude/upgrade-baseline/
-.claude/upgrade-baseline-source.zip
-.claude/session-runtime/
-.claude/workflow-runs/
-.claude/memory/
-python/__pycache__/
+
+# Root-level audit/log artifacts dropped by review & upgrade loops.
+# (`*.log` above already covers tsc.log.)
+/.upgrade-*
+tsc-output.txt
