@@ -26,14 +26,24 @@ function write(file: string, body: string) {
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, body);
 }
+// The fork-skill assertion below depends on the skill's own `model:` winning.
+// CLAUDE_CODE_SUBAGENT_MODEL is a deliberate highest-precedence override, so a
+// value inherited from the developer's real environment would silently defeat
+// the fixture (and print that developer's model name into the diff). Clear it
+// for every test here; subagents.test.ts covers the override's real behaviour.
+const savedSubagentModel = process.env.CLAUDE_CODE_SUBAGENT_MODEL;
+
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-extension-"));
   vi.stubEnv("CCR_USER_CONFIG_DIR", path.join(root, "user"));
+  delete process.env.CLAUDE_CODE_SUBAGENT_MODEL;
   resetSkills();
   fixture.models.length = 0;
 });
 afterEach(() => {
   resetSkills();
+  if (savedSubagentModel === undefined) delete process.env.CLAUDE_CODE_SUBAGENT_MODEL;
+  else process.env.CLAUDE_CODE_SUBAGENT_MODEL = savedSubagentModel;
   vi.unstubAllEnvs();
   fs.rmSync(root, { recursive: true, force: true });
 });

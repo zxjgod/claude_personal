@@ -252,14 +252,21 @@ describe("native windows sandbox (win32 end-to-end)", () => {
     expect(result.stdout).toContain("second");
   });
 
-  win32("kills and reports a timed-out command", async () => {
-    const result = await runWindowsSandbox({
-      command: "ping -n 30 127.0.0.1 >nul",
-      cwd: process.cwd(),
-      timeoutMs: 2000,
-    });
-    expect(result.timedOut).toBe(true);
-  });
+  win32(
+    "kills and reports a timed-out command",
+    async () => {
+      const result = await runWindowsSandbox({
+        command: "ping -n 30 127.0.0.1 >nul",
+        cwd: process.cwd(),
+        timeoutMs: 2000,
+      });
+      expect(result.timedOut).toBe(true);
+      // Genuinely sits through the 2s kill timer and then tears down a real
+      // `ping` process tree — that outruns the 20s suite-wide default once this
+      // file runs concurrently with the rest of the suite.
+    },
+    60_000,
+  );
 
   win32("truncates captured output beyond the cap instead of loading it all", async () => {
     // ~8.6KB of stdout against a 2KB cap: the redirect file itself is

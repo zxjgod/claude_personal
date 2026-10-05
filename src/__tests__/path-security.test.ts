@@ -63,7 +63,7 @@ describe("resolveInWorkspace", () => {
 
     beforeAll(() => {
       // Create a temp workspace and a parent directory outside it
-      const base = fs.mkdtempSync(path.join(require("os").tmpdir(), "ccr-test-"));
+      const base = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-test-"));
       outsideDir = path.join(base, "outside");
       fs.mkdirSync(outsideDir);
       tempDir = path.join(base, "ws");
