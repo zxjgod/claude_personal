@@ -14,6 +14,7 @@ export interface ValidationResult {
 /**
  * Input Validator - Centralized validation logic for tools
  */
+// biome-ignore lint/complexity/noStaticOnlyClass: namespaced static helpers, instantiated nowhere by design
 export class InputValidator {
   /**
    * Validate file path input.
@@ -250,6 +251,14 @@ export class InputValidator {
       return ipv4 ? InputValidator.isPrivateIPv4(ipv4) : false;
     }
 
+    // NAT64 (RFC 6052 well-known 64:ff9b::/96, RFC 8215 local 64:ff9b:1::/48):
+    // the trailing 32 bits embed an IPv4 that a prefix check cannot see —
+    // "64:ff9b::7f00:1" is 127.0.0.1 in disguise.
+    if (lower.startsWith("64:ff9b::") || lower.startsWith("64:ff9b:1:")) {
+      const ipv4 = InputValidator.nat64EmbeddedIPv4(lower);
+      return ipv4 ? InputValidator.isPrivateIPv4(ipv4) : false;
+    }
+
     // Link-local fe80::/10 (first byte fe, second byte 80–bf).
     if (
       lower.startsWith("fe8") ||
@@ -288,5 +297,20 @@ export class InputValidator {
       return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
     }
     return undefined;
+  }
+
+  /** Extract the embedded IPv4 from a NAT64 address, or undefined. */
+  private static nat64EmbeddedIPv4(addr: string): string | undefined {
+    // Dotted suffix form: "64:ff9b::127.0.0.1".
+    const dotted = /(\d+\.\d+\.\d+\.\d+)$/.exec(addr)?.[1];
+    if (dotted) return net.isIPv4(dotted) ? dotted : undefined;
+    // Normalized form: the last two hextets are the four IPv4 octets
+    // ("64:ff9b::7f00:1" → 127.0.0.1).
+    const hextets = /([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(addr);
+    if (!hextets) return undefined;
+    const hi = Number.parseInt(hextets[1]!, 16);
+    const lo = Number.parseInt(hextets[2]!, 16);
+    if (Number.isNaN(hi) || Number.isNaN(lo)) return undefined;
+    return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
   }
 }

@@ -11,7 +11,7 @@
 
 import type { PermissionMode, TodoDisplayItem, ToolExecutionResult } from "./../types.js";
 import type { EffortLevel } from "./effort.js";
-import { t } from "./i18n.js";
+import { sanitizeTerminalText } from "./terminal-width.js";
 
 export type TranscriptItem =
   | {
@@ -208,12 +208,32 @@ export type Overlay =
       resolve: (model: string | null) => void;
     }
   | {
+      /** 档位式二级 settings menu (bare /agents, /memory-approval): each row
+       *  is one setting flipped in place with ←/→ (onChange fires per flip —
+       *  即刻生效); Enter/Esc closes. */
+      kind: "togglePicker";
+      title: string;
+      hint?: string;
+      rows: TogglePickerRow[];
+      onChange: (rowId: string, value: string) => void;
+      resolve: () => void;
+    }
+  | {
       /** Batch C2 (ExitPlanMode): the official plan-approval panel. Resolves
        *  with the verdict and the (possibly editor-revised) plan text. */
       kind: "planApproval";
       plan: string;
       resolve: (verdict: { choice: "approve" | "reject"; plan: string }) => void;
     };
+
+export interface TogglePickerRow {
+  id: string;
+  label: string;
+  /** 档位 values, shown inline (e.g. ["off", "on"]). */
+  values: string[];
+  current: string;
+  detail?: string;
+}
 
 export interface StoreState {
   /** Completed transcript items (rendered in <Static>, never repainted). */
@@ -616,10 +636,34 @@ export class TuiStore {
     return new Promise((resolve) => {
       this.openOverlay({
         kind: "modelPicker",
-        items,
+        // `label` is display text built from the configured model id (settings
+        // can be project-supplied); `name`/`id` are returned on selection and
+        // must stay byte-identical, so only the label is sanitized.
+        items: items.map((it) => ({ ...it, label: sanitizeTerminalText(it.label) })),
         resolve: (model) => {
           this.set({ overlay: null });
           resolve(model);
+        },
+      } as Overlay);
+    });
+  }
+
+  openTogglePicker(
+    title: string,
+    hint: string | undefined,
+    rows: TogglePickerRow[],
+    onChange: (rowId: string, value: string) => void,
+  ): Promise<void> {
+    return new Promise((resolve) => {
+      this.openOverlay({
+        kind: "togglePicker",
+        title,
+        hint,
+        rows,
+        onChange,
+        resolve: () => {
+          this.set({ overlay: null });
+          resolve();
         },
       } as Overlay);
     });
@@ -792,16 +836,20 @@ export class TuiStore {
       onAmend?: (feedback: string) => void;
     },
   ): Promise<"yes" | "always" | "no"> {
+    // Every string but `diff` is model/MCP-authored (the tool name, the
+    // command, the file path) and is rendered verbatim in the dialog, so it is
+    // sanitized here — one chokepoint for both renderers. `diff` stays as-is:
+    // it is already sanitized per line by renderDiffLine, which then colors it.
     return new Promise((resolve) => {
       this.openOverlay({
         kind: "permission",
-        header,
-        detail,
-        riskHint,
+        header: sanitizeTerminalText(header),
+        detail: detail && sanitizeTerminalText(detail),
+        riskHint: riskHint && sanitizeTerminalText(riskHint),
         alwaysLabel,
         diff,
-        subtitle: presentation?.subtitle,
-        description: presentation?.description,
+        subtitle: presentation?.subtitle && sanitizeTerminalText(presentation.subtitle),
+        description: presentation?.description && sanitizeTerminalText(presentation.description),
         onAmend: presentation?.onAmend,
         resolve: (choice) => {
           this.set({ overlay: null });
@@ -817,12 +865,20 @@ export class TuiStore {
     options: Array<{ label: string; description?: string; preview?: string }>,
     multiSelect: boolean,
   ): Promise<string[] | null> {
+    // Option labels/descriptions/previews are written by the model and often
+    // quote file content — sanitize before they reach the overlay. The labels
+    // are also returned to the model, so they are sanitized rather than
+    // rewritten; the value the user picks is unchanged in practice.
     return new Promise((resolve) => {
       this.openOverlay({
         kind: "question",
-        header,
-        question,
-        options,
+        header: sanitizeTerminalText(header),
+        question: sanitizeTerminalText(question),
+        options: options.map((o) => ({
+          label: sanitizeTerminalText(o.label),
+          description: o.description && sanitizeTerminalText(o.description),
+          preview: o.preview && sanitizeTerminalText(o.preview),
+        })),
         multiSelect,
         resolve: (labels) => {
           this.set({ overlay: null });
@@ -851,8 +907,15 @@ export class TuiStore {
     return new Promise((resolve) =>
       this.openOverlay({
         kind: "elicitation",
-        message,
-        fields,
+        message: sanitizeTerminalText(message),
+        // `name` is the key of the submitted content record, so it is left
+        // untouched; everything the server asked us to DISPLAY is sanitized.
+        fields: fields.map((f) => ({
+          ...f,
+          title: f.title && sanitizeTerminalText(f.title),
+          description: f.description && sanitizeTerminalText(f.description),
+          enum: f.enum?.map((v) => sanitizeTerminalText(v)),
+        })),
         resolve: (result) => {
           this.set({ overlay: null });
           resolve(result);
@@ -884,7 +947,13 @@ export class TuiStore {
     return new Promise((resolve) => {
       this.openOverlay({
         kind: "sessionPicker",
-        sessions,
+        // label/preview are re-formatted by the caller but ultimately come
+        // from the session file on disk, so they are sanitized on the way in.
+        sessions: sessions.map((s) => ({
+          ...s,
+          label: sanitizeTerminalText(s.label),
+          preview: s.preview && sanitizeTerminalText(s.preview),
+        })),
         resolve: (sessionId) => {
           this.set({ overlay: null });
           resolve(sessionId);
@@ -902,7 +971,13 @@ export class TuiStore {
     return new Promise((resolve) => {
       this.openOverlay({
         kind: "providerPicker",
-        profiles,
+        // label/detail are display-only ("provider/model", base URL); `name`
+        // is the returned profile key and stays byte-identical.
+        profiles: profiles.map((p) => ({
+          ...p,
+          label: sanitizeTerminalText(p.label),
+          detail: p.detail && sanitizeTerminalText(p.detail),
+        })),
         resolve: (name) => {
           this.set({ overlay: null });
           resolve(name);
@@ -1108,7 +1183,9 @@ export class TuiStore {
       }
       this.openOverlay({
         kind: "rewind",
-        entries,
+        // `label` previews the turn's user message, replayed from the session
+        // file — untrusted text on a reloaded session.
+        entries: entries.map((e) => ({ ...e, label: sanitizeTerminalText(e.label) })),
         resolve: (choice) => {
           this.set({ overlay: null });
           resolve(choice);
@@ -1140,7 +1217,13 @@ export class TuiStore {
     return new Promise((resolve) => {
       this.openOverlay({
         kind: "commandPicker",
-        commands,
+        // `name` is validated by isSafeCommandName at load time and is
+        // returned on selection; the description comes from the .md
+        // frontmatter, i.e. from the project directory.
+        commands: commands.map((c) => ({
+          ...c,
+          description: sanitizeTerminalText(c.description),
+        })),
         resolve: (name) => {
           this.set({ overlay: null });
           resolve(name);

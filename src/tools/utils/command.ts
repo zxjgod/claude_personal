@@ -93,6 +93,7 @@ function globToRegExp(glob: string): RegExp {
   for (const ch of glob) {
     if (ch === "*") re += ".*";
     else if (ch === "?") re += ".";
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: $" is a literal glob metachar, not an interpolation hole
     else if ("+.^${}()|".includes(ch)) re += `\\${ch}`;
     else re += ch;
   }

@@ -240,7 +240,7 @@ export function checkDangerousPattern(
           let rest = s.trimStart();
           for (;;) {
             const m = wrapperRe.exec(rest);
-            if (!m || m.index !== 0 || m[0].length === 0) break;
+            if (m?.index !== 0 || m[0].length === 0) break;
             rest = rest.slice(m[0].length);
           }
           return interpRe.test(rest) || pathInterpRe.test(s);
@@ -453,6 +453,25 @@ export function isBlockedPath(filePath: string, workspaceRoot?: string): boolean
   // applying the platform-neutral safety rules.
   const normalized = filePath.replaceAll("\\", "/").toLowerCase();
   return BLOCKED_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+/**
+ * Redirection write targets in a shell command (`>`, `>>`). Best-effort:
+ * simple quoted/unquoted paths only (`2>&1` and other fd jugglery are
+ * skipped). A missed target falls through to the dangerous-pattern floor; a
+ * caught one is a hard deny — bypass mode must not `echo >> ~/.bashrc` its
+ * way around the blocked-path floor.
+ */
+export function shellWriteTargets(command: string): string[] {
+  const targets: string[] = [];
+  const re = />>?\s*(?:"([^"]+)"|'([^']+)'|([^\s;|&]+))/g;
+  let m: RegExpExecArray | null;
+  // biome-ignore lint/suspicious/noAssignInExpressions: exec-loop idiom — match is tested against null in the condition itself
+  while ((m = re.exec(command)) !== null) {
+    const target = m[1] ?? m[2] ?? m[3];
+    if (target) targets.push(target);
+  }
+  return targets;
 }
 
 // --- LLM-Assisted Risk Classifier (M15.3) ---
@@ -698,6 +717,23 @@ export async function checkPermission(
       };
       logPermissionDecision(1, tool.name, action, result, { path: input.filePath });
       return result;
+    }
+  }
+
+  // The same floor covers shell redirection writes: `cat secret > ~/.bashrc`
+  // can be marked "read-only" by the data-driven Bash check and must still be
+  // stopped BEFORE the read-only fast path (and in every mode, like 3a).
+  if (typeof input.command === "string") {
+    for (const target of shellWriteTargets(input.command)) {
+      if (isBlockedPath(target, context.workspaceRoot)) {
+        const result = {
+          allowed: false as const,
+          reason: `Shell write target "${target}" is blocked for security reasons.`,
+          decisionReason: "safetyCheck" as const,
+        };
+        logPermissionDecision(1, tool.name, action, result, { path: target });
+        return result;
+      }
     }
   }
 

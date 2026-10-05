@@ -27,6 +27,7 @@ export interface ResourceMetrics {
 /**
  * Resource Limiter - Tracks and enforces resource limits
  */
+// biome-ignore lint/complexity/noStaticOnlyClass: namespaced static helpers, instantiated nowhere by design
 export class ResourceLimiter {
   private static limits: ResourceLimits = {
     maxFileSize: 10 * 1024 * 1024, // 10MB

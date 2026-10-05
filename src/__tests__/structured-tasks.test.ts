@@ -9,7 +9,6 @@ import {
   getTask,
   listTasks,
   resetTaskIdCounter,
-  type StructuredTask,
   updateTask,
 } from "../structured-tasks.js";
 
@@ -129,11 +128,32 @@ describe("Structured Tasks", () => {
 
     it("should not duplicate dependencies", () => {
       const task = createTask(sessionId, "Task", "Desc");
-      updateTask(sessionId, task.id, { addBlocks: ["2"] });
-      updateTask(sessionId, task.id, { addBlocks: ["2"] });
+      const other = createTask(sessionId, "Other", "Desc");
+      updateTask(sessionId, task.id, { addBlocks: [other.id] });
+      updateTask(sessionId, task.id, { addBlocks: [other.id] });
 
       const updated = getTask(sessionId, task.id);
-      expect(updated?.blocks).toEqual(["2"]);
+      expect(updated?.blocks).toEqual([other.id]);
+      expect(getTask(sessionId, other.id)?.blockedBy).toEqual([task.id]);
+    });
+
+    it("should ignore dependencies on unknown tasks and self-references", () => {
+      const task = createTask(sessionId, "Task", "Desc");
+      updateTask(sessionId, task.id, { addBlocks: ["999", task.id] });
+
+      const updated = getTask(sessionId, task.id);
+      expect(updated?.blocks).toEqual([]);
+      expect(updated?.blockedBy).toEqual([]);
+    });
+
+    it("should reject dependency cycles", () => {
+      const a = createTask(sessionId, "A", "Desc");
+      const b = createTask(sessionId, "B", "Desc");
+      updateTask(sessionId, a.id, { addBlocks: [b.id] });
+      updateTask(sessionId, b.id, { addBlocks: [a.id] }); // would close a cycle
+
+      expect(getTask(sessionId, b.id)?.blocks).toEqual([]);
+      expect(getTask(sessionId, a.id)?.blockedBy).toEqual([]);
     });
 
     it("should merge metadata", () => {
@@ -189,10 +209,12 @@ describe("Structured Tasks", () => {
       updated = getTask(sessionId, task.id);
       expect(updated?.status).toBe("completed");
 
-      // Delete
+      // Delete — review fix: status:"deleted" actually REMOVES the task
+      // (the old code tagged it in place, leaving it listed forever).
       updateTask(sessionId, task.id, { status: "deleted" });
       updated = getTask(sessionId, task.id);
-      expect(updated?.status).toBe("deleted");
+      expect(updated).toBeUndefined();
+      expect(listTasks(sessionId).some((t) => t.id === task.id)).toBe(false);
     });
   });
 });

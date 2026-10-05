@@ -1,6 +1,6 @@
 import { scopedHooks } from "../../scoped-execution.js";
 // ============================================================
-// Agent Tool — Enhanced sub-agent spawning with full API compatibility
+// Agent Tool ??Enhanced sub-agent spawning with full API compatibility
 // ============================================================
 // Provides the official Claude Code "Agent" tool API as an enhanced wrapper
 // around the existing Task tool, with added support for isolation modes,
@@ -9,24 +9,45 @@ import { scopedHooks } from "../../scoped-execution.js";
 
 import { z } from "zod";
 import { agentLoop } from "../../agent-loop.js";
+import { type AgentMcpHandle, prepareAgentMcpServers } from "../../agents/agent-mcp.js";
 import { createModelCaller } from "../../llm-adapter.js";
+import { policyDecision } from "../../permission-policy.js";
+import { recordSidechainReport } from "../../sidechain-transcript.js";
+import { blockedOutputNotice, scanSubagentOutput } from "../../subagent-output-scan.js";
+import {
+  claimRun,
+  createRun,
+  isRunActive,
+  loadRun,
+  type SubagentRunRecord,
+  saveRun,
+  unmarkRunActive,
+} from "../../subagent-store.js";
 import {
   buildSubagentSystemPrompt,
   extractLastAssistantText,
   getCoreToolsForSubagents,
-  getSubagentType,
   listSubagentNames,
   listSubagentSelectionHints,
+  normalizeSubagentTypeName,
   preloadAgentSkills,
   resolveSubagentTools,
+  resolveSubagentType,
   subagentModelConfig,
 } from "../../subagents.js";
-import { deriveSubContext, type Message, type Tool, type ToolResult } from "../../types.js";
+import {
+  deriveSubContext,
+  type Message,
+  type PermissionMode,
+  type Tool,
+  type ToolResult,
+} from "../../types.js";
 import { Semaphore } from "../../utils/semaphore.js";
 import { createSubAgentApprover } from "../../utils/subagent-security.js";
 import {
   createIsolatedWorktree,
   finishIsolatedWorktree,
+  randomWorktreeName,
   type WorktreeInfo,
 } from "../../worktrees.js";
 import { createJob, settleJob } from "../job-store.js";
@@ -34,14 +55,25 @@ import { buildTool } from "../registry.js";
 import { collectPartialReport } from "./subagent-report.js";
 
 // ============================================================
-// Guards — fork depth + concurrency
+// Guards ??fork depth + concurrency
 // ============================================================
 
 // Fork nesting cap: a fork inherits the full core tool set (including the
-// Agent tool itself), so without a limit fork → fork → … recurses unbounded.
-// Main agent (depth 0) forks at depth 1; that fork may delegate once more
-// (depth 2); a depth-2 agent cannot fork again.
-const MAX_FORK_DEPTH = 2;
+// Agent tool itself), so without a limit fork ??fork ????recurses unbounded.
+// Official semantics (docs/en/sub-agents "How forks differ"): "A fork can't
+// spawn further forks" ??the main agent (depth 0) forks at depth 1, and that
+// fork must delegate to a TYPED sub-agent instead of forking again. (This
+// now matches the Task tool's cap; the earlier depth-2 allowance diverged.)
+const MAX_FORK_DEPTH = 1;
+
+// Total sub-agent nesting cap. Official 2.1.202 rejects any spawn at depth
+// >= 5 (S8t=5): "Subagent nesting limit reached (depth N of 5). Complete
+// this task directly using your tools instead of spawning another agent."
+const MAX_SUBAGENT_DEPTH = 5;
+
+// Official fork agent definition: maxTurns 200 (a fork inherits the full
+// task and needs the headroom typed research agents don't).
+const FORK_MAX_TURNS = 200;
 
 // Max concurrent Agent loops. Deliberately a SEPARATE semaphore from Task's:
 // a fan-out mixing Task and Agent calls should not starve either kind.
@@ -62,17 +94,12 @@ export function resetAgentSlots(): void {
 // Worktree isolation helpers
 // ============================================================
 
-function randomWorktreeName(): string {
-  const t = process.hrtime.bigint().toString(16).slice(-8);
-  return `agent-wt-${t}`;
-}
-
 async function createWorktree(
   workspaceRoot: string,
   _sessionId: string,
 ): Promise<WorktreeInfo | { error: string }> {
   try {
-    return await createIsolatedWorktree(workspaceRoot, randomWorktreeName());
+    return await createIsolatedWorktree(workspaceRoot, randomWorktreeName("agent-wt"));
   } catch (error) {
     return { error: String(error) };
   }
@@ -89,7 +116,7 @@ const AgentSchema = z.strictObject({
     .string()
     .optional()
     .describe(
-      `Type of agent to launch. Omit to fork the current agent. Available: ${listSubagentNames().join(", ")}`,
+      `Type of agent to launch. Omit for the default general agent; "fork" forks the current agent. Available: ${listSubagentNames().join(", ")}`,
     ),
   model: z.string().optional().describe("Model override for this agent"),
   effort: z
@@ -104,12 +131,45 @@ const AgentSchema = z.strictObject({
     .boolean()
     .optional()
     .describe("Run agent in background, return immediately with task ID"),
+  mode: z
+    .enum(["acceptEdits", "auto", "bypassPermissions", "default", "dontAsk", "plan"])
+    .optional()
+    .describe(
+      "Permission mode for this agent (e.g. 'plan' to require plan approval). " +
+        "Overrides the agent definition and the inherited mode. Not applied while the " +
+        "parent session is itself in plan mode — a sub-agent cannot widen past its parent.",
+    ),
+  // Official declares this "Deprecated; ignored. The session has a single implicit
+  // team." Accepted and discarded so an official-shaped call does not fail the
+  // strict parse, which is exactly how official treats it.
+  team_name: z.string().optional().describe("Deprecated and ignored; the session has one team"),
+  resume: z
+    .string()
+    .optional()
+    .describe(
+      "Resume a previous agent run by its agent id (returned in metadata). The stored " +
+        'conversation is loaded and this prompt continues it. Not valid with "fork".',
+    ),
 });
+
+// How much authority a permission mode GRANTS, least → most. `dontAsk` sits
+// below `default` because it changes prompting (deny instead of ask), not
+// grants ??it can never be used to obtain more authority than the parent holds.
+const MODE_AUTHORITY: Record<PermissionMode, number> = {
+  plan: 0,
+  dontAsk: 1,
+  default: 2,
+  acceptEdits: 3,
+  auto: 4,
+  bypassPermissions: 5,
+};
 
 type AgentInput = z.infer<typeof AgentSchema>;
 
-function buildAgentPromptDescription(): string {
-  const hints = listSubagentSelectionHints()
+// Rebuilt by cli-tools after disk agents register (and in lean form when the
+// description budget is blown ??official Y$l swaps whenToUse ??whenToUseLean).
+export function buildAgentPromptDescription(lean?: boolean): string {
+  const hints = listSubagentSelectionHints(lean)
     .map((h) => `  - ${h.name}: ${h.whenToUse}`)
     .join("\n");
 
@@ -124,14 +184,16 @@ function buildAgentPromptDescription(): string {
     "Parameters:\n" +
     "  - prompt (required): detailed task instructions\n" +
     "  - description (optional): short summary shown in UI\n" +
-    "  - subagent_type (optional): agent type, omit to fork current agent\n" +
+    "  - subagent_type (optional): agent type; omit for the default general agent,\n" +
+    '    or "fork" to fork the current agent\n' +
     "  - model (optional): override model for this agent\n" +
     "  - effort (optional): reasoning effort (low/medium/high/xhigh/max)\n" +
     "  - isolation (optional): 'worktree' for git worktree isolation (expensive)\n" +
     "  - run_in_background (optional): return immediately, agent runs async\n\n" +
     "Available agent types:\n" +
     hints +
-    "\n\nOmit subagent_type to FORK: inherits conversation context and prompt cache."
+    "\n\nOmit subagent_type for the default general-purpose agent. " +
+    'Use subagent_type: "fork" to FORK: inherits conversation context and prompt cache.'
   );
 }
 
@@ -155,18 +217,70 @@ export const AgentTool: Tool = buildTool({
       return { content: "", error: "Agent tool requires modelConfig in context" };
     }
 
+    // Official lets the caller pass `mode` for the spawned teammate, and the
+    // caller here is the MODEL. Honoring it verbatim would hand a
+    // prompt-injected model a privilege-escalation path: it cannot change the
+    // session mode, but `mode: "bypassPermissions"` would grant its sub-agent
+    // more authority than the user ever granted this session. So a sub-agent
+    // may narrow, never widen — and a widening request is reported rather than
+    // silently downgraded, so a model that relied on it is not misled.
+    if (input.mode && MODE_AUTHORITY[input.mode] > MODE_AUTHORITY[context.permissionMode]) {
+      return {
+        content: "",
+        error:
+          `Agent mode "${input.mode}" grants more authority than this session's ` +
+          `"${context.permissionMode}" mode. A sub-agent can only narrow permissions.`,
+      };
+    }
+
     // Guard against unbounded fork recursion (fork → fork → …). Computed from
     // context alone so the cheap rejection happens before any slot or worktree
     // is created.
     const canFork = !!context.getParentMessages && !!context.parentSystemPrompt;
-    const isFork = !input.subagent_type?.trim() && canFork;
+    // Official (2.1.202): subagent_type "fork" selects the fork EXPLICITLY
+    // (normalization makes "Fork"/"fork_" equivalent), alongside omitting
+    // the type entirely.
+    const requestedType = input.subagent_type?.trim();
+    const wantsFork = !!requestedType && normalizeSubagentTypeName(requestedType) === "fork";
+    if (wantsFork && !canFork) {
+      return {
+        content: "",
+        error: `subagent_type "fork" requires a parent session context, which is not available here.`,
+      };
+    }
+    // 拍板 a = official 2.1.202: omitting subagent_type launches the DEFAULT
+    // typed agent (general-purpose) — "If omitted, the general-purpose agent
+    // is used." Forking is EXPLICIT-only (subagent_type: "fork").
+    const isFork = wantsFork && canFork;
     const forkDepth = context.subagentDepth ?? 0;
+    if (forkDepth >= MAX_SUBAGENT_DEPTH) {
+      return {
+        content: "",
+        error:
+          `Subagent nesting limit reached (depth ${forkDepth} of ${MAX_SUBAGENT_DEPTH}). ` +
+          `Complete this task directly using your tools instead of spawning another agent.`,
+      };
+    }
     if (isFork && forkDepth >= MAX_FORK_DEPTH) {
       return {
         content: "",
         error:
           `Fork nesting limit reached (depth ${forkDepth}). ` +
           `Use a typed sub-agent (subagent_type) instead of forking again.`,
+      };
+    }
+    // Official fork availability check includes the deny list (Agent(fork)
+    // removes the fork agent from the selectable set). Applies to both the
+    // explicit subagent_type:"fork" and the omitted-type fork.
+    if (
+      isFork &&
+      policyDecision(context.permissionPolicy, "Agent", { subagent_type: "fork" }) === "deny"
+    ) {
+      return {
+        content: "",
+        error:
+          `Agent type 'fork' has been denied by a permissions.deny rule (e.g. Agent(fork)). ` +
+          `Remove the rule or use a typed sub-agent.`,
       };
     }
 
@@ -225,14 +339,80 @@ export const AgentTool: Tool = buildTool({
     // Resolve the agent type FIRST — before any resource (slot, worktree) is
     // acquired — so this validation error's early return cannot leak them.
     // (canFork/isFork were computed above.)
-    const requestedType = input.subagent_type?.trim();
-    const subagentName = isFork ? "fork" : requestedType || "code-explorer";
-    const subagentType = isFork ? undefined : getSubagentType(subagentName);
-
-    if (!isFork && !subagentType) {
+    const subagentName = isFork ? "fork" : requestedType || "general";
+    // 拍板 #19: resume a previous typed agent run by agent id.
+    let resumeRecord: SubagentRunRecord | undefined;
+    const resumeId = input.resume?.trim();
+    if (resumeId) {
+      if (wantsFork) {
+        return { content: "", error: `resume cannot be combined with subagent_type "fork".` };
+      }
+      resumeRecord = loadRun(context.workspaceRoot, context.sessionId, resumeId);
+      if (!resumeRecord) {
+        return {
+          content: "",
+          error: `No stored agent run "${resumeId}" for this session (see /agents history).`,
+        };
+      }
+      if (isRunActive(context.sessionId, resumeId)) {
+        return {
+          content: "",
+          error: `Agent run "${resumeId}" is still running — wait for it or job_kill it first.`,
+        };
+      }
+      // A record stuck at "running" on disk belongs to a DEAD process — an
+      // orphan, exactly what resume exists for. Heal before reactivation.
+      if (resumeRecord.status === "running") resumeRecord.status = "interrupted";
+      if (
+        requestedType &&
+        normalizeSubagentTypeName(requestedType) !==
+          normalizeSubagentTypeName(resumeRecord.typeName)
+      ) {
+        return {
+          content: "",
+          error:
+            `Run "${resumeId}" is a "${resumeRecord.typeName}" agent — ` +
+            `resume with that type or omit subagent_type.`,
+        };
+      }
+    }
+    const effectiveName = resumeRecord?.typeName ?? subagentName;
+    const resolution = isFork ? undefined : resolveSubagentType(effectiveName);
+    if (resolution?.kind === "ambiguous") {
       return {
         content: "",
-        error: `Unknown subagent type: "${subagentName}". Available: ${listSubagentNames().join(", ")}`,
+        error:
+          `Agent type '${effectiveName}' is ambiguous — matches ` +
+          `${resolution.matches.join(", ")}. Use the exact name: ${resolution.matches.join(" or ")}`,
+      };
+    }
+    if (resolution?.kind === "not-found") {
+      const allowed = listSubagentNames().filter(
+        (n) => policyDecision(context.permissionPolicy, "Agent", { subagent_type: n }) !== "deny",
+      );
+      return {
+        content: "",
+        error: `Unknown subagent type: "${effectiveName}". Available: ${allowed.join(", ")}`,
+      };
+    }
+    const subagentType = resolution?.kind === "found" ? resolution.type : undefined;
+    // The resumed run's own type name wins for display/progress too.
+    const displayName = resumeRecord?.typeName ?? subagentName;
+
+    // Official "Disable specific subagents": `permissions.deny` may name a
+    // type (`Agent(code-explorer)`). The generic permission gate also denies
+    // the call, but rejecting here — before slot/worktree acquisition —
+    // returns a clearer message and cannot leak resources.
+    if (
+      subagentType &&
+      policyDecision(context.permissionPolicy, "Agent", { subagent_type: subagentType.name }) ===
+        "deny"
+    ) {
+      return {
+        content: "",
+        error:
+          `Sub-agent type "${subagentType.name}" is denied by permissions.deny ` +
+          `(e.g. Agent(${subagentType.name})). Remove the rule or pick another type.`,
       };
     }
 
@@ -244,7 +424,21 @@ export const AgentTool: Tool = buildTool({
     let effectiveWorkspaceRoot = context.workspaceRoot;
 
     let slotAcquired = false;
+    // 拍板 #14-B: agent-scoped MCP handle, closed in the finally below.
+    let agentMcpHandle: AgentMcpHandle | undefined;
+    // 拍板 #19: hoisted so the finally can persist the terminal record even
+    // when an exception unwinds the run.
+    let runRecord: SubagentRunRecord | undefined;
+    // Only the CLAIMANT persists the terminal record and releases the marker.
+    let runClaimed = false;
     try {
+      // Trust-gate + connect the agent's declared MCP servers BEFORE any
+      // resource acquisition — a denial/errors out without leaking slots.
+      if (subagentType && !isFork) {
+        const prepared = await prepareAgentMcpServers(subagentType, context);
+        if (prepared.kind === "error") return { content: "", error: prepared.error };
+        if (prepared.kind === "ready") agentMcpHandle = prepared.handle;
+      }
       // Concurrency guard. Top-level agents QUEUE for a slot — a fan-out of
       // Agent calls is the normal use. NESTED agents must never queue: their
       // parent already holds a slot and is waiting on this result, so parking
@@ -272,13 +466,18 @@ export const AgentTool: Tool = buildTool({
         effectiveWorkspaceRoot = worktree.path;
       }
 
-      // Build model config with overrides
-      let modelConfig = subagentModelConfig(isFork ? undefined : subagentType, context.modelConfig);
-      if (!isFork && (input.model || input.effort)) {
+      // Build model config with overrides. Precedence (2.1.202 binary B7):
+      // env > call-time model param > frontmatter — all inside
+      // subagentModelConfig; the effort param is applied here after.
+      let modelConfig = subagentModelConfig(
+        isFork ? undefined : subagentType,
+        context.modelConfig,
+        isFork ? undefined : input.model,
+      );
+      if (!isFork && input.effort) {
         modelConfig = {
           ...modelConfig,
-          ...(input.model && { model: input.model }),
-          ...(input.effort && { effort: input.effort }),
+          options: { ...modelConfig.options, effort: input.effort },
         };
       }
 
@@ -303,8 +502,11 @@ export const AgentTool: Tool = buildTool({
           ].join("\n"),
           { workspaceRoot: effectiveWorkspaceRoot },
         );
-        initialMessages = [];
-        tools = resolveSubagentTools(subagentType!, availableTools);
+        initialMessages = resumeRecord?.messages ?? [];
+        tools = [
+          ...resolveSubagentTools(subagentType!, availableTools),
+          ...(agentMcpHandle?.tools ?? []),
+        ];
       }
 
       // Add user prompt
@@ -324,13 +526,39 @@ export const AgentTool: Tool = buildTool({
       // Create model caller
       const modelCaller = createModelCaller(modelConfig);
 
+      // 拍板 #19: one run record per typed agent (forks excluded). Persisted
+      // "running" now; the finally writes the terminal status + full messages.
+      runRecord = !isFork
+        ? (resumeRecord ??
+          createRun(
+            context.workspaceRoot,
+            context.sessionId,
+            subagentType!.name,
+            input.description || "Sub-agent task",
+            input.prompt,
+          ))
+        : undefined;
+      if (runRecord) {
+        // 拍板 #19: authoritative claim (the earlier isRunActive check is only
+        // the fast, friendly path — both tools are concurrency-safe, so two
+        // calls can resume the same id in one assistant turn).
+        if (!claimRun(context.sessionId, runRecord.agentId)) {
+          return {
+            content: "",
+            error: `Agent run "${runRecord.agentId}" is already running in this session — only one resume may write its record.`,
+          };
+        }
+        runClaimed = true;
+        saveRun(context.workspaceRoot, runRecord);
+      }
+
       // Run agent loop
       const approver = createSubAgentApprover(context.askUser);
 
       const loop = agentLoop(messages, tools, modelCaller, modelConfig, {
         systemPrompt,
         applyEffortInstruction: !isFork,
-        maxTurns: subagentType?.maxTurns ?? 20,
+        maxTurns: isFork ? FORK_MAX_TURNS : (subagentType?.maxTurns ?? 20),
         autoCompactThreshold: 50_000,
         abortSignal: context.abortSignal,
         // Explicit allow-list, not a spread: a spread would hand the worker
@@ -352,10 +580,14 @@ export const AgentTool: Tool = buildTool({
             context.sessionId,
             effectiveWorkspaceRoot,
           ),
+          // An explicit `mode` on the call wins over the agent definition's
+          // frontmatter. (Widening was already rejected in call(), and plan mode
+          // never reaches here — line 161 returns early.)
           permissionMode:
-            subagentType?.permissionMode === "plan" || subagentType?.permissionMode === "dontAsk"
+            input.mode ??
+            (subagentType?.permissionMode === "plan" || subagentType?.permissionMode === "dontAsk"
               ? subagentType.permissionMode
-              : context.permissionMode,
+              : context.permissionMode),
           // Thread the nesting depth so a fork-of-a-fork is capped.
           subagentDepth: forkDepth + 1,
         }),
@@ -367,14 +599,14 @@ export const AgentTool: Tool = buildTool({
       for await (const event of loop) {
         if (event.type === "tool_use") {
           context.onSubAgentProgress?.({
-            subagentName,
+            subagentName: displayName,
             phase: "tool_use",
             toolName: event.name,
             input: event.input,
           });
         } else if (event.type === "tool_results") {
           context.onSubAgentProgress?.({
-            subagentName,
+            subagentName: displayName,
             phase: "tool_results",
             results: event.results,
           });
@@ -399,13 +631,13 @@ export const AgentTool: Tool = buildTool({
             )
           : "";
       context.onSubAgentProgress?.({
-        subagentName,
+        subagentName: displayName,
         phase: "done",
         reason: context.abortSignal?.aborted ? "aborted" : (terminal?.reason ?? "model_error"),
       });
       await context.hooks
         ?.runEvent?.("SubagentStop", {
-          subagent_name: subagentName,
+          subagent_name: displayName,
           reason: context.abortSignal?.aborted ? "aborted" : (terminal?.reason ?? "model_error"),
         })
         .catch(() => {});
@@ -416,6 +648,19 @@ export const AgentTool: Tool = buildTool({
       // assistant message that happened to survive in the tail.
       const finalText = extractLastAssistantText(messages.filter((m) => !inherited.has(m)));
       const duration = Date.now() - startTime;
+
+      // 拍板 #19: terminal status for the run record (persisted in finally).
+      if (runRecord) {
+        runRecord.status =
+          context.abortSignal?.aborted || terminal?.reason === "aborted_streaming"
+            ? "interrupted"
+            : terminal?.reason === "end_turn" && finalText
+              ? "completed"
+              : "error";
+        runRecord.report =
+          finalText || String(terminal?.error || terminal?.reason || "no terminal event");
+        runRecord.messages = messages;
+      }
 
       // Clean up worktree if successful
       if (worktree && terminal?.reason === "end_turn") {
@@ -440,24 +685,78 @@ export const AgentTool: Tool = buildTool({
         // hitting the turn budget is never reported as a completed task.
         const report = partialReport || finalText;
         if (report) {
+          recordSidechainReport(
+            context.workspaceRoot,
+            context.sessionId,
+            displayName,
+            report,
+            duration,
+          );
           return {
             content: `[Agent partial report — turn budget reached; task incomplete]\n${report}${worktreeNotice}`,
-            metadata: { durationMs: duration, incomplete: true, ...worktreeMetadata },
+            metadata: {
+              durationMs: duration,
+              incomplete: true,
+              ...(runRecord ? { agentId: runRecord.agentId } : {}),
+              ...worktreeMetadata,
+            },
           };
         }
       }
       if (terminal?.reason !== "end_turn" || !finalText) {
+        recordSidechainReport(
+          context.workspaceRoot,
+          context.sessionId,
+          displayName,
+          finalText || `ERROR: ${terminal?.error || terminal?.reason || "no terminal event"}`,
+          duration,
+        );
         return {
           content: (finalText || "") + worktreeNotice,
           error: `Agent incomplete: ${terminal?.error || terminal?.reason || "no terminal event"}${!finalText ? "; no final report" : ""}`,
-          metadata: { durationMs: duration, ...worktreeMetadata },
+          metadata: {
+            durationMs: duration,
+            ...(runRecord ? { agentId: runRecord.agentId } : {}),
+            ...worktreeMetadata,
+          },
+        };
+      }
+
+      // Subagent output scanning (official 2.1.202 parity, 拍板 d=A): classify
+      // the final report for prompt injection before returning it. Fail-open.
+      // 拍板 #22: the RAW report is recorded before scanning — the audit trail
+      // must show what the agent actually said even when it is withheld.
+      recordSidechainReport(
+        context.workspaceRoot,
+        context.sessionId,
+        displayName,
+        finalText,
+        duration,
+      );
+      const scan = await scanSubagentOutput(finalText, modelConfig);
+      if (scan.blocked) {
+        return {
+          content: blockedOutputNotice(displayName) + worktreeNotice,
+          metadata: {
+            durationMs: duration,
+            outputScan: "blocked",
+            ...(runRecord ? { agentId: runRecord.agentId } : {}),
+            ...worktreeMetadata,
+          },
         };
       }
 
       return {
-        content: (finalText || "(Agent completed with no output)") + worktreeNotice,
+        content:
+          (finalText || "(Agent completed with no output)") +
+          worktreeNotice +
+          (runRecord
+            ? `\n\n(Agent id: ${runRecord.agentId} — continue this agent with resume:"${runRecord.agentId}")`
+            : ""),
         metadata: {
           durationMs: duration,
+          outputScan: scan.status,
+          ...(runRecord ? { agentId: runRecord.agentId } : {}),
           ...worktreeMetadata,
         },
       };
@@ -475,6 +774,19 @@ export const AgentTool: Tool = buildTool({
       }
       throw error;
     } finally {
+      // 拍板 #19: persist the terminal record (crash leaves "running", which
+      // listRuns reports as "interrupted") and release the active marker.
+      if (runRecord) {
+        // An exception path never set a terminal status — that IS an
+        // interruption (abort/crash), not a successful or failed run.
+        if (runRecord.status === "running") runRecord.status = "interrupted";
+        if (runClaimed) {
+          saveRun(context.workspaceRoot, runRecord);
+          unmarkRunActive(context.sessionId, runRecord.agentId);
+        }
+      }
+      // 拍板 #14-B: agent-scoped MCP connections live exactly one run.
+      await agentMcpHandle?.close();
       if (slotAcquired) agentSlots.release();
     }
   },

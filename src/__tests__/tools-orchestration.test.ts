@@ -17,7 +17,6 @@ import {
   SleepTool,
 } from "../tools/breadth/orchestration.js";
 import {
-  getScheduledJob,
   listScheduledJobs,
   resetScheduledJobs,
   validateCron,

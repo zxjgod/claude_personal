@@ -1,9 +1,7 @@
-import { execFile } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { PassThrough } from "node:stream";
-import { promisify } from "node:util";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { agentLoop } from "../agent-loop.js";
@@ -26,6 +24,7 @@ import {
 } from "../language-servers.js";
 import { LspClient } from "../lsp.js";
 import { MCPManager } from "../mcp/index.js";
+import { setMemoryApproval } from "../memory-approval.js";
 import { MemoryStore } from "../memory-extract.js";
 import { permissionRuleMatches, policyDecision } from "../permission-policy.js";
 import { isBlockedPath } from "../permissions.js";
@@ -146,37 +145,44 @@ it("project LSP refuses untrusted config and starts only after explicit trust", 
   expect(fs.readFileSync(marker, "utf8")).toBe("started");
 });
 
-it("user memory requires approval and scope storage/output are consistent", async () => {
-  const approval = vi.fn(async () => false);
-  const result = await executeSingleTool(
-    {
-      id: "fixture",
-      type: "function",
-      function: {
-        name: "MemorySave",
-        arguments:
-          '{"content":"Harmless review fixture","scope":"user","agent_type":"review-agent"}',
+it("gate ON: user memory requires approval and scope storage/output are consistent", async () => {
+  // The gate defaults OFF (user decision 2026-10-04); this test covers the
+  // strict (T2) posture, so enable it explicitly.
+  setMemoryApproval(true);
+  try {
+    const approval = vi.fn(async () => false);
+    const result = await executeSingleTool(
+      {
+        id: "fixture",
+        type: "function",
+        function: {
+          name: "MemorySave",
+          arguments:
+            '{"content":"Harmless review fixture","scope":"user","agent_type":"review-agent"}',
+        },
       },
-    },
-    [MemorySaveTool],
-    ctx(),
-    approval,
-  );
-  expect(result.isError).toBe(true);
-  expect(new MemoryStore(root, "user").list()).toHaveLength(0);
-  const approved = await MemorySaveTool.call(
-    { content: "Harmless review fixture", scope: "user", agent_type: "review-agent" },
-    ctx({ askUser: async () => true }),
-  );
-  expect(approved.content).toContain("user scope");
-  expect(new MemoryStore(root, "user").list()).toHaveLength(1);
-  await MemorySaveTool.call(
-    { content: "Local review fixture", scope: "local", agent_type: "review-local" },
-    ctx(),
-  );
-  expect(new MemoryStore(root).list()).toHaveLength(0);
-  expect(new MemoryStore(root, "local").list()).toHaveLength(1);
-  expect(fs.existsSync(agentMemoryFile("local", "review-local", root))).toBe(true);
+      [MemorySaveTool],
+      ctx(),
+      approval,
+    );
+    expect(result.isError).toBe(true);
+    expect(new MemoryStore(root, "user").list()).toHaveLength(0);
+    const approved = await MemorySaveTool.call(
+      { content: "Harmless review fixture", scope: "user", agent_type: "review-agent" },
+      ctx({ askUser: async () => true }),
+    );
+    expect(approved.content).toContain("user scope");
+    expect(new MemoryStore(root, "user").list()).toHaveLength(1);
+    await MemorySaveTool.call(
+      { content: "Local review fixture", scope: "local", agent_type: "review-local" },
+      ctx({ askUser: async () => true }),
+    );
+    expect(new MemoryStore(root).list()).toHaveLength(0);
+    expect(new MemoryStore(root, "local").list()).toHaveLength(1);
+    expect(fs.existsSync(agentMemoryFile("local", "review-local", root))).toBe(true);
+  } finally {
+    setMemoryApproval(false);
+  }
 });
 it("#6 normal plan execution denies Agent before calling its implementation", async () => {
   const implementation = vi.spyOn(AgentTool, "call");

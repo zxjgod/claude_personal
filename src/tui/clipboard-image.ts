@@ -104,7 +104,7 @@ async function readDarwin(): Promise<string | null> {
   // osascript prints the PNG as «data PNGf<hex...>» — parse the hex payload.
   const res = await runText("osascript", ["-e", "get the clipboard as «class PNGf»"]);
   const m = res.match(/«data PNGf([0-9A-Fa-f\s]*)»/);
-  if (!m || !m[1]) return null;
+  if (!m?.[1]) return null;
   const hex = m[1].replace(/\s+/g, "");
   if (hex.length === 0) return null;
   return Buffer.from(hex, "hex").toString("base64");

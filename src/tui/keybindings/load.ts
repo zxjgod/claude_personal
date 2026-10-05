@@ -3,7 +3,6 @@
 // ============================================================
 
 import * as fs from "node:fs";
-import * as path from "node:path";
 import { ccrPath } from "../../workspace-config.js";
 import type { KeybindingBlock } from "./types.js";
 

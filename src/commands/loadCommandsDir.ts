@@ -35,7 +35,7 @@ import * as path from "node:path";
 import { userConfigRoot } from "../settings.js";
 import { loadDiskEntries } from "../utils/disk-loader.js";
 import { expandDiskTemplate } from "../utils/disk-template.js";
-import { frontmatterList, frontmatterString, parseFrontmatter } from "../utils/frontmatter.js";
+import { frontmatterString, parseFrontmatter } from "../utils/frontmatter.js";
 import { ccrPath } from "../workspace-config.js";
 import type { SlashCommand } from "./types.js";
 

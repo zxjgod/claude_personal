@@ -12,7 +12,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { render } from "ink-testing-library";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { checkPermission } from "../permissions.js";
 import { EnterPlanModeTool, ExitPlanModeTool } from "../tools/breadth/interactive.js";
 import { App } from "../tui/App.js";

@@ -13,6 +13,7 @@ import * as nodePath from "node:path";
 import { render, useApp, useInput } from "ink";
 import { type RefObject, useCallback, useEffect, useRef } from "react";
 import { agentLoop } from "./../agent-loop.js";
+import { isAxScreenReaderEnabled } from "../ax-screen-reader.js";
 import {
   beginUserTurn,
   changedFiles,
@@ -24,7 +25,6 @@ import { formatCliError } from "./../cli-errors.js";
 import type { CommandContext } from "./../commands.js";
 import { handleSlashCommand } from "./../commands.js";
 import { debugLogger } from "../debug-logger.js";
-import type { ElicitationRequest, ElicitationResult } from "../mcp/index.js";
 import {
   applyProfile,
   loadProviderProfiles,
@@ -53,6 +53,7 @@ import { APP_VERSION } from "../version.js";
 import { App } from "./App.js";
 import { printBanner, renderBannerLines } from "./banner.js";
 import { readClipboardImageBase64 } from "./clipboard-image.js";
+import { runAgentsMenu, runMemoryApprovalMenu } from "./command-menu-flow.js";
 import { EFFORT_DESCRIPTIONS, getEffort } from "./effort.js";
 import { completeFiles as completeFilesInRoot } from "./file-completions.js";
 import { messagesToTranscript } from "./history-replay.js";
@@ -72,7 +73,7 @@ import {
   TuiStore,
 } from "./store.js";
 import { StreamBuffer } from "./stream-buffer.js";
-import { truncateVisual } from "./terminal-width.js";
+import { sanitizeTerminalText, truncateVisual } from "./terminal-width.js";
 import { applyTheme } from "./theme.js";
 import { buildPermissionDiff } from "./tool-output.js";
 import { useStoreSelector } from "./useStoreSelector.js";
@@ -229,16 +230,20 @@ export async function runTurn(
       // flows straight back into the tool's result.
       requestPlanApproval: (plan) => store.askPlanApproval(plan),
       onSubAgentProgress: (ev) => {
+        // subagentName is the model-controlled `subagent_type`, toolName is
+        // server-controlled for MCP, and the detail is the tool input — a
+        // notice row is rendered verbatim, so sanitize before composing it.
+        const name = sanitizeTerminalText(ev.subagentName);
         if (ev.phase === "tool_use") {
           const d = toolDetail(ev.input);
           store.addSubAgentActivity(
-            `    ⎿ [${ev.subagentName}] ${capitalize(ev.toolName ?? "tool")}${d ? `(${truncate(d, 80)})` : ""}`,
+            `    ⎿ [${name}] ${capitalize(sanitizeTerminalText(ev.toolName ?? "tool"))}${d ? `(${truncate(sanitizeTerminalText(d), 80)})` : ""}`,
           );
         } else if (ev.phase === "done") {
           store.setActivityLabel(null);
           const doneLabel =
             ev.reason === "end_turn" ? "done" : `stopped (${ev.reason ?? "unknown"})`;
-          store.addSubAgentActivity(`    ⎿ [${ev.subagentName}] ${doneLabel}`);
+          store.addSubAgentActivity(`    ⎿ [${name}] ${doneLabel}`);
         }
       },
     },
@@ -1296,6 +1301,21 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
           return;
         }
 
+        // /agents and /memory-approval with no args → open their档位式
+        // toggle menu (TogglePicker overlay): each row is one setting, ←/→
+        // flips it in place and persists IMMEDIATELY, Enter/Esc closes.
+        // With an arg they fall through to the static handler.
+        const optionMenu = /^\/(agents|memory-approval)\s*$/i.exec(value);
+        if (optionMenu) {
+          const menuName = optionMenu[1]!.toLowerCase();
+          if (menuName === "agents") {
+            await runAgentsMenu(store, deps.getWorkspaceRoot?.() ?? deps.workspaceRoot);
+          } else {
+            await runMemoryApprovalMenu(store, deps.getWorkspaceRoot?.() ?? deps.workspaceRoot);
+          }
+          return;
+        }
+
         // Slash commands run locally; capture their console output and read
         // the CommandResult in one dispatch (no double-execution). A command
         // may return `prompt` to inject a user message and run the loop
@@ -1518,6 +1538,8 @@ export function InterruptHotkey({
 
 /** Launch the Ink TUI. Resolves when the user exits. */
 export function runTui(deps: TuiDeps): Promise<void> {
+  // Official `--ax-screen-reader`, resolved once for both render paths.
+  const axScreenReader = isAxScreenReaderEnabled();
   // /theme persists via modelConfig.options (config file) — apply the saved
   // choice before the first frame so the palette is right from the start.
   const savedTheme = deps.modelConfig.options?.theme;
@@ -1594,6 +1616,11 @@ export function runTui(deps: TuiDeps): Promise<void> {
       // Ctrl+C is handled by Root's InterruptHotkey (interrupt turn / exit when
       // idle) — Ink's default would hard-exit the process mid-turn.
       exitOnCtrlC: false,
+      // Official `--ax-screen-reader`: Ink swaps to a flat text tree (no
+      // borders, no colors, no frame throttling). Unreachable here in
+      // practice — screen-reader mode also suppresses fullscreen — but it is
+      // passed unconditionally so the two paths can never disagree.
+      isScreenReaderEnabled: axScreenReader,
       // Explicit stdio (Ink's defaults — stated for clarity; no mouse
       // protocol is enabled: scrolling is the terminal's / PgUp pager's job).
       stdin: process.stdin,
@@ -1626,6 +1653,8 @@ export function runTui(deps: TuiDeps): Promise<void> {
   const { waitUntilExit } = render(<Root store={store} deps={deps} />, {
     // See the fullscreen render above: Ctrl+C belongs to InterruptHotkey.
     exitOnCtrlC: false,
+    // See the fullscreen render above for why this is passed unconditionally.
+    isScreenReaderEnabled: axScreenReader,
     // Explicit stdio (Ink's defaults — stated for clarity; no mouse protocol
     // is enabled: scrolling is the terminal's / PgUp pager's job).
     stdin: process.stdin,

@@ -18,7 +18,6 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { userConfigRoot } from "./settings.js";
 import { atomicWriteFile, withFileLock } from "./utils/file-lock.js";
-import { ccrPath } from "./workspace-config.js";
 
 export type MemoryScope = "user" | "project" | "local";
 
@@ -68,6 +67,22 @@ export function agentMemoryDir(
   ) {
     throw new Error(`Refusing to use agent-memory path outside its root: ${resolvedDir}`);
   }
+  // Lexical containment is not enough: a checked-out repo can ship
+  // .claude/agent-memory/<type> as a symlink/junction pointing at the USER
+  // scope directory, which would let an approval-free project-scope write
+  // poison cross-project memory. Resolve links and re-verify containment.
+  try {
+    const realRoot = fs.realpathSync(resolvedRoot);
+    if (fs.existsSync(resolvedDir)) {
+      const realDir = fs.realpathSync(resolvedDir);
+      if (realDir !== realRoot && !realDir.startsWith(realRoot + path.sep)) {
+        throw new Error(`Refusing to use agent-memory path outside its root: ${realDir}`);
+      }
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("Refusing")) throw error;
+    // Root not created yet — nothing to follow, the mkdir will stay local.
+  }
   return dir;
 }
 
@@ -85,6 +100,9 @@ const SCOPE_HINT: Record<MemoryScope, string> = {
   project: "Project-scoped memory — tailored to THIS repository.",
   local: "Local, gitignored memory — machine-specific notes.",
 };
+
+/** Cap on the MEMORY.md block injected into a sub-agent system prompt. */
+const MAX_MEMORY_PROMPT_CHARS = 25_000;
 
 /**
  * Load the memory prompt block for an agentType under a scope (kernel §5).
@@ -115,7 +133,13 @@ export function loadAgentMemoryPrompt(
     return null; // no file yet, or unreadable
   }
   if (!content) return null;
-  return [`[AGENT MEMORY · ${scope}]`, SCOPE_HINT[scope], "", content].join("\n");
+  // A VCS-shared MEMORY.md is attacker-influenced input: cap the injected
+  // block so a poisoned repo can't blow up every sub-agent call's context.
+  const capped =
+    content.length > MAX_MEMORY_PROMPT_CHARS
+      ? `${content.slice(0, MAX_MEMORY_PROMPT_CHARS)}\n\n[memory truncated]`
+      : content;
+  return [`[AGENT MEMORY · ${scope}]`, SCOPE_HINT[scope], "", capped].join("\n");
 }
 
 /**
