@@ -8,7 +8,9 @@ import * as path from "node:path";
 import chalk from "chalk";
 
 import { loadAgentsDir } from "./agents/loadAgentsDir.js";
-import { askYesNo } from "./cli-prompts.js";
+// cli-prompts.js pulls the TUI render chain (markdown -> highlight.js,
+// ~200 files); the only use here is a TTY-guarded trust prompt, so it is
+// dynamic-imported inside the callback to keep headless startups light.
 import {
   parseBriefFlag,
   parseDisableSlashCommands,
@@ -16,7 +18,7 @@ import {
   type ToolsSelection,
   toolAllowed,
 } from "./cli-session-flags.js";
-import { loadCommandsDir } from "./commands.js";
+import { loadCommandsDir } from "./commands/loadCommandsDir.js";
 import { readSettings } from "./hooks-config.js";
 import { discoverMCPConfigs, MCPManager } from "./mcp/index.js";
 import { pluginComponentRoots, pluginDirs, readManifest } from "./plugins.js";
@@ -243,7 +245,9 @@ export async function setupTools(deps: {
                 ),
               );
               for (const description of descriptions) console.log(chalk.gray(`   ${description}`));
-              return askYesNo("Trust and enable these project MCP servers? [y/N] ");
+              return (await import("./cli-prompts.js")).askYesNo(
+                "Trust and enable these project MCP servers? [y/N] ",
+              );
             }
           : undefined,
     });

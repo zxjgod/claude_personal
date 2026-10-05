@@ -3,8 +3,12 @@ import { withModelBudget } from "./model-budget.js";
 // Multi-Provider LLM Client Adapter
 // ============================================================
 
-import OpenAI from "openai";
-import { anthropicCaller } from "./anthropic-adapter.js";
+// Provider SDKs are loaded lazily (pillar C, startup cost): each SDK is
+// ~100 ESM files, and a session only ever needs ONE of them. `openai` is
+// dynamic-imported inside openAICompatibleCaller's first invocation and
+// @anthropic-ai/sdk likewise inside the anthropic branch of
+// createModelCaller — type positions keep the type-only imports below.
+import type OpenAI from "openai";
 import { isCloudGateway, resolveGateway } from "./cloud-gateway.js";
 import {
   getEffort,
@@ -154,7 +158,8 @@ async function* openAICompatibleCaller(
   config: ModelConfig,
   abortSignal?: AbortSignal,
 ): AsyncGenerator<StreamEvent> {
-  const client = new OpenAI({
+  const { default: OpenAIClient } = await import("openai");
+  const client = new OpenAIClient({
     apiKey: config.apiKey,
     baseURL:
       config.baseURL || PROVIDER_CONFIGS[config.provider]?.baseURL || "https://api.openai.com/v1",
@@ -372,7 +377,14 @@ function formatToolsForOpenAI(tools: Tool[]): OpenAI.Chat.Completions.ChatComple
 
 export function createModelCaller(cfg: ModelConfig): ModelCaller {
   if (cfg.provider === "anthropic") {
-    return withModelBudget(anthropicCaller);
+    // Lazy wrapper keeps createModelCaller synchronous (many call sites)
+    // while deferring the @anthropic-ai/sdk graph to the first actual call.
+    const lazyAnthropic: ModelCaller = (messages, tools, systemPrompt, config, abortSignal) =>
+      (async function* () {
+        const { anthropicCaller } = await import("./anthropic-adapter.js");
+        yield* anthropicCaller(messages, tools, systemPrompt, config, abortSignal);
+      })();
+    return withModelBudget(lazyAnthropic);
   }
   // All non-Anthropic providers use OpenAI-compatible API for now.
   return withModelBudget(openAICompatibleCaller);

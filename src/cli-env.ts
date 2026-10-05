@@ -10,7 +10,10 @@ import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import dotenv from "dotenv";
 
-import { COMMANDS } from "./commands.js";
+// NOTE: commands.js (the full slash-command graph) is deliberately NOT
+// imported statically here. cli.ts is the slim entry: --version/--help must
+// print before the heavy module graph (agent loop, SDKs, TUI) loads, so
+// COMMANDS is fetched with a dynamic import inside maybeHandleInfoFlags.
 
 /**
  * Installation directory of the CLI (the repo root), resolved from the module
@@ -318,7 +321,7 @@ Configuration:
 
 In-session: type /help for slash commands.`;
 
-export function maybeHandleInfoFlags(argv: string[]): boolean {
+export async function maybeHandleInfoFlags(argv: string[]): Promise<boolean> {
   if (argv.includes("--version") || argv.includes("-V")) {
     console.log(readPackageVersion());
     return true;
@@ -330,6 +333,7 @@ export function maybeHandleInfoFlags(argv: string[]): boolean {
   if (argv.includes("--print-command")) {
     // Non-interactive introspection for smoke tests and scripting: list the
     // built-in slash commands, then exit before any provider/TUI setup.
+    const { COMMANDS } = await import("./commands.js");
     for (const cmd of COMMANDS) {
       console.log(`/${cmd.name} — ${cmd.description}`);
     }
