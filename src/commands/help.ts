@@ -1,5 +1,6 @@
 // /help — list all commands grouped by category
 import chalk from "chalk";
+import { sanitizeTerminalText } from "../tui/terminal-width.js";
 import type { SlashCommand } from "./types.js";
 
 // COMMANDS is injected at registry build time to avoid a static import cycle
@@ -101,8 +102,10 @@ export const helpCommand: SlashCommand = {
     for (const cat of categories) {
       console.log(chalk.bold(`  ${cat.emoji} ${cat.title}`));
       for (const cmd of cat.commands) {
-        const name = chalk.cyan("/" + cmd.name).padEnd(18);
-        const desc = chalk.gray(cmd.description);
+        // Disk commands (.claude/commands/*.md) contribute their frontmatter
+        // description here — file content, so sanitize name and description.
+        const name = chalk.cyan(`/${sanitizeTerminalText(cmd.name)}`).padEnd(18);
+        const desc = chalk.gray(sanitizeTerminalText(cmd.description));
         console.log(`    ${name} ${desc}`);
       }
       console.log("");

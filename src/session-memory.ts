@@ -28,14 +28,31 @@ import lockfile from "proper-lockfile";
 import { resetCheckpoints } from "./checkpoint.js";
 import { releaseSessionGoal } from "./goal-runtime.js";
 import { saveSessionRuntime } from "./session-runtime.js";
+import { deleteRunsInDir } from "./subagent-store.js";
 import { firstUserPreview } from "./tui/history-replay.js";
 import type { Message } from "./types.js";
+import { renameWithRetry } from "./utils/atomic-rename.js";
 import { ccrPath } from "./workspace-config.js";
 
 // --- Format Version ---
 
 /** Current session format version. Increment when the schema changes. */
 export const SESSION_FORMAT_VERSION = 3;
+
+/**
+ * Session ids are file-name components (sessions/<id>.json, transcript
+ * sidecars, checkpoint buckets). Externally supplied ids (--session-id,
+ * --resume, --from-pr metadata) must be restricted to a charset that cannot
+ * traverse directories: no separators, no dots (kills ".."), bounded length.
+ * Generated ids (UUID, "<id>-skill-<ts>") fit this by construction. The
+ * optional ".corrupt-<digits>" suffix covers this module's own quarantine
+ * backups, which load() re-reads under that name — still no separators, no
+ * leading dot, no "..", so it cannot traverse either.
+ */
+export const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}(\.corrupt-\d+)?$/;
+export function isValidSessionId(sessionId: string): boolean {
+  return SESSION_ID_PATTERN.test(sessionId);
+}
 
 /** Bound on the lastSaved write-through cache (LRU by insertion order).
  *  Without it a long-running process pinned full message arrays for every
@@ -159,6 +176,17 @@ export interface SessionData {
   taskState: TaskState;
   /** Last terminal reason emitted by the agent loop, when one exists. */
   lastTerminalReason?: string;
+  /** Display name from the official `-n, --name <name>` flag. */
+  name?: string;
+  /**
+   * Pull request linked to this session by the official
+   * `--from-pr [value]` flag. Official persists the same three fields
+   * and matches on `prNumber`; `prRepository` is what keeps PR #7 of
+   * one repo from resuming a session linked to PR #7 of another.
+   */
+  prNumber?: number;
+  prUrl?: string;
+  prRepository?: string;
 }
 
 export interface SessionMeta {
@@ -169,6 +197,12 @@ export interface SessionMeta {
   completed: boolean;
   taskState: TaskState;
   lastTerminalReason?: string;
+  /** Display name from the official `-n, --name <name>` flag. */
+  name?: string;
+  /** Linked pull request, from the official `--from-pr [value]` flag. */
+  prNumber?: number;
+  prUrl?: string;
+  prRepository?: string;
 }
 
 export interface SessionCatalogEntry extends SessionMeta {
@@ -213,6 +247,24 @@ export class SessionMemory {
   private warnedLockSkip = new Set<string>();
   /** Last preview string actually written to the catalog for a session. */
   private lastPreviewWritten = new Map<string, string>();
+  /**
+   * Display names pending their first write, from the official
+   * `-n, --name <name>` flag. Recorded rather than written immediately: the
+   * session file may not exist yet, and every save call site (TUI onSave,
+   * headless save, agent-loop autosave) would otherwise have to thread the
+   * name through just to keep a label.
+   */
+  private pendingNames = new Map<string, string>();
+  /**
+   * Linked pull request per session, from the official
+   * `--from-pr [value]` flag. Same deferred-write rationale as
+   * pendingNames: the session file may not exist yet, and the linkage has
+   * to survive the first auto-save without every call site knowing about it.
+   */
+  private pendingPullRequests = new Map<
+    string,
+    { prNumber: number; prUrl?: string; prRepository?: string }
+  >();
 
   constructor(workspaceRoot: string) {
     this.sessionsDir = ccrPath(workspaceRoot, "sessions");
@@ -252,6 +304,12 @@ export class SessionMemory {
    * Get the file path for a session
    */
   private sessionPath(sessionId: string): string {
+    // Defense in depth (review: "--session-id/--resume 无格式校验目录穿越"):
+    // a sessionId containing separators or ".." would escape sessionsDir.
+    // Entry points validate too, but every path constructor is a floor.
+    if (!isValidSessionId(sessionId)) {
+      throw new Error(`Invalid session id: ${JSON.stringify(sessionId.slice(0, 64))}`);
+    }
     return path.join(this.sessionsDir, `${sessionId}.json`);
   }
 
@@ -293,7 +351,7 @@ export class SessionMemory {
     // (endsWith ".tmp").
     const tmpPath = `${filePath}.${process.pid}.tmp`;
     await fsPromises.writeFile(tmpPath, JSON.stringify(catalog, null, 2), "utf-8");
-    await fsPromises.rename(tmpPath, filePath);
+    await renameWithRetry(tmpPath, filePath);
   }
 
   /**
@@ -427,6 +485,15 @@ export class SessionMemory {
       } catch {
         // best-effort — bucket cleanup must not fail the session delete
       }
+      // 拍板 #19: the session's sub-agent run records are FULL transcripts in
+      // sessions/subagents-<id>/. deleteRuns used to have no caller at all, so
+      // they outlived the session forever (and every /agents history re-read
+      // them). They go with the session.
+      try {
+        deleteRunsInDir(this.sessionsDir, sessionId);
+      } catch {
+        // best-effort — record cleanup must not fail the session delete
+      }
     } finally {
       if (release) {
         await release().catch(() => {
@@ -476,6 +543,10 @@ export class SessionMemory {
       completed: data.completed,
       taskState: data.taskState,
       lastTerminalReason: data.lastTerminalReason,
+      name: data.name,
+      prNumber: data.prNumber,
+      prUrl: data.prUrl,
+      prRepository: data.prRepository,
       pinned: Boolean(catalog[sessionId]?.pinned),
       preview: messagePreview ?? firstUserPreview(data.messages),
     };
@@ -508,6 +579,11 @@ export class SessionMemory {
         entry.updatedAt,
         entry.preview,
         entry.taskState,
+        entry.name ?? "",
+        // Official's picker shows the PR a session is linked to, so the
+        // number is searchable text there; matching it here makes
+        // `/resume 42` and `--session 42` find the PR session too.
+        entry.prNumber === undefined ? "" : `PR #${entry.prNumber}`,
         entry.pinned ? "pinned" : "",
       ]
         .join(" ")
@@ -537,10 +613,44 @@ export class SessionMemory {
    * truncated/partial session file (which would make the session unresumable).
    * Returns a Promise that resolves once THIS save has flushed.
    */
+  /**
+   * Attach a display name to a session. Takes effect on the next save, which
+   * always happens (a session with no messages yet still saves on its first
+   * turn) and never rewrites a name an explicit `save({ name })` set later.
+   */
+  setSessionName(sessionId: string, name: string): void {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    this.pendingNames.set(sessionId, trimmed);
+  }
+
+  /**
+   * Link a session to a pull request so a later `--from-pr <same>` resumes it.
+   * Only ever called for a session the user named a PR for, never inferred
+   * from the current branch — see from-pr.ts for why the automatic
+   * branch→PR linkage official gets from its GitHub integration is not
+   * reproduced here.
+   */
+  setSessionPullRequest(
+    sessionId: string,
+    ref: { number: number; url?: string; repository?: string },
+  ): void {
+    this.pendingPullRequests.set(sessionId, {
+      prNumber: ref.number,
+      prUrl: ref.url,
+      prRepository: ref.repository,
+    });
+  }
+
   async save(
     sessionId: string,
     messages: Message[],
-    options?: { completed?: boolean; taskState?: TaskState; lastTerminalReason?: string },
+    options?: {
+      completed?: boolean;
+      taskState?: TaskState;
+      lastTerminalReason?: string;
+      name?: string;
+    },
   ): Promise<void> {
     // Snapshot semantics, for real this time (Top10 follow-up C1): capture a
     // SHALLOW COPY at enqueue time. The comment always claimed "each link
@@ -561,7 +671,12 @@ export class SessionMemory {
     sessionId: string,
     messages: Message[],
     options:
-      | { completed?: boolean; taskState?: TaskState; lastTerminalReason?: string }
+      | {
+          completed?: boolean;
+          taskState?: TaskState;
+          lastTerminalReason?: string;
+          name?: string;
+        }
       | undefined,
   ): Promise<void> {
     this.ensureDir();
@@ -650,6 +765,8 @@ export class SessionMemory {
         existing = await this.load(sessionId);
       }
 
+      const name = options?.name ?? this.pendingNames.get(sessionId) ?? undefined;
+      const pullRequest = this.pendingPullRequests.get(sessionId);
       if (existing) {
         data = {
           ...existing,
@@ -659,6 +776,10 @@ export class SessionMemory {
           completed: options?.completed ?? existing.completed,
           taskState: options?.taskState ?? existing.taskState,
           lastTerminalReason: options?.lastTerminalReason ?? existing.lastTerminalReason,
+          name: name ?? existing.name,
+          prNumber: pullRequest?.prNumber ?? existing.prNumber,
+          prUrl: pullRequest?.prUrl ?? existing.prUrl,
+          prRepository: pullRequest?.prRepository ?? existing.prRepository,
         };
       } else {
         data = {
@@ -672,6 +793,10 @@ export class SessionMemory {
           completed: options?.completed ?? false,
           taskState: options?.taskState ?? "paused",
           lastTerminalReason: options?.lastTerminalReason,
+          name,
+          prNumber: pullRequest?.prNumber,
+          prUrl: pullRequest?.prUrl,
+          prRepository: pullRequest?.prRepository,
         };
       }
 
@@ -684,7 +809,7 @@ export class SessionMemory {
       // the old or the new complete file, never a partial one.
       const tmpPath = `${filePath}.${process.pid}.tmp`;
       await fsPromises.writeFile(tmpPath, json, "utf-8");
-      await fsPromises.rename(tmpPath, filePath);
+      await renameWithRetry(tmpPath, filePath);
       try {
         saveSessionRuntime(path.dirname(path.dirname(this.sessionsDir)), sessionId);
       } catch (error) {
@@ -783,7 +908,7 @@ export class SessionMemory {
     if (path.basename(filePath) === "catalog.json") return;
     const backup = `${filePath.slice(0, -".json".length)}.corrupt-${Date.now()}.json`;
     try {
-      await fsPromises.rename(filePath, backup);
+      await renameWithRetry(filePath, backup);
       console.warn(
         `session-memory: session file for ${sessionId} was corrupt (${why}); preserved as ${path.basename(backup)} and starting fresh.`,
       );
@@ -878,6 +1003,10 @@ export class SessionMemory {
           completed: data.completed,
           taskState: data.taskState,
           lastTerminalReason: data.lastTerminalReason,
+          name: data.name,
+          prNumber: data.prNumber,
+          prUrl: data.prUrl,
+          prRepository: data.prRepository,
         });
       }
 

@@ -9,6 +9,7 @@ import {
   providersFilePath,
 } from "../provider-profiles.js";
 import { promptSelectMenu } from "../tui/cli-interactive.js";
+import { sanitizeTerminalText } from "../tui/terminal-width.js";
 import type { CommandContext, SlashCommand } from "./types.js";
 
 /** "provider/model" — one-line summary of a profile's target. */
@@ -49,10 +50,17 @@ const EXAMPLE = `  {
 /** Switch the live config to `profile` and print a detailed confirmation with model recommendation. */
 function switchTo(ctx: CommandContext, profile: ProviderProfile): void {
   const prevProvider = ctx.modelConfig.provider;
-  applyProfile(ctx.modelConfig, profile);
+  try {
+    applyProfile(ctx.modelConfig, profile);
+  } catch (error) {
+    console.log(
+      `${chalk.red("  ✗")} 无法切换: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return;
+  }
 
   console.log("");
-  console.log(chalk.green("  ✓") + ` 已切换到 ${chalk.cyan(profile.name)}`);
+  console.log(`${chalk.green("  ✓")} 已切换到 ${chalk.cyan(sanitizeTerminalText(profile.name))}`);
   console.log(chalk.gray("  ──────────────────────────────────────"));
 
   const currentProvider = ctx.modelConfig.provider;
@@ -60,21 +68,27 @@ function switchTo(ctx: CommandContext, profile: ProviderProfile): void {
 
   // Show provider change
   if (prevProvider !== currentProvider) {
-    console.log(`  ${chalk.dim("Provider:")} ${prevProvider} → ${chalk.cyan(currentProvider)}`);
+    console.log(
+      `  ${chalk.dim("Provider:")} ${sanitizeTerminalText(prevProvider)} → ${chalk.cyan(sanitizeTerminalText(currentProvider))}`,
+    );
   }
 
   // Show model change and recommendation
   const recommended = getRecommendedModel(currentProvider);
   if (profile.model) {
     // User explicitly specified a model in the profile
-    console.log(`  ${chalk.dim("Model:")}   ${chalk.cyan(currentModel)}`);
+    console.log(`  ${chalk.dim("Model:")}   ${chalk.cyan(sanitizeTerminalText(currentModel))}`);
     if (currentModel !== recommended.model) {
-      console.log(chalk.gray(`           推荐模型: ${recommended.model} (${recommended.reason})`));
+      console.log(
+        chalk.gray(
+          `           推荐模型: ${sanitizeTerminalText(recommended.model)} (${sanitizeTerminalText(recommended.reason)})`,
+        ),
+      );
     }
   } else {
     // Using provider default
     console.log(
-      `  ${chalk.dim("Model:")}   ${chalk.cyan(currentModel)} ${chalk.gray("(provider 默认)")}`,
+      `  ${chalk.dim("Model:")}   ${chalk.cyan(sanitizeTerminalText(currentModel))} ${chalk.gray("(provider 默认)")}`,
     );
   }
 
@@ -114,7 +128,9 @@ export const providerCommand: SlashCommand = {
       const match = findProfile(profiles, name);
       if (!match) {
         console.log(chalk.yellow(`  未找到匹配的 profile: "${name}"`));
-        console.log(chalk.gray(`  可用选项: ${profiles.map((p) => p.name).join(", ")}`));
+        console.log(
+          chalk.gray(`  可用选项: ${profiles.map((p) => sanitizeTerminalText(p.name)).join(", ")}`),
+        );
         return;
       }
       switchTo(ctx, match);
@@ -128,8 +144,10 @@ export const providerCommand: SlashCommand = {
         header: "切换 Provider",
         question: "选择一个 API 端点配置:",
         options: profiles.map((p) => ({
-          label: p.name,
-          description: `${p.provider ?? "openai"}/${p.model ?? "default"}`,
+          // .claude/providers.json lives in the workspace — profile fields are
+          // project-supplied, so sanitize the label/description shown here.
+          label: sanitizeTerminalText(p.name),
+          description: sanitizeTerminalText(`${p.provider ?? "openai"}/${p.model ?? "default"}`),
         })),
       });
       if (!picked || picked.length === 0) {
@@ -151,9 +169,11 @@ export const providerCommand: SlashCommand = {
       const isCurrent =
         ctx.modelConfig.provider === (p.provider ?? "openai") && ctx.modelConfig.model === current;
       const marker = isCurrent ? chalk.green(" ◀ 当前") : "";
-      console.log(`    ${chalk.cyan(p.name)} — ${chalk.gray(describe(p))}${marker}`);
+      console.log(
+        `    ${chalk.cyan(sanitizeTerminalText(p.name))} — ${chalk.gray(sanitizeTerminalText(describe(p)))}${marker}`,
+      );
       if (p.model && p.model !== rec.model) {
-        console.log(chalk.gray(`                   推荐: ${rec.model}`));
+        console.log(chalk.gray(`                   推荐: ${sanitizeTerminalText(rec.model)}`));
       }
     }
     console.log("");

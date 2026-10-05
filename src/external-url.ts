@@ -10,9 +10,13 @@ export function validatedExternalUrl(value: string): string {
 export async function openExternalUrl(value: string): Promise<void> {
   const url = validatedExternalUrl(value);
   // No shell command string contains the server-supplied URL.
+  // Review fix ("powershell.exe CWD 劫持"): a bare "powershell.exe" is resolved
+  // through the Windows search order, which includes the CURRENT directory —
+  // in a malicious workspace (cwd = repo root) a planted powershell.exe would
+  // run instead of the system one. Resolve via SystemRoot to the real binary.
   const command =
     process.platform === "win32"
-      ? "powershell.exe"
+      ? `${process.env.SystemRoot ?? "C:\\Windows"}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`
       : process.platform === "darwin"
         ? "open"
         : "xdg-open";

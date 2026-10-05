@@ -45,7 +45,7 @@ export class TTLCache<T> {
 
   /** Delete every key starting with the prefix (a workspace root). */
   deletePrefix(prefix: string): number {
-    const normalized = CASE_INSENSITIVE_FS ? prefix.toLowerCase() : prefix;
+    const normalized = normalizeScope(prefix);
     let removed = 0;
     for (const key of this.map.keys()) {
       if (key.startsWith(normalized)) {
@@ -90,9 +90,14 @@ const KEY_SEP = "\u0000";
 // and a case-sensitive prefix match would let invalidation miss entries.
 const CASE_INSENSITIVE_FS = process.platform === "win32" || process.platform === "darwin";
 
-/** Normalize a scope path for key/prefix use (see CASE_INSENSITIVE_FS). */
+/** Normalize a scope path for key/prefix use (see CASE_INSENSITIVE_FS).
+ *  Review fix (§五 "键不统一路径分隔符"): on Windows the same directory
+ *  reaches us as `D:\x` and `D:/x` — two cache keys for one tree, so an
+ *  invalidation keyed one way missed listings keyed the other. Unify
+ *  separators before casing. */
 function normalizeScope(scope: string): string {
-  return CASE_INSENSITIVE_FS ? scope.toLowerCase() : scope;
+  const unified = scope.replace(/\\/g, "/");
+  return CASE_INSENSITIVE_FS ? unified.toLowerCase() : unified;
 }
 
 /**

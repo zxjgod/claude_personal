@@ -52,7 +52,23 @@ export class SessionStats {
   cacheReadTokens = 0;
   /** Cumulative tokens written to the prompt cache (12.3). */
   cacheCreationTokens = 0;
-  readonly startedAt = Date.now();
+  /** Not readonly: /resume swaps the live session and reset() restarts the clock. */
+  startedAt = Date.now();
+
+  /**
+   * Zero every counter and restart the clock. Called when /resume swaps the
+   * live session (review fix: "统计状态泄漏") — without it /cost and /status
+   * kept accumulating the PREVIOUS session's tokens/cost into the new one.
+   */
+  reset(): void {
+    this.inputTokens = 0;
+    this.outputTokens = 0;
+    this.apiCalls = 0;
+    this.toolCalls = 0;
+    this.cacheReadTokens = 0;
+    this.cacheCreationTokens = 0;
+    this.startedAt = Date.now();
+  }
 
   /** Record one API call's token usage. */
   addUsage(

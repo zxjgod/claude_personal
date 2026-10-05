@@ -16,6 +16,33 @@ export function stripAnsi(input: string): string {
   return input.replace(ANSI_PATTERN, "");
 }
 
+// Terminal-hostile sequences that must NOT survive in untrusted text (model
+// output, tool output, error messages): CSI including private markers
+// ("\x1b[?25l" hides the cursor — the plain stripAnsi pattern above misses the
+// "?"), OSC terminated by BEL *or* ST ("\x1b]52;c;...\x07" writes the
+// clipboard), DCS/SOS/PM/APC strings, lone ESC, and C0/C1 control chars
+// (tab/newline/CR are kept).
+// eslint-disable-next-line no-control-regex
+const UNSAFE_CONTROL_PATTERN =
+  /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[PX^_][^\x1b]*(?:\x1b\\)?|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\x80-\x9f]/g;
+
+/** Any C0/C1 control byte at all — the cheap "is there anything to strip?"
+ *  pre-check for sanitizeTerminalText. Non-global, so no lastIndex state. */
+const CONTROL_BYTE_PATTERN = /[\x00-\x1f\x7f-\x9f]/;
+
+/**
+ * Sanitize untrusted text before printing it to the terminal. Unlike
+ * stripAnsi (a width-measurement helper) this also removes private CSI,
+ * ST-terminated OSC, and stray control characters. Apply BEFORE adding our
+ * own chalk styling — afterwards it would strip that too.
+ */
+export function sanitizeTerminalText(input: string): string {
+  // Fast path: this runs on every rendered row and every i18n interpolation,
+  // and almost no string carries a control byte.
+  if (!CONTROL_BYTE_PATTERN.test(input)) return input;
+  return input.replace(UNSAFE_CONTROL_PATTERN, "");
+}
+
 // Lazily constructed grapheme segmenter (not available on very old runtimes).
 let segmenter: Intl.Segmenter | undefined;
 function getSegmenter(): Intl.Segmenter | undefined {

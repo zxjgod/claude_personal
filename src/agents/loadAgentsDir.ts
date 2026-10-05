@@ -18,13 +18,15 @@
 //   maxTurns: 20
 //   memory: project
 //   model: sonnet
+//   omitClaudeMd: true
 //   ---
 //   You are a careful pull-request reviewer. Read the diff and report …
 //
 // `tools` maps to the SubagentType's `toolNames`; `maxTurns` and `memory` are
-// passed through. `model` is parsed and surfaced on the type for /agents but
-// does not override the session model (sub-agent loops inherit the parent's
-// model config). The body is the sub-agent's system prompt.
+// passed through. `model` is honored by subagentModelConfig (alias resolution
+// included) unless CLAUDE_CODE_SUBAGENT_MODEL forces one model onto every
+// sub-agent. `omitClaudeMd: true` skips CLAUDE.md injection into the
+// sub-agent's system prompt. The body is the sub-agent's system prompt.
 // ============================================================
 
 import * as path from "node:path";
@@ -53,6 +55,22 @@ const asString = frontmatterString;
 
 const asList = frontmatterList;
 
+/** Validate a frontmatter mcpServers map (拍板 #14-B). Defensive: entries
+ * without a valid transport type are dropped; prototype-polluting keys too. */
+function asMcpServers(value: unknown): SubagentType["mcpServers"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const out: NonNullable<SubagentType["mcpServers"]> = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (key === "__proto__" || key === "constructor" || key === "prototype") continue;
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const cfg = entry as Record<string, unknown>;
+    if (cfg.type !== "stdio" && cfg.type !== "http" && cfg.type !== "sse" && cfg.type !== "ws")
+      continue;
+    out[key] = cfg as unknown as NonNullable<SubagentType["mcpServers"]>[string];
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 function asNumber(v: unknown): number | undefined {
   if (v === undefined) return undefined;
   const s = Array.isArray(v) ? v[0] : v;
@@ -76,11 +94,23 @@ function agentFromFile(
     disallowedTools: asList(frontmatter.disallowedTools ?? frontmatter["disallowed-tools"]),
     model: asString(frontmatter.model),
     effort: asString(frontmatter.effort),
+    // 拍板 #21: per-agent thinking escape hatch (default is OFF globally).
+    thinking:
+      asString(frontmatter.thinking) === "true"
+        ? true
+        : asString(frontmatter.thinking) === "false"
+          ? false
+          : undefined,
     skills: asList(frontmatter.skills),
     permissionMode: asString(frontmatter.permissionMode),
     hooks: frontmatter.hooks,
     background: asString(frontmatter.background) === "true",
     isolation: asString(frontmatter.isolation) === "worktree" ? "worktree" : undefined,
+    // Official field: skip user/project/local CLAUDE.md for this sub-agent.
+    omitClaudeMd: asString(frontmatter.omitClaudeMd ?? frontmatter["omit-claude-md"]) === "true",
+    // 拍板 #14-B: agent-scoped MCP servers (validated; connected per-run
+    // under the fingerprint trust gate in agents/agent-mcp.ts).
+    mcpServers: asMcpServers(frontmatter.mcpServers),
     systemPrompt: body,
     maxTurns: asNumber(frontmatter.maxTurns),
     // memory must be one of the supported scopes, or undefined.

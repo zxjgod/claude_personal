@@ -16,6 +16,7 @@ import {
 } from "../checkpoint.js";
 import { PersistenceManager } from "../persistence.js";
 import { SessionMemory } from "../session-memory.js";
+import { createRun, saveRun } from "../subagent-store.js";
 import type { Message } from "../types.js";
 
 function userMsg(text: string): Message {
@@ -73,6 +74,20 @@ describe("SessionMemory", () => {
     expect((await sm.listSessions()).length).toBe(1);
     await sm.deleteSession(id);
     expect(await sm.load(id)).toBeNull();
+  });
+
+  // 拍板 #19: sub-agent run records are full transcripts under
+  // sessions/subagents-<id>/. deleteRuns() had no caller at all, so they
+  // outlived every deleted session and grew without bound.
+  it("deleting a session also removes its sub-agent run records", async () => {
+    const id = sm.generateId();
+    await sm.save(id, [{ role: "user", content: [{ type: "text", text: "x" }] }]);
+    const run = createRun(tmpDir, id, "general", "d", "p");
+    saveRun(tmpDir, run);
+    const runsDir = path.join(sessionsDirOf(tmpDir), `subagents-${id}`);
+    expect(fs.existsSync(runsDir)).toBe(true);
+    await sm.deleteSession(id);
+    expect(fs.existsSync(runsDir)).toBe(false);
   });
 
   // Top10 #9: a corrupt file used to load as null WITHOUT a trace, and the

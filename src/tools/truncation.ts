@@ -118,8 +118,12 @@ export function spillIfLarge(formatted: string, opts: SpillOptions): string {
     const dir = path.join(opts.workspaceRoot, SPILL_DIR);
     fs.mkdirSync(dir, { recursive: true });
     const safeName = opts.toolName.replace(/[^a-zA-Z0-9_-]/g, "_");
+    // sessionId comes from --session-id (caller-controlled CLI input) and is
+    // not validated upstream — sanitize it like toolName so a traversal value
+    // ("../../escape") cannot spill outside the tool-results directory.
+    const safeSession = opts.sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
     const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const filePath = path.join(dir, `${opts.sessionId}-${safeName}-${stamp}.txt`);
+    const filePath = path.join(dir, `${safeSession}-${safeName}-${stamp}.txt`);
     fs.writeFileSync(filePath, formatted, "utf-8");
     return preview(
       formatted,

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { userConfigRoot } from "./settings.js";
+import { renameSyncWithRetry } from "./utils/atomic-rename.js";
 
 function storePath(): string {
   return (
@@ -38,6 +39,6 @@ export async function confirmExecutableConfig(
   }
   const temp = `${store}.${process.pid}.tmp`;
   fs.writeFileSync(temp, JSON.stringify({ ...existing, [path.resolve(file)]: fingerprint(raw) }));
-  fs.renameSync(temp, store);
+  renameSyncWithRetry(temp, store);
   return true;
 }

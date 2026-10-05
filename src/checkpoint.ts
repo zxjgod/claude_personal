@@ -42,6 +42,7 @@ import fs from "node:fs";
 import nodePath from "node:path";
 import { forgetChanges } from "./change-tracker.js";
 import { refreshRead } from "./read-tracker.js";
+import { renameSyncWithRetry } from "./utils/atomic-rename.js";
 
 interface SessionCheckpoints {
   /** 1-based index of the turn currently running (0 = none started). */
@@ -126,7 +127,7 @@ function writeBlob(key: string, content: string | null): string | null {
       fs.mkdirSync(dir, { recursive: true });
       const tmp = `${file}.${process.pid}.tmp`;
       fs.writeFileSync(tmp, content, "utf-8");
-      fs.renameSync(tmp, file);
+      renameSyncWithRetry(tmp, file);
     }
     return hash;
   } catch {
@@ -241,7 +242,7 @@ function persistState(key: string, s: SessionCheckpoints): void {
     const file = nodePath.join(dir, "state.json");
     const tmp = `${file}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(mirror), "utf-8");
-    fs.renameSync(tmp, file);
+    renameSyncWithRetry(tmp, file);
   } catch {
     // Best-effort mirror; memory checkpoints keep working.
   }
@@ -569,7 +570,7 @@ export function restoreToTurn(sessionId: string, turn: number): RestoreResult {
         const tmp = `${path}.${process.pid}.${Date.now()}.rewind.tmp`;
         try {
           fs.writeFileSync(tmp, content, "utf-8");
-          fs.renameSync(tmp, path);
+          renameSyncWithRetry(tmp, path);
         } finally {
           try {
             if (fs.existsSync(tmp)) fs.rmSync(tmp, { force: true });

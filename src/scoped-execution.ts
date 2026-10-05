@@ -1,4 +1,4 @@
-import { HookRegistry } from "./hooks.js";
+import { HookRegistry, mergeEventOutcomes, strongestPermissionDecision } from "./hooks.js";
 import { parseHooksConfig, registerHooksFromConfig } from "./hooks-config.js";
 import { mergePermissionPolicies, type PermissionPolicy } from "./permission-policy.js";
 import type { SkillDefinition } from "./skills.js";
@@ -22,7 +22,14 @@ export function scopedHooks(
       const first = await parent.runPre(payload);
       if (first.block) return first;
       const second = await registry.runPre({ ...payload, input: first.input ?? payload.input });
-      return { ...first, ...second };
+      const merged = { ...first, ...second };
+      // deny/ask are sticky across layers — an inner "allow" must not
+      // override an outer layer's stronger decision.
+      merged.permissionDecision = strongestPermissionDecision(
+        first.permissionDecision,
+        second.permissionDecision,
+      );
+      return merged;
     },
     async runPost(payload) {
       const first = await parent.runPost(payload);
@@ -35,11 +42,14 @@ export function scopedHooks(
       return registry.runStop(payload);
     },
     async runEvent(event, payload) {
-      const first = await parent.runEvent?.(event, payload);
+      const first = (await parent.runEvent?.(event, payload)) || undefined;
       if (first?.block) return first;
       const second = await registry.runEvent(event, payload);
+      // mergeEventOutcomes keeps the STRONGEST permission decision across
+      // layers — an inner "allow" must not override an outer deny/ask.
+      const merged = mergeEventOutcomes(first, second);
       return {
-        ...second,
+        ...merged,
         additionalContext:
           [first?.additionalContext, second?.additionalContext].filter(Boolean).join("\n") ||
           undefined,

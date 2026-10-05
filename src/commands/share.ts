@@ -10,6 +10,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import chalk from "chalk";
 import { resolveAllowedWorkspaceFile } from "../tools/utils/path.js";
+import { sanitizeTerminalText } from "../tui/terminal-width.js";
 import type { CommandContext, CommandResult, SlashCommand } from "./types.js";
 
 /** Render a compact, shareable transcript (no raw tool args/results dump). */
@@ -55,7 +56,10 @@ export const shareCommand: SlashCommand = {
 
     if (!target) {
       // No path → print to stdout so it can be piped (`/share | pbcopy`).
-      process.stdout.write(md + "\n");
+      // The transcript embeds assistant text (model-produced) — sanitize the
+      // terminal print. The file-write path below stays raw on purpose: it is
+      // an export document, not terminal output.
+      process.stdout.write(sanitizeTerminalText(md) + "\n");
       return;
     }
     try {

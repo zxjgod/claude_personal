@@ -62,6 +62,11 @@ docs/更新日志/
 | 2026-10-02 | style | TUI / 启动横幅 | [启动横幅文字配色](./20261002-banner-text-colors.md) | 本次提交 | [当前架构](../项目架构.md) |
 | 2026-10-02 | feature / fix | 核心执行 / 扩展 / 协议 / 恢复 | [v1.6.0 本地能力全面升级](./20261002-comprehensive-upgrade.md) | 工作区改动 | [升级实施](../升级实施-20261002.md) |
 | 2026-10-02 | fix | 权限 / LSP / MCP / goal / 恢复 | [v1.6.1 审查问题修复](./20261002-review-remediation.md) | 工作区改动 | [核验报告](../问题清单核验-20261002.md) |
+| 2026-10-02 | fix | 工具契约 / 参数名 / Hooks | [官方工具参数名对齐（snake_case）](./20261002-official-param-parity.md) | 工作区改动 | [差距评估](../claude-code差距评估-20261002.md) |
+| 2026-10-02 | fix | 工具契约 / 工具名 / Grep / CI | [官方工具名对齐 + Grep context/offset](./20261002-official-name-parity.md) | 工作区改动 | [前一轮：参数名](./20261002-official-param-parity.md) |
+| 2026-10-02 | fix | 工具契约 / Workflow / Agent / Notebook | [官方工具契约缺口收尾（第二批）](./20261002-official-contract-batch3.md) | 工作区改动 | [前一轮：工具名](./20261002-official-name-parity.md) |
+| 2026-10-02 | fix | 持久化 / session / Windows | [修复 Windows 上 session 保存被瞬时共享冲突吞掉](./20261002-windows-rename-share-violation.md) | 工作区改动 | [前一批：工具契约](./20261002-official-contract-batch3.md) |
+| 2026-10-02 | fix | checkpoint / 原子写 / Windows | [原子 rename 重试覆盖面补全（9 处 renameSync）](./20261002-atomic-rename-coverage.md) | 工作区改动 | [上一轮：session 保存](./20261002-windows-rename-share-violation.md) |
 | 2026-10-02 | feature | TUI / 询问面板 | [开放询问布局与 Tab 补充回答](./20261002-open-asking-panel.md) | 本次提交 | [当前架构](../项目架构.md) |
 | 2026-10-01 | fix | 权限 / 会话 / 调度 / MCP / 文档 | [执行约束与运行时归属修复](./20261001-runtime-ownership-fix.md) | 本次提交 | [当前设计决策](../architecture/decisions.md) |
 | 2026-09-30 | feature / fix | TUI / EffortPrompt / 动画 | [/effort 灰紫布局与 Ultracode 紫色线性扩散波纹](./20260930-effort-layout-ultracode-ripple.md) | 待提交 | — |
@@ -106,6 +111,11 @@ docs/更新日志/
 - **启动横幅 / 主题文字颜色**：[20261002-banner-text-colors](./20261002-banner-text-colors.md)（橙色品牌、亮灰正文、中灰信息及灰色斜体链接）。
 - **全面升级 / 配置 / Hooks / 自动化 / 运行状态 / 代码理解**：[20261002-comprehensive-upgrade](./20261002-comprehensive-upgrade.md)（v1.6.0 行为、迁移、验证与外部服务边界）。
 - **审查修复 / 权限 / LSP / MCP / 目标恢复**：[20261002-review-remediation](./20261002-review-remediation.md)（v1.6.1 已确认问题、条件性入口保护与永久回归）。
+- **工具契约 / 官方参数名 / Hook 信封**：[20261002-official-param-parity](./20261002-official-param-parity.md)（`file_path` 等 snake_case 作为规范名，camelCase 保留为别名）。
+- **工具契约 / 官方工具名 / Grep 分页**：[20261002-official-name-parity](./20261002-official-name-parity.md)（`Read`/`WebFetch`/`TodoWrite` 全链路可解析、Grep `context`/`offset`、补齐 `.github/` 与 `.gitignore`）。
+- **工具契约 / Workflow / Agent 权限 / Notebook 单元格**：[20261002-official-contract-batch3](./20261002-official-contract-batch3.md)（NotebookEdit `cell_id` 真实寻址、Workflow `script`/`scriptPath`/无必填、Agent `mode` 只收不放宽）。
+- **持久化 / session 保存 / Windows**：[20261002-windows-rename-share-violation](./20261002-windows-rename-share-violation.md)（`EPERM` 瞬时共享冲突曾静默丢保存；rename 加重试，压力脚本 300 轮 0 失败）。
+- **原子写 / checkpoint / Windows**：[20261002-atomic-rename-coverage](./20261002-atomic-rename-coverage.md)（上一轮只搜了 `rename(` 漏掉 9 处 `renameSync`；本轮补齐，含每次编辑都走的 checkpoint blob 写）。
 
 - **询问面板 / 权限补充 / AI 自定义回答**：[20261002-open-asking-panel](./20261002-open-asking-panel.md)（开放布局、浅紫配色、编号选择、Tab 补充、连续请求重置）。
 

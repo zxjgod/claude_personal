@@ -3,7 +3,33 @@
 // ============================================================
 
 import { describe, expect, it } from "vitest";
-import { truncateVisual, visualWidth } from "../tui/terminal-width.js";
+import { sanitizeTerminalText, truncateVisual, visualWidth } from "../tui/terminal-width.js";
+
+describe("sanitizeTerminalText", () => {
+  it("strips plain SGR sequences", () => {
+    expect(sanitizeTerminalText("\x1b[31mred\x1b[0m")).toBe("red");
+  });
+
+  it("strips private CSI that the width-oriented stripAnsi misses", () => {
+    // "\x1b[?25l" hides the cursor — the "?" private marker must not survive.
+    expect(sanitizeTerminalText("a\x1b[?25lb")).toBe("ab");
+    expect(sanitizeTerminalText("a\x1b[?1049hb")).toBe("ab"); // alt screen
+  });
+
+  it("strips OSC52 clipboard writes (BEL and ST terminated)", () => {
+    expect(sanitizeTerminalText("x\x1b]52;c;aGVsbG8=\x07y")).toBe("xy");
+    expect(sanitizeTerminalText("x\x1b]52;c;aGVsbG8=\x1b\\y")).toBe("xy");
+    expect(sanitizeTerminalText("x\x1b]8;;https://evil.example\x1b\\link\x1b]8;;\x1b\\y")).toBe(
+      "xlinky",
+    );
+  });
+
+  it("strips DCS strings, stray control chars, and keeps tab/newline", () => {
+    expect(sanitizeTerminalText("a\x1bPq1;2;3\x1b\\b")).toBe("ab");
+    expect(sanitizeTerminalText("a\x07\x00\x1fb")).toBe("ab");
+    expect(sanitizeTerminalText("a\tb\nc\rd")).toBe("a\tb\nc\rd");
+  });
+});
 
 describe("visualWidth", () => {
   it("counts CJK and fullwidth glyphs as two columns", () => {

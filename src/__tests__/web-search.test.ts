@@ -4,6 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  filterByDomains,
   parseBingResults,
   parseDdgLiteResults,
   parseSearchResults,
@@ -108,5 +109,53 @@ describe("parseDdgLiteResults (S7)", () => {
   it("decodes entities and respects the limit", () => {
     expect(parseDdgLiteResults(DDG_LITE_SAMPLE, 1)).toHaveLength(1);
     expect(parseDdgLiteResults("<html>nothing</html>")).toHaveLength(0);
+  });
+});
+
+// `site:` is only a hint to the engine (Bing ignores it often enough to matter),
+// so the domain restrictions are enforced on the results themselves.
+describe("filterByDomains", () => {
+  const hits = [
+    { title: "a", url: "https://docs.python.org/3/x", snippet: "" },
+    { title: "b", url: "https://python.org/dev", snippet: "" },
+    { title: "c", url: "https://evil.example.com/x", snippet: "" },
+    { title: "d", url: "notaurl", snippet: "" },
+    { title: "e", url: "https://dev.python.org/x", snippet: "" },
+  ];
+
+  it("keeps only allowed domains and their subdomains", () => {
+    expect(filterByDomains(hits, { allowed: ["docs.python.org"] }).map((r) => r.url)).toEqual([
+      "https://docs.python.org/3/x",
+    ]);
+    expect(filterByDomains(hits, { allowed: ["python.org"] }).map((r) => r.title)).toEqual([
+      "a",
+      "b",
+      "e",
+    ]);
+  });
+
+  it("drops blocked domains and their subdomains", () => {
+    expect(filterByDomains(hits, { blocked: ["example.com"] }).map((r) => r.title)).toEqual([
+      "a",
+      "b",
+      "e",
+    ]);
+  });
+
+  it("applies both, and rejects non-absolute URLs when an allow list is set", () => {
+    expect(filterByDomains(hits, { allowed: ["python.org"] }).map((r) => r.title)).toEqual([
+      "a",
+      "b",
+      "e",
+    ]);
+    expect(
+      filterByDomains(hits, { allowed: ["python.org"], blocked: ["dev.python.org"] }).map(
+        (r) => r.title,
+      ),
+    ).toEqual(["a", "b"]);
+    // With no restrictions the list passes through untouched (no URL parsing).
+    expect(filterByDomains(hits)).toBe(hits);
+    // Case- and leading-dot-tolerant.
+    expect(filterByDomains(hits, { allowed: [".Docs.Python.ORG"] })).toHaveLength(1);
   });
 });

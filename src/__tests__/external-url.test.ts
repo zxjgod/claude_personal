@@ -51,7 +51,12 @@ it("keeps a Windows URL out of the PowerShell command text", async () => {
   await openExternalUrl(value);
   const [command, args, options] = vi.mocked(execFile).mock.calls[0];
   if (process.platform === "win32") {
-    expect(command).toBe("powershell.exe");
+    // CWD-hijack fix: an ABSOLUTE System32 path, never the bare name
+    // (CreateProcess searches the current directory for bare names).
+    expect(
+      String(command).toLowerCase().endsWith("\\system32\\windowspowershell\\v1.0\\powershell.exe"),
+    ).toBe(true);
+    expect(String(command)).not.toBe("powershell.exe");
     expect(args).not.toContain(value);
     expect((options as { env: Record<string, string> }).env.CCR_EXTERNAL_URL).toBe(value);
   } else expect(args).toContain(value);

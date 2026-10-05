@@ -29,6 +29,7 @@ import {
 } from "./tui/cli-renderer.js";
 import { Spinner } from "./tui/cli-spinner.js";
 import { SessionTranscript } from "./tui/session-transcript.js";
+import { sanitizeTerminalText } from "./tui/terminal-width.js";
 import type {
   AskUserFn,
   Message,
@@ -191,6 +192,14 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
   // Ctrl+C would BOTH abort the turn (per-turn handler) and kill the process
   // (top-level handler) at the same time.
   let turnInProgress = false;
+  // Review fix ("SIGINT 监听器泄漏致 Ctrl+C 失效"): the per-turn handler is
+  // installed at the turn's start and removed after it — but ONLY on the
+  // happy path. A throw from the turn body (permission prompt failure,
+  // adapter error surfacing through loop.next(), …) skips the removal and
+  // leaves turnInProgress stuck true; from then on the top-level handler
+  // below returns early FOREVER and Ctrl+C at the idle prompt does nothing.
+  // Track the live handler here and detach it in the outer finally too.
+  let activeTurnSigint: (() => void) | undefined;
 
   // Top-level signal handlers. The per-turn SIGINT handler (installed inside
   // the REPL loop) aborts just the current turn; these fire on SIGTERM, or on
@@ -290,6 +299,7 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
       const onSigint = () => {
         controller.abort("User interrupted");
       };
+      activeTurnSigint = onSigint;
       process.on("SIGINT", onSigint);
       // Pre-turn save of the just-pushed user message. Best-effort like every
       // other mid-loop save (saveChain keeps ordering; a failure must not kill
@@ -423,7 +433,10 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
               thinkingStreamed = true;
               process.stdout.write(chalk.dim("  💭 "));
             }
-            process.stdout.write(chalk.dim(event.delta));
+            // Model-produced prose — sanitize before it touches the terminal
+            // (thinking bypasses the markdown renderer, which is where text
+            // deltas get their sanitizeTerminalText).
+            process.stdout.write(chalk.dim(sanitizeTerminalText(event.delta)));
             break;
           }
 
@@ -620,6 +633,7 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
 
       // Detach this turn's SIGINT handler so handlers don't stack up.
       process.removeListener("SIGINT", onSigint);
+      activeTurnSigint = undefined;
 
       console.log(""); // New line after response
       turnInProgress = false;
@@ -628,6 +642,14 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
       await new Promise<void>((resolve) => process.stdout.write("", () => resolve()));
     }
   } finally {
+    // Belt to the per-turn detach above: if the turn body THREW, its
+    // removeListener was skipped — drop the stale handler and reset the flag
+    // so a surviving REPL (caller-caught error) doesn't leave Ctrl+C dead.
+    if (activeTurnSigint) {
+      process.removeListener("SIGINT", activeTurnSigint);
+      activeTurnSigint = undefined;
+      turnInProgress = false;
+    }
     await hooks
       .runEvent("SessionEnd", { session_id: session.id, workspace_root: getWorkspaceRoot() })
       .catch(() => {});

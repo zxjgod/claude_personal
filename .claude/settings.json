@@ -1,0 +1,9 @@
+{
+  "subagents": {
+    "thinking": false,
+    "sidechainMode": "audit"
+  },
+  "memory": {
+    "requireApproval": false
+  }
+}

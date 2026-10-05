@@ -121,6 +121,33 @@ describe("HookRegistry — PreToolUse", () => {
   });
 });
 
+describe("HookRegistry — event decision merging", () => {
+  it("a later allow does NOT override an earlier deny", async () => {
+    const reg = new HookRegistry();
+    reg.register({ matcher: "*", event: () => ({ permissionDecision: "deny" as const }) });
+    reg.register({ matcher: "*", event: () => ({ permissionDecision: "allow" as const }) });
+    const out = await reg.runEvent("PermissionRequest", {});
+    expect(out?.permissionDecision).toBe("deny");
+  });
+
+  it("a later allow does NOT override an earlier ask", async () => {
+    const reg = new HookRegistry();
+    reg.register({ matcher: "*", event: () => ({ permissionDecision: "ask" as const }) });
+    reg.register({ matcher: "*", event: () => ({ permissionDecision: "allow" as const }) });
+    const out = await reg.runEvent("PermissionRequest", {});
+    expect(out?.permissionDecision).toBe("ask");
+  });
+
+  it("allow survives when no stronger decision exists", async () => {
+    const reg = new HookRegistry();
+    reg.register({ matcher: "*", event: () => ({ additionalContext: "note" }) });
+    reg.register({ matcher: "*", event: () => ({ permissionDecision: "allow" as const }) });
+    const out = await reg.runEvent("PermissionRequest", {});
+    expect(out?.permissionDecision).toBe("allow");
+    expect(out?.additionalContext).toBe("note");
+  });
+});
+
 describe("HookRegistry — PostToolUse", () => {
   it("returns the original result when no hooks match", async () => {
     const reg = new HookRegistry();

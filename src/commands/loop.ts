@@ -9,6 +9,7 @@
 // ============================================================
 import chalk from "chalk";
 import { cancelAllWakeupJobs, listWakeupJobs } from "../tools/extended/schedule-wakeup.js";
+import { sanitizeTerminalText } from "../tui/terminal-width.js";
 import type { SlashCommand } from "./types.js";
 
 function loopPrompt(task: string): string {
@@ -44,17 +45,33 @@ export const loopCommand: SlashCommand = {
         console.log("");
         console.log(chalk.bold(`  Pending wakeups (${wakeups.length}):`));
         for (const w of wakeups) {
-          const preview = w.prompt.length > 50 ? `${w.prompt.slice(0, 47)}…` : w.prompt;
+          // The prompt is model/user text and the id may come from a durable
+          // .claude/scheduled_tasks.json — sanitize before printing.
+          const prompt = sanitizeTerminalText(w.prompt);
+          const preview = prompt.length > 50 ? `${prompt.slice(0, 47)}…` : prompt;
           const secs = Math.max(
             0,
             Math.round(Number((w.fireAt - process.hrtime.bigint()) / 1_000_000n)),
           );
-          console.log(`    ${chalk.cyan(w.id)}  in ${secs}s  ${chalk.gray(preview)}`);
+          console.log(
+            `    ${chalk.cyan(sanitizeTerminalText(w.id))}  in ${secs}s  ${chalk.gray(preview)}`,
+          );
         }
       }
       return;
     }
 
+    // Review fix ("loop state clobbering"): starting a new /loop while an
+    // old one still had pending wakeups used to leave BOTH alive — two
+    // loops interleaving turns and rescheduling themselves, with /loop stop
+    // as the only way out. New-loop-is-replace: cancel the session's stale
+    // wakeups first so at most one dynamic loop owns this session.
+    const replaced = cancelAllWakeupJobs(ctx);
+    if (replaced > 0) {
+      console.log(
+        chalk.gray(`  Replaced the previous loop — cancelled ${replaced} stale wakeup(s).`),
+      );
+    }
     console.log(
       chalk.gray(
         `  Loop started. Each iteration runs while you're away; watch for "[Scheduled wakeup]" turns. /loop stop ends it.`,

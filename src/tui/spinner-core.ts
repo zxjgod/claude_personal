@@ -13,7 +13,7 @@
 // claude test/src/src/components/Spinner/* and bridge/bridgeStatusUtil.ts.
 // ============================================================
 
-import { graphemes, truncateVisual, visualWidth } from "./terminal-width.js";
+import { graphemes, sanitizeTerminalText, truncateVisual, visualWidth } from "./terminal-width.js";
 
 // --- Verbs -------------------------------------------------------------------
 
@@ -444,6 +444,11 @@ function clip(value: string, max = 40): string {
  * for unknown tools.
  */
 export function actionLabel(name: string, detail = ""): string {
+  // Both arguments are model-controlled (the tool name is server-controlled
+  // for MCP) and the label is printed verbatim by the live spinner card, so
+  // strip control sequences before slicing basenames/hosts out of them.
+  name = sanitizeTerminalText(name);
+  detail = sanitizeTerminalText(detail);
   const key = name.toLowerCase();
   const target = detail.trim();
   switch (key) {

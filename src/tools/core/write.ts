@@ -27,7 +27,8 @@ export const WriteTool: Tool = buildTool({
   promptDescription:
     "Create or overwrite a file at the specified absolute path. " +
     "Creates parent directories automatically if they don't exist. " +
-    "Parameters: filePath (required, absolute path where to write), " +
+    "Parameters: file_path (required, absolute path where to write; `filePath` " +
+    "is also accepted), " +
     "content (required, the text content to write). " +
     "Use for creating new files or replacing entire file contents. " +
     "For partial edits, use the edit tool instead.",

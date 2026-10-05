@@ -1,7 +1,7 @@
 import chalk from "chalk";
 import type { ToolExecutionResult } from "../types.js";
 import { highlightCode } from "./markdown.js";
-import { stripAnsi, terminalColumns, visualWidth } from "./terminal-width.js";
+import { sanitizeTerminalText, terminalColumns, visualWidth } from "./terminal-width.js";
 import { palette } from "./theme.js";
 
 export function toolOutputLines(result: ToolExecutionResult, detail = ""): string[] {
@@ -20,7 +20,9 @@ export function toolOutputLines(result: ToolExecutionResult, detail = ""): strin
   if (preview) {
     const code = highlightCode(preview.text, languageForPath(preview.filePath)).split("\n");
     const lines = [
-      `${preview.totalLines} lines written to ${preview.filePath}`,
+      // The path is model-controlled (Write's filePath) and lands unstyled in
+      // the line below — sanitize it like every other untrusted string.
+      `${preview.totalLines} lines written to ${sanitizeTerminalText(preview.filePath)}`,
       ...code.map((line, i) => `${chalk.hex(palette.muted)(String(i + 1).padStart(4))} ${line}`),
     ];
     const omitted = preview.totalLines - code.length;
@@ -30,7 +32,10 @@ export function toolOutputLines(result: ToolExecutionResult, detail = ""): strin
   }
   const language = languageForPath(detail);
   const isDiff = ["edit", "multi_edit", "multiedit"].includes(result.toolName.toLowerCase());
-  return result.formatted.split("\n").map((line) => {
+  return result.formatted.split("\n").map((rawLine) => {
+    // Untrusted tool output — strip terminal control sequences (OSC52
+    // clipboard writes, cursor moves, ...) before we add our own styling.
+    const line = sanitizeTerminalText(rawLine);
     if (isDiff && /^[+-] /.test(line)) return renderDiffLine(line, language);
     if (line.startsWith("Error:")) return chalk.hex(palette.error)(line);
     return chalk.hex(palette.text)(line);
@@ -65,7 +70,7 @@ export function renderNumberedDiffLine(
   const foreground = added ? palette.success : palette.error;
   const background = added ? palette.diffAddedBg : palette.diffRemovedBg;
   const gutter = chalk.hex(palette.muted)(String(d.line).padStart(gutterWidth));
-  const rendered = `${gutter} ${chalk.hex(foreground)(d.sign)} ${highlightCode(stripAnsi(d.text), language)}`;
+  const rendered = `${gutter} ${chalk.hex(foreground)(sanitizeTerminalText(d.sign))} ${highlightCode(sanitizeTerminalText(d.text), language)}`;
   const width = Math.max(1, terminalColumns() - (gutterWidth + 1));
   return chalk.bgHex(background)(rendered + " ".repeat(Math.max(0, width - visualWidth(rendered))));
 }
@@ -74,7 +79,9 @@ export function renderDiffLine(line: string, language = ""): string {
   const added = line.startsWith("+");
   const foreground = added ? palette.success : palette.error;
   const background = added ? palette.diffAddedBg : palette.diffRemovedBg;
-  const source = stripAnsi(line.slice(2));
+  // stripAnsi() leaves ST-terminated OSC (…ESC\ ) and private CSI intact, so
+  // use the full sanitizer before the text reaches highlightCode.
+  const source = sanitizeTerminalText(line.slice(2));
   const rendered = chalk.hex(foreground)(line.slice(0, 2)) + highlightCode(source, language);
   const width = Math.max(1, terminalColumns() - 5);
   return chalk.bgHex(background)(rendered + " ".repeat(Math.max(0, width - visualWidth(rendered))));

@@ -7,6 +7,7 @@ import { listScheduledJobs, restoreSessionJobs } from "./tools/extended/cron-sha
 import { enqueueScheduledInput, pendingSessionInputs } from "./tools/extended/schedule-scope.js";
 import { listWakeupJobs, restoreWakeups } from "./tools/extended/schedule-wakeup.js";
 import { listJobs, restoreJobs } from "./tools/job-store.js";
+import { renameSyncWithRetry } from "./utils/atomic-rename.js";
 export function saveSessionRuntime(root: string, sessionId: string): void {
   if (!/^[a-zA-Z0-9_-]+$/.test(sessionId)) return;
   const file = path.join(root, ".claude", "session-runtime", `${sessionId}.json`);
@@ -38,7 +39,7 @@ export function saveSessionRuntime(root: string, sessionId: string): void {
     temp,
     JSON.stringify(value, (_key, entry) => (typeof entry === "bigint" ? String(entry) : entry)),
   );
-  fs.renameSync(temp, file);
+  renameSyncWithRetry(temp, file);
 }
 export function restoreSessionRuntime(root: string, sessionId: string): void {
   if (!/^[a-zA-Z0-9_-]+$/.test(sessionId)) return;

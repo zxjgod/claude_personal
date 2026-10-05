@@ -14,6 +14,7 @@ import type { CommandContext, CommandResult } from "./commands/types.js";
 import { activateSkill } from "./scoped-execution.js";
 import { runForkSkill } from "./skills/forkSkill.js";
 import { getSkill, resolveSkillPrompt } from "./skills.js";
+import { sanitizeTerminalText } from "./tui/terminal-width.js";
 import type { PermissionMode } from "./types.js";
 
 export {
@@ -88,14 +89,20 @@ export async function handleSlashCommand(
             },
             ctx.callModel,
           );
-          console.log(result.error ? `${result.error}\n${result.content}` : result.content);
+          // Fork-skill output is sub-agent (model) prose — sanitize before print.
+          const out = sanitizeTerminalText(result.content);
+          console.log(result.error ? `${sanitizeTerminalText(result.error)}\n${out}` : out);
           return { handled: true };
         }
         activateSkill(ctx.sessionId, skill);
         return { handled: true, prompt };
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
-        console.log(chalk.yellow(`  Skill /${name} failed to load: ${detail}`));
+        // Skill load errors can embed SKILL.md frontmatter (untrusted project
+        // content) via zod messages — sanitize before print.
+        console.log(
+          chalk.yellow(`  Skill /${name} failed to load: ${sanitizeTerminalText(detail)}`),
+        );
         return { handled: true };
       }
     }

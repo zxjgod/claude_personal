@@ -13,6 +13,7 @@ import { useState } from "react";
 import { t } from "./i18n.js";
 import { PromptAnswerInput, PromptOption, PromptPanel } from "./PromptPanel.js";
 import type { Overlay, TuiStore } from "./store.js";
+import { sanitizeTerminalText } from "./terminal-width.js";
 import { modeColor, modeFooterText, palette } from "./theme.js";
 import { DIFF_PREVIEW_MAX } from "./tool-output.js";
 import { useStoreSelector } from "./useStoreSelector.js";
@@ -271,12 +272,12 @@ export function QuestionPrompt({ overlay }: { overlay: Extract<Overlay, { kind: 
               </PromptOption>
               {opt.description ? (
                 <Box paddingLeft={5}>
-                  <Text color={palette.secondary}>{opt.description}</Text>
+                  <Text color={palette.secondary}>{sanitizeTerminalText(opt.description)}</Text>
                 </Box>
               ) : null}
               {i === cursor && opt.preview ? (
                 <Box paddingLeft={5} marginY={1}>
-                  <Text>{opt.preview}</Text>
+                  <Text>{sanitizeTerminalText(opt.preview)}</Text>
                 </Box>
               ) : null}
             </Box>
@@ -371,7 +372,9 @@ export function ElicitationPrompt({
       {overlay.fields.map((f, i) => (
         <Text key={f.name} color={i === index ? palette.promptAccent : undefined}>
           {i === index ? "❯ " : "  "}
-          {f.title ?? f.name}: {values[f.name] ?? ""}
+          {/* `name` is the answer's key and is deliberately NOT sanitized in
+              the store, so it is sanitized here for display. */}
+          {sanitizeTerminalText(f.title ?? f.name)}: {values[f.name] ?? ""}
           {f.enum?.length ? ` [${f.enum.join("/")}]` : ""}
         </Text>
       ))}

@@ -8,6 +8,7 @@ import {
   extractMemoriesWithModel,
   MemoryStore,
 } from "../memory-extract.js";
+import { sanitizeTerminalText } from "../tui/terminal-width.js";
 import type { SlashCommand } from "./types.js";
 
 export const memoryCommand: SlashCommand = {
@@ -90,7 +91,11 @@ export const memoryCommand: SlashCommand = {
           return;
         }
         console.log(chalk.gray(`  Stored ${written.length} memorie(s) → ${store.path}`));
-        for (const m of written) console.log(`    ${chalk.green("+")} ${m.text}`);
+        // Memory text is model-authored (MemorySave / /memory extract) and read
+        // back from .claude/memories.jsonl — sanitize before printing.
+        for (const m of written) {
+          console.log(`    ${chalk.green("+")} ${sanitizeTerminalText(m.text)}`);
+        }
       };
       return run().then(() => undefined);
     }
@@ -102,8 +107,10 @@ export const memoryCommand: SlashCommand = {
       console.log("");
       console.log(chalk.bold(`  Durable memories (${memories.length}) — ${store.path}:`));
       for (const m of memories.slice(-15)) {
-        const tag = m.tags?.length ? chalk.gray(` [${m.tags.join(",")}]`) : "";
-        console.log(`    ${chalk.cyan("•")} ${m.text}${tag}`);
+        const tag = m.tags?.length
+          ? chalk.gray(` [${m.tags.map(sanitizeTerminalText).join(",")}]`)
+          : "";
+        console.log(`    ${chalk.cyan("•")} ${sanitizeTerminalText(m.text)}${tag}`);
       }
       console.log(chalk.gray("  (Use /memory extract to capture more from this session.)"));
     }
@@ -113,7 +120,9 @@ export const memoryCommand: SlashCommand = {
       console.log("");
       console.log(chalk.bold(`  CLAUDE.md (${claudeMdPath}):`));
       console.log("");
-      for (const line of content.split("\n")) console.log(`  ${chalk.gray(line)}`);
+      for (const line of content.split("\n")) {
+        console.log(`  ${chalk.gray(sanitizeTerminalText(line))}`);
+      }
     } catch {
       if (memories.length === 0) {
         console.log(

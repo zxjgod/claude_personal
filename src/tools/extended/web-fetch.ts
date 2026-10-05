@@ -77,7 +77,8 @@ export const WebFetchTool: Tool = buildTool({
   promptDescription:
     "Fetch content from a URL and extract information. " +
     "Parameters: url (required, must be http/https, blocked: localhost, private IPs), " +
-    "fetchInfo (required, what you want to extract from the page). " +
+    "prompt (required, what you want to extract from the page; `fetchInfo` " +
+    "is also accepted). " +
     "Returns plain text content with HTML stripped. " +
     "Use this to read documentation, check API responses, or research topics. " +
     "Max content: 100KB. Timeouts after 15s.",

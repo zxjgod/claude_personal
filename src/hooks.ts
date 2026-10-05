@@ -95,6 +95,37 @@ export interface HookEventOutcome {
   additionalContext?: string;
 }
 
+/** Decision strength for merging: deny > ask > allow. */
+function decisionRank(decision: HookEventOutcome["permissionDecision"]): number {
+  return decision === "deny" ? 3 : decision === "ask" ? 2 : decision === "allow" ? 1 : 0;
+}
+
+/** The stronger of two permission decisions (deny > ask > allow). */
+export function strongestPermissionDecision(
+  a: HookEventOutcome["permissionDecision"],
+  b: HookEventOutcome["permissionDecision"],
+): HookEventOutcome["permissionDecision"] {
+  return decisionRank(a) >= decisionRank(b) ? a : b;
+}
+
+/**
+ * Merge two event outcomes. The STRONGEST permission decision wins — a later
+ * (or outer-layer) "allow" must never paper over an earlier "deny"/"ask".
+ */
+export function mergeEventOutcomes(
+  a: HookEventOutcome | undefined,
+  b: HookEventOutcome | undefined,
+): HookEventOutcome | undefined {
+  if (!a) return b;
+  if (!b) return a;
+  const merged = { ...a, ...b };
+  merged.permissionDecision = strongestPermissionDecision(
+    a.permissionDecision,
+    b.permissionDecision,
+  );
+  return merged;
+}
+
 export class HookRegistry {
   private hooks: Hook[] = [];
 
@@ -228,7 +259,9 @@ export class HookRegistry {
       // actual event name — config-built lifecycle hooks branch on it.
       const outcome = await hook.event({ ...payload, event });
       if (outcome?.block) return outcome;
-      if (outcome) merged = { ...merged, ...outcome };
+      // deny/ask are sticky: mergeEventOutcomes keeps the strongest decision
+      // instead of letting a later "allow" overwrite it via plain spread.
+      if (outcome) merged = mergeEventOutcomes(merged, outcome);
       if (outcome?.additionalContext) context.push(outcome.additionalContext);
     }
     if (context.length) return { ...merged, additionalContext: context.join("\n") };

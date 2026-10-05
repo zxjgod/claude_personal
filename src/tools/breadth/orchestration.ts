@@ -145,8 +145,12 @@ export const SkillTool: Tool = buildTool({
     "the result lists available skills. Only invoke skills from the available-" +
     "skills list or one the user explicitly named.",
   schema: SkillSchema,
+  // Trusted disk templates (CLAUDE.md decision #2) make the approval-free
+  // read-only stance intentional — but resolution can run shell expansion and
+  // fork skills spawn a full sub-agent, so concurrent interleaving with
+  // mutating tools is NOT safe.
   isReadOnly: true,
-  isConcurrencySafe: true,
+  isConcurrencySafe: false,
 
   async call(input, context): Promise<ToolResult> {
     const name = input.skill.trim();
@@ -165,6 +169,33 @@ export const SkillTool: Tool = buildTool({
     }
     if (skill.disableModelInvocation)
       return { content: "", error: `Skill ${name} can only be invoked explicitly by the user.` };
+
+    // Review fix ("skill 非白名单 command 形态触发执行无闸门" + "fork 模式
+    // 无 shell 扫描"): a PROJECT-scope disk skill whose body carries `!`sh``
+    // directives runs repo-controlled shell at RESOLUTION time — and the
+    // trigger here is the MODEL, which file content can steer (prompt
+    // injection → skill=<planted> → shell, zero gate; the fork path ran the
+    // same expansion unscanned). Install-is-trust covers CARRYING shell, not
+    // model-triggered EXECUTION. Require explicit approval; fail closed when
+    // no approval channel exists (headless). The user's own `/<name>` slash
+    // invocation never reaches this tool — that IS the explicit approval.
+    if (skill.hasShellDirectives && skill.diskScope === "project") {
+      const approved = context.askUser
+        ? await context.askUser(
+            SkillTool,
+            { skill: name, args: input.args },
+            `project-scope skill "${name}" executes shell (!\`...\`) from the workspace repo`,
+          )
+        : false;
+      if (!approved) {
+        return {
+          content: "",
+          error:
+            `Skill "${name}" is a project-scope template with shell directives; ` +
+            `model invocation needs explicit approval (or invoke it yourself as /${name}).`,
+        };
+      }
+    }
 
     // Resolve the body now (kernel: discovery cheap, loading expensive — the
     // template/shell expansion happens here, at invocation, not at discovery).
@@ -278,7 +309,11 @@ export const SleepTool: Tool = buildTool({
     "delay. Use for self-paced loops; for external polling prefer waiting " +
     "on the actual signal rather than a fixed short interval.",
   schema: SleepSchema,
-  isReadOnly: true,
+  // A bare sleep is a no-op acknowledgment (read-only); a sleep carrying a
+  // prompt registers a future user-turn injection — that is a side-effecting
+  // write and must go through approval, not the read-only fast path. Called
+  // without input in static contexts (listings): answer conservatively.
+  isReadOnly: (input?: { prompt?: string }) => !!input && !input.prompt?.trim(),
   isConcurrencySafe: true,
 
   async call(input, context): Promise<ToolResult> {

@@ -1,6 +1,7 @@
 // /keybindings — show the active keyboard shortcuts (+ user overrides)
 import chalk from "chalk";
 import { chordToString, loadUserBindings, parseBindings } from "../tui/keybindings/index.js";
+import { sanitizeTerminalText } from "../tui/terminal-width.js";
 import type { SlashCommand } from "./types.js";
 
 export const keybindingsCommand: SlashCommand = {
@@ -41,8 +42,12 @@ export const keybindingsCommand: SlashCommand = {
       console.log(chalk.bold("  Custom (~/.claude/keybindings.json):"));
       for (const b of parsed) {
         const key = chordToString(b.chord);
-        const action = b.action === null ? chalk.dim("unbound") : b.action;
-        console.log(`    ${chalk.cyan(key.padEnd(18))} ${chalk.gray(`[${b.context}] ${action}`)}`);
+        // context/action come from ~/.claude/keybindings.json — a file, so
+        // untrusted until proven otherwise.
+        const action = b.action === null ? chalk.dim("unbound") : sanitizeTerminalText(b.action);
+        console.log(
+          `    ${chalk.cyan(key.padEnd(18))} ${chalk.gray(`[${sanitizeTerminalText(b.context)}] ${action}`)}`,
+        );
       }
     }
   },

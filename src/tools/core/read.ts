@@ -28,7 +28,8 @@ export const ReadTool: Tool = buildTool({
   description: "Read a file from the local filesystem",
   promptDescription:
     "Read a file from the local filesystem. Returns text content with line numbers (4-space padded). " +
-    "Parameters: filePath (required, absolute path to the file), " +
+    "Parameters: file_path (required, absolute path to the file; `filePath` " +
+    "is also accepted), " +
     "offset (optional, line number to start reading from, 1-based), " +
     "limit (optional, maximum number of lines to read, default 2000). " +
     "Images (PNG/JPG/GIF/WebP) and PDFs are returned as visual content blocks you can see directly.",

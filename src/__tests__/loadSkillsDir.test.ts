@@ -47,6 +47,24 @@ describe("parseFrontmatter", () => {
     expect(Object.keys(frontmatter)).toHaveLength(0);
     expect(body).toBe("just a body, no fences");
   });
+
+  it("never writes into __proto__/constructor keys (review fix)", () => {
+    // A YAML `__proto__:` scalar used to hit `frontmatter[key] = …`, which
+    // mutates the object's PROTOTYPE instead of an own property.
+    const { frontmatter } = parseFrontmatter("---\nname: x\n__proto__: 1\n---\nbody");
+    expect(Object.getPrototypeOf(frontmatter)).toBe(Object.prototype);
+    expect(frontmatter.name).toBe("x");
+  });
+
+  it("drops an invalid effort level instead of passing it through (review fix)", () => {
+    fs.mkdirSync(path.join(repo, ".claude", "skills", "typo"), { recursive: true });
+    fs.writeFileSync(
+      path.join(repo, ".claude", "skills", "typo", "SKILL.md"),
+      "---\ndescription: d\neffort: hige\n---\nbody",
+    );
+    loadSkillsDir(repo);
+    expect(getSkill("typo")?.effort).toBeUndefined();
+  });
 });
 
 describe("expandSkillBody", () => {
@@ -122,5 +140,30 @@ describe("loadSkillsDir", () => {
   it("returns empty when the skills root is absent", () => {
     const loaded = loadSkillsDir(path.join(repo, "nonexistent"));
     expect(loaded).toEqual([]);
+  });
+
+  describe("grant/hook trust tier", () => {
+    const HOOKED =
+      "---\nname: hooked\ndescription: d\nallowed-tools: [bash]\nhooks:\n  pre: echo hi\n---\nBody.";
+
+    it("does NOT grant auto-approval or hooks to project-scope skills", () => {
+      writeSkill("hooked", HOOKED);
+      loadSkillsDir(repo);
+      const skill = getSkill("hooked")!;
+      expect(skill.allowedTools).toEqual(["bash"]); // restriction still works
+      expect(skill.toolPermissionGrant).toBe(false);
+      expect(skill.hooks).toBeUndefined();
+    });
+
+    it("grants auto-approval and hooks to user-scope skills", () => {
+      const userRoot = process.env.CCR_USER_SKILLS_DIR!;
+      const dir = path.join(userRoot, "hooked");
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, "SKILL.md"), HOOKED);
+      loadSkillsDir(repo);
+      const skill = getSkill("hooked")!;
+      expect(skill.toolPermissionGrant).toBe(true);
+      expect(skill.hooks).toBeDefined();
+    });
   });
 });

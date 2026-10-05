@@ -1,10 +1,12 @@
 // ============================================================
-// Tests: Fork mode — Agent tool with no subagent_type forks the agent (M35)
+// Tests: Fork mode — Agent tool with explicit "fork" type forks the agent
 // ============================================================
-// Kernel §6 mechanism A: omitting subagent_name forks the CURRENT agent — it
-// inherits the parent's message history, reuses the parent's system prompt
-// verbatim (shared prompt cache, no model swap), and returns ONLY its own final
-// text (the seeded parent history is sliced off before extraction).
+// Kernel §6 mechanism A + 拍板 a (official 2.1.202): subagent_name "fork"
+// forks the CURRENT agent — it inherits the parent's message history, reuses
+// the parent's system prompt verbatim (shared prompt cache, no model swap),
+// and returns ONLY its own final text (the seeded parent history is sliced
+// off before extraction). Omitting the name launches the default typed agent
+// (general), NOT a fork.
 //
 // We mock the model caller to capture what (messages, systemPrompt) the forked
 // sub-loop is invoked with, and to emit a canned final answer.
@@ -49,9 +51,12 @@ beforeEach(() => {
   captured.length = 0;
 });
 
-describe("TaskTool — fork mode (no subagent_name)", () => {
+describe('TaskTool — fork mode (explicit subagent_name "fork")', () => {
   it("inherits the parent's message history and appends the fork task", async () => {
-    await TaskTool.call({ description: "f", prompt: "the fork task" }, forkCtx());
+    await TaskTool.call(
+      { description: "f", prompt: "the fork task", subagent_name: "fork" },
+      forkCtx(),
+    );
     expect(captured.length).toBeGreaterThanOrEqual(1);
     const seen = captured[0]!.messages;
     // Parent turns are seeded first…
@@ -64,12 +69,15 @@ describe("TaskTool — fork mode (no subagent_name)", () => {
   });
 
   it("reuses the parent system prompt verbatim (shared prompt cache)", async () => {
-    await TaskTool.call({ description: "f", prompt: "task" }, forkCtx());
+    await TaskTool.call({ description: "f", prompt: "task", subagent_name: "fork" }, forkCtx());
     expect(captured[0]!.systemPrompt).toBe("PARENT-SYSTEM-PROMPT");
   });
 
   it("returns only the fork's final text under a Fork header (no parent leak)", async () => {
-    const r = await TaskTool.call({ description: "f", prompt: "task" }, forkCtx());
+    const r = await TaskTool.call(
+      { description: "f", prompt: "task", subagent_name: "fork" },
+      forkCtx(),
+    );
     expect(r.error).toBeUndefined();
     expect(r.content).toContain("[Fork of current agent completed]");
     expect(r.content).toContain("fork final answer");
@@ -77,16 +85,26 @@ describe("TaskTool — fork mode (no subagent_name)", () => {
     expect(r.content).not.toContain("earlier assistant answer");
   });
 
-  it("falls back to a typed sub-agent when fork context is absent", async () => {
-    // No getParentMessages/parentSystemPrompt → can't fork → code-explorer.
+  it("omitting the name launches the DEFAULT typed agent (general), not a fork", async () => {
+    // 拍板 a = official 2.1.202: "If omitted, the general-purpose agent is
+    // used." Fork context is available here but must be ignored without an
+    // explicit "fork" name.
+    const r = await TaskTool.call({ description: "f", prompt: "task" }, forkCtx());
+    expect(r.error).toBeUndefined();
+    expect(r.content).toContain('[Sub-agent "general" completed]');
+    expect(r.content).not.toContain("Fork of current agent");
+    // A typed sub-agent does NOT seed the parent history.
+    expect(captured[0]!.messages[0].content[0].text).toBe("task");
+    expect(captured[0]!.systemPrompt).not.toBe("PARENT-SYSTEM-PROMPT");
+  });
+
+  it("omitting the name without fork context still launches the general agent", async () => {
     const r = await TaskTool.call(
       { description: "f", prompt: "task" },
       { workspaceRoot: process.cwd(), sessionId: "s", permissionMode: "default", modelConfig },
     );
     expect(r.error).toBeUndefined();
-    expect(r.content).toContain('[Sub-agent "code-explorer" completed]');
-    expect(r.content).not.toContain("Fork of current agent");
-    // A typed sub-agent does NOT seed the parent history.
+    expect(r.content).toContain('[Sub-agent "general" completed]');
     expect(captured[0]!.messages[0].content[0].text).toBe("task");
   });
 

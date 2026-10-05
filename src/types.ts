@@ -145,6 +145,10 @@ export interface ToolResultMetadata {
   exitCode?: number | null;
   /** True when the tool was interrupted by an abort (Ctrl+C). */
   aborted?: boolean;
+  /** Subagent output-scan verdict (official 2.1.202 parity): clean | blocked | unavailable. */
+  outputScan?: string;
+  /** Resume subsystem (拍板 #19): id of the sub-agent run record (task/agent tools). */
+  agentId?: string;
   /** True when the command exceeded its timeout and was force-killed. */
   timedOut?: boolean;
   /** Background job id (M38) — set when a tool (Bash) returns a job handle. */
@@ -469,6 +473,9 @@ export interface Tool<T extends ToolInput = ToolInput> {
       }
     >;
     required: string[];
+    /** strictObject schemas advertise false so providers reject extra keys
+     *  model-side instead of the mismatch surfacing only at runtime. */
+    additionalProperties?: boolean;
   };
   /** Whether this tool is currently enabled */
   isEnabled(): boolean;
@@ -661,6 +668,7 @@ export type LoopEvent =
  *   prompt_too_long    — context exceeded the model limit and compaction failed
  *   blocking_limit     — hard context limit hit with auto-compaction disabled
  *   stop_hook_prevented— a stop hook hard-stopped continuation
+ *   stop_hook_limit    — a stop hook kept blocking past the hard continuation cap
  *   hook_stopped       — a hook aborted the run
  *   image_error        — an image block could not be processed
  *   aborted_interrupt  — a SOFT interrupt (user typed mid-turn); queued input is
@@ -676,6 +684,7 @@ export type TerminalReason =
   | "prompt_too_long"
   | "blocking_limit"
   | "stop_hook_prevented"
+  | "stop_hook_limit"
   | "hook_stopped"
   | "image_error";
 

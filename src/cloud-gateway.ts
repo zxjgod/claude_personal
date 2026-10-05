@@ -20,6 +20,8 @@ export interface GatewayOptions {
   region?: string;
   /** GCP project id — required for Vertex. */
   project?: string;
+  /** Vertex API version segment — defaults to "v1" (see resolveGateway). */
+  apiVersion?: string;
 }
 
 export interface GatewayResolution {
@@ -59,6 +61,18 @@ export function resolveGateway(
 ): GatewayResolution {
   const region = opts.region || DEFAULTS[gateway].region;
 
+  // Review fix: region/project are interpolated into the request URL without
+  // validation — a region containing "@" turns the URL authority into
+  // userinfo (`https://evil.com@-aiplatform.googleapis.com/...`) and silently
+  // redirects API-key-bearing requests to an attacker host. Whitelist the
+  // charset both clouds actually use (letters, digits, hyphens).
+  const SAFE = /^[a-z0-9][a-z0-9-]*$/i;
+  if (!SAFE.test(region)) {
+    throw new Error(
+      `Invalid gateway region "${region}" — expected letters, digits and hyphens only.`,
+    );
+  }
+
   if (gateway === "bedrock") {
     // Bedrock's OpenAI-compatible Chat Completions endpoint.
     return {
@@ -71,8 +85,30 @@ export function resolveGateway(
   if (!opts.project) {
     throw new Error("Vertex AI gateway requires a project id (set LLM_GATEWAY_PROJECT).");
   }
+  if (!SAFE.test(opts.project)) {
+    throw new Error(
+      `Invalid Vertex project id "${opts.project}" — expected letters, digits and hyphens only.`,
+    );
+  }
+  // The version segment is interpolated into the URL, so whitelist it too.
+  const apiVersion = opts.apiVersion || process.env.LLM_GATEWAY_API_VERSION || "v1";
+  if (!/^v[0-9][a-z0-9]*$/.test(apiVersion)) {
+    throw new Error(
+      `Invalid Vertex API version "${apiVersion}" — expected a version like v1 or v1beta1.`,
+    );
+  }
   return {
-    baseURL: `https://${region}-aiplatform.googleapis.com/v1/projects/${opts.project}/locations/${region}/endpoints/openapi`,
+    // Google's documented OpenAI-compatible Vertex base URL puts the compat
+    // gateway under **v1** (`.../v1/projects/P/locations/L/endpoints/openapi`);
+    // the v1beta1 prefix belongs to the NATIVE publisher-model endpoints
+    // (`.../v1beta1/projects/P/locations/L/publishers/google/models/...`).
+    // An earlier round flipped this to v1beta1 on the assumption that /v1/
+    // 404s — an assumption that was never live-tested (neither variant can be
+    // reached from this environment), so it turned a documented URL into an
+    // unverified guess. The default is now back on the documented /v1/, and
+    // LLM_GATEWAY_API_VERSION lets a deployment that really needs v1beta1 (or
+    // the reverse) switch without patching.
+    baseURL: `https://${region}-aiplatform.googleapis.com/${apiVersion}/projects/${opts.project}/locations/${region}/endpoints/openapi`,
     defaultModel: DEFAULTS.vertex.defaultModel,
   };
 }

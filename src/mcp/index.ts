@@ -22,6 +22,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { pluginDirs, readManifest } from "../plugins.js";
 import { userConfigRoot } from "../settings.js";
+import { sanitizeTerminalText } from "../tui/terminal-width.js";
 import type { PermissionResult, Tool, ToolContext, ToolResult } from "../types.js";
 import { ccrPath } from "../workspace-config.js";
 import { FileTokenOAuthProvider, type MCPOAuthConfig } from "./auth.js";
@@ -151,6 +152,9 @@ export interface MCPLoadOptions {
   /** Require explicit approval before connecting servers from a project file. */
   requireTrust?: boolean;
   confirm?: (descriptions: string[]) => Promise<boolean>;
+  /** Official `disabledMcpjsonServers` (settings.json): server NAMES to skip
+   *  entirely — they neither connect nor trigger the trust prompt. */
+  disabledServers?: ReadonlySet<string>;
 }
 
 const SAFE_STDIO_ENV_KEYS = new Set([
@@ -166,13 +170,34 @@ const SAFE_STDIO_ENV_KEYS = new Set([
   "TERM",
   "SHELL",
   "ComSpec",
+  // Review fix: Windows stdio servers commonly fail to start without these —
+  // APPDATA/LOCALAPPDATA (node/python config homes), PATHEXT (cmd resolves
+  // .cmd/.bat shims through it), PSModulePath (powershell-based servers).
+  "APPDATA",
+  "LOCALAPPDATA",
+  "PATHEXT",
+  "PSModulePath",
 ]);
 
 /** Keep ambient credentials out of project-controlled MCP child processes. */
 export function buildStdioEnv(overrides?: Record<string, string>): Record<string, string> {
   const env: Record<string, string> = {};
   for (const key of SAFE_STDIO_ENV_KEYS) {
-    const value = process.env[key];
+    // Review fix ("Path 大小写"): Windows env keys are case-INSENSITIVE but
+    // process.env property lookup preserves the key casing the parent was
+    // started with ("Path" on most Windows systems) — an exact-case read
+    // misses it and the child spawns without a PATH at all. Fall back to a
+    // case-insensitive scan.
+    let value = process.env[key];
+    if (value === undefined) {
+      const lower = key.toLowerCase();
+      for (const [k, v] of Object.entries(process.env)) {
+        if (k.toLowerCase() === lower && v !== undefined) {
+          value = v;
+          break;
+        }
+      }
+    }
     if (value !== undefined) env[key] = value;
   }
   return { ...env, ...(expandEnvRecord(overrides) ?? {}) };
@@ -231,6 +256,10 @@ function trustMcpConfig(configPath: string, raw: string): void {
   }
 }
 
+// Exported for the agent-scoped MCP gate (拍板 #14-B): agent frontmatter
+// mcpServers reuse the same (path, content-fingerprint) one-time trust.
+export { isMcpConfigTrusted, trustMcpConfig };
+
 // --- Server entry ---
 
 interface ServerEntry {
@@ -245,18 +274,22 @@ interface ServerEntry {
 export class MCPManager {
   private servers: Map<string, ServerEntry> = new Map();
   /**
-   * 16.10: MCP tools whose first call the user already confirmed this session.
-   * Keyed by the synthetic tool name `mcp__<server>__<tool>`. Subsequent calls
-   * skip the prompt so a trusted tool doesn't nag every turn.
+   * server name → (wrapped tool name → definition fingerprint).
+   *
+   * Per SERVER, not one flat map: two servers can legitimately produce the same
+   * wrapped name (`mcp__${server}__${tool}` — the plugin namespace separator and
+   * any server/tool name containing `__` make cross-server collisions routine),
+   * and `getAllTools()` resolves them "first server wins". A single flat map
+   * let the LOSER's fingerprint overwrite the winner's, so the surviving tool
+   * failed its own staleness check on every call and was permanently unusable
+   * with "definition changed; request the refreshed tool".
    */
-  private confirmedMcpTools: Map<string, string> = new Map();
-  private toolDefinitions: Map<string, string> = new Map();
+  private toolDefinitions: Map<string, Map<string, string>> = new Map();
   clearApprovals(): void {
-    this.confirmedMcpTools.clear();
-  }
-  private clearToolApprovals(toolName: string): void {
-    for (const key of this.confirmedMcpTools.keys())
-      if (key.split("\0")[1] === toolName) this.confirmedMcpTools.delete(key);
+    // No-op retained for callers (session resume / disconnect): MCP approvals
+    // are no longer cached manager-side — a one-time "yes" approves ONE call,
+    // and sticky "always" grants live in the permission prompter's alwaysAllow
+    // set (keyed with the tool-definition fingerprint).
   }
   private elicitationHandler: ElicitationHandler | null = null;
   /**
@@ -322,7 +355,9 @@ export class MCPManager {
     }
 
     if (options.requireTrust) {
-      const enabled = Object.entries(config.mcpServers).filter(([, server]) => !server.disabled);
+      const enabled = Object.entries(config.mcpServers).filter(
+        ([name, server]) => !server.disabled && !options.disabledServers?.has(name),
+      );
       // Only prompt when this exact config content has not been trusted before.
       // Once trusted, subsequent launches load it silently; an edited config
       // changes the fingerprint and re-prompts.
@@ -332,7 +367,29 @@ export class MCPManager {
             server.type === "stdio"
               ? [server.command, ...(server.args ?? [])].join(" ")
               : server.url;
-          return `${name} (${server.type}): ${target ?? "configured server"}`;
+          // The trust prompt must disclose every channel through which this
+          // server can receive the user's environment: `env` (stdio child
+          // process) and `headers` (HTTP transport) both support ${VAR}
+          // expansion, so a config that siphons secrets must be visible at
+          // confirmation time. Show var NAMES, never expanded values.
+          const channels: string[] = [];
+          for (const [label, record] of [
+            ["env", server.env],
+            ["headers", server.headers],
+          ] as const) {
+            if (!record) continue;
+            const entries = Object.entries(record).map(
+              ([k, v]) => `${k}=${v.includes("${") ? v : "<set>"}`,
+            );
+            channels.push(`${label}: ${entries.join(", ")}`);
+          }
+          const suffix = channels.length > 0 ? ` [${channels.join(" | ")}]` : "";
+          // The whole line is untrusted config content (name/command/args/
+          // env keys) printed by the confirm callback — sanitize it here so
+          // every consumer gets clean text.
+          return sanitizeTerminalText(
+            `${name} (${server.type}): ${target ?? "configured server"}${suffix}`,
+          );
         });
         const trusted = options.confirm ? await options.confirm(descriptions) : false;
         if (!trusted) {
@@ -346,7 +403,7 @@ export class MCPManager {
     }
 
     for (const [name, serverConfig] of Object.entries(config.mcpServers)) {
-      if (serverConfig.disabled) continue;
+      if (serverConfig.disabled || options.disabledServers?.has(name)) continue;
       await this.connectServer(options.namespace ? `${options.namespace}__${name}` : name, {
         ...serverConfig,
         type: serverConfig.type ?? (serverConfig.command ? "stdio" : "http"),
@@ -543,8 +600,12 @@ export class MCPManager {
           .createHash("sha256")
           .update(JSON.stringify(remoteTool))
           .digest("hex");
-        if (this.toolDefinitions.get(toolName) !== definition) this.clearToolApprovals(toolName);
-        this.toolDefinitions.set(toolName, definition);
+        let definitions = this.toolDefinitions.get(name);
+        if (!definitions) {
+          definitions = new Map<string, string>();
+          this.toolDefinitions.set(name, definitions);
+        }
+        definitions.set(toolName, definition);
 
         return {
           name: toolName,
@@ -554,7 +615,11 @@ export class MCPManager {
           inputSchema,
           isEnabled: () => true,
           isReadOnly: () => false, // Conservative — assume destructive
-          isConcurrencySafe: () => true, // Separate process, safe to run in parallel
+          // Conservative too (review fix): the old `true` let a destructive
+          // MCP call (drop a DB, send mail) run inside a PARALLEL batch
+          // alongside other mutations. "Separate process" says nothing about
+          // side-effect isolation.
+          isConcurrencySafe: () => false,
           // 16.10: MCP servers can execute arbitrary external actions (drop a
           // DB, send mail), so trusting them sight-unseen is risky. We now
           // require interactive approval in default mode for the FIRST call to
@@ -575,11 +640,29 @@ export class MCPManager {
                 CALL_TOOL_TIMEOUT_MS,
               );
 
-              // Extract text content from result
-              const content = (result.content as CallToolResult["content"])
-                .filter((c): c is TextContent => c.type === "text")
+              // Extract text content from result. A remote tool reports failure
+              // with `isError: true` (protocol-level, NOT a thrown error) — the
+              // old code returned that as a plain success, so the model read
+              // "permission denied" / "file not found" text as a completed
+              // action and the TUI rendered it as a normal result. `content` is
+              // also optional in the schema, and `.filter` on undefined threw a
+              // TypeError that masked the real failure.
+              const raw = (result as CallToolResult).content;
+              const blocks = Array.isArray(raw) ? raw : [];
+              const content = blocks
+                .filter((c): c is TextContent => c?.type === "text")
                 .map((c) => c.text)
                 .join("\n");
+              if ((result as CallToolResult).isError)
+                return {
+                  content,
+                  error: `MCP tool error (${toolName}): ${content || "tool reported an error"}`,
+                };
+              if (!Array.isArray(raw))
+                return {
+                  content: "",
+                  error: `MCP tool error (${toolName}): malformed tool result (content is not an array)`,
+                };
 
               return { content: content || "(no text output)" };
             } catch (error) {
@@ -605,33 +688,32 @@ export class MCPManager {
             _input: Record<string, unknown>,
             context: ToolContext,
           ): Promise<PermissionResult> => {
-            // 16.10: prompt on the first call to each MCP tool per session,
-            // then honor the sticky "always" decision. In plan mode the
-            // system-level checkPermission hard-blocks anyway; here we only
-            // gate the default-mode first use. bypassPermissions/acceptEdits
-            // are likewise handled by the system level, so this returns
-            // allowed:true there and lets the loop proceed.
+            // 16.10 (hardened): EVERY call to an MCP tool prompts unless the
+            // user chose "always" — a one-time "yes" approves exactly one
+            // invocation. The old manager-side confirmed set let a single yes
+            // silently authorize every later call with ANY arguments (a write
+            // tool approved for /tmp/a.txt could then write anywhere). Sticky
+            // trust flows through the prompter's alwaysAllow set, whose key
+            // carries the definition fingerprint below, so a definition change
+            // also revokes the grant. bypassPermissions/acceptEdits are
+            // handled by the system level, so this returns allowed:true there
+            // and lets the loop proceed.
             if (context.permissionMode === "bypassPermissions") {
               return { allowed: true };
             }
-            const approvalKey = `${context.sessionId}\0${toolName}`;
-            if (this.toolDefinitions.get(toolName) !== definition)
+            if (this.toolDefinitions.get(name)?.get(toolName) !== definition)
               return {
                 allowed: false,
                 reason: "MCP tool definition changed; request the refreshed tool",
               };
-            if (this.confirmedMcpTools.get(approvalKey) === definition) {
-              return { allowed: true };
-            }
             const allowed = context.askUser
               ? await context.askUser(
                   { name: toolName, isReadOnly: () => false, requiresApproval: () => true } as Tool,
                   { ..._input, __approvalFingerprint: definition },
-                  `First call to MCP tool "${toolName}" — confirm to trust this server action`,
+                  `MCP tool "${toolName}" — confirm this server action (choose "always" to stop re-prompting)`,
                 )
               : false;
             if (allowed) {
-              this.confirmedMcpTools.set(approvalKey, definition);
               return { allowed: true };
             }
             return {
@@ -660,8 +742,9 @@ export class MCPManager {
       LIST_TOOLS_TIMEOUT_MS,
     );
     const refreshed = new Set(toolsResult.tools.map((tool) => `mcp__${name}__${tool.name}`));
-    for (const key of this.toolDefinitions.keys())
-      if (key.startsWith(`mcp__${name}__`) && !refreshed.has(key)) this.toolDefinitions.delete(key);
+    const definitions = this.toolDefinitions.get(name);
+    if (definitions)
+      for (const key of definitions.keys()) if (!refreshed.has(key)) definitions.delete(key);
     entry.tools = this.wrapRemoteTools(name, toolsResult.tools, entry.client);
     this.notifyToolsChanged(name);
     return entry.tools.length;
@@ -750,15 +833,30 @@ export class MCPManager {
    * Get all tools from connected MCP servers. Deduped by wrapped name:
    * server names containing `__` can produce cross-server collisions
    * (mcp__a__b__c), and a duplicate makes registry.register() throw —
-   * first server (insertion order) wins.
+   * first server (insertion order) wins. A dropped duplicate is warned about
+   * once per name (getAllTools is called on every refresh/list): otherwise the
+   * loser's tool vanished silently, and worse, the model could unknowingly call
+   * the OTHER server's same-named tool.
    */
+  private warnedCollisions = new Set<string>();
   getAllTools(): Tool[] {
     const allTools: Tool[] = [];
-    const seen = new Set<string>();
-    for (const server of this.servers.values()) {
+    const seen = new Map<string, string>(); // wrapped name → owning server
+    for (const [serverName, server] of this.servers) {
       for (const tool of server.tools) {
-        if (seen.has(tool.name)) continue;
-        seen.add(tool.name);
+        const owner = seen.get(tool.name);
+        if (owner !== undefined) {
+          if (!this.warnedCollisions.has(tool.name)) {
+            this.warnedCollisions.add(tool.name);
+            console.warn(
+              `MCP tool name collision: "${sanitizeTerminalText(tool.name)}" is exposed by both ` +
+                `"${sanitizeTerminalText(owner)}" and "${sanitizeTerminalText(serverName)}" — ` +
+                `keeping the first and ignoring the duplicate.`,
+            );
+          }
+          continue;
+        }
+        seen.set(tool.name, serverName);
         allTools.push(tool);
       }
     }
@@ -878,7 +976,6 @@ export class MCPManager {
    * Disconnect all MCP servers
    */
   async disconnectAll(): Promise<void> {
-    this.clearApprovals();
     this.toolDefinitions.clear();
     const entries = [...this.servers.entries()];
     this.servers.clear();
@@ -894,10 +991,10 @@ export class MCPManager {
    * Disconnect a single server by name
    */
   async disconnectServer(name: string): Promise<void> {
-    for (const key of this.toolDefinitions.keys())
-      if (key.startsWith(`mcp__${name}__`)) this.toolDefinitions.delete(key);
-    for (const key of this.confirmedMcpTools.keys())
-      if (key.split("\0")[1]?.startsWith(`mcp__${name}__`)) this.confirmedMcpTools.delete(key);
+    // Exact key, not a `mcp__${name}__` prefix scan: with a namespaced server
+    // ("plug__srv") the prefix form also matched "plug" and wiped definitions
+    // belonging to servers that are still connected.
+    this.toolDefinitions.delete(name);
     const server = this.servers.get(name);
     if (!server) return;
     try {

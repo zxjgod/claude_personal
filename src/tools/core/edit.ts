@@ -44,7 +44,7 @@ export const EditTool: Tool = buildTool({
     "Make precise edits using search/replace. " +
     "IMPORTANT: old_string must match EXACTLY including whitespace and indentation. " +
     "If the match is not unique, add more surrounding context lines or use replace_all: true. " +
-    "Parameters: filePath (required, absolute path), " +
+    "Parameters: file_path (required, absolute path; `filePath` is also accepted), " +
     "old_string (required, exact text to find), " +
     "new_string (required, replacement text, use empty string to delete), " +
     "replace_all (optional, replace all occurrences). " +
@@ -246,7 +246,7 @@ export const MultiEditTool: Tool = buildTool({
   promptDescription:
     "Apply multiple search/replace edits to ONE file in a single atomic operation. " +
     "Use when you need to make several changes to the same file — all edits succeed or none are written. " +
-    "Parameters: filePath (required, absolute path), " +
+    "Parameters: file_path (required, absolute path; `filePath` is also accepted), " +
     "edits (required, array of {old_string, new_string, replace_all?}). " +
     "Edits apply in order; each sees the result of previous edits. " +
     "If ANY edit fails, NO changes are written. Prefer this over multiple edit calls.",

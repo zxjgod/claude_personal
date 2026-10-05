@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
+import { permissionRuleMatches, policyDecision } from "../permission-policy.js";
 import { runForkSkill } from "../skills/forkSkill.js";
 import { registerSubagentType, setCoreToolsForSubagents } from "../subagents.js";
 import { createAgents, resetTeams, runAgentTurn } from "../team.js";
@@ -126,5 +127,89 @@ describe("delegated execution constraints", () => {
     await run(ctx);
     expect(runPre).toHaveBeenCalledOnce();
     expect(read).not.toHaveBeenCalled();
+  });
+});
+
+describe("subagent-type deny rules (official: Disable specific subagents)", () => {
+  it("matches subagent_name (task) and subagent_type (Agent) case-insensitively", () => {
+    expect(
+      permissionRuleMatches("Task(code-explorer)", "task", { subagent_name: "code-explorer" }),
+    ).toBe(true);
+    expect(
+      permissionRuleMatches("Agent(Code-Explorer)", "Agent", { subagent_type: "code-explorer" }),
+    ).toBe(true);
+    expect(permissionRuleMatches("Task(general)", "task", { subagent_name: "code-explorer" })).toBe(
+      false,
+    );
+  });
+
+  it("Task(*) covers forks too (no type field in the input)", () => {
+    expect(permissionRuleMatches("Task(*)", "task", { description: "d", prompt: "p" })).toBe(true);
+  });
+
+  it("does not leak type rules into other tools' matching", () => {
+    expect(permissionRuleMatches("Task(code-explorer)", "bash", { command: "code-explorer" })).toBe(
+      false,
+    );
+  });
+
+  it("policyDecision denies a typed spawn through the generic gate", () => {
+    expect(
+      policyDecision({ allow: [], deny: ["Task(code-explorer)"], ask: [] }, "task", {
+        description: "d",
+        prompt: "p",
+        subagent_name: "code-explorer",
+      }),
+    ).toBe("deny");
+  });
+
+  it("Task rejects a denied type before any model call", async () => {
+    const ctx = {
+      ...context(),
+      permissionPolicy: { allow: [], deny: ["Task(policy-reader)"], ask: [] },
+    };
+    const r = await TaskTool.call(
+      { description: "Read", prompt: "read", subagent_name: "policy-reader" },
+      ctx,
+    );
+    expect(r.error).toContain("denied by permissions.deny");
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it("Agent rejects a denied type case-insensitively", async () => {
+    const ctx = {
+      ...context(),
+      permissionPolicy: { allow: [], deny: ["Agent(Policy-Reader)"], ask: [] },
+    };
+    const r = await AgentTool.call(
+      { description: "Read", prompt: "read", subagent_type: "policy-reader" },
+      ctx,
+    );
+    expect(r.error).toContain("denied by permissions.deny");
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it("denying one type leaves the others spawnable", async () => {
+    const ctx = {
+      ...context(),
+      permissionPolicy: { allow: [], deny: ["Task(code-explorer)"], ask: [] },
+    };
+    const r = await TaskTool.call(
+      { description: "Read", prompt: "read", subagent_name: "policy-reader" },
+      ctx,
+    );
+    expect(r.error).toBeUndefined();
+    expect(read).toHaveBeenCalled();
+  });
+
+  it("the unknown-type error hides denied types from the suggestion list", async () => {
+    const ctx = {
+      ...context(),
+      permissionPolicy: { allow: [], deny: ["Task(code-explorer)"], ask: [] },
+    };
+    const r = await TaskTool.call({ description: "d", prompt: "p", subagent_name: "nope" }, ctx);
+    expect(r.error).toContain("Unknown subagent type");
+    expect(r.error).not.toContain("code-explorer");
+    expect(r.error).toContain("policy-reader");
   });
 });

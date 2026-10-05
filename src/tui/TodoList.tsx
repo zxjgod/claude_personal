@@ -12,6 +12,7 @@
 import { Box, Text } from "ink";
 import type { TodoDisplayItem } from "../types.js";
 import { t } from "./i18n.js";
+import { sanitizeTerminalText } from "./terminal-width.js";
 import { palette } from "./theme.js";
 
 /** Max rows the region may occupy, indicator rows included. */
@@ -58,10 +59,13 @@ export function todoWindow(todos: TodoDisplayItem[], maxRows: number = TODO_MAX_
 /** One todo row. `prefix` carries the `⎿` connector on the region's first
  *  visible row (hanging from the status line above); other rows align under it. */
 function TodoRow({ item, prefix }: { item: TodoDisplayItem; prefix: string }) {
+  // `content`/`activeForm` are model-authored and routinely quote file
+  // contents, so they are untrusted text like any other tool input.
+  const content = sanitizeTerminalText(item.content);
   if (item.status === "completed") {
     return (
       <Text dimColor>
-        {prefix}☑ <Text strikethrough>{item.content}</Text>
+        {prefix}☑ <Text strikethrough>{content}</Text>
       </Text>
     );
   }
@@ -70,12 +74,14 @@ function TodoRow({ item, prefix }: { item: TodoDisplayItem; prefix: string }) {
       <Text>
         {prefix}
         <Text color={palette.accent}>■ </Text>
-        {item.content}
-        {item.activeForm ? <Text dimColor>{` — ${item.activeForm}`}</Text> : null}
+        {content}
+        {item.activeForm ? (
+          <Text dimColor>{` — ${sanitizeTerminalText(item.activeForm)}`}</Text>
+        ) : null}
       </Text>
     );
   }
-  return <Text dimColor>{`${prefix}□ ${item.content}`}</Text>;
+  return <Text dimColor>{`${prefix}□ ${content}`}</Text>;
 }
 
 export function TodoList({ todos }: { todos: TodoDisplayItem[] }) {

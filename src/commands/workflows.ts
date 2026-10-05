@@ -3,6 +3,7 @@
 // ============================================================
 
 import chalk from "chalk";
+import { sanitizeTerminalText } from "../tui/terminal-width.js";
 import { listWorkflows } from "../workflow.js";
 import type { SlashCommand } from "./types.js";
 
@@ -18,6 +19,9 @@ export const workflowsCommand: SlashCommand = {
       return;
     }
     for (const wf of workflows.slice(0, 20)) {
+      // Log lines and the rendered result are model/tool output — the
+      // interpreter logs whatever the agents emitted — and this command writes
+      // straight to the parent terminal, where nothing strips control bytes.
       const status =
         wf.status === "completed"
           ? chalk.green(wf.status)
@@ -27,10 +31,12 @@ export const workflowsCommand: SlashCommand = {
       const dur = wf.finishedAt
         ? `${((wf.finishedAt - wf.startedAt) / 1000).toFixed(1)}s`
         : "running…";
-      console.log(`    ${chalk.cyan(wf.id)}  ${status}  ${chalk.gray(dur)}`);
+      console.log(`    ${chalk.cyan(sanitizeTerminalText(wf.id))}  ${status}  ${chalk.gray(dur)}`);
       const last = wf.logs.slice(-3);
-      for (const l of last) console.log(chalk.gray(`        ${l}`));
-      if (wf.result) console.log(chalk.gray(`        → ${wf.result.slice(0, 80)}`));
+      for (const l of last) console.log(chalk.gray(`        ${sanitizeTerminalText(l)}`));
+      if (wf.result) {
+        console.log(chalk.gray(`        → ${sanitizeTerminalText(wf.result).slice(0, 80)}`));
+      }
     }
   },
 };

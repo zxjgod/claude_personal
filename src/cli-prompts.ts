@@ -12,6 +12,7 @@ import { logPermissionChange } from "./audit-log.js";
 import { loadPersistentAlwaysAllow, savePersistentAlwaysAllow } from "./permission-policy.js";
 import { promptPermissionMenu, promptSelectMenu } from "./tui/cli-interactive.js";
 import { renderPermissionPrompt } from "./tui/cli-renderer.js";
+import { sanitizeTerminalText } from "./tui/terminal-width.js";
 import type { AskUserFn, UserQuestion } from "./types.js";
 
 /**
@@ -101,7 +102,8 @@ export function createUserPrompters(deps: {
         }).catch(() => {});
         // P2-2: Show confirmation feedback for "always allow"
         const target = detail || tool.name;
-        console.log(chalk.green(`  ✓ 已记住: ${target} (本会话内不再询问)`));
+        // The target is the model-proposed command/path — sanitize the echo.
+        console.log(chalk.green(`  ✓ 已记住: ${sanitizeTerminalText(target)} (本会话内不再询问)`));
         return true;
       }
       return choice === "yes";
@@ -125,7 +127,9 @@ export function createUserPrompters(deps: {
         (typeof input.command === "string" && input.command) ||
         (typeof input.filePath === "string" && input.filePath) ||
         tool.name;
-      console.log(chalk.green(`  ✓ 已记住: ${target.slice(0, 50)} (本会话内不再询问)`));
+      console.log(
+        chalk.green(`  ✓ 已记住: ${sanitizeTerminalText(target.slice(0, 50))} (本会话内不再询问)`),
+      );
       return true;
     }
     return answer === "y" || answer === "yes";
@@ -150,9 +154,12 @@ export function createUserPrompters(deps: {
       });
     }
     // Non-TTY: print the question + numbered options, read one line.
-    console.log(`\n  ${chalk.bold(q.header)}: ${q.question}`);
+    // Question fields are model input (ask_user_question) — sanitize.
+    console.log(
+      `\n  ${chalk.bold(sanitizeTerminalText(q.header))}: ${sanitizeTerminalText(q.question)}`,
+    );
     q.options.forEach((o, i) => {
-      console.log(`    ${i + 1}. ${o.label}`);
+      console.log(`    ${i + 1}. ${sanitizeTerminalText(o.label)}`);
     });
     const hint = q.multiSelect ? "numbers separated by commas" : "a number";
     const raw = await askQuestion(`  Choose ${hint}: `);

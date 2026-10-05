@@ -93,6 +93,27 @@ describe("anthropic request gating", () => {
     expect(params.output_config).toBeUndefined();
   });
 
+  it("forwards allowlisted --betas as the anthropic-beta header", async () => {
+    await drain({
+      ...base,
+      model: "claude-opus-4-8",
+      options: { betas: ["context-1m-2025-08-07"] },
+    });
+    expect(ctorSpy.mock.calls[0][0].defaultHeaders).toEqual({
+      "anthropic-beta": "context-1m-2025-08-07",
+    });
+  });
+
+  it("sends no beta header when --betas was absent or fully rejected", async () => {
+    await drain({ ...base, model: "claude-opus-4-8" });
+    expect(ctorSpy.mock.calls[0][0].defaultHeaders).toBeUndefined();
+    // Rejected values never reach the adapter, so `betas` is absent — but an
+    // empty array must not produce an empty header either.
+    ctorSpy.mockClear();
+    await drain({ ...base, model: "claude-opus-4-8", options: { betas: [] } });
+    expect(ctorSpy.mock.calls[0][0].defaultHeaders).toBeUndefined();
+  });
+
   it("an explicit options.output_config still wins over the gate", async () => {
     // Caller's explicit decision — the adapter passes it through even where
     // the default would be suppressed.

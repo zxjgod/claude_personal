@@ -5,6 +5,8 @@
 // Claude Code replica application.
 
 import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { ResourceLimiter } from "./resource-limiter.js";
 
 export type HealthStatus = "healthy" | "degraded" | "unhealthy";
@@ -71,7 +73,12 @@ export async function checkHealth(): Promise<HealthCheckResult> {
  */
 async function checkFilesystem(errors: string[]): Promise<boolean> {
   try {
-    const testPath = ".health-check-test";
+    // Review fix ("health-check 在工作区落 .health-check-test"): the probe
+    // file used to be written into process.cwd() — polluting the project
+    // directory and racing a concurrent health check over the same name.
+    // The check is about fs writability in general; the OS temp dir (with a
+    // unique name) answers it without touching the workspace.
+    const testPath = path.join(os.tmpdir(), `ccr-health-check-${process.pid}-${Date.now()}`);
     await fs.promises.writeFile(testPath, "test", "utf-8");
     await fs.promises.readFile(testPath, "utf-8");
     await fs.promises.unlink(testPath);
@@ -166,7 +173,11 @@ function determineStatus(checks: Record<string, boolean>, errors: string[]): Hea
     return "healthy";
   }
 
-  if (failedChecks <= 1 || errors.length <= 2) {
+  // Review fix ("determineStatus OR 语义"): degraded used to be
+  // `failedChecks <= 1 || errors.length <= 2` — EITHER branch alone
+  // downgraded a genuinely broken system (e.g. 3 failed checks but an
+  // empty errors array → "degraded"). Degraded requires BOTH to be low.
+  if (failedChecks <= 1 && errors.length <= 2) {
     return "degraded";
   }
 

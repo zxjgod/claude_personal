@@ -111,11 +111,15 @@ export function buildSummaryPrompt(digest: ToolBatchDigest): string {
 export function renderSummaryAttachment(summary: string | null): string | null {
   const text = summary?.trim();
   if (!text) return null;
+  // The summary is fast-model output derived from untrusted tool results; a
+  // literal closing tag in it would break out of the reminder frame and let
+  // attacker-controlled text pose as system-level instructions. Neutralize it.
+  const safe = text.replace(/<\/?system-reminder/gi, "<system_reminder");
   return [
     "<system-reminder>",
     "Digest of the previous tool batch (background context — the full results",
     "remain above; this is a glanceable summary, not a replacement):",
-    text,
+    safe,
     "</system-reminder>",
   ].join("\n");
 }

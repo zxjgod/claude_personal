@@ -8,6 +8,7 @@
 // ============================================================
 import chalk from "chalk";
 import { getOutputStyle, listOutputStyles } from "../output-style.js";
+import { sanitizeTerminalText } from "../tui/terminal-width.js";
 import type { SlashCommand } from "./types.js";
 
 export const outputStyleCommand: SlashCommand = {
@@ -21,7 +22,9 @@ export const outputStyleCommand: SlashCommand = {
     if (target) {
       if (!getOutputStyle(target)) {
         console.log(chalk.yellow(`  Unknown output style: ${target}`));
-        console.log(chalk.gray(`  Available: ${styles.map((s) => s.name).join(", ")}`));
+        console.log(
+          chalk.gray(`  Available: ${styles.map((s) => sanitizeTerminalText(s.name)).join(", ")}`),
+        );
         return;
       }
       if (ctx.outputStyle) {
@@ -37,11 +40,17 @@ export const outputStyleCommand: SlashCommand = {
     console.log("");
     console.log(chalk.bold("  Output styles:"));
     for (const s of styles) {
+      // Custom styles are .md files in the project directory; their name and
+      // description are file content.
       const marker = s.name === active ? chalk.green("●") : " ";
-      console.log(`    ${marker} ${chalk.cyan(s.name.padEnd(14))} ${chalk.gray(s.description)}`);
+      console.log(
+        `    ${marker} ${chalk.cyan(sanitizeTerminalText(s.name).padEnd(14))} ${chalk.gray(sanitizeTerminalText(s.description))}`,
+      );
     }
     console.log("");
-    console.log(chalk.gray(`  Active: ${active}  —  switch with /output-style <name>`));
+    console.log(
+      chalk.gray(`  Active: ${sanitizeTerminalText(active)}  —  switch with /output-style <name>`),
+    );
   },
 };
 

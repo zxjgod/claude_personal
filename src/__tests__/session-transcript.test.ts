@@ -65,6 +65,24 @@ describe("SessionTranscript", () => {
     expect(entries[0].type).toBe("user_prompt");
   });
 
+  it("keeps seq continuity when the last line exceeds 64KB (review fix)", async () => {
+    // A single transcript line bigger than the old fixed 64KB tail window
+    // left lastSeqOnDisk with only an unparseable fragment → seq restarted
+    // at 0 on the next append, reopening the duplicate-seq corruption.
+    await t.append(SID, {
+      type: "tool_result",
+      name: "bash",
+      durationMs: 5,
+      preview: "x".repeat(100_000),
+    });
+    // Fresh instance: the in-memory seq memo is empty, forcing a disk scan.
+    const t2 = new SessionTranscript(tmpDir);
+    await t2.append(SID, { type: "user_prompt", text: "after the big line" });
+    const entries = t2.read(SID);
+    expect(entries).toHaveLength(2);
+    expect(entries.map((e) => e.seq)).toEqual([0, 1]);
+  });
+
   it("replay folds usage, tool calls, and turns", async () => {
     await t.append(SID, { type: "user_prompt", text: "p1" });
     await t.append(SID, { type: "tool_use", id: "1", name: "bash", input: {} });

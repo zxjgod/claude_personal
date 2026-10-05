@@ -28,6 +28,13 @@
 // Installing/creating a skill vouches for it. The trustedShell gate in
 // disk-template.ts remains as defense-in-depth and a future policy hook
 // (callers can still pass trustedShell:false explicitly).
+//
+// Permission grants and hooks are a SEPARATE, narrower trust tier (fix loop
+// 2026-10): `allowed-tools` becomes an auto-approval grant and `hooks` run
+// shell commands silently — both only honored for USER-scope skills
+// (~/.claude/skills or CCR_USER_SKILLS_DIR). A cloned repo can plant
+// .claude/skills/…/SKILL.md, so project-scope skills keep allowedTools purely
+// as a tool-set restriction and their hooks are dropped.
 // ============================================================
 
 import * as path from "node:path";
@@ -83,9 +90,16 @@ function defFromFile(
   name: string,
   parsed: ParsedSkillFile,
   trustedShell: boolean,
+  trustedGrant: boolean,
 ): SkillDefinition {
   const fm = parsed.frontmatter;
   const context = asString(fm.context) === "fork" ? "fork" : "inline";
+  // Review fix ("frontmatter 默认值不校验"): effort used to pass through
+  // verbatim — a typo ("hige") silently became an unknown level downstream.
+  // Accept only the known levels; anything else drops to undefined.
+  const rawEffort = asString(fm.effort);
+  const effort =
+    rawEffort && /^(low|medium|high|xhigh|max)$/.test(rawEffort) ? rawEffort : undefined;
   return {
     name: asString(fm.name) || name,
     description: asString(fm.description) || `Disk skill "${name}"`,
@@ -95,13 +109,18 @@ function defFromFile(
     context: context as SkillContext,
     agent: asString(fm.agent),
     allowedTools: asList(fm["allowed-tools"] ?? fm.allowedTools),
-    toolPermissionGrant: fm["allowed-tools"] !== undefined,
+    // Auto-approval grant only from user-scope skills — see header policy.
+    toolPermissionGrant: trustedGrant && fm["allowed-tools"] !== undefined,
     disallowedTools: asList(fm["disallowed-tools"] ?? fm.disallowedTools),
     disableModelInvocation: asString(fm["disable-model-invocation"]) === "true",
     userInvocable: asString(fm["user-invocable"]) !== "false",
     model: asString(fm.model),
-    effort: asString(fm.effort),
-    hooks: fm.hooks,
+    effort,
+    // Model-invocation shell gate inputs (see SkillDefinition docs).
+    diskScope: trustedGrant ? "user" : "project",
+    hasShellDirectives: /!`[^`]*`/.test(parsed.body),
+    // Hooks run shell silently; only honored from user-scope skills.
+    hooks: trustedGrant ? fm.hooks : undefined,
     // Lazy: the template is expanded only when the skill is actually invoked.
     getPromptForCommand: (ctx) =>
       expandSkillBody(parsed.body, {
@@ -122,12 +141,22 @@ export function loadSkillsDir(
   workspaceRoot: string,
   options: { roots?: string[]; namespace?: string } = {},
 ): string[] {
+  // Grant/hook trust attaches to the user-scope root only (see header policy).
+  const userRoot = path.resolve(
+    process.env[USER_SKILLS_ENV] || path.join(userConfigRoot(), "skills"),
+  );
   return loadDiskEntries({
     roots: options.roots ?? skillDirRoots(workspaceRoot),
     accepts: (entry) => entry.isDirectory() && isSafeSkillName(entry.name),
     nameOf: (entry) => entry.name,
     fileOf: (root, entry) => path.join(root, entry.name, "SKILL.md"),
-    parse: (entry) => defFromFile(entry.name, parseFrontmatter(entry.raw), true),
+    parse: (entry) =>
+      defFromFile(
+        entry.name,
+        parseFrontmatter(entry.raw),
+        true,
+        path.resolve(entry.root) === userRoot,
+      ),
     register: (skill) =>
       registerSkill(
         options.namespace ? { ...skill, name: `${options.namespace}:${skill.name}` } : skill,

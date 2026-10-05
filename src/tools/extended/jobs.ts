@@ -65,7 +65,8 @@ export const JobOutputTool: Tool = buildTool({
   description: "Read the accumulated output of a background job",
   promptDescription:
     "Read a background job's output. Every response ends with `[status: ...]`. " +
-    "Reads are non-blocking unless `wait: true`, which waits up to `timeout_ms`.",
+    "Reads are non-blocking unless `block: true`, which waits up to `timeout` ms. " +
+    "The official names are task_id/block/timeout; job_id/wait/timeout_ms are also accepted.",
   schema: JobOutputSchema,
   isReadOnly: true,
   isConcurrencySafe: true,

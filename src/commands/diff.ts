@@ -1,6 +1,7 @@
 // /diff — show files changed during this session
 import chalk from "chalk";
 import { listChanges } from "../change-tracker.js";
+import { sanitizeTerminalText } from "../tui/terminal-width.js";
 import type { SlashCommand } from "./types.js";
 
 export const diffCommand: SlashCommand = {
@@ -17,7 +18,7 @@ export const diffCommand: SlashCommand = {
     for (const ch of changes) {
       const tag = ch.kind === "created" ? chalk.green("created ") : chalk.yellow("modified");
       const times = ch.edits > 1 ? chalk.gray(` ×${ch.edits}`) : "";
-      console.log(`    ${tag} ${chalk.cyan(ch.path)}${times}`);
+      console.log(`    ${tag} ${chalk.cyan(sanitizeTerminalText(ch.path))}${times}`);
     }
   },
 };

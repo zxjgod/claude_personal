@@ -148,6 +148,26 @@ describe("InputValidator", () => {
       expect(result.error).toContain("private networks");
     });
 
+    it("should reject NAT64 addresses embedding a private IPv4 (SSRF bypass)", () => {
+      // RFC 6052 well-known prefix, normalized hextet form: 64:ff9b::7f00:1 = 127.0.0.1.
+      for (const url of [
+        "http://[64:ff9b::7f00:1]",
+        "http://[64:ff9b::a9fe:a9fe]", // 169.254.169.254 — cloud metadata
+        "http://[64:ff9b::c0a8:101]", // 192.168.1.1
+        "http://[64:ff9b::127.0.0.1]", // dotted-suffix form
+        "http://[64:ff9b:1::a00:1]", // RFC 8215 local prefix, 10.0.0.1
+      ]) {
+        const result = InputValidator.validateUrl(url);
+        expect(result.valid).toBe(false);
+        expect(result.error).toContain("private networks");
+      }
+    });
+
+    it("should allow NAT64 addresses embedding a public IPv4", () => {
+      const result = InputValidator.validateUrl("http://[64:ff9b::808:808]"); // 8.8.8.8
+      expect(result.valid).toBe(true);
+    });
+
     it("should reject invalid URL format", () => {
       const result = InputValidator.validateUrl("not-a-url");
       expect(result.valid).toBe(false);

@@ -8,17 +8,43 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+import { parseEffortFlag, parseFallbackModels } from "./cli-session-flags.js";
 import { readSettings } from "./hooks-config.js";
 import { resolveProviderConfig } from "./llm-adapter.js";
+import { initMemoryApproval } from "./memory-approval.js";
 import { mergePermissionPolicies, type PermissionPolicy } from "./permission-policy.js";
 import { loadProjectInstructions, renderInstructions } from "./project-instructions.js";
-import { readManagedSettings, readProjectSettings, settingSources } from "./settings.js";
+import {
+  mergeSettings,
+  readManagedSettings,
+  readProjectSettings,
+  readUserSettings,
+  type Settings,
+  settingSources,
+} from "./settings.js";
+import { initSubagentSettings } from "./subagent-settings.js";
 import type { ModelConfig, PermissionMode } from "./types.js";
+import { atomicWriteFile, withFileLock } from "./utils/file-lock.js";
 
 export function loadConfig(): ModelConfig {
   const workspace = process.env.WORKSPACE_ROOT || process.cwd();
   const settings = readSettings(workspace);
-  const env = settings?.env;
+  // 拍板 #21/#22: sub-agent runtime settings (thinking default + sidechain
+  // mode) ride the same merged settings, key "subagents".
+  initSubagentSettings(settings);
+  // T2 gate toggle (/memory-approval): defaults OFF (user decision 2026-10-04);
+  // read from the resolved settings target (install-location dependent) +
+  // managed settings — see memory-approval.ts.
+  initMemoryApproval(workspace);
+  // env is a credential-adjacent lever (LLM_BASE_URL/PERMISSION_MODE/
+  // CCR_TRUST_STORE_SETTINGS are all read from process.env below), so only
+  // trusted sources may set it: user settings, managed settings, and the
+  // explicit --settings CLI arg. Project/local settings come from a
+  // checked-out repository and must never inject process.env.
+  const env = mergeSettings(
+    (readUserSettings().env as Settings | undefined) ?? {},
+    (readManagedSettings().env as Settings | undefined) ?? {},
+  );
   if (env && typeof env === "object" && !Array.isArray(env)) {
     for (const [key, value] of Object.entries(env as Record<string, unknown>)) {
       if (typeof value === "string" && process.env[key] === undefined) process.env[key] = value;
@@ -61,17 +87,35 @@ export function loadConfig(): ModelConfig {
           gateway: process.env.LLM_GATEWAY,
           gatewayRegion: process.env.LLM_GATEWAY_REGION || undefined,
           gatewayProject: process.env.LLM_GATEWAY_PROJECT || undefined,
+          // Vertex API version segment (default v1, Google's documented
+          // OpenAI-compatible path). Escape hatch for deployments that need
+          // v1beta1 — cloud-gateway.ts documents why neither could be
+          // live-tested from the build environment.
+          gatewayApiVersion: process.env.LLM_GATEWAY_API_VERSION || undefined,
         }
       : undefined,
   });
 
-  // Fallback model chain (same provider): LLM_FALLBACK_MODELS="a,b,c".
-  const fallbackModels = (process.env.LLM_FALLBACK_MODELS || "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
+  // Fallback model chain (same provider). Precedence: official
+  // `--fallback-model a,b,c` flag → LLM_FALLBACK_MODELS="a,b,c". The official
+  // flag is documented as --print only; here the chain is provider-agnostic and
+  // already implemented in the agent loop, so it applies to every entry point
+  // rather than being artificially restricted to one.
+  const fallbackModels =
+    parseFallbackModels(process.argv) ??
+    (process.env.LLM_FALLBACK_MODELS || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
   if (fallbackModels.length > 0) {
     config.fallbackModels = fallbackModels;
+  }
+  // `--effort <level>` — the session reasoning tier, the same value /effort
+  // writes at runtime. Set before returning so headless, TUI and REPL all
+  // start on the requested tier; /effort can still change it mid-session.
+  const effort = parseEffortFlag(process.argv);
+  if (effort) {
+    config.options = { ...(config.options ?? {}), effort };
   }
   return config;
 }
@@ -98,11 +142,8 @@ export function getPermissionMode(workspaceRoot: string): PermissionMode {
   if (VALID_PERMISSION_MODES.includes(managedMode)) return managedMode;
   // Precedence (highest → lowest): CLI flag → --safe-mode → env → project
   // settings (settings.local.json > settings.json) → user settings (~/.claude).
-  const flagIdx = process.argv.indexOf("--permission-mode");
-  if (flagIdx !== -1) {
-    const m = process.argv[flagIdx + 1] as PermissionMode | undefined;
-    if (m && VALID_PERMISSION_MODES.includes(m)) return m;
-  }
+  const flagMode = flagValues("--permission-mode")[0] as PermissionMode | undefined;
+  if (flagMode && VALID_PERMISSION_MODES.includes(flagMode)) return flagMode;
   // --safe-mode: force a read-only (plan) session regardless of env/config.
   if (process.argv.includes("--read-only")) {
     return "plan";
@@ -212,7 +253,10 @@ function trustProjectAllow(workspaceRoot: string, fp: string): void {
       // Missing or corrupt store — start fresh.
     }
     store[projectSettingsKey(workspaceRoot)] = fp;
-    fs.writeFileSync(file, JSON.stringify(store, null, 2));
+    // Locked + atomic: the store is keyed per workspace, so a plain overwrite
+    // could drop ANOTHER workspace's approvals (or be read half-written by a
+    // concurrent process, re-prompting the user).
+    withFileLock(file, () => atomicWriteFile(file, JSON.stringify(store, null, 2)));
   } catch {
     // Best-effort persistence; failure just re-prompts next launch.
   }
@@ -296,9 +340,12 @@ export function parseMaxTurns(raw: string | undefined): number | undefined {
  * operator safety ceiling, never an implicit reason to cut off a main task.
  */
 export function resolveMaxTurns(): number {
-  const flagIdx = process.argv.indexOf("--max-turns");
-  if (flagIdx !== -1) {
-    const parsed = parseMaxTurns(process.argv[flagIdx + 1]);
+  // flagValues covers BOTH "--max-turns 5" and "--max-turns=5" — the old
+  // indexOf lookup silently missed the "=" form and fell through to
+  // unlimited (fail-open).
+  const flagRaw = flagValues("--max-turns")[0];
+  if (flagRaw !== undefined) {
+    const parsed = parseMaxTurns(flagRaw);
     if (parsed !== undefined) return parsed;
   }
   const envParsed = parseMaxTurns(process.env.CCR_MAX_TURNS);

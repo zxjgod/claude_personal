@@ -19,6 +19,7 @@ import {
   modelMaxOutput,
 } from "./model-metadata.js";
 import { DEFAULT_MAX_RESULT_CHARS, truncateToolResult } from "./tools/truncation.js";
+import { resolveTool } from "./tools/utils/official-names.js";
 import type { Message, ModelCaller, ModelConfig, StreamEvent, Tool } from "./types.js";
 import { createStallController } from "./utils/cancellation.js";
 
@@ -72,7 +73,7 @@ export const PROVIDER_DEFAULTS = PROVIDER_CONFIGS;
  * Falls back to DEFAULT_MAX_RESULT_CHARS for unknown tools.
  */
 function getToolMaxChars(toolName: string, tools: Tool[]): number {
-  const tool = tools.find((t) => t.name === toolName);
+  const tool = resolveTool(toolName, tools);
   if (tool?.maxResultSizeChars) return tool.maxResultSizeChars;
   return DEFAULT_MAX_RESULT_CHARS;
 }
@@ -237,7 +238,11 @@ async function* openAICompatibleCaller(
       toolCallsEmitted = true;
       for (const [, buf] of toolCallBuffers) {
         try {
-          const input = JSON.parse(buf.arguments);
+          // Review fix: providers omit/zero-stream the arguments field for
+          // zero-parameter tools — "" is a legitimate empty input, not
+          // malformed JSON.
+          const raw = buf.arguments.trim();
+          const input = raw === "" ? {} : JSON.parse(raw);
           yield { type: "tool_use", id: buf.id, name: buf.name, input };
         } catch {
           // A truncated stream (finish_reason === "length") leaves tool-call
@@ -417,6 +422,7 @@ export function resolveProviderConfig(
     const resolved = resolveGateway(gateway, {
       region: partial.options?.gatewayRegion as string | undefined,
       project: partial.options?.gatewayProject as string | undefined,
+      apiVersion: partial.options?.gatewayApiVersion as string | undefined,
     });
     if (!partial.baseURL) baseURL = resolved.baseURL;
     if (!partial.model) model = resolved.defaultModel;

@@ -90,7 +90,10 @@ describe("MCP stdio transport (real child server)", () => {
   it("wraps tools with conservative, prompt-on-first-use semantics", () => {
     const echo = mgr.getAllTools().find((t) => t.name === "mcp__mock__echo")!;
     expect(echo.isReadOnly()).toBe(false); // assume destructive
-    expect(echo.isConcurrencySafe()).toBe(true); // separate process
+    // Review fix: destructive-by-assumption also means NOT concurrency-safe —
+    // "separate process" says nothing about side-effect isolation, and `true`
+    // let a destructive MCP call run inside a parallel batch.
+    expect(echo.isConcurrencySafe()).toBe(false);
     expect(echo.requiresApproval?.()).toBe(true);
     expect(echo.isEnabled()).toBe(true);
     // The remote description survives onto the prompt-facing field.
@@ -111,7 +114,7 @@ describe("MCP stdio transport (real child server)", () => {
     expect(r.content).toBe("7");
   });
 
-  it("prompts on first call then is sticky for the session", async () => {
+  it("a one-time yes approves one call; the next call prompts again", async () => {
     const echo = mgr.getAllTools().find((t) => t.name === "mcp__mock__echo")!;
     let asks = 0;
     const askUser = async () => {
@@ -121,10 +124,12 @@ describe("MCP stdio transport (real child server)", () => {
     const first = await echo.checkPermissions!({ message: "x" }, ctx("default", askUser));
     expect(first.allowed).toBe(true);
     expect(asks).toBe(1);
-    // Second call to the same tool does not prompt again.
+    // A plain "yes" must NOT spread: a later call (possibly with different,
+    // dangerous arguments) prompts again. Sticky trust requires the explicit
+    // "always" grant, which lives in the prompter's alwaysAllow set.
     const second = await echo.checkPermissions!({ message: "y" }, ctx("default", askUser));
     expect(second.allowed).toBe(true);
-    expect(asks).toBe(1);
+    expect(asks).toBe(2);
   });
 
   it("denies when the user rejects the first call (add, not yet confirmed)", async () => {
@@ -275,6 +280,32 @@ describe("MCP transport routing + failure handling", () => {
     const mgr = new MCPManager();
     await expect(mgr.loadConfig("/no/such/mcp.json")).resolves.toBeUndefined();
     expect(mgr.serverCount).toBe(0);
+  });
+
+  it("disabledServers (settings disabledMcpjsonServers) skips connect AND the trust prompt", async () => {
+    const fs = await import("node:fs");
+    const tmp = fileURLToPath(new URL("./fixtures/named-off.mcp.json", import.meta.url));
+    fs.writeFileSync(
+      tmp,
+      JSON.stringify({
+        mcpServers: {
+          blocked: { type: "stdio", command: "node", args: ["-e", ""] },
+        },
+      }),
+    );
+    const confirm = vi.fn(async () => true);
+    try {
+      const mgr = new MCPManager();
+      await mgr.loadConfig(tmp, {
+        requireTrust: true,
+        confirm,
+        disabledServers: new Set(["blocked"]),
+      });
+      expect(mgr.serverCount).toBe(0);
+      expect(confirm).not.toHaveBeenCalled(); // disabled server must not prompt
+    } finally {
+      fs.rmSync(tmp, { force: true });
+    }
   });
 
   it("loadConfig tolerates malformed JSON without throwing", async () => {

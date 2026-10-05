@@ -20,7 +20,7 @@ import { BLACK_CIRCLE, TOOL_RESULT } from "./figures.js";
 import { t } from "./i18n.js";
 import { renderMarkdown } from "./markdown.js";
 import type { TranscriptItem } from "./store.js";
-import { terminalColumns, truncateVisual } from "./terminal-width.js";
+import { sanitizeTerminalText, terminalColumns, truncateVisual } from "./terminal-width.js";
 import { currentTheme, palette } from "./theme.js";
 import { toolOutputLines } from "./tool-output.js";
 
@@ -101,10 +101,11 @@ function itemLines(
     case "thinking_text": {
       const lines = item.text.split("\n");
       // D6 (ctrl+e): the collapsed side folds thinking to one-liners even in
-      // verbose mode — tool output stays full either way.
+      // verbose mode — tool output stays full either way. The reasoning text is
+      // model-authored and skips renderMarkdown, so sanitize it here.
       if (verbose && !opts.collapseThinking) {
         // Transcript viewer: the full reasoning text.
-        return lines.map((l) => ({ text: `  ${l}`, dim: true }));
+        return lines.map((l) => ({ text: `  ${sanitizeTerminalText(l)}`, dim: true }));
       }
       // P0-2: collapsed to one line; the full text lives in the viewer.
       return [{ text: `  ${collapsedThinkingLine(item.seconds, lines.length)}`, dim: true }];
@@ -133,9 +134,17 @@ function itemLines(
       // Official head: `⏺ Name(detail)` — the head carries no accent tint
       // (the glyph's own success/error color is the signal).
       const dot = chalk.hex(r.error ? palette.error : palette.success)(BLACK_CIRCLE);
-      const head = `${dot} ${capitalize(r.toolName)}${item.detail ? `(${truncate(item.detail, 100)})` : ""}`;
+      // Tool name (server-controlled for MCP) and the detail argument are
+      // model-controlled; the error body is raw tool output. None of them pass
+      // through renderMarkdown, so sanitize here.
+      const head = `${dot} ${capitalize(sanitizeTerminalText(r.toolName))}${
+        item.detail ? `(${truncate(sanitizeTerminalText(item.detail), 100)})` : ""
+      }`;
       if (r.error)
-        return [{ text: head }, { text: `  ${TOOL_RESULT}  ${r.error}`, color: palette.error }];
+        return [
+          { text: head },
+          { text: `  ${TOOL_RESULT}  ${sanitizeTerminalText(r.error)}`, color: palette.error },
+        ];
       const all = toolOutputLines(r, item.detail);
       // P0-1: verbose mode (transcript viewer) shows everything; the compact
       // mode keeps the preview window.
@@ -203,7 +212,11 @@ export function transcriptToLines(
     if (item.kind === "assistant" || item.kind === "tool") out.push({ text: "" });
   }
   if (streamingThinking.trim()) {
-    out.push(...streamingThinking.split("\n").map((l) => ({ text: `  ${l}`, dim: true })));
+    out.push(
+      ...streamingThinking
+        .split("\n")
+        .map((l) => ({ text: `  ${sanitizeTerminalText(l)}`, dim: true })),
+    );
   }
   if (streamingText.trim()) {
     // Plain assistant text — no bullet (official rendering).

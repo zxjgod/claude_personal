@@ -71,6 +71,13 @@ const GrepSchema = z.strictObject({
     .max(10000)
     .optional()
     .describe(`Limit output to first N lines (default: ${DEFAULT_HEAD_LIMIT})`),
+  offset: z
+    .number()
+    .int()
+    .min(0)
+    .max(10000)
+    .optional()
+    .describe("Skip the first N results, for paging past a previous call's head_limit window"),
   "-n": z.boolean().optional().describe("Show line numbers (default: true)"),
   "-o": z.boolean().optional().describe("Only output the matching part of each line"),
   "-e": z.boolean().optional().describe("Extended regex (PCRE2 features like lookahead)"),
@@ -111,6 +118,7 @@ export const GrepTool: Tool = buildTool({
     "Parameters: pattern (required, regex), path (optional, file or dir, default workspace root), " +
     "type (optional, file type like 'js'/'py'), -i (case-insensitive), -A/-B/-C (context lines), " +
     "output_mode (content | files_with_matches | count), head_limit (default 250), " +
+    "offset (skip the first N results, for paging past a head_limit window), " +
     "-n (line numbers, default true), -o (only matching part), -e (extended regex), " +
     "multiline (^/$ match lines), glob (file filter like '*.ts'). " +
     "Returns matching lines as 'path:line:content'.",
@@ -355,10 +363,15 @@ async function runRipgrep(
 
   const rawLines = stdout.trim().split("\n").filter(Boolean);
   const headLimit = input.head_limit ?? DEFAULT_HEAD_LIMIT;
+  // Official `offset` pages past a previous call's window: skip the first N
+  // results, then apply head_limit to what remains, so consecutive calls with
+  // head_limit=100 / offset=0,100,200 walk the whole result set exactly once.
+  const skip = Math.min(Math.max(0, input.offset ?? 0), rawLines.length);
+  const windowed = rawLines.slice(skip);
   // Stopping early on the size cap leaves later batches unsearched — the
   // result is incomplete even when the line count fits under headLimit.
-  const truncated = rawLines.length > headLimit || sizeCapped;
-  const lines = rawLines.slice(0, headLimit);
+  const truncated = windowed.length > headLimit || sizeCapped;
+  const lines = windowed.slice(0, headLimit);
 
   if (lines.length === 0) {
     return { content: "No matches found.", metadata: { linesRead: 0, summary: "No matches" } };
@@ -369,7 +382,7 @@ async function runRipgrep(
     truncated,
     metadata: {
       linesRead: lines.length,
-      summary: summarize(input.output_mode, rawLines.length),
+      summary: summarize(input.output_mode, windowed.length),
     },
   };
 }
@@ -411,6 +424,10 @@ async function runNodeFallback(
   }
 
   const headLimit = input.head_limit ?? DEFAULT_HEAD_LIMIT;
+  // The collection loop must produce the skipped prefix too, otherwise `offset`
+  // would page a window that is shorter than head_limit. See runRipgrep.
+  const skip = Math.max(0, input.offset ?? 0);
+  const collectLimit = skip + headLimit;
   const results: string[] = [];
   const fileMatchCount = new Map<string, number>();
   const deadline = Date.now() + 5000;
@@ -441,9 +458,9 @@ async function runNodeFallback(
     await new Promise<void>((resolve) => setImmediate(resolve));
     if (context.abortSignal?.aborted)
       return { content: "Search aborted.", metadata: { aborted: true } };
-    // Satisfied results beat the deadline: a full headLimit page is complete,
+    // Satisfied results beat the deadline: a full page is complete,
     // whereas the timeout branch would discard it.
-    if (results.length >= headLimit) break;
+    if (results.length >= collectLimit) break;
     if (Date.now() >= deadline) return { content: "", error: "Fallback search timed out" };
     try {
       const resolved = resolveInWorkspace(
@@ -477,7 +494,7 @@ async function runNodeFallback(
             flags,
             lines: contentLines,
             only: !!input["-o"],
-            limit: headLimit,
+            limit: collectLimit,
           },
           { timeout: 100 },
         );
@@ -498,7 +515,7 @@ async function runNodeFallback(
           // -o; they would duplicate the match on the same line).
           for (const match of matches) {
             results.push(showLineNum ? `${relPath}:${i + 1}:${match}` : match);
-            if (results.length >= headLimit) break;
+            if (results.length >= collectLimit) break;
           }
         } else {
           // content mode: emit match lines with optional context
@@ -510,7 +527,7 @@ async function runNodeFallback(
             results.push(`${prefix}${contentLines[j]!.trim()}`);
           }
         }
-        if (results.length >= headLimit) break;
+        if (results.length >= collectLimit) break;
       }
     } catch {
       // Skip unreadable files
@@ -518,7 +535,7 @@ async function runNodeFallback(
   }
 
   if (input.output_mode === "files_with_matches") {
-    const filesOut = [...fileMatchCount.keys()];
+    const filesOut = [...fileMatchCount.keys()].slice(skip);
     return {
       content: filesOut.length === 0 ? "No matches found." : filesOut.join("\n"),
       truncated: filesOut.length > headLimit,
@@ -529,7 +546,7 @@ async function runNodeFallback(
     };
   }
   if (input.output_mode === "count") {
-    const counts = [...fileMatchCount.entries()].map(([f, n]) => `${f}:${n}`);
+    const counts = [...fileMatchCount.entries()].slice(skip).map(([f, n]) => `${f}:${n}`);
     return {
       content: counts.length === 0 ? "No matches found." : counts.join("\n"),
       truncated: counts.length > headLimit,
@@ -537,14 +554,15 @@ async function runNodeFallback(
     };
   }
 
-  const truncated = results.length > headLimit;
-  const clipped = results.slice(0, headLimit);
+  const windowed = results.slice(skip);
+  const truncated = windowed.length > headLimit;
+  const clipped = windowed.slice(0, headLimit);
   if (clipped.length === 0) {
     return { content: "No matches found.", metadata: { linesRead: 0, summary: "No matches" } };
   }
   return {
     content: clipped.join("\n"),
     truncated,
-    metadata: { linesRead: clipped.length, summary: summarize("content", results.length) },
+    metadata: { linesRead: clipped.length, summary: summarize("content", windowed.length) },
   };
 }

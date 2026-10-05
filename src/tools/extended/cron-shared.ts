@@ -16,6 +16,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { renameSyncWithRetry } from "../../utils/atomic-rename.js";
 import {
   cancelScheduledInputs,
   matchesScheduleScope,
@@ -310,6 +311,12 @@ interface DurableJobRecord {
   prompt: string;
   recurring: boolean;
   createdAtMs: number;
+  /**
+   * Review fix ("重启后同分钟双发"): the minute-dedup marker was NOT
+   * persisted, so a recurring job that fired at 10:00:30 pre-restart fired
+   * AGAIN when the process restarted inside the same minute. Round-trip it.
+   */
+  lastFiredMinute?: number;
 }
 
 function durablePath(root: string): string {
@@ -335,13 +342,14 @@ export function persistDurableJobs(root: string): void {
         prompt: j.prompt,
         recurring: j.recurring,
         createdAtMs: j.createdAtMs,
+        lastFiredMinute: j.lastFiredMinute,
       }));
     const dir = path.dirname(durablePath(root));
     fs.mkdirSync(dir, { recursive: true });
     const file = durablePath(root);
     const tmp = `${file}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, `${JSON.stringify({ version: 1, jobs }, null, 2)}\n`);
-    fs.renameSync(tmp, file);
+    renameSyncWithRetry(tmp, file);
   } catch {
     /* best-effort */
   }
@@ -389,6 +397,8 @@ export function loadDurableJobs(root: string): { loaded: number; skipped: number
       workspaceRoot: path.resolve(root),
       createdAt: process.hrtime.bigint(),
       createdAtMs: typeof record.createdAtMs === "number" ? record.createdAtMs : Date.now(),
+      lastFiredMinute:
+        typeof record.lastFiredMinute === "number" ? record.lastFiredMinute : undefined,
     });
     loaded++;
   }

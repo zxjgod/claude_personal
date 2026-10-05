@@ -124,6 +124,20 @@ export function appendHistory(workspaceRoot: string, value: string): void {
     fs.mkdirSync(historyDir(workspaceRoot), { recursive: true });
     fs.appendFileSync(file, `${JSON.stringify({ v })}\n`, "utf-8");
     lastEntryMemo.set(file, v);
+    // Review fix ("历史文件无界增长"): the read-back is capped at
+    // HISTORY_LIMIT entries but the FILE itself grew forever. Compact once it
+    // crosses a size threshold: keep the newest HISTORY_LIMIT entries and
+    // rewrite atomically (tmp + rename — a crash mid-compact must not lose
+    // the history). One stat per submit; rewrites are rare (≈ every
+    // 2500 entries).
+    const MAX_HISTORY_FILE_BYTES = 256 * 1024;
+    if (fs.statSync(file).size > MAX_HISTORY_FILE_BYTES) {
+      const kept = loadHistory(workspaceRoot); // newest HISTORY_LIMIT entries
+      const tmp = `${file}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, kept.map((e) => `${JSON.stringify({ v: e })}\n`).join(""), "utf-8");
+      fs.renameSync(tmp, file);
+      lastEntryMemo.set(file, kept.at(-1) ?? v);
+    }
   } catch {
     /* best-effort */
   }

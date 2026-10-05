@@ -5,6 +5,8 @@
 // Currently supports English only, but structured for easy extension.
 // ============================================================
 
+import { sanitizeTerminalText } from "./terminal-width.js";
+
 export type Language = "en" | "zh-CN";
 
 export interface I18nOptions {
@@ -532,6 +534,11 @@ const translations: Record<Language, Record<string, string>> = {
  * Get a translated message by key.
  * Replaces {placeholder} with provided values.
  *
+ * String values are sanitized before interpolation: several placeholders carry
+ * untrusted text (a compaction-summary snippet, an unknown tool's name, a
+ * session label) and the composed label is printed verbatim by both renderers.
+ * No caller passes chalk-styled values here, so nothing legitimate is lost.
+ *
  * Reads the `currentLanguage` singleton (seeded from detectLanguage at import
  * time) — NOT the environment on every call. Otherwise setLanguage()/a /lang
  * command could never take effect, and a mid-process env change would silently
@@ -543,7 +550,10 @@ export function t(key: string, values?: Record<string, string | number>): string
 
   if (values) {
     for (const [k, v] of Object.entries(values)) {
-      message = message.replace(new RegExp(`\\{${k}\\}`, "g"), String(v));
+      message = message.replace(
+        new RegExp(`\\{${k}\\}`, "g"),
+        typeof v === "string" ? sanitizeTerminalText(v) : String(v),
+      );
     }
   }
 

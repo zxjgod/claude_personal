@@ -71,6 +71,26 @@ describe("messagesToTranscript", () => {
     expect((item as any).result.formatted).toContain("no result");
   });
 
+  it("unwraps <tool_use_error> results and flags them isError (review fix)", () => {
+    const msgs: Message[] = [
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "c1", type: "function", function: { name: "bash", arguments: "{}" } }],
+      },
+      {
+        role: "tool",
+        tool_call_id: "c1",
+        name: "bash",
+        content: "<tool_use_error>rm: permission denied</tool_use_error>",
+      },
+    ];
+    const [item] = messagesToTranscript(msgs);
+    expect((item as any).result.isError).toBe(true);
+    expect((item as any).result.formatted).toBe("rm: permission denied");
+    expect((item as any).result.result.content).toBe("rm: permission denied");
+  });
+
   it("flattens image content blocks in user messages", () => {
     const msgs: Message[] = [
       {

@@ -15,6 +15,7 @@
 
 import { z } from "zod";
 import { appendAgentMemory } from "../../agent-memory.js";
+import { isMemoryApprovalRequired } from "../../memory-approval.js";
 import { MemoryStore } from "../../memory-extract.js";
 import { policyDecision } from "../../permission-policy.js";
 import { listSubagentNames } from "../../subagents.js";
@@ -59,19 +60,38 @@ export const MemorySaveTool: Tool<z.infer<typeof MemorySaveSchema>> = buildTool(
   async checkPermissions(input, context): Promise<PermissionResult> {
     if (context.permissionMode === "plan")
       return { allowed: false, reason: "Plan mode: memory writes are disabled" };
-    if (input.scope !== "user") return { allowed: true };
+    // Every scope — project/local included — persists text that is later
+    // injected into future sessions' system prompts (and project scope is
+    // shared via VCS). An unapproved write is a durable prompt-injection
+    // channel, so all scopes require explicit approval, not just user.
     const decision = policyDecision(context.permissionPolicy, "MemorySave", input);
     if (decision === "deny")
-      return { allowed: false, reason: "User memory denied by permission rule" };
-    const allowed =
-      decision === "allow" ||
-      (context.askUser
-        ? await context.askUser(
-            MemorySaveTool,
-            { ...input, __approvalFingerprint: "user-memory-scope" },
-            "Persist a memory across all projects in the user scope",
-          )
-        : false);
+      return { allowed: false, reason: "Memory write denied by permission rule" };
+    // /memory-approval off: the user has deliberately relaxed the T2 gate
+    // (user/managed settings only — project settings cannot disable it).
+    // Deny rules and plan mode above still apply.
+    if (decision === "allow" || !isMemoryApprovalRequired()) {
+      context.approvedUserMemoryWrite = JSON.stringify([
+        input.content,
+        input.agent_type,
+        input.scope,
+      ]);
+      return { allowed: true };
+    }
+    const scope = input.scope ?? "project";
+    const scopeLabel =
+      scope === "user"
+        ? "across all projects in the user scope"
+        : scope === "project"
+          ? "for this project (shared with collaborators via VCS)"
+          : "locally for this project";
+    const allowed = context.askUser
+      ? await context.askUser(
+          MemorySaveTool,
+          { ...input, __approvalFingerprint: "memory-scope" },
+          `Persist a memory ${scopeLabel}`,
+        )
+      : false;
     if (allowed)
       context.approvedUserMemoryWrite = JSON.stringify([
         input.content,
@@ -80,16 +100,15 @@ export const MemorySaveTool: Tool<z.infer<typeof MemorySaveSchema>> = buildTool(
       ]);
     return allowed
       ? { allowed: true }
-      : { allowed: false, reason: "Cross-project user memory requires explicit approval" };
+      : { allowed: false, reason: "Durable memory writes require explicit approval" };
   },
 
   async call(input, context): Promise<ToolResult> {
     if (context.permissionMode === "plan")
       return { content: "", error: "Plan mode: memory writes are disabled" };
     if (
-      input.scope === "user" &&
       context.approvedUserMemoryWrite !==
-        JSON.stringify([input.content, input.agent_type, input.scope])
+      JSON.stringify([input.content, input.agent_type, input.scope])
     ) {
       const permission = await MemorySaveTool.checkPermissions(input, context);
       if (!permission.allowed) return { content: "", error: permission.reason };

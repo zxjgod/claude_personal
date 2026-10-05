@@ -125,7 +125,13 @@ export const TaskUpdateTool: Tool = buildTool({
 
   async call(input, context): Promise<ToolResult> {
     const { taskId, ...updates } = input;
+    // Review fix ("TaskCompleted 钩子先于存在性检查"): the hook fired on
+    // input.status === "completed" even when the task did NOT exist — a
+    // phantom completion event. Verify the task first, hook second.
     if (input.status === "completed") {
+      if (!getTask(context.sessionId, taskId)) {
+        return { content: "", error: `Task ${taskId} not found` };
+      }
       const outcome = await context.hooks?.runEvent?.("TaskCompleted", {
         task_id: taskId,
         session_id: context.sessionId,

@@ -1,6 +1,7 @@
 // /sessions — list, search, pin, and delete saved sessions
 import chalk from "chalk";
 import type { SessionCatalogEntry, SessionMeta } from "../persistence.js";
+import { sanitizeTerminalText } from "../tui/terminal-width.js";
 import type { SlashCommand } from "./types.js";
 
 type SessionRow = SessionMeta | SessionCatalogEntry;
@@ -13,8 +14,14 @@ function formatSession(s: SessionRow, currentId: string): string {
   const marker = s.sessionId === currentId ? chalk.green("*") : " ";
   const pin = isCatalogEntry(s) && s.pinned ? chalk.yellow("📌 ") : "   ";
   const state = s.taskState;
-  const preview = isCatalogEntry(s) && s.preview ? chalk.gray(` — ${s.preview}`) : "";
-  return `  ${marker} ${pin}${s.sessionId.slice(0, 8)}... — ${s.messageCount} msgs — ${new Date(s.updatedAt).toLocaleString()} — ${state}${preview}`;
+  // A `-n, --name` label replaces the truncated id; unnamed sessions keep
+  // the id, which is what /resume takes. Both the label and the preview are
+  // read back from the session file on disk, so they are sanitized like any
+  // other untrusted text before the row is printed.
+  const label = s.name ? chalk.cyan(sanitizeTerminalText(s.name)) : `${s.sessionId.slice(0, 8)}...`;
+  const preview =
+    isCatalogEntry(s) && s.preview ? chalk.gray(` — ${sanitizeTerminalText(s.preview)}`) : "";
+  return `  ${marker} ${pin}${label} — ${s.messageCount} msgs — ${new Date(s.updatedAt).toLocaleString()} — ${state}${preview}`;
 }
 
 function findSessionByPrefix(sessions: SessionMeta[], idOrPrefix: string): SessionMeta[] {

@@ -57,8 +57,11 @@ export function getMicroCompactConfig(): MicroCompactConfig {
       : DEFAULT_CONFIG.enabled,
     gapThresholdMinutes:
       envGap && !Number.isNaN(Number.parseInt(envGap, 10))
-        ? Number.parseInt(envGap, 10)
-        : DEFAULT_CONFIG.gapThresholdMinutes,
+        ? Math.max(1, Number.parseInt(envGap, 10)) // Floor at 1 — review fix
+        : // ("负阈值"): keepRecent had the floor but gap did not, so
+          // CCR_MICROCOMPACT_GAP_MINUTES=-5 made EVERY result eligible for
+          // immediate compaction.
+          DEFAULT_CONFIG.gapThresholdMinutes,
     keepRecent:
       envKeep && !Number.isNaN(Number.parseInt(envKeep, 10))
         ? Math.max(1, Number.parseInt(envKeep, 10)) // Floor at 1

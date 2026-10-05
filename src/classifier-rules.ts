@@ -23,7 +23,12 @@ export const DEFAULT_CLASSIFIER_RULES: ClassifierRules = {
   allow: [
     "Read-only operations: reading files, listing directories, searching (grep/glob), git status/log/diff",
     "Running build, test, or type-check commands (npm test, tsc --noEmit, cargo build)",
-    "Installing packages into the project (npm install, pip install)",
+    // Review fix: plain `npm install` executes arbitrary postinstall scripts,
+    // which system-prompt.ts lists under "ALWAYS require explicit user
+    // confirmation" — auto-allowing it contradicted that promise. Only the
+    // script-suppressing form is auto-allowed; a plain install falls through
+    // to the user prompt.
+    "Installing packages with lifecycle scripts disabled (npm install --ignore-scripts, pip install --no-build-isolation from wheels)",
   ],
   soft_deny: [
     "Deleting files or directories (rm, del, Remove-Item -Recurse)",
@@ -71,9 +76,11 @@ Rules:
 export function buildClassifierPrompt(rules: ClassifierRules): string {
   const list = (items: string[]): string =>
     items.length > 0 ? items.map((r) => `- ${r}`).join("\n") : "- (none)";
-  return BASE_CLASSIFIER_PROMPT.replace("<allow_rules>", list(rules.allow))
-    .replace("<deny_rules>", list(rules.soft_deny))
-    .replace("<environment_rules>", list(rules.environment));
+  // Replacer functions: rule text is user-supplied and may contain `$`-pattern
+  // sequences ($&, $', $1…) that String.replace would otherwise interpret.
+  return BASE_CLASSIFIER_PROMPT.replace("<allow_rules>", () => list(rules.allow))
+    .replace("<deny_rules>", () => list(rules.soft_deny))
+    .replace("<environment_rules>", () => list(rules.environment));
 }
 
 /** Merge user overrides over defaults (per-section REPLACE: non-empty replaces). */

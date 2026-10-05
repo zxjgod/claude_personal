@@ -50,6 +50,45 @@ describe("resolveTelemetryOptions", () => {
     );
     expect(resolveTelemetryOptions(tmp).enabled).toBe(true);
   });
+
+  it("enables from the USER-level settings file, not just the project one", () => {
+    // Regression: resolveTelemetryOptions read <workspace>/.claude/settings.json
+    // directly, so for a global install the toggle the user wrote to the user
+    // settings file (the install-level write target) was never read back —
+    // recording stayed off no matter what the user configured.
+    const userDir = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-tel-user-"));
+    const previous = process.env.CCR_USER_CONFIG_DIR;
+    try {
+      process.env.CCR_USER_CONFIG_DIR = userDir;
+      fs.writeFileSync(
+        path.join(userDir, "settings.json"),
+        JSON.stringify({ telemetry: { enabled: true } }),
+      );
+      expect(resolveTelemetryOptions(tmp).enabled).toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env.CCR_USER_CONFIG_DIR;
+      else process.env.CCR_USER_CONFIG_DIR = previous;
+      fs.rmSync(userDir, { recursive: true, force: true });
+    }
+  });
+
+  it("lets managed settings force recording OFF", () => {
+    fs.mkdirSync(path.join(tmp, ".claude"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmp, ".claude", "settings.json"),
+      JSON.stringify({ telemetry: { enabled: true } }),
+    );
+    const managed = path.join(tmp, "managed.json");
+    fs.writeFileSync(managed, JSON.stringify({ telemetry: { enabled: false } }));
+    const previous = process.env.CCR_MANAGED_SETTINGS;
+    try {
+      process.env.CCR_MANAGED_SETTINGS = managed;
+      expect(resolveTelemetryOptions(tmp).enabled).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env.CCR_MANAGED_SETTINGS;
+      else process.env.CCR_MANAGED_SETTINGS = previous;
+    }
+  });
 });
 
 describe("Telemetry recorder", () => {

@@ -54,7 +54,11 @@ export function createTokenBudgetState(): TokenBudgetState {
 
 /** Fold one model call's reported output tokens into the budget state. */
 export function recordOutput(state: TokenBudgetState, outputTokens: number): TokenBudgetState {
-  return { ...state, totalOutput: state.totalOutput + Math.max(0, outputTokens) };
+  // A missing/invalid usage field must not poison the accumulator: NaN
+  // comparisons are all false, which would silently disable BOTH guards below.
+  const tokens = Number.isFinite(outputTokens) ? Math.max(0, outputTokens) : 0;
+  const total = Number.isFinite(state.totalOutput) ? state.totalOutput : 0;
+  return { ...state, totalOutput: total + tokens };
 }
 
 export interface BudgetDecision {
@@ -78,14 +82,16 @@ export function checkTokenBudget(
   lastTurnOutput: number,
   config: TokenBudgetConfig,
 ): BudgetDecision {
-  // Disabled → behave exactly as before (no auto-continuation).
-  if (config.maxOutputTokens <= 0) {
+  // Disabled (or a non-finite ceiling from a bad config) → no auto-continuation.
+  if (!Number.isFinite(config.maxOutputTokens) || config.maxOutputTokens <= 0) {
     return { shouldContinue: false, stopReason: "disabled", state };
   }
 
   // Update the diminishing-returns streak: a continuation that produced fewer
   // than minMarginalTokens is "low gain". A productive turn resets the streak.
-  const lowGain = lastTurnOutput < config.minMarginalTokens;
+  // Non-finite output counts as low gain — fail toward stopping, never toward
+  // an unbounded nudge loop.
+  const lowGain = !Number.isFinite(lastTurnOutput) || lastTurnOutput < config.minMarginalTokens;
   const lowGainStreak = lowGain ? state.lowGainStreak + 1 : 0;
   const next: TokenBudgetState = { ...state, lowGainStreak };
 

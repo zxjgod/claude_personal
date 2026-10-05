@@ -94,8 +94,16 @@ describe("loadProviderProfiles", () => {
     expect(profiles.map((p) => p.name)).toEqual(["ok"]);
   });
 
-  it("drops an unknown provider (falls back later to openai)", () => {
+  it("drops the whole profile when the provider is present but unrecognized", () => {
+    // A typo'd provider must NOT silently inherit the current provider while
+    // carrying a baseURL/apiKey meant for another family (key to wrong
+    // endpoint) — the entry is unusable, so it is dropped entirely.
     writeProfiles(JSON.stringify({ profiles: [{ name: "weird", provider: "gemini" }] }));
+    expect(loadProviderProfiles(ws)).toEqual([]);
+  });
+
+  it("keeps an entry whose provider is omitted (inherits current on apply)", () => {
+    writeProfiles(JSON.stringify({ profiles: [{ name: "relay" }] }));
     const [p] = loadProviderProfiles(ws);
     expect(p!.provider).toBeUndefined();
   });
@@ -155,16 +163,30 @@ describe("applyProfile", () => {
     expect(cfg.model).toBe("qwen-plus");
   });
 
-  it("reuses the current apiKey when the profile omits one", () => {
+  it("inherits the apiKey only when the endpoint is unchanged", () => {
     const cfg = baseConfig({ apiKey: "keep-me" });
-    applyProfile(cfg, { name: "relay", baseURL: "https://r/v1", model: "gpt-4o" });
+    applyProfile(cfg, { name: "same-endpoint", model: "gpt-4o" });
     expect(cfg.apiKey).toBe("keep-me");
   });
 
-  it("defaults provider to openai when omitted", () => {
-    const cfg = baseConfig({ provider: "deepseek" });
-    applyProfile(cfg, { name: "relay", baseURL: "https://r/v1", apiKey: "sk", model: "x" });
-    expect(cfg.provider).toBe("openai");
+  it("refuses to send the current key to a changed endpoint", () => {
+    const cfg = baseConfig({ apiKey: "secret-key" });
+    expect(() =>
+      applyProfile(cfg, { name: "relay", baseURL: "https://r/v1", model: "gpt-4o" }),
+    ).toThrow(/no apiKey/);
+    expect(cfg.apiKey).toBe("secret-key"); // config untouched on failure
+  });
+
+  it("keeps the current provider when the profile omits one", () => {
+    const cfg = baseConfig({
+      provider: "deepseek",
+      apiKey: "sk",
+      baseURL: "https://api.deepseek.com/v1",
+    });
+    applyProfile(cfg, { name: "ds2", model: "deepseek-reasoner" });
+    expect(cfg.provider).toBe("deepseek");
+    expect(cfg.model).toBe("deepseek-reasoner");
+    expect(cfg.baseURL).toContain("deepseek.com");
   });
 
   it("preserves maxTokens/temperature/options", () => {

@@ -58,6 +58,28 @@ export function restoreStructuredTasks(sessionId: string, values: unknown[]): vo
 
 let taskIdCounter = 0;
 
+/**
+ * True when adding the edge blockerId→blockedId would close a dependency
+ * cycle (blockedId already transitively blocks blockerId).
+ */
+function wouldCreateCycle(
+  tasks: Map<string, StructuredTask>,
+  blockerId: string,
+  blockedId: string,
+): boolean {
+  const seen = new Set<string>();
+  const stack = [blockedId];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    if (current === blockerId) return true;
+    if (seen.has(current)) continue;
+    seen.add(current);
+    const task = tasks.get(current);
+    if (task) stack.push(...task.blocks);
+  }
+  return false;
+}
+
 function nextTaskId(): string {
   taskIdCounter += 1;
   return `${taskIdCounter}`;
@@ -136,6 +158,22 @@ export function updateTask(
   const task = getTask(sessionId, taskId);
   if (!task) return undefined;
 
+  // Review fix ("deleted 任务永不移除"): status:"deleted" used to just tag
+  // the task — it stayed in the map (listed as [deleted], still holding
+  // dependency edges) forever. Actually remove it and scrub both directions
+  // of every edge pointing at it.
+  if (updates.status === "deleted") {
+    const tasks = getTaskMap(sessionId);
+    tasks.delete(taskId);
+    for (const other of tasks.values()) {
+      other.blocks = other.blocks.filter((id) => id !== taskId);
+      other.blockedBy = other.blockedBy.filter((id) => id !== taskId);
+    }
+    task.status = "deleted";
+    task.updatedAt = process.hrtime.bigint();
+    return task;
+  }
+
   if (updates.subject !== undefined) task.subject = updates.subject;
   if (updates.description !== undefined) task.description = updates.description;
   if (updates.activeForm !== undefined) task.activeForm = updates.activeForm;
@@ -154,21 +192,21 @@ export function updateTask(
     }
   }
 
-  // Add dependencies
-  if (updates.addBlocks) {
-    for (const id of updates.addBlocks) {
-      if (!task.blocks.includes(id)) {
-        task.blocks.push(id);
-      }
-    }
-  }
-  if (updates.addBlockedBy) {
-    for (const id of updates.addBlockedBy) {
-      if (!task.blockedBy.includes(id)) {
-        task.blockedBy.push(id);
-      }
-    }
-  }
+  // Add dependencies. Both directions of the edge are written so
+  // blocks/blockedBy stay consistent; unknown targets and self-references are
+  // ignored, and an edge that would create a dependency cycle is skipped.
+  const tasks = getTaskMap(sessionId);
+  const addEdge = (blockerId: string, blockedId: string): void => {
+    if (blockerId === blockedId) return;
+    const blocker = tasks.get(blockerId);
+    const blocked = tasks.get(blockedId);
+    if (!blocker || !blocked) return;
+    if (wouldCreateCycle(tasks, blockerId, blockedId)) return;
+    if (!blocker.blocks.includes(blockedId)) blocker.blocks.push(blockedId);
+    if (!blocked.blockedBy.includes(blockerId)) blocked.blockedBy.push(blockerId);
+  };
+  for (const id of updates.addBlocks ?? []) addEdge(taskId, id);
+  for (const id of updates.addBlockedBy ?? []) addEdge(id, taskId);
 
   task.updatedAt = process.hrtime.bigint();
   return task;

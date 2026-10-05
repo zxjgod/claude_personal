@@ -7,6 +7,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { appendAgentMemory } from "../agent-memory.js";
+import { setMemoryApproval } from "../memory-approval.js";
 import { autoExtractMemoriesOnExit, MemoryStore } from "../memory-extract.js";
 import { MemorySaveTool } from "../tools/extended/memory-save.js";
 import type { Message, ModelCaller, ToolContext } from "../types.js";
@@ -25,6 +26,9 @@ const ctx = (): ToolContext => ({
   workspaceRoot: tmpDir,
   sessionId: "memsave-test",
   permissionMode: "default",
+  // Tests simulate an approving user; production without an approval channel
+  // must block (see the "requires explicit approval" test below).
+  askUser: async () => true,
 });
 
 function userMsg(text: string): Message {
@@ -62,6 +66,36 @@ describe("MemorySaveTool", () => {
     const content = fs.readFileSync(md, "utf-8");
     expect(content).toContain("## Auto-saved");
     expect(content).toContain("- Run tests from the repo root only");
+  });
+
+  // The approval gate defaults OFF (user decision 2026-10-04); the next two
+  // tests cover the ON posture, so enable it explicitly.
+  it("gate ON: blocks project-scope writes without an approval channel", async () => {
+    setMemoryApproval(true);
+    try {
+      const bare: ToolContext = {
+        workspaceRoot: tmpDir,
+        sessionId: "memsave-test",
+        permissionMode: "default",
+      };
+      const result = await MemorySaveTool.call({ content: "unapproved lesson" }, bare);
+      expect(result.error).toContain("approval");
+      expect(new MemoryStore(tmpDir).list()).toHaveLength(0);
+    } finally {
+      setMemoryApproval(false);
+    }
+  });
+
+  it("gate ON: blocks when the user declines the approval prompt", async () => {
+    setMemoryApproval(true);
+    try {
+      const declining: ToolContext = { ...ctx(), askUser: async () => false };
+      const result = await MemorySaveTool.call({ content: "declined lesson" }, declining);
+      expect(result.error).toContain("approval");
+      expect(new MemoryStore(tmpDir).list()).toHaveLength(0);
+    } finally {
+      setMemoryApproval(false);
+    }
   });
 });
 

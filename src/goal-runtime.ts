@@ -7,6 +7,8 @@ export interface GoalState {
   suspended?: boolean;
 }
 const goals = new Map<string, GoalState>();
+/** Hard cap on paid evaluator calls per goal — each check is a real model call. */
+export const MAX_GOAL_CHECKS = 20;
 export function setSessionGoal(sessionId: string, objective: string): void {
   if (!objective) goals.delete(sessionId);
   else goals.set(sessionId, { objective, complete: false, checks: 0 });
@@ -56,6 +58,11 @@ export async function evaluateSessionGoal(
 ): Promise<GoalState | undefined> {
   const goal = goals.get(sessionId);
   if (!goal || goal.complete || goal.suspended) return goal;
+  if (goal.checks >= MAX_GOAL_CHECKS) {
+    goal.suspended = true;
+    goal.reason = `Goal evaluation stopped after ${MAX_GOAL_CHECKS} checks; set /goal again to resume.`;
+    return goal;
+  }
   if (signal?.aborted) throw signal.reason ?? new Error("Goal evaluation cancelled");
   const evidence = messages
     .slice(-16)
@@ -87,13 +94,21 @@ export async function evaluateSessionGoal(
     if (event.type === "text_delta") output += event.delta;
     if (event.type === "error") throw event.error;
   }
-  const value = JSON.parse(output.replace(/^```(?:json)?\s*|\s*```$/g, "")) as {
-    complete?: unknown;
-    reason?: unknown;
-  };
-  if (typeof value.complete !== "boolean") throw new Error("Invalid goal evaluator result");
-  goal.complete = value.complete;
-  goal.reason = typeof value.reason === "string" ? value.reason : "";
+  // Count every paid evaluation up front — including failed/invalid ones — so
+  // a model that keeps returning non-JSON cannot retry forever without a trace.
   goal.checks++;
+  try {
+    const value = JSON.parse(output.replace(/^```(?:json)?\s*|\s*```$/g, "")) as {
+      complete?: unknown;
+      reason?: unknown;
+    };
+    if (typeof value.complete !== "boolean") throw new Error("Invalid goal evaluator result");
+    goal.complete = value.complete;
+    goal.reason = typeof value.reason === "string" ? value.reason : "";
+  } catch (error) {
+    goal.reason = `Evaluation failed: ${error instanceof Error ? error.message : String(error)}`;
+    if (goal.checks >= MAX_GOAL_CHECKS) goal.suspended = true;
+    throw error;
+  }
   return goal;
 }

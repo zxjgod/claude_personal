@@ -13,9 +13,47 @@
 // ============================================================
 
 import { execFile } from "node:child_process";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+
+let cachedGitExe: string | undefined;
+
+/**
+ * Resolve git to an ABSOLUTE path on Windows (review fix: "git execFile CWD
+ * 劫持"). CreateProcess' search order includes the CURRENT directory, so a
+ * bare "git" in a workspace containing a planted git.exe/git.cmd executes the
+ * planted binary — and gatherGitContext runs automatically at CLI startup.
+ * An absolute path skips the search entirely. PATH entries are user-machine
+ * config (not project-controlled), so the first hit is trusted. Non-Windows
+ * keeps the bare name (POSIX execvp does not search CWD unless PATH says so).
+ */
+export function resolveGitExecutable(): string {
+  if (process.platform !== "win32") return "git";
+  if (cachedGitExe !== undefined) return cachedGitExe;
+  let pathEnv: string | undefined;
+  for (const [k, v] of Object.entries(process.env)) {
+    if (k.toLowerCase() === "path") pathEnv = v;
+  }
+  for (const dir of (pathEnv ?? "").split(";")) {
+    if (!dir) continue;
+    for (const ext of [".exe", ".cmd", ".bat"]) {
+      const candidate = path.join(dir, `git${ext}`);
+      try {
+        fs.accessSync(candidate, fs.constants.X_OK);
+        cachedGitExe = candidate;
+        return candidate;
+      } catch {
+        // keep looking
+      }
+    }
+  }
+  // Not found on PATH — fall back to the bare name (fails as before).
+  cachedGitExe = "git";
+  return cachedGitExe;
+}
 
 export interface GitContext {
   branch: string;
@@ -35,7 +73,7 @@ interface GatherOptions {
 
 async function git(args: string[], cwd: string, timeoutMs: number): Promise<string | null> {
   try {
-    const { stdout } = await execFileAsync("git", args, {
+    const { stdout } = await execFileAsync(resolveGitExecutable(), args, {
       cwd,
       timeout: timeoutMs,
       windowsHide: true,

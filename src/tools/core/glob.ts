@@ -49,9 +49,13 @@ export const GlobTool: Tool = buildTool({
     try {
       // Patterns are evaluated relative to the already validated directory;
       // reject absolute/traversal patterns so fast-glob cannot escape cwd.
+      // The segment check must ALSO catch `..` hiding inside brace expansion
+      // ("{..,src}/secret" expands to "../secret" after this check), so `..`
+      // is rejected when bounded by brace/comma separators too.
       if (
         path.isAbsolute(input.pattern) ||
-        input.pattern.split(/[\\/]+/).some((segment) => segment === "..")
+        input.pattern.split(/[\\/]+/).some((segment) => segment === "..") ||
+        /(^|[{}|,])\.\.(?=[{}|,]|$)/.test(input.pattern)
       ) {
         return { content: "", error: "Glob pattern must stay inside the workspace." };
       }
@@ -64,6 +68,10 @@ export const GlobTool: Tool = buildTool({
           ignore: ["**/node_modules/**", "**/.git/**"],
           absolute: false,
           dot: false,
+          // Never follow symlinked directories — a symlink inside the
+          // workspace pointing outside would otherwise leak the external
+          // file listing through results.
+          followSymbolicLinks: false,
           // Align with the official Glob tool: match FILES only, never dirs.
           onlyFiles: true,
         }),

@@ -85,9 +85,15 @@ export class Spinner {
     this.render(0);
     if (!this.reducedMotion) {
       this.timer = setInterval(() => this.tick(), FRAME_MS);
-      // Don't keep the event loop alive solely for the spinner.
-      this.timer.unref?.();
+    } else {
+      // Review fix ("reduced-motion 耗时钟停 (0s)"): reduced motion disables
+      // the GLYPH/SHIMMER animation, not the elapsed clock — with no timer at
+      // all the "(Ns)" suffix froze at the render(0) value for the whole
+      // turn. A slow 1s refresh updates the clock with no motion.
+      this.timer = setInterval(() => this.tick(), 1000);
     }
+    // Don't keep the event loop alive solely for the spinner.
+    this.timer.unref?.();
   }
 
   /** Update live token estimate (called as text streams in). */

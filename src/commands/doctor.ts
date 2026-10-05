@@ -10,13 +10,18 @@ import { execFile } from "node:child_process";
 import * as fs from "node:fs";
 import { promisify } from "node:util";
 import chalk from "chalk";
+import { resolveGitExecutable } from "../git-context.js";
 import type { SlashCommand } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
 async function git(args: string[], cwd: string): Promise<string | null> {
   try {
-    const { stdout } = await execFileAsync("git", args, { cwd, timeout: 3000, windowsHide: true });
+    const { stdout } = await execFileAsync(resolveGitExecutable(), args, {
+      cwd,
+      timeout: 3000,
+      windowsHide: true,
+    });
     return stdout.trim();
   } catch {
     return null;

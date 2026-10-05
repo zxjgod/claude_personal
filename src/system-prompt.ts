@@ -267,6 +267,89 @@ export interface SystemPromptOptions {
    * model reads about a capability it cannot actually call.
    */
   permissionPolicy?: PermissionPolicy;
+  /**
+   * Official `--agent <name>`: the selected sub-agent's persona for this
+   * session. Its prompt is PREPENDED to the identity section rather than
+   * replacing it, because the harness contract below this point (coding rules,
+   * tool descriptions, permission boundaries) is what keeps the model honest
+   * about what it can actually do — an agent definition should not be able to
+   * erase that. Documented as a deviation from the official flag.
+   */
+  agentPersona?: { name: string; prompt: string };
+  /**
+   * Official `--brief`: SendUserMessage is registered for this session, so the
+   * prompt tells the model how to use the channel. Omitted when the flag is
+   * absent (the default) — the section would otherwise advertise a tool the
+   * model cannot call.
+   */
+  brief?: boolean;
+  /**
+   * Official `--file <specs...>`: files pulled from the Files API into
+   * `<cwd>/<sessionId>/uploads/` at startup. Both the landed files AND the
+   * ones that failed are listed — a spec that did not download must never
+   * read to the model as one that did.
+   */
+  startupFiles?: Array<{ path: string; bytesWritten?: number; error?: string }>;
+}
+
+/**
+ * The `--file` section: where startup-downloaded resources landed, and which
+ * requests failed. The failure lines are load-bearing — without them a model
+ * asked about a missing attachment would answer from imagination.
+ */
+export function buildStartupFilesSection(
+  files: Array<{ path: string; bytesWritten?: number; error?: string }>,
+): string {
+  const landed = files.filter((f) => !f.error);
+  const failed = files.filter((f) => f.error);
+  const lines: string[] = [
+    "[STARTUP FILES]",
+    "Files requested with --file were downloaded into this workspace:",
+  ];
+  for (const f of landed) {
+    lines.push(`- ${f.path} (${f.bytesWritten ?? 0} bytes) — read it with the Read tool.`);
+  }
+  if (failed.length > 0) {
+    lines.push("These --file requests did NOT download. Do not act as if they exist:");
+    for (const f of failed) lines.push(`- ${f.error}`);
+  }
+  return lines.join("\n");
+}
+
+/**
+ * The `--brief` prompt section.
+ *
+ * Adapted from official's `BRIEF_PROACTIVE_SECTION`, which tells the model that
+ * text outside SendUserMessage is "visible if the user expands the detail
+ * view, but most won't". That is a fact about official's chat view, not about
+ * this terminal, where plain assistant text is fully visible — stating it
+ * verbatim would teach the model to distrust output the user actually reads.
+ * The behavioural substance is kept (ack → work → result, checkpoints at phase
+ * boundaries, second person, tight messages); the claim about visibility is not.
+ */
+export function buildBriefChannelSection(): string {
+  return [
+    "[BRIEF CHANNEL]",
+    "SendUserMessage is your dedicated line to the user. It reaches them verbatim and",
+    "survives independently of whatever tool call happened to run last, so anything",
+    "meant to be READ goes through it. Narration printed around a tool call is not a",
+    "substitute: the user asked a question, and a paragraph about running tests is not",
+    "the answer.",
+    "",
+    "When the user says something, the reply they read comes through SendUserMessage.",
+    "",
+    "If you can answer right away, send the answer. If you need to go look — run a",
+    "command, read files, check something — ack first in one line, then work, then send",
+    "the result. Without the ack they are staring at a spinner.",
+    "",
+    "For longer work: ack → work → result. Between those, send a checkpoint when",
+    "something useful happened — a decision you made, a surprise you hit, a phase",
+    'boundary. Skip the filler ("running tests..."): a checkpoint earns its place by',
+    "carrying information.",
+    "",
+    "Keep messages tight — the decision, the file:line, the PR number. Second person",
+    'always ("your config"), never third.',
+  ].join("\n");
 }
 
 // ============================================================
@@ -314,8 +397,16 @@ export function buildSystemPrompt(options: SystemPromptOptions): string[] {
   for (const key of [...sectionCache.keys()]) {
     if (key.startsWith("tools:") && key !== toolsKey) sectionCache.delete(key);
   }
+  // Keyed by agent name so switching personas (a /agents switch, or a second
+  // --agent build in one process during tests) recomputes only this block
+  // instead of invalidating the whole static prefix.
+  const persona = options.agentPersona;
   const staticBlocks = [
-    systemPromptSection("identity", buildIdentitySection),
+    systemPromptSection(persona ? `identity:agent:${persona.name}` : "identity", () =>
+      persona
+        ? `[SESSION AGENT: ${persona.name}]\n${persona.prompt}\n\n${buildIdentitySection()}`
+        : buildIdentitySection(),
+    ),
     systemPromptSection("coding_rules", buildCodingRulesSection),
     systemPromptSection("tool_usage", buildToolUsageSection),
     systemPromptSection(`output_style:${outputStyle}`, () => buildOutputStyleSection(outputStyle)),
@@ -324,6 +415,10 @@ export function buildSystemPrompt(options: SystemPromptOptions): string[] {
       buildToolDescriptionsSection(options.tools, options.permissionPolicy),
     ),
   ];
+  // `--brief` is a per-process flag, so this block is part of the stable
+  // prefix: a session that enables it pays the section once, and a session that
+  // does not keeps the shorter cached prefix it already had.
+  if (options.brief) staticBlocks.push(systemPromptSection("brief", buildBriefChannelSection));
 
   // --- Dynamic suffix (below the boundary; values drift at runtime) ---
   // Ordered MOST STABLE FIRST (Top10 follow-up A7③): prefix caching
@@ -355,6 +450,13 @@ export function buildSystemPrompt(options: SystemPromptOptions): string[] {
   // Per-turn drift: the git snapshot refreshes between turns.
   if (options.gitStatus) {
     dynamicBlocks.push(`[GIT STATUS]\n${options.gitStatus}`);
+  }
+  // `--file` resources: fixed for the session, but path content depends on
+  // where the files landed, so it goes in the drift section rather than the
+  // cached prefix. Listed LAST-but-one so a mid-session change still leaves
+  // the MCP instructions — the most volatile of all — at the very end.
+  if (options.startupFiles && options.startupFiles.length > 0) {
+    dynamicBlocks.push(buildStartupFilesSection(options.startupFiles));
   }
   if (options.mcpInstructions) {
     // MCP servers connect/disconnect between turns, so this is intentionally

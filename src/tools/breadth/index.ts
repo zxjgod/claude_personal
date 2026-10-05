@@ -8,6 +8,7 @@
 // ============================================================
 
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import { promisify } from "node:util";
 import { z } from "zod";
@@ -37,7 +38,25 @@ const execFileAsync = promisify(execFile);
 
 const NotebookSchema = z.strictObject({
   filePath: z.string().describe("Path to the .ipynb file"),
-  cellIndex: z.number().int().describe("0-based index of the cell to operate on"),
+  cellIndex: z
+    .number()
+    .int()
+    .optional()
+    .describe(
+      "0-based index of the cell to operate on. Either cellIndex or cell_id is " +
+        "required; if both are given, cellIndex wins.",
+    ),
+  // Official's cell_id is CONTENT-ADDRESSED (the cell's Jupyter `id`), not an
+  // index — so it is a real parameter here, NOT an alias for cellIndex. Aliasing
+  // the two would silently edit the wrong cell whenever the notebook is
+  // reordered.
+  cellId: z
+    .string()
+    .optional()
+    .describe(
+      "The `id` of the cell to operate on (nbformat 4.5+). For insert, the new cell " +
+        "is added AFTER this cell; with neither cellId nor cellIndex, insert prepends.",
+    ),
   mode: z
     .enum(["replace", "insert", "delete"])
     .optional()
@@ -52,6 +71,8 @@ const NotebookSchema = z.strictObject({
 interface NotebookCell {
   cell_type: string;
   source: string[] | string;
+  /** nbformat 4.5+ cell id; how official `cell_id` addresses a cell. */
+  id?: string;
   metadata?: Record<string, unknown>;
   outputs?: unknown[];
   execution_count?: number | null;
@@ -71,14 +92,45 @@ function toSourceLines(source: string): string[] {
   return parts.map((line, i) => (i < parts.length - 1 ? line + "\n" : line));
 }
 
+/**
+ * Turn a cell `id` into an index, or -1 when no cell carries it.
+ *
+ * Official's `cell_id` is the cell's own identifier, so this is a lookup, not a
+ * reinterpretation of an index. Notebooks predating nbformat 4.5 have no `id`
+ * on their cells and are therefore not addressable this way — that is reported
+ * rather than papered over, because falling back to "treat the id as an index"
+ * would silently edit the wrong cell whenever the two happened to line up.
+ */
+function indexOfCellId(nb: Notebook, cellId: string): number {
+  return nb.cells.findIndex((c) => c.id === cellId);
+}
+
+/**
+ * Mint a cell id that is valid for nbformat 4.5+ (`[a-zA-Z0-9-_]`, ≤64 chars)
+ * and not already present in the notebook.
+ */
+function nextCellId(nb: Notebook): string {
+  const taken = new Set(nb.cells.map((c) => c.id).filter((id): id is string => !!id));
+  for (let attempt = 0; attempt < 1000; attempt++) {
+    const candidate = randomUUID().replace(/-/g, "").slice(0, 8);
+    if (!taken.has(candidate)) return candidate;
+  }
+  // Astronomically unlikely; fall back to something guaranteed-unique-ish.
+  return `cell${nb.cells.length}${Date.now().toString(36)}`;
+}
+
 export const NotebookEditTool: Tool = buildTool({
   name: "notebook_edit",
   description: "Edit a Jupyter notebook cell (replace / insert / delete)",
   promptDescription:
-    "Edit a Jupyter (.ipynb) notebook cell. mode=replace overwrites the cell at " +
-    "cellIndex; mode=insert adds a new cell after cellIndex (use -1 to prepend); " +
-    "mode=delete removes it. source is the new cell text for replace/insert. " +
-    "cellType (code|markdown) applies to insert. cellIndex is 0-based.",
+    "Edit a Jupyter (.ipynb) notebook cell. Address the cell with EITHER cell_id " +
+    "(the cell's own id, nbformat 4.5+; preferred because it survives reordering) or " +
+    "cellIndex (0-based). edit_mode=replace overwrites the addressed cell; " +
+    "edit_mode=insert adds a new cell AFTER it (with neither, the new cell is prepended); " +
+    "edit_mode=delete removes it. new_source is the new cell text for replace/insert. " +
+    "cell_type (code|markdown) applies to insert. Newly inserted cells are given a fresh " +
+    "id so they can be addressed by cell_id next time. " +
+    "The internal names mode/source/cellType and filePath are also accepted.",
   schema: NotebookSchema,
   isReadOnly: false,
   isConcurrencySafe: false,
@@ -113,7 +165,35 @@ export const NotebookEditTool: Tool = buildTool({
         return { content: "", error: "Notebook has no cells array" };
       }
 
-      const idx = input.cellIndex;
+      // Addressing: official addresses a cell by its content `id`; this project
+      // historically used a 0-based index. Both are accepted; an explicit index
+      // wins when both are present (same rule as official-parameter aliases).
+      const explicitIndex = input.cellIndex ?? -1;
+      const cellId = input.cellId ?? "";
+      const hasIndex = input.cellIndex !== undefined;
+      let idx = explicitIndex;
+      let addressedBy = `cell ${explicitIndex}`;
+      if (!hasIndex) {
+        if (cellId.length > 0) {
+          const found = indexOfCellId(nb, cellId);
+          if (found === -1) {
+            return {
+              content: "",
+              error:
+                `cell_id "${cellId}" not found in ${input.filePath}. ` +
+                `Notebooks saved before nbformat 4.5 carry no cell ids; use cellIndex for those.`,
+            };
+          }
+          idx = found;
+          addressedBy = `cell_id "${cellId}"`;
+        } else if (mode === "insert") {
+          // Official: with no cell_id, an inserted cell goes at the BEGINNING.
+          idx = -1;
+          addressedBy = "the start of the notebook";
+        } else {
+          return { content: "", error: "one of cellIndex or cellId is required" };
+        }
+      }
 
       if (mode === "delete") {
         if (idx < 0 || idx >= nb.cells.length) {
@@ -131,6 +211,9 @@ export const NotebookEditTool: Tool = buildTool({
           cell_type: input.cellType ?? "code",
           source: toSourceLines(input.source),
           metadata: {},
+          // Mint an id so the new cell is addressable by `cell_id` on the next
+          // call, and so the notebook stays valid nbformat 4.5+.
+          id: nextCellId(nb),
         };
         if (newCell.cell_type === "code") {
           newCell.outputs = [];
@@ -167,7 +250,7 @@ export const NotebookEditTool: Tool = buildTool({
       recordChange(context.sessionId, rel, "modified", `notebook ${mode}`);
 
       return {
-        content: `Notebook ${mode} applied to ${input.filePath} (cell ${idx}). Now ${nb.cells.length} cells.`,
+        content: `Notebook ${mode} applied to ${input.filePath} (${addressedBy}). Now ${nb.cells.length} cells.`,
       };
     } catch (error) {
       const errno = error as NodeJS.ErrnoException;
@@ -192,7 +275,7 @@ export const LspDiagnosticsTool: Tool = buildTool({
   description: "Get TypeScript diagnostics for the project or a single file",
   promptDescription:
     "Run TypeScript diagnostics (tsc --noEmit) over the project and return " +
-    "errors/warnings. Pass filePath to filter to one file. Use this to verify " +
+    "errors/warnings. Pass file_path to filter to one file. Use this to verify " +
     "a change type-checks before declaring it done. Requires a tsconfig.json.",
   schema: LspDiagnosticsSchema,
   isReadOnly: true,
@@ -290,7 +373,7 @@ export const LspCompletionsTool: Tool = buildTool({
   description: "Get TypeScript code completions at a cursor position",
   promptDescription:
     "Request code completions at a specific cursor position from the live " +
-    "tsserver. filePath is the file; line and column are 1-based. Returns up to " +
+    "tsserver. file_path is the file; line and column are 1-based. Returns up to " +
     "50 completion names (with kind and insertText). Requires a tsconfig.json.",
   schema: LspCompletionsSchema,
   isReadOnly: true,

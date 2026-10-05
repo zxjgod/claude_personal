@@ -120,6 +120,59 @@ describe("startScheduler", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  it("#16: a finished background SUB-AGENT wakes the idle parent session", () => {
+    const busy = { busy: false };
+    const host = makeHost(busy);
+    pushTaskNotification("sched-test", {
+      id: "job-7",
+      kind: "agent",
+      status: "done",
+      summary: "scan the repo",
+    });
+    stop = startScheduler(host);
+    vi.advanceTimersByTime(1100);
+    // Displayed to the human AND a wake prompt delivered to the model.
+    expect(host.shown).toBe(1);
+    expect(host.delivered).toHaveLength(1);
+    expect(host.delivered[0]).toContain("后台子代理已结束");
+    expect(host.delivered[0]).toContain("job-7");
+    // One-shot: the same notification never wakes twice.
+    vi.advanceTimersByTime(2200);
+    expect(host.delivered).toHaveLength(1);
+  });
+
+  it("#16: non-agent completions (bash jobs) display but never wake the model", () => {
+    const busy = { busy: false };
+    const host = makeHost(busy);
+    pushTaskNotification("sched-test", {
+      id: "job-8",
+      kind: "bash",
+      status: "done",
+      summary: "npm test",
+    });
+    stop = startScheduler(host);
+    vi.advanceTimersByTime(1100);
+    expect(host.shown).toBe(1);
+    expect(host.delivered).toEqual([]);
+  });
+
+  it("#16: no wake while busy — the in-turn drain delivers the completion instead", () => {
+    const busy = { busy: true };
+    const host = makeHost(busy);
+    pushTaskNotification("sched-test", {
+      id: "job-9",
+      kind: "agent",
+      status: "done",
+      summary: "scan the repo",
+    });
+    stop = startScheduler(host);
+    vi.advanceTimersByTime(1100);
+    expect(host.shown).toBe(1);
+    expect(host.delivered).toEqual([]);
+    // The model still receives the queued copy (turn-start / mid-turn drain).
+    expect(drainNotifications("sched-test").join("")).toContain("job-9");
+  });
+
   it("parks due prompts while busy (no delivery, parked notice shown)", () => {
     const busy = { busy: true };
     const host = makeHost(busy);

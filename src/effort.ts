@@ -175,7 +175,13 @@ export function withEffortInstruction(
 ): string {
   // Forked agents inherit the already-enriched parent prompt. Keep that
   // prompt byte-identical so prompt-cache reuse and fork semantics survive.
-  if (/\[EFFORT MODE:\s*[^\]]+\]/.test(systemPrompt)) return systemPrompt;
+  // Review fix ("EFFORT MODE 嗅探误抑制"): the sniff used to scan the WHOLE
+  // prompt — file/memory content that happens to embed the literal
+  // "[EFFORT MODE: x]" string silently suppressed the real instruction.
+  // The enrichment is APPENDED, so checking only the tail keeps the fork
+  // fast path while embedded content can no longer spoof it.
+  const tail = systemPrompt.slice(-400);
+  if (/\[EFFORT MODE:\s*[^\]]+\]/.test(tail)) return systemPrompt;
   return `${systemPrompt}\n\n${getEffortStrategy(options).instruction}`;
 }
 

@@ -32,6 +32,7 @@ import { getCustomCommands } from "./loadCommandsDir.js";
 import { loopCommand } from "./loop.js";
 import { mcpCommand } from "./mcp.js";
 import { memoryCommand } from "./memory.js";
+import { memoryApprovalCommand } from "./memory-approval.js";
 import { modeCommand } from "./mode.js";
 import { modelCommand } from "./model.js";
 import { onboardingCommand } from "./onboarding.js";
@@ -82,6 +83,7 @@ export const COMMANDS: SlashCommand[] = [
   configCommand,
   diffCommand,
   memoryCommand,
+  memoryApprovalCommand,
   initCommand,
   effortCommand,
   commitCommand,

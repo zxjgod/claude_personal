@@ -1,5 +1,6 @@
 // /permissions — show or clear always-allow permission memory
 import chalk from "chalk";
+import { sanitizeTerminalText } from "../tui/terminal-width.js";
 import type { SlashCommand } from "./types.js";
 
 export const permissionsCommand: SlashCommand = {
@@ -23,7 +24,9 @@ export const permissionsCommand: SlashCommand = {
     }
     console.log("");
     console.log(chalk.bold("  Always-allow permissions:"));
-    for (const item of items) console.log(chalk.gray(`    ${item}`));
+    // The remembered rules originate from user approvals of model-proposed
+    // commands — sanitize before printing them.
+    for (const item of items) console.log(chalk.gray(`    ${sanitizeTerminalText(item)}`));
     console.log(chalk.gray("  Use /permissions clear to clear them."));
   },
 };

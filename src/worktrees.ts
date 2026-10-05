@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { promisify } from "node:util";
+import { resolveGitExecutable } from "./git-context.js";
 
 const execFileAsync = promisify(execFile);
 export interface WorktreeInfo {
@@ -23,7 +24,11 @@ export function isRegisteredWorktree(root: string): boolean {
 }
 
 export async function worktreeGit(args: string[], cwd: string): Promise<string> {
-  const { stdout } = await execFileAsync("git", args, { cwd, timeout: 15000, windowsHide: true });
+  const { stdout } = await execFileAsync(resolveGitExecutable(), args, {
+    cwd,
+    timeout: 15000,
+    windowsHide: true,
+  });
   return stdout.trim();
 }
 
@@ -47,6 +52,16 @@ export function popWorktree(sessionId: string): void {
 }
 export function resetWorktrees(sessionId: string): void {
   active.delete(sessionId);
+}
+
+/**
+ * Generated worktree name (official `-w/--worktree` with no value, and the
+ * Agent tool's worktree isolation). Kept here so both callers produce names of
+ * the same shape — and so they satisfy createIsolatedWorktree's validator by
+ * construction rather than by coincidence.
+ */
+export function randomWorktreeName(prefix = "worktree"): string {
+  return `${prefix}-${process.hrtime.bigint().toString(16).slice(-8)}`;
 }
 
 export async function createIsolatedWorktree(

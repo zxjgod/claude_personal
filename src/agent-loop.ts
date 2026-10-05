@@ -19,6 +19,7 @@ import {
 } from "./error-recovery.js";
 import { evaluateSessionGoal, sessionGoal, suspendGoal } from "./goal-runtime.js";
 import { modelContextWindow } from "./model-metadata.js";
+import { policyDecision } from "./permission-policy.js";
 import {
   buildContinuationNudge,
   checkTokenBudget,
@@ -122,6 +123,13 @@ interface LoopState {
    * True once a stop hook has injected a blocking error this turn-sequence.
    */
   stopHookActive: boolean;
+  /**
+   * Cumulative stop-hook blockingError continuations this run. A hook that
+   * always blocks would otherwise loop the model forever at API cost
+   * (review fix: "stop-hook 无硬上限") — stop_hook_active only lets a
+   * WELL-BEHAVED hook self-limit. Capped by MAX_STOP_HOOK_CONTINUATIONS.
+   */
+  stopHookContinuations: number;
   /**
    * M41: consecutive turn continuations driven solely by background
    * completion notifications. Capped so a background job that (directly or
@@ -296,6 +304,10 @@ export async function* agentLoop(
   }
   const MAX_CONTEXT_LENGTH_RETRIES = 3;
   const MAX_TRANSIENT_RETRIES = 3;
+  // Hard ceiling on stop-hook blockingError continuations (review fix: the
+  // hook-driven retry had NO cap — a buggy or malicious stop hook could burn
+  // paid model turns forever; stop_hook_active only helps well-behaved hooks).
+  const MAX_STOP_HOOK_CONTINUATIONS = 5;
 
   let state: LoopState = {
     turnCount: 0,
@@ -306,6 +318,7 @@ export async function* agentLoop(
     transition: { reason: "start" },
     budget: createTokenBudgetState(),
     stopHookActive: false,
+    stopHookContinuations: 0,
     notificationContinuations: 0,
     truncationContinuations: 0,
     fallbackIndex: 0,
@@ -340,6 +353,19 @@ export async function* agentLoop(
         { deferSpecPromotion: true },
       ),
     abortSignal,
+    // Review fix ("streaming 早启动假设"): read-only does not imply
+    // auto-approved — an ask policy rule or a tool-level requiresApproval
+    // would otherwise pop a permission prompt mid-stream, concurrently with
+    // the rest of the turn. Veto early-start for those.
+    (toolName, input) => {
+      const tool = tools.find((t) => t.name === toolName);
+      try {
+        if (tool?.requiresApproval?.()) return false;
+      } catch {
+        return false;
+      }
+      return policyDecision(baseContext.permissionPolicy, toolName, input) !== "ask";
+    },
   );
 
   const terminal = (reason: TerminalReason, error?: unknown): Terminal => ({
@@ -795,6 +821,18 @@ export async function* agentLoop(
             return terminal("stop_hook_prevented");
           }
           if (stop.blockingError) {
+            if (state.stopHookContinuations >= MAX_STOP_HOOK_CONTINUATIONS) {
+              yield {
+                type: "done",
+                finishReason: "end_turn",
+                turns: turnCount,
+                message:
+                  `Stop hook blocked continuation ${MAX_STOP_HOOK_CONTINUATIONS} times; ` +
+                  "stopping to prevent an unbounded hook-driven loop.",
+                speculation: specCache.isEnabled ? specCache.getStats() : undefined,
+              };
+              return terminal("stop_hook_limit");
+            }
             const stopMsg: Message = {
               role: "user",
               content: [{ type: "text", text: stop.blockingError }],
@@ -803,6 +841,7 @@ export async function* agentLoop(
             state = {
               ...state,
               stopHookActive: true,
+              stopHookContinuations: state.stopHookContinuations + 1,
               turnCount: turnCount + 1,
               transition: { reason: "model_retry" },
             };

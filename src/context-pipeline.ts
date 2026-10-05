@@ -269,11 +269,16 @@ export function applyToolResultBudget(
     const content = m.content;
     if (content.length <= headChars + tailChars) continue; // not worth trimming
 
-    options.store?.collapse(m.tool_call_id, content);
     const head = content.slice(0, headChars);
     const tail = content.slice(content.length - tailChars);
     const removed = content.length - head.length - tail.length;
-    const trimmed = `${head}\n[... ${removed} chars trimmed to fit context budget — RestoreContext id: ${m.tool_call_id} ...]\n${tail}`;
+    const marker = `\n[... ${removed} chars trimmed to fit context budget — RestoreContext id: ${m.tool_call_id} ...]\n`;
+    // Review fix ("trim 放大"): when the removable middle is SHORTER than the
+    // marker itself, "trimming" makes the message LONGER. Only trim when it
+    // actually saves characters.
+    if (removed <= marker.length) continue;
+    options.store?.collapse(m.tool_call_id, content);
+    const trimmed = `${head}${marker}${tail}`;
     out[i] = { ...m, content: trimmed };
     total -= content.length - trimmed.length;
     charsSaved += content.length - trimmed.length;

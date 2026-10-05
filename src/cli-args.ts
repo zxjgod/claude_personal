@@ -1,3 +1,9 @@
+import {
+  parseBriefFlag,
+  parseIncludeHookEvents,
+  parsePromptSuggestions,
+} from "./cli-session-flags.js";
+
 export interface CliArgs {
   print: boolean;
   outputFormat: "text" | "json" | "stream-json";
@@ -16,6 +22,9 @@ export interface CliArgs {
   noSessionPersistence: boolean;
   replayUserMessages: boolean;
   includePartialMessages: boolean;
+  includeHookEvents: boolean;
+  promptSuggestions: boolean;
+  brief: boolean;
 }
 
 function values(argv: string[], names: string[]): string[] {
@@ -87,5 +96,8 @@ export function parseCliArgs(argv: string[]): CliArgs {
     noSessionPersistence: argv.includes("--no-session-persistence"),
     replayUserMessages: argv.includes("--replay-user-messages"),
     includePartialMessages: argv.includes("--include-partial-messages"),
+    includeHookEvents: parseIncludeHookEvents(argv),
+    promptSuggestions: parsePromptSuggestions(argv),
+    brief: parseBriefFlag(argv),
   };
 }

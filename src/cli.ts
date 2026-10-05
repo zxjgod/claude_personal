@@ -19,6 +19,15 @@ import * as path from "node:path";
 import * as readline from "node:readline";
 import chalk from "chalk";
 import { agentLoop } from "./agent-loop.js";
+import { registerInlineAgents } from "./agents/inlineAgents.js";
+import { betaWarnings, resolveBetas } from "./api-betas.js";
+import { isAxScreenReaderEnabled } from "./ax-screen-reader.js";
+import {
+  BG_SUBCOMMAND_USAGE,
+  BG_SUPERVISOR_NOUN,
+  resolveBgStartup,
+  resolveJobIdArg,
+} from "./bg-startup.js";
 import { listChanges } from "./change-tracker.js";
 import { setCheckpointWorkspaceRootResolver } from "./checkpoint.js";
 import {
@@ -27,6 +36,7 @@ import {
   parseClassifierRules,
 } from "./classifier-rules.js";
 import { parseCliArgs } from "./cli-args.js";
+import { resolveCliCommand } from "./cli-commands.js";
 import {
   confirmProjectAllowRules,
   getPermissionMode,
@@ -34,7 +44,6 @@ import {
   getWorkspaceRoot,
   loadClaudeMd,
   loadConfig,
-  resolveMaxTurns,
 } from "./cli-config.js";
 import { checkOrCreateEnv, maybeHandleInfoFlags } from "./cli-env.js";
 import { formatCliError } from "./cli-errors.js";
@@ -42,12 +51,31 @@ import { createCliInputReader } from "./cli-input.js";
 import { askYesNo, createUserPrompters, permissionKey } from "./cli-prompts.js";
 import { runRepl } from "./cli-repl.js";
 import { createResumeSession, initSession } from "./cli-session.js";
+import {
+  parseBetaTokens,
+  parseDebugFlags,
+  parseFileSpecTokens,
+  parseFromPrFlag,
+  parseInlineAgentsJson,
+  parseSessionAgent,
+  parseWorktreeFlag,
+} from "./cli-session-flags.js";
 import { setupTools } from "./cli-tools.js";
 import { COMMANDS } from "./commands.js";
+import { debugLogger } from "./debug-logger.js";
 import { handleUrlElicitation, openExternalUrl } from "./external-url.js";
+import { resolveFastPath } from "./fast-path.js";
+import {
+  describePullRequest,
+  lookupPullRequestSession,
+  PullRequestLookupError,
+  type PullRequestRef,
+  parsePullRequestRef,
+} from "./from-pr.js";
 import { formatGitContext, gatherGitContext } from "./git-context.js";
 import { sessionGoal } from "./goal-runtime.js";
-import { runHeadless } from "./headless.js";
+import { installHookEventStream, runHeadless } from "./headless.js";
+import { clearHookLifecycleSink } from "./hook-events.js";
 import { HookRegistry } from "./hooks.js";
 import {
   configureHookServices,
@@ -63,6 +91,7 @@ import { createModelCaller } from "./llm-adapter.js";
 import { disposeAllLspClients } from "./lsp.js";
 import { autoExtractMemoriesOnExit, MemoryStore } from "./memory-extract.js";
 import { savePersistentAlwaysAllow } from "./permission-policy.js";
+import { PersistenceManager } from "./persistence.js";
 import { pluginDirs, pluginHookSettings } from "./plugins.js";
 import { renderPrefetchAttachment, startPrefetch } from "./prefetch.js";
 import { memoryIndex } from "./project-memory.js";
@@ -70,7 +99,15 @@ import { resolveFastModelConfig } from "./provider-profiles.js";
 import { normalizeFinishReason } from "./session-memory.js";
 import { settingSources } from "./settings.js";
 import { listSkills } from "./skills.js";
+import {
+  describeFileResult,
+  downloadFileResources,
+  type FileResourceResult,
+  parseFileSpecs,
+} from "./startup-files.js";
+import { getSubagentType, listSubagentNames } from "./subagents.js";
 import { buildSystemPrompt, renderSystemPrompt } from "./system-prompt.js";
+import { resolveTmuxStartup } from "./tmux.js";
 import { loadDurableJobs } from "./tools/extended/cron-shared.js";
 import { registerNotificationHook } from "./tools/notifications.js";
 import { createRawInputReader } from "./tui/cli-interactive.js";
@@ -82,6 +119,12 @@ import type {
   PermissionClassifier,
   PermissionMode,
 } from "./types.js";
+import {
+  createIsolatedWorktree,
+  pushWorktree,
+  randomWorktreeName,
+  type WorktreeInfo,
+} from "./worktrees.js";
 
 // --- Main ---
 
@@ -89,10 +132,19 @@ async function main() {
   // Info flags first — print + return before touching config / API key / stdin.
   if (maybeHandleInfoFlags(process.argv)) return;
 
-  const startupArgs = parseCliArgs(process.argv);
-  if (startupArgs.print) console.log = (...args: unknown[]) => console.error(...args);
+  // Official `--debug [filter]` / `--debug-file <path>`. Enabled before any
+  // other startup work so the earliest provider/tool decisions are covered.
+  // A malformed value must fail here rather than silently log nothing.
+  const debugFlags = parseDebugFlags(process.argv);
+  if (debugFlags) debugLogger.enable(debugFlags.filter, { file: debugFlags.file });
+
+  // Parsed ONCE here and reused: the worktree/agent gates below need
+  // `resume`/`continue` before the session exists, and a second parse of the
+  // same argv could only ever disagree with the first.
+  const cliArgs = parseCliArgs(process.argv);
+  if (cliArgs.print) console.log = (...args: unknown[]) => console.error(...args);
   // P0-1: First-run onboarding - guide user to create .env if missing
-  if (!startupArgs.print && !(await checkOrCreateEnv())) {
+  if (!cliArgs.print && !(await checkOrCreateEnv())) {
     return;
   }
 
@@ -119,9 +171,127 @@ async function main() {
   // (which would otherwise fail deep inside the agent loop). Also makes the
   // no-key path deterministic for the smoke test.
   if (!modelConfig.provider) return;
+  // Official `--betas`. Validated here (not at the adapter) so a rejected value
+  // is reported once at startup, where the user can see and fix it — official
+  // does the same, warning per value before the first request.
+  {
+    const resolution = resolveBetas(parseBetaTokens(process.argv));
+    for (const warning of betaWarnings(resolution)) console.warn(chalk.yellow(warning));
+    if (resolution.allowed.length > 0) {
+      modelConfig.options = { ...modelConfig.options, betas: resolution.allowed };
+    }
+  }
   let workspaceRoot = getWorkspaceRoot();
+  // Official `--ax-screen-reader`, resolved ONCE here so the TUI and the
+  // startup notice cannot disagree. Read before the worktree swap so the
+  // settings it consults are the ones the user actually launched in.
+  const axScreenReader = isAxScreenReaderEnabled(readSettings(workspaceRoot));
   const sessionStorageRoot = workspaceRoot;
   setCheckpointWorkspaceRootResolver(() => sessionStorageRoot);
+
+  // Official `-w, --worktree [name]`: run the whole session inside a fresh git
+  // worktree. Placed BEFORE the permission mode, settings, trust gate and
+  // CLAUDE.md reads on purpose — the point of the flag is that the session
+  // behaves as if it were started in that directory.
+  //
+  // sessionStorageRoot stays on the ORIGINAL checkout: sessions and checkpoints
+  // keep living in one place instead of scattering per worktree, and /cd back
+  // to the main checkout still finds them.
+  // Official `--tmux`: tmux pane backend for the worktree. Checked BEFORE
+  // the worktree is created because official serves this flag from a fast
+  // path that runs ahead of commander entirely, so on Windows a rejected
+  // `--tmux` never touches the filesystem. This project has no tmux pane
+  // backend, so every reachable outcome is a failure — which makes
+  // failing loudly the only honest option.
+  const tmuxDecision = await resolveTmuxStartup(process.argv);
+  if (tmuxDecision.kind !== "absent") {
+    console.error(tmuxDecision.message);
+    process.exitCode = 1;
+    return;
+  }
+
+  // Official's hidden fast-path: the internal worker entry points, the
+  // Remote-Control bridge aliases, and the --cloud / --remote backend flags.
+  // These dispatch ahead of the background path in official, so this check
+  // runs first; every reachable outcome is a named refusal.
+  const fastPathDecision = resolveFastPath(process.argv.slice(2), {
+    isTTY: process.stdout.isTTY === true,
+  });
+  if (fastPathDecision.kind === "reject") {
+    console.error(fastPathDecision.message);
+    process.exitCode = 1;
+    return;
+  }
+
+  // Official `--bg` / `--background` and the six background subcommands it
+  // advertises. Placed ahead of the worktree/tmux work on purpose: official's
+  // fast path runs before everything else, and a background job must never
+  // touch a worktree or a tmux pane on its way to being refused. Same reason
+  // it sits below the trust check and nothing else that writes.
+  const bgDecision = resolveBgStartup(process.argv.slice(2), {
+    settings: readSettings(workspaceRoot),
+  });
+  if (bgDecision.kind === "reject") {
+    console.error(bgDecision.message);
+    process.exitCode = 1;
+    return;
+  }
+  if (bgDecision.kind === "subcommand") {
+    const { usage, summary } = BG_SUBCOMMAND_USAGE[bgDecision.name];
+    // Reproduce the branches of official's shared id resolver that are
+    // reachable without a job store, then refuse with the gap named. `rm`
+    // alone drops the agents hint — official's inline resolver does too.
+    const resolved = resolveJobIdArg(bgDecision.arg, usage, [], {
+      agentsHint: bgDecision.name !== "rm",
+    });
+    console.error(
+      resolved.kind === "id"
+        ? `'${bgDecision.name}' is recognised but not implemented in this project: ${usage} needs a ${BG_SUPERVISOR_NOUN} that this CLI does not run. Nothing was touched.`
+        : resolved.message,
+    );
+    if (resolved.kind !== "id") console.error(summary);
+    process.exitCode = 1;
+    return;
+  }
+
+  // Official's eleven non-background top-level subcommands (auth, doctor,
+  // mcp, plugin, update, ...). Commander dispatches these after the
+  // pre-commander fast path, so this check sits below the bg block and above
+  // everything that builds a session. Each is a named refusal, never a prompt.
+  const cliCommandDecision = resolveCliCommand(process.argv.slice(2));
+  if (cliCommandDecision.kind === "reject") {
+    console.error(cliCommandDecision.message);
+    process.exitCode = 1;
+    return;
+  }
+
+  const worktreeFlag = parseWorktreeFlag(process.argv);
+  let worktreeEntry: WorktreeInfo | undefined;
+  if (worktreeFlag) {
+    // Official documents these as incompatible. Resuming would replay a history
+    // recorded in a different directory, and --continue would pick whichever
+    // session was last active, which is not the one the user is looking at.
+    if (cliArgs.resume || cliArgs.continue) {
+      console.error("--worktree cannot be combined with --resume or --continue.");
+      process.exitCode = 1;
+      return;
+    }
+    const requested = worktreeFlag.name ?? randomWorktreeName("ccr");
+    try {
+      worktreeEntry = await createIsolatedWorktree(workspaceRoot, requested);
+    } catch (error) {
+      console.error(`Cannot create a worktree named "${requested}": ${String(error)}`);
+      process.exitCode = 1;
+      return;
+    }
+    workspaceRoot = worktreeEntry.path;
+    console.log(
+      chalk.gray(
+        `Worktree: ${worktreeEntry.path} (branch ${worktreeEntry.branch}, from ${worktreeEntry.baseCommit.slice(0, 8)})`,
+      ),
+    );
+  }
+
   let permissionMode = getPermissionMode(workspaceRoot);
   // A3 trust gate: a cloned repo's project allow rules need a one-time
   // fingerprint confirmation BEFORE the policy is assembled (untrusted allow
@@ -155,11 +325,128 @@ async function main() {
     console.log("");
   }
 
+  // --- Official `--from-pr [value]` — resume the session linked to a PR ---
+  //
+  // Resolved BEFORE initSession so the linked session id flows into the
+  // normal startup-resume path rather than being swapped in afterwards
+  // (the checkpoint binding and the runtime restore both key off the id
+  // that initSession settles on).
+  let pullRequestSessionId: string | undefined;
+  let pullRequest: PullRequestRef | undefined;
+  {
+    const fromPr = parseFromPrFlag(process.argv);
+    if (fromPr) {
+      // Official pairs these two explicitly in its mutual-exclusion
+      // check: both select which stored session to load, so accepting
+      // both would silently drop one of the two requests.
+      if (cliArgs.resume || cliArgs.continue) {
+        console.error("--from-pr cannot be combined with --resume or --continue.");
+        process.exitCode = 1;
+        return;
+      }
+      if (fromPr.picker) {
+        // The interactive picker is not implemented. Say so instead of
+        // opening an unrelated fresh session that looks like it worked.
+        console.error(
+          "Error: --from-pr without a value opens the official interactive PR picker, which is not implemented. Pass a PR number or URL instead, e.g. --from-pr 42.",
+        );
+        process.exitCode = 1;
+        return;
+      }
+      let ref: PullRequestRef;
+      try {
+        ref = parsePullRequestRef(fromPr.raw);
+      } catch (error) {
+        console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
+        process.exitCode = 1;
+        return;
+      }
+      try {
+        // A throwaway reader: the lookup is read-only and initSession
+        // builds its own manager on the same sessions directory.
+        const sessions = await new PersistenceManager(workspaceRoot).listSessions();
+        const lookup = await lookupPullRequestSession(ref, workspaceRoot, sessions);
+        pullRequest = lookup.ref;
+        if (lookup.kind === "resumed") {
+          pullRequestSessionId = lookup.session.sessionId;
+          console.log(
+            chalk.gray(
+              `--from-pr ${describePullRequest(lookup.ref)} → session ${lookup.session.sessionId.slice(0, 8)}...`,
+            ),
+          );
+        } else {
+          // Official falls through to a plain fresh session here, silently.
+          // Reported AND linked instead: the user asked for a specific PR,
+          // and an unlinked session is exactly the thing a later
+          // `--from-pr <same>` is supposed to find.
+          console.log(
+            chalk.gray(
+              `No session linked to ${describePullRequest(lookup.ref)} yet — starting a new one and linking it to that PR.`,
+            ),
+          );
+        }
+      } catch (error) {
+        // Every path out of the lookup is fatal by construction: an
+        // unresolved PR must not degrade into an unrelated session.
+        const message =
+          error instanceof PullRequestLookupError || error instanceof Error
+            ? error.message
+            : String(error);
+        console.error(`Error: ${message}`);
+        process.exitCode = 1;
+        return;
+      }
+    }
+  }
+
   // --- Persistence / session ---
 
   const messages: Message[] = [];
-  const state = await initSession({ workspaceRoot, messages, verbose });
+  const state = await initSession({
+    workspaceRoot,
+    messages,
+    verbose,
+    pullRequestSessionId,
+    pullRequest,
+  });
   const { persistence, session, telemetry } = state;
+
+  // The worktree is pushed onto the session's stack only now that the id
+  // exists. Everything below already runs with workspaceRoot = the worktree.
+  if (worktreeEntry) pushWorktree(session.id, worktreeEntry);
+
+  // --- Official `--file <specs...>` — startup file resources ---
+  //
+  // Runs after initSession (the destination is namespaced by session id) and
+  // before the system prompt is built, so the model learns what landed in the
+  // same prompt that tells it where to look. Never throws: a gateway without
+  // the Files API degrades to per-file errors and the session still starts —
+  // the failures are reported AND injected, so the model cannot invent files
+  // it does not have.
+  const startupFiles: FileResourceResult[] = [];
+  {
+    const { specs, warnings } = parseFileSpecs(parseFileSpecTokens(process.argv));
+    for (const warning of warnings) console.warn(chalk.yellow(`Warning: ${warning}`));
+    if (specs.length > 0) {
+      startupFiles.push(
+        ...(await downloadFileResources(specs, workspaceRoot, session.id, {
+          baseUrl: modelConfig.baseURL ?? "https://api.anthropic.com",
+          apiKey: modelConfig.apiKey,
+        })),
+      );
+      for (const result of startupFiles) console.log(chalk.gray(describeFileResult(result)));
+    }
+  }
+
+  // Hook lifecycle events go on the stream-json output. Installed here, before
+  // any hook runs, because official reports SessionStart unconditionally and
+  // that hook fires below — long before the print path is entered.
+  if (cliArgs.print && cliArgs.outputFormat === "stream-json")
+    installHookEventStream(
+      (line) => process.stdout.write(line),
+      session.id,
+      cliArgs.includeHookEvents,
+    );
 
   // --- Tool Setup ---
 
@@ -167,6 +454,42 @@ async function main() {
     workspaceRoot,
     verbose,
   });
+
+  // --- Session agent (official `--agents` / `--agent`) ---
+  //
+  // Registered AFTER setupTools so an inline definition overrides a same-named
+  // disk or plugin agent: a definition typed on the command line is the most
+  // explicit statement of intent available.
+  const inlineAgentsJson = parseInlineAgentsJson(process.argv);
+  if (inlineAgentsJson !== undefined) {
+    const inline = registerInlineAgents(inlineAgentsJson);
+    for (const warning of inline.warnings) console.warn(chalk.yellow(`Warning: ${warning}`));
+    if (inline.errors.length > 0) {
+      for (const error of inline.errors) console.error(chalk.red(`Error: ${error}`));
+      process.exitCode = 1;
+      return;
+    }
+    console.log(chalk.gray(`Session agents: ${inline.agents.map((a) => a.name).join(", ")}`));
+  }
+
+  const sessionAgentName = parseSessionAgent(process.argv);
+  let agentPersona: { name: string; prompt: string } | undefined;
+  if (sessionAgentName) {
+    const type = getSubagentType(sessionAgentName);
+    if (!type) {
+      // A typo that silently fell back to the default persona would look
+      // exactly like the flag having worked.
+      console.error(
+        chalk.red(
+          `Unknown --agent "${sessionAgentName}". Available agents: ${listSubagentNames().join(", ")}`,
+        ),
+      );
+      process.exitCode = 1;
+      return;
+    }
+    agentPersona = { name: type.name, prompt: type.systemPrompt };
+    console.log(chalk.gray(`Session agent: ${type.name} — ${type.description}`));
+  }
 
   // --- System Prompt ---
 
@@ -241,6 +564,13 @@ async function main() {
         // Withhold denied tools from the AVAILABLE TOOLS index so it matches
         // the `tools` payload the adapters actually send.
         permissionPolicy,
+        // Official `--agent <name>`: persona prepended to the identity block.
+        agentPersona,
+        // Official `--brief`: the SendUserMessage channel exists this session
+        // (the tool is registered in cli-tools.ts under the same flag).
+        brief: cliArgs.brief,
+        // Official `--file`: startup resources fetched before the first turn.
+        startupFiles,
       }),
     );
     const memory = memoryIndex(workspaceRoot);
@@ -503,7 +833,6 @@ async function main() {
   // Official-compatible one-shot/headless mode. It deliberately uses the same
   // agent loop and permission policy as the interactive clients, while never
   // opening an approval prompt (unsafe calls are denied in CI).
-  const cliArgs = parseCliArgs(process.argv);
   const allowedDirectories = cliArgs.addDirs.map((dir) => path.resolve(workspaceRoot, dir));
   if (cliArgs.print) {
     try {
@@ -534,6 +863,9 @@ async function main() {
     await hooks
       .runEvent("SessionEnd", { session_id: session.id, workspace_root: workspaceRoot })
       .catch(() => {});
+    // Detached here rather than in runHeadless: the SessionEnd hook above is
+    // the last thing that can report lifecycle events on the stream.
+    clearHookLifecycleSink();
     await mcpManager.disconnectAll();
     await disposeAllLspClients();
     unregisterNotificationHook();
@@ -649,6 +981,10 @@ async function main() {
     onResume: () => {
       goalHolder.value = sessionGoal(session.id)?.objective ?? "";
       mcpManager.clearApprovals();
+      // Review fix ("统计状态泄漏"): the resumed session must start its own
+      // /cost and /status counters — the shared SessionStats otherwise kept
+      // accumulating the previous session's tokens/cost into this one.
+      state.stats.reset();
     },
   });
 
@@ -713,10 +1049,26 @@ async function main() {
   // input, or an explicit opt-out, falls through to the line-based REPL below.
   const tuiDisabled = process.argv.includes("--no-tui") || process.env.CCR_NO_TUI === "1";
   if (isInteractive && !tuiDisabled) {
+    // Official announces the mode on the TTY only, and not under --print
+    // (`if (!M && process.stdout.isTTY && qP())`). Reaching here already means
+    // interactive, so the guard collapses to this one line.
+    if (axScreenReader) console.log("[Accessible screen reader mode: on]");
     // M25.2: opt-in full-screen layout (alt-screen + in-app scrollback). Default
     // OFF — the proven <Static> native-scrollback path stays the default so
     // there's zero regression for anyone not asking for it.
-    const fullscreen = process.argv.includes("--fullscreen") || process.env.CCR_FULLSCREEN === "1";
+    //
+    // Official `--ax-screen-reader` wins over an explicit --fullscreen: its
+    // alternate-screen predicate short-circuits on the flag, so the request is
+    // dropped rather than half-honoured. Announced below so the ignored flag
+    // is not silent.
+    const requestedFullscreen =
+      process.argv.includes("--fullscreen") || process.env.CCR_FULLSCREEN === "1";
+    const fullscreen = requestedFullscreen && !axScreenReader;
+    if (requestedFullscreen && axScreenReader) {
+      console.error(
+        "Warning: --fullscreen is ignored while screen-reader mode is on (the alternate screen buffer is not used).",
+      );
+    }
     const { runTui } = await import("./tui/run.js");
     await runTui({
       messages,

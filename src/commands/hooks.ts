@@ -8,6 +8,7 @@
 // don't micromanage" stance.
 // ============================================================
 import chalk from "chalk";
+import { sanitizeTerminalText } from "../tui/terminal-width.js";
 import type { SlashCommand } from "./types.js";
 
 export const hooksCommand: SlashCommand = {
@@ -34,7 +35,12 @@ export const hooksCommand: SlashCommand = {
       ]
         .filter(Boolean)
         .join(" + ");
-      const matcher = h.matcher === "*" ? chalk.yellow("* (all tools)") : chalk.cyan(h.matcher);
+      // The matcher comes from .claude/settings.json / cli.ts registration — a
+      // project-level settings file is untrusted, so sanitize before print.
+      const matcher =
+        h.matcher === "*"
+          ? chalk.yellow("* (all tools)")
+          : chalk.cyan(sanitizeTerminalText(h.matcher));
       console.log(`    ${matcher} — ${chalk.gray(phases)}`);
     }
   },

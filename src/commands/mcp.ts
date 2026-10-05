@@ -1,5 +1,6 @@
 // /mcp — show MCP server, tool, and auth status
 import chalk from "chalk";
+import { sanitizeTerminalText } from "../tui/terminal-width.js";
 import type { SlashCommand } from "./types.js";
 
 export const mcpCommand: SlashCommand = {
@@ -50,8 +51,12 @@ export const mcpCommand: SlashCommand = {
       byServer.get(server)!.push(tool);
     }
     for (const [server, toolNames] of byServer) {
-      console.log(`    ${chalk.cyan(server)} — ${toolNames.length} tool(s)`);
-      for (const tn of toolNames.slice(0, 12)) console.log(chalk.gray(`        - ${tn}`));
+      // Both the server segment and the tool segment are declared by the MCP
+      // server — sanitize before printing.
+      console.log(`    ${chalk.cyan(sanitizeTerminalText(server))} — ${toolNames.length} tool(s)`);
+      for (const tn of toolNames.slice(0, 12)) {
+        console.log(chalk.gray(`        - ${sanitizeTerminalText(tn)}`));
+      }
       if (toolNames.length > 12)
         console.log(chalk.gray(`        … +${toolNames.length - 12} more`));
     }

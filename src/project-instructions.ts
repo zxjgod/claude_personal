@@ -127,7 +127,16 @@ export function loadProjectInstructions(workspace: string, target?: string): Ins
   return [...new Map(files.map((file) => [file.path, file])).values()];
 }
 export function renderInstructions(files: InstructionFile[]): string {
-  return files.map((file) => `Instructions from ${file.path}:\n${file.content}`).join("\n\n");
+  return files
+    .map((file) => {
+      // Instruction content is repo-controlled text rendered into privileged
+      // system/user context. Neutralize system-reminder tag sequences so a
+      // planted file can't forge or close a privileged frame (same treatment
+      // as summary.ts / prefetch.ts).
+      const content = file.content.replace(/<\/?system-reminder/gi, "<system_reminder");
+      return `Instructions from ${file.path}:\n${content}`;
+    })
+    .join("\n\n");
 }
 const seen = new Map<string, Set<string>>();
 export function instructionAttachment(

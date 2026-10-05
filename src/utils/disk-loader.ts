@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { sanitizeTerminalText } from "../tui/terminal-width.js";
 
 /** A parsed disk entry ready for a source-specific registrar. */
 export interface DiskEntry {
@@ -69,14 +70,18 @@ export function loadDiskEntries<T>(options: DiskLoaderOptions<T>): string[] {
       try {
         value = options.parse(entry);
       } catch (error) {
-        console.warn(`Skipped invalid extension ${file}: ${String(error)}`);
+        // file is a disk path and parse errors (zod) can embed frontmatter —
+        // both project-untrusted; sanitize before printing.
+        console.warn(
+          `Skipped invalid extension ${sanitizeTerminalText(file)}: ${sanitizeTerminalText(String(error))}`,
+        );
         continue;
       }
       if (value === undefined) continue;
       const registeredName = options.loadedName?.(value, entry) ?? name;
       if (names.has(registeredName))
         console.warn(
-          `Duplicate extension name ${registeredName} at ${file}; overriding with deterministic directory precedence`,
+          `Duplicate extension name ${sanitizeTerminalText(registeredName)} at ${sanitizeTerminalText(file)}; overriding with deterministic directory precedence`,
         );
       names.add(registeredName);
       options.register(value);

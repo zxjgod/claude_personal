@@ -79,12 +79,24 @@ export function messagesToTranscript(messages: Message[]): ReplayItem[] {
           const name = tc.function.name;
           const detail = argDetail(tc.function.arguments);
           const hasResult = toolResultById.has(tc.id);
-          const formatted = hasResult ? toolResultById.get(tc.id)! : "(no result recorded)";
+          // Review fix ("回放把失败工具调用渲染为成功"): error results are
+          // persisted wrapped in <tool_use_error>…</tool_use_error> (see
+          // agent-loop). Unwrap and mark isError so the replay shows the
+          // FAILED styling instead of a fake green "ok" tool call.
+          const raw = hasResult ? toolResultById.get(tc.id)! : "(no result recorded)";
+          const errorMatch =
+            raw.startsWith("<tool_use_error>") && raw.endsWith("</tool_use_error>");
+          const formatted = errorMatch
+            ? raw.slice("<tool_use_error>".length, -"</tool_use_error>".length)
+            : raw;
           const result: ToolExecutionResult = {
             toolName: name,
             formatted,
             result: { content: formatted },
           };
+          // Only flag errors — successful results keep their previous shape
+          // (no isError key) so consumers snapshotting them see no diff.
+          if (errorMatch) result.isError = true;
           items.push({ kind: "tool", name, detail, result } as ReplayItem);
         }
         break;

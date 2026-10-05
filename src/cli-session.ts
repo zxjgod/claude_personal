@@ -10,12 +10,15 @@ import chalk from "chalk";
 import { bindCheckpointSession } from "./checkpoint.js";
 import { parseCliArgs } from "./cli-args.js";
 import { formatCliError } from "./cli-errors.js";
+import { parseSessionName } from "./cli-session-flags.js";
 import { releaseSessionGoal } from "./goal-runtime.js";
 import { PersistenceManager } from "./persistence.js";
 import { microCompactByTime } from "./services/time-micro-compact.js";
+import { isValidSessionId } from "./session-memory.js";
 import { restoreSessionRuntime, saveSessionRuntime } from "./session-runtime.js";
 import { Telemetry } from "./telemetry.js";
 import { releaseSessionSchedules } from "./tools/extended/scheduler.js";
+import { resetNotifications } from "./tools/notifications.js";
 import { SessionStats } from "./tui/session-stats.js";
 import { SessionTranscript } from "./tui/session-transcript.js";
 import type { Message } from "./types.js";
@@ -35,14 +38,22 @@ export async function initSession(deps: {
   workspaceRoot: string;
   messages: Message[];
   verbose: boolean;
+  /**
+   * Session id resolved by official `--from-pr [value]` in cli.ts, which
+   * owns the `gh` round trip. Takes precedence over `--continue`'s "most
+   * recent" guess but not over an explicit `--session` / `--resume`.
+   */
+  pullRequestSessionId?: string;
+  /** The PR to link the resulting session to, for the next `--from-pr`. */
+  pullRequest?: { number: number; url?: string; repository?: string };
 }): Promise<SessionState> {
-  const { workspaceRoot, messages, verbose } = deps;
+  const { workspaceRoot, messages, verbose, pullRequestSessionId, pullRequest } = deps;
 
   const persistence = new PersistenceManager(workspaceRoot);
   // M19.2: append-only event log (tool_use/tool_result/usage/…) alongside the
   // session snapshot. Best-effort: every record call is wrapped so a write
   // failure warns but never blocks the turn.
-  const transcript = new SessionTranscript(workspaceRoot);
+  const transcript = SessionTranscript.forWorkspace(workspaceRoot);
   const stats = new SessionStats();
 
   // Local telemetry (11.4) — disabled unless explicitly opted in. Local-only,
@@ -59,9 +70,23 @@ export async function initSession(deps: {
     const sessionArg = process.argv.find((a) => a.startsWith("--session="));
     sessionId = sessionArg?.split("=")[1];
   }
+  if (!sessionId && pullRequestSessionId) {
+    sessionId = pullRequestSessionId;
+  }
   if (!sessionId && cliArgs.continue) {
     const recent = await persistence.searchSessions("");
     sessionId = recent[0]?.sessionId;
+  }
+
+  // Session ids become file names (<id>.json, transcript sidecars, checkpoint
+  // buckets) — an externally supplied id (--session-id/--resume/--session=/
+  // --from-pr metadata, the last being REMOTE-controlled via gh output) must
+  // not contain separators or "..". Reject before any path is built.
+  if (sessionId && !isValidSessionId(sessionId)) {
+    console.error(
+      `Warning: ignoring malformed session id ${JSON.stringify(sessionId.slice(0, 64))} — starting a new session.`,
+    );
+    sessionId = undefined;
   }
 
   // If no session specified, list available ones in verbose mode only.
@@ -116,6 +141,18 @@ export async function initSession(deps: {
   }
 
   const session = { id: sessionId };
+  // Official `-n, --name <name>`: a human label for the session, kept in the
+  // session file so /resume and /sessions can show something better than a
+  // truncated id. Applies to a resumed session too — relabelling is the point.
+  const sessionName = parseSessionName(process.argv);
+  if (sessionName) {
+    persistence.setSessionName(sessionId, sessionName);
+    if (verbose) console.log(`Session name: ${sessionName}`);
+  }
+  // Official `--from-pr [value]` linkage. Applied to a resumed session too:
+  // re-stating the same PR is a no-op, and re-stating a DIFFERENT one is the
+  // user deliberately re-pointing the session at that PR.
+  if (pullRequest) persistence.setSessionPullRequest(sessionId, pullRequest);
   if (!cliArgs.forkSession) restoreSessionRuntime(workspaceRoot, sessionId);
   bindCheckpointSession(session.id, workspaceRoot);
   const recordTranscript: SessionState["recordTranscript"] = (entry) => {
@@ -148,6 +185,12 @@ export function createResumeSession(deps: {
       saveSessionRuntime(persistence.workspaceRoot, session.id);
       releaseSessionGoal(session.id);
       releaseSessionSchedules(session.id);
+      // Review fix ("通知状态泄漏"): background-completion notifications are
+      // queued PER SESSION id. Swapping sessions without clearing strands the
+      // old session's queue forever (its producers were just released above,
+      // so nothing will ever drain it) — and the queued XML mentions work the
+      // resumed session knows nothing about.
+      resetNotifications(session.id);
     }
     session.id = existing.sessionId;
     bindCheckpointSession(session.id, persistence.workspaceRoot);

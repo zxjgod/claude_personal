@@ -273,6 +273,35 @@ async function searchBing(query: string, limit: number): Promise<SearchOutcome> 
   }
 }
 
+/**
+ * Enforce domain restrictions on the parsed results. `site:` operators are only
+ * a HINT to the engine — Bing in particular ignores them often enough that the
+ * tool returned hits from sites the caller explicitly excluded/required. Drop
+ * anything outside `allowed_domains` and inside `blocked_domains` (domain or
+ * any subdomain of it). Exported for testing.
+ */
+export function filterByDomains(
+  results: SearchResult[],
+  { allowed, blocked }: { allowed?: readonly string[]; blocked?: readonly string[] } = {},
+): SearchResult[] {
+  if (!allowed?.length && !blocked?.length) return results;
+  return results.filter((result) => {
+    let hostname: string;
+    try {
+      hostname = new URL(result.url).hostname.toLowerCase();
+    } catch {
+      // Not an absolute URL — never matches an allowed domain.
+      return false;
+    }
+    const matches = (domain: string) => {
+      const d = domain.trim().toLowerCase().replace(/^\./, "");
+      return d.length > 0 && (hostname === d || hostname.endsWith(`.${d}`));
+    };
+    if (blocked?.some(matches)) return false;
+    return allowed?.length ? allowed.some(matches) : true;
+  });
+}
+
 function formatResults(query: string, results: SearchResult[]): ToolResult {
   if (results.length === 0) {
     return { content: `No results found for "${query}".` };
@@ -309,26 +338,25 @@ export const WebSearchTool: Tool = buildTool({
     // S7: domain restriction rides DDG's site: operator; freshness maps to df.
     const domains = input.allowed_domains ?? input.domains;
     const effectiveQuery = `${domains?.length ? `${input.query} ${domains.map((d) => `site:${d}`).join(" OR ")}` : input.query}${input.blocked_domains?.map((domain) => ` -site:${domain}`).join("") ?? ""}`;
+    const df = input.freshness ? FRESHNESS_DF[input.freshness] : undefined;
+    // The parsers truncate to their limit BEFORE domain filtering, so asking
+    // for exactly `limit` under-fills the answer whenever a few hits are off-
+    // domain. Fetch headroom, then filter and cut back to `limit`.
+    const domainFiltered = Boolean(domains?.length || input.blocked_domains?.length);
+    const fetchLimit = domainFiltered ? Math.min(limit * 3, 50) : limit;
     const format = (results: SearchResult[]) =>
       formatResults(
         input.query,
-        results.filter((result) => {
-          try {
-            const hostname = new URL(result.url).hostname;
-            return !input.blocked_domains?.some(
-              (domain) => hostname === domain || hostname.endsWith(`.${domain}`),
-            );
-          } catch {
-            return false;
-          }
-        }),
+        filterByDomains(results, { allowed: domains, blocked: input.blocked_domains }).slice(
+          0,
+          limit,
+        ),
       );
-    const df = input.freshness ? FRESHNESS_DF[input.freshness] : undefined;
 
     // DuckDuckGo lite first (stable table markup), then the html endpoint,
     // unless disabled or already known unreachable at the network level.
     if (ENGINE_PREF !== "bing" && !ddgUnavailable) {
-      const lite = await searchDuckDuckGoLite(effectiveQuery, limit, df);
+      const lite = await searchDuckDuckGoLite(effectiveQuery, fetchLimit, df);
       if (!lite.ok) {
         errors.push(`DuckDuckGo(lite): ${lite.error}`);
       } else if (lite.results.length > 0 || ENGINE_PREF === "duckduckgo") {
@@ -336,7 +364,7 @@ export const WebSearchTool: Tool = buildTool({
       }
       // Empty lite page → try the html endpoint before giving up on DDG.
       if (lite.ok && lite.results.length === 0) {
-        const html = await searchDuckDuckGo(effectiveQuery, limit, df);
+        const html = await searchDuckDuckGo(effectiveQuery, fetchLimit, df);
         if (!html.ok) {
           errors.push(`DuckDuckGo(html): ${html.error}`);
         } else if (html.results.length > 0 || ENGINE_PREF === "duckduckgo") {
@@ -351,11 +379,21 @@ export const WebSearchTool: Tool = buildTool({
     }
 
     if (ENGINE_PREF !== "duckduckgo") {
-      const bing = await searchBing(effectiveQuery, limit);
+      const bing = await searchBing(effectiveQuery, fetchLimit);
       if (!bing.ok) {
         errors.push(`Bing: ${bing.error}`);
       } else {
-        return format(bing.results);
+        const out = format(bing.results);
+        if (input.freshness) {
+          // The freshness enum only maps to DDG's `df` parameter; the Bing
+          // fallback silently ignored it. Tell the model instead of letting it
+          // believe the results are recency-filtered.
+          out.content =
+            `(note: the freshness filter is only supported by the DuckDuckGo engine; ` +
+            `these results came from the Bing fallback and are NOT recency-filtered)\n\n` +
+            out.content;
+        }
+        return out;
       }
     }
 

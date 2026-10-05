@@ -12,7 +12,7 @@
 // soon as the code arrives (or times out).
 // ============================================================
 
-import { createHash } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as http from "node:http";
 import * as path from "node:path";
@@ -48,6 +48,60 @@ interface StoredAuth {
   clientInformation?: OAuthClientInformationFull;
   tokens?: OAuthTokens;
   codeVerifier?: string;
+}
+
+/** On-disk envelope: only the (public, hash-derived) binding stays readable. */
+interface StoredEnvelope {
+  binding: string;
+  enc: { iv: string; tag: string; data: string };
+}
+
+// --- At-rest encryption ---
+// Tokens used to be persisted as plaintext JSON (review finding: "MCP OAuth
+// token 明文存储"). They are now AES-256-GCM encrypted under a per-install
+// random key kept in a SEPARATE file (`<dir>/.key`). This is obfuscation-
+// level protection — any process running as the same user can read both
+// files — but it keeps bearer tokens out of backups, sync folders, dotfile
+// repos, and casual `cat ~/.claude/mcp-auth/*`. There is no OS-keychain
+// dependency in this project, so a random key file is the honest ceiling.
+function keyPath(storeDir: string): string {
+  return path.join(storeDir, ".key");
+}
+
+function loadOrCreateKey(storeDir: string): Buffer {
+  try {
+    const hex = fs.readFileSync(keyPath(storeDir), "utf-8").trim();
+    const key = Buffer.from(hex, "hex");
+    if (key.length === 32) return key;
+  } catch {
+    /* fall through to create */
+  }
+  const key = randomBytes(32);
+  try {
+    fs.mkdirSync(storeDir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(keyPath(storeDir), key.toString("hex"), { mode: 0o600 });
+  } catch {
+    /* best effort — write() will surface persistent failures */
+  }
+  return key;
+}
+
+function encryptPayload(key: Buffer, payload: StoredAuth): StoredEnvelope["enc"] {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  const data = Buffer.concat([cipher.update(JSON.stringify(payload), "utf-8"), cipher.final()]);
+  return {
+    iv: iv.toString("base64"),
+    tag: cipher.getAuthTag().toString("base64"),
+    data: data.toString("base64"),
+  };
+}
+
+function decryptPayload(key: Buffer, enc: StoredEnvelope["enc"]): StoredAuth {
+  const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(enc.iv, "base64"));
+  decipher.setAuthTag(Buffer.from(enc.tag, "base64"));
+  const plain = Buffer.concat([decipher.update(Buffer.from(enc.data, "base64")), decipher.final()]);
+  return JSON.parse(plain.toString("utf-8")) as StoredAuth;
 }
 
 function authDir(): string {
@@ -107,8 +161,26 @@ export class FileTokenOAuthProvider implements OAuthClientProvider {
 
   private read(): StoredAuth {
     try {
-      const stored = JSON.parse(fs.readFileSync(this.storePath, "utf-8")) as StoredAuth;
-      return stored.binding === this.binding ? stored : {};
+      const raw = JSON.parse(fs.readFileSync(this.storePath, "utf-8")) as StoredEnvelope &
+        StoredAuth;
+      if (raw.binding !== this.binding) return {};
+      if (raw.enc) {
+        // Encrypted envelope — a decryption failure (missing/rotated key)
+        // drops the store and forces re-authorization, never a silent
+        // fallback to treating ciphertext as state.
+        return decryptPayload(loadOrCreateKey(this.storeDir), raw.enc);
+      }
+      // Legacy plaintext store — migrate to the encrypted envelope on read.
+      const legacy: StoredAuth = {
+        clientInformation: raw.clientInformation,
+        tokens: raw.tokens,
+        codeVerifier: raw.codeVerifier,
+      };
+      if (legacy.clientInformation || legacy.tokens || legacy.codeVerifier) {
+        this.stored = legacy;
+        this.write();
+      }
+      return legacy;
     } catch {
       return {};
     }
@@ -120,13 +192,13 @@ export class FileTokenOAuthProvider implements OAuthClientProvider {
     } catch {
       /* best effort */
     }
-    fs.writeFileSync(
-      this.storePath,
-      JSON.stringify({ ...this.stored, binding: this.binding }, null, 2),
-      {
-        mode: 0o600,
-      },
-    );
+    const envelope: StoredEnvelope = {
+      binding: this.binding,
+      enc: encryptPayload(loadOrCreateKey(this.storeDir), this.stored),
+    };
+    fs.writeFileSync(this.storePath, JSON.stringify(envelope, null, 2), {
+      mode: 0o600,
+    });
   }
 
   // --- OAuthClientProvider interface ---

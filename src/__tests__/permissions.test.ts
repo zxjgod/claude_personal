@@ -9,6 +9,7 @@ import {
   classifyPermissionRisk,
   isBlockedPath,
   parseClassifierVerdict,
+  shellWriteTargets,
 } from "../permissions.js";
 import { createTool } from "../tools/registry.js";
 import type {
@@ -83,6 +84,75 @@ describe("isBlockedPath", () => {
     ]) {
       expect(isBlockedPath(p), p).toBe(false);
     }
+  });
+});
+
+describe("shellWriteTargets", () => {
+  it("extracts redirection targets, quoted and unquoted", () => {
+    expect(shellWriteTargets("echo hi > out.txt")).toEqual(["out.txt"]);
+    expect(shellWriteTargets("echo hi >> ~/.bashrc")).toEqual(["~/.bashrc"]);
+    expect(shellWriteTargets("cat a > \"my file.txt\" && cat b >> 'x.env'")).toEqual([
+      "my file.txt",
+      "x.env",
+    ]);
+  });
+
+  it("ignores fd jugglery and non-redirections", () => {
+    expect(shellWriteTargets("cmd 2>&1")).toEqual([]);
+    expect(shellWriteTargets("ls -l")).toEqual([]);
+    expect(shellWriteTargets("grep a < in.txt")).toEqual([]);
+  });
+});
+
+describe("checkPermission — blocked shell write floor", () => {
+  const bashTool = createTool({
+    name: "bash",
+    description: "Bash",
+    promptDescription: "Run shell commands",
+    inputSchema: { type: "object", properties: {}, required: [] },
+    isReadOnly: () => true, // even a tool claiming read-only must hit the floor
+    isConcurrencySafe: true,
+    call: async () => ({ content: "" }),
+  });
+
+  it("hard-denies redirection to a blocked path in EVERY mode", async () => {
+    for (const mode of ["default", "bypassPermissions", "auto", "acceptEdits"] as const) {
+      const r = await checkPermission(
+        bashTool,
+        { command: "echo pwned >> ~/.bashrc" },
+        makeContext(mode),
+        { askUser: alwaysAllow },
+      );
+      expect(r.allowed, mode).toBe(false);
+      expect(r.decisionReason, mode).toBe("safetyCheck");
+    }
+  });
+
+  it("hard-denies writes into .claude and .env even when the user would allow", async () => {
+    const r = await checkPermission(
+      bashTool,
+      { command: "echo x > .claude/settings.json" },
+      makeContext("bypassPermissions"),
+      { askUser: alwaysAllow },
+    );
+    expect(r.allowed).toBe(false);
+    const r2 = await checkPermission(
+      bashTool,
+      { command: "cat secret > .env" },
+      makeContext("bypassPermissions"),
+      { askUser: alwaysAllow },
+    );
+    expect(r2.allowed).toBe(false);
+  });
+
+  it("leaves benign redirections alone", async () => {
+    const r = await checkPermission(
+      bashTool,
+      { command: "echo hi > build/out.txt" },
+      makeContext("default"),
+      { askUser: alwaysAllow },
+    );
+    expect(r.allowed).toBe(true);
   });
 });
 

@@ -59,11 +59,38 @@ describe("FileTokenOAuthProvider", () => {
     const provider = new FileTokenOAuthProvider("srv", url, {}, dir);
     expect(provider.tokens()).toBeUndefined();
     provider.saveTokens({ access_token: "new", token_type: "Bearer" });
-    const boundFile = fs.readdirSync(dir).find((name) => name !== "srv.json");
+    const boundFile = fs.readdirSync(dir).find((name) => name !== "srv.json" && name !== ".key");
     if (!boundFile) throw new Error("Missing bound credential file");
     const stored = JSON.parse(fs.readFileSync(path.join(dir, boundFile), "utf8"));
     stored.binding = "wrong-resource";
     fs.writeFileSync(path.join(dir, boundFile), JSON.stringify(stored));
+    expect(new FileTokenOAuthProvider("srv", url, {}, dir).tokens()).toBeUndefined();
+  });
+
+  it("never persists tokens in plaintext (encrypted envelope + separate key)", () => {
+    const provider = new FileTokenOAuthProvider("srv", url, {}, dir);
+    provider.saveTokens({ access_token: "super-secret-token", token_type: "Bearer" });
+    provider.saveCodeVerifier("pkce-verifier-secret");
+    const boundFile = fs.readdirSync(dir).find((name) => name.endsWith(".json"));
+    if (!boundFile) throw new Error("Missing bound credential file");
+    const onDisk = fs.readFileSync(path.join(dir, boundFile), "utf8");
+    expect(onDisk).not.toContain("super-secret-token");
+    expect(onDisk).not.toContain("pkce-verifier-secret");
+    const envelope = JSON.parse(onDisk);
+    expect(envelope.enc?.iv).toBeTruthy();
+    expect(envelope.enc?.tag).toBeTruthy();
+    expect(envelope.enc?.data).toBeTruthy();
+    // The key lives in a separate file, and a fresh instance decrypts fine.
+    expect(fs.existsSync(path.join(dir, ".key"))).toBe(true);
+    expect(new FileTokenOAuthProvider("srv", url, {}, dir).tokens()?.access_token).toBe(
+      "super-secret-token",
+    );
+  });
+
+  it("drops the store (forces re-auth) when the encryption key is lost", () => {
+    const provider = new FileTokenOAuthProvider("srv", url, {}, dir);
+    provider.saveTokens({ access_token: "tok", token_type: "Bearer" });
+    fs.unlinkSync(path.join(dir, ".key"));
     expect(new FileTokenOAuthProvider("srv", url, {}, dir).tokens()).toBeUndefined();
   });
   it("builds client metadata with the localhost redirect", () => {

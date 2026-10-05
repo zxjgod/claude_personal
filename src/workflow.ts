@@ -15,6 +15,7 @@ import { agentLoop, WORKER_COMPACT_THRESHOLD } from "./agent-loop.js";
 import { createModelCaller } from "./llm-adapter.js";
 import { extractLastAssistantText, getCoreToolsForSubagents } from "./subagents.js";
 import { deriveSubContext, type Message, type ToolContext } from "./types.js";
+import { renameSyncWithRetry } from "./utils/atomic-rename.js";
 import { CancellationScope } from "./utils/cancellation.js";
 import { Semaphore } from "./utils/semaphore.js";
 import { createSubAgentApprover } from "./utils/subagent-security.js";
@@ -166,7 +167,7 @@ export async function runWorkflow(
     fs.mkdirSync(runRoot, { recursive: true });
     const temp = `${snapshotPath}.tmp`;
     fs.writeFileSync(temp, JSON.stringify({ version: 1, cache: Object.fromEntries(cache) }));
-    fs.renameSync(temp, snapshotPath);
+    renameSyncWithRetry(temp, snapshotPath);
   };
   const record: WorkflowRecord = {
     id,

@@ -8,6 +8,7 @@ import {
   getWakeupJob,
   listWakeupJobs,
   resetWakeupJobs,
+  restoreWakeups,
   ScheduleWakeupTool,
   scheduleWakeup,
 } from "../tools/extended/schedule-wakeup.js";
@@ -15,6 +16,33 @@ import {
 describe("ScheduleWakeup", () => {
   beforeEach(() => {
     resetWakeupJobs();
+  });
+
+  describe("restoreWakeups — stale catch-up grace (review fix)", () => {
+    const mk = (fireAtMs: number) => ({
+      id: `w-${fireAtMs}`,
+      prompt: "loop iteration",
+      reason: "r",
+      fireAtMs,
+    });
+
+    it("drops wakeups past due beyond the 10-minute grace instead of firing immediately", () => {
+      restoreWakeups("/tmp", "s1", [mk(Date.now() - 60 * 60_000)]); // 1h overdue
+      expect(listWakeupJobs()).toHaveLength(0);
+    });
+
+    it("restores wakeups overdue by less than the grace (catch-up)", () => {
+      restoreWakeups("/tmp", "s1", [mk(Date.now() - 60_000)]); // 1min overdue
+      expect(listWakeupJobs()).toHaveLength(1);
+    });
+
+    it("restores future wakeups with the remaining delay", () => {
+      restoreWakeups("/tmp", "s1", [mk(Date.now() + 300_000)]);
+      const jobs = listWakeupJobs();
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0]!.delaySeconds).toBeGreaterThan(200);
+      expect(jobs[0]!.delaySeconds).toBeLessThanOrEqual(300);
+    });
   });
 
   describe("scheduleWakeup", () => {
@@ -26,6 +54,12 @@ describe("ScheduleWakeup", () => {
       expect(job.prompt).toBe("Check CI status");
       expect(job.reason).toBe("Waiting for build");
       expect(job.scheduledAt).toBeDefined();
+      expect(job.fireAt).toBeDefined();
+    });
+
+    it("rounds a fractional delay instead of throwing (review fix)", () => {
+      // BigInt(non-integer) used to throw a RangeError for direct callers.
+      const job = scheduleWakeup(120.5, "Test", "Test reason");
       expect(job.fireAt).toBeDefined();
     });
 

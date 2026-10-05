@@ -47,6 +47,7 @@ import { StatusLine } from "./StatusLine.js";
 import type { StoreState, TuiStore } from "./store.js";
 import { Toast } from "./Toast.js";
 import { TodoList } from "./TodoList.js";
+import { TogglePicker } from "./TogglePicker.js";
 import { TranscriptReview } from "./TranscriptReview.js";
 import { transcriptToLines } from "./transcript-lines.js";
 import { useStoreField, useStoreSelector } from "./useStoreSelector.js";
@@ -150,6 +151,8 @@ function FsInteraction({
         return <ProviderPicker overlay={overlay} />;
       case "modelPicker":
         return <ModelPicker overlay={overlay} />;
+      case "togglePicker":
+        return <TogglePicker overlay={overlay} />;
       case "planApproval":
         return <PlanApproval key={promptRequestKey(overlay)} overlay={overlay} />;
       case "commandPicker":

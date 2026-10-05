@@ -17,6 +17,9 @@ import type { ToolExecutionResult } from "../types.js";
 
 // Force chalk on so color codes are deterministic in CI, and pin the UI
 // language so literal-string assertions hold on zh-locale machines too.
+// An OSC 52 clipboard write — the payload every "strips terminal control
+// sequences" assertion below hunts for.
+const OSC52 = "\x1b]52;c;SGVsbG8hHGludmFkaW5nIQ==\x07";
 const prevLevel = chalk.level;
 beforeEach(() => {
   chalk.level = 1;
@@ -157,6 +160,31 @@ describe("renderToolResult", () => {
     expect(out).toContain("Read 2 lines");
     expect(out).not.toContain("line one");
   });
+
+  it("strips terminal control sequences from the Write preview path (round 4)", () => {
+    const result: ToolExecutionResult = {
+      toolName: "write",
+      formatted: "",
+      result: {
+        content: "",
+        // The file path is model-controlled and lands in a plain (unstyled)
+        // line of the preview header.
+        metadata: {
+          codePreview: {
+            filePath: `src/x${OSC52}.ts`,
+            text: "export const a = 1;",
+            totalLines: 1,
+            truncated: false,
+          },
+        },
+      },
+    } as ToolExecutionResult;
+    const out = captureStdout(() => renderToolResult(result));
+    expect(out).toContain("lines written to");
+    expect(out).toContain(".ts");
+    expect(out).not.toContain("52;c");
+    expect(out).not.toContain("\x07");
+  });
 });
 
 describe("renderSubAgentActivity", () => {
@@ -189,6 +217,37 @@ describe("renderSubAgentActivity", () => {
     expect(out).toContain("grep");
     expect(out).toContain("boom");
   });
+
+  // Round 4: sub-agent names, nested tool names and nested tool errors all
+  // reach stdout verbatim here, unlike renderToolResult which sanitizes.
+  it("strips terminal control sequences from sub-agent names, tool names and errors", () => {
+    const out = captureStdout(() =>
+      renderSubAgentActivity({
+        subagentName: `evil${OSC52}`,
+        phase: "tool_results",
+        results: [
+          { toolName: `t${OSC52}`, formatted: "", error: `boom ${OSC52}` },
+          { toolName: "read", formatted: "ok", durationMs: 2 },
+        ],
+      }),
+    );
+    expect(out).toContain("boom");
+    expect(out).not.toContain("52;c");
+    expect(out).not.toContain("\x07");
+  });
+
+  it("strips terminal control sequences from a nested tool_use line", () => {
+    const out = captureStdout(() =>
+      renderSubAgentActivity({
+        subagentName: `x${OSC52}`,
+        phase: "tool_use",
+        toolName: `read${OSC52}`,
+        input: {},
+      }),
+    );
+    expect(out).not.toContain("52;c");
+    expect(out).not.toContain("\x07");
+  });
 });
 
 describe("renderToolStart / renderPermissionPrompt", () => {
@@ -197,6 +256,12 @@ describe("renderToolStart / renderPermissionPrompt", () => {
     expect(out).toContain("Bash");
     expect(out).toContain("ls -la");
     expect(out).toContain("●");
+  });
+
+  it("strips terminal control sequences from a server-supplied tool name", () => {
+    const out = captureStdout(() => renderToolStart(`mcp__srv__t${OSC52}`));
+    expect(out).not.toContain("52;c");
+    expect(out).not.toContain("\x07");
   });
 
   it("renders a bordered permission prompt with detail and risk", () => {
@@ -213,5 +278,11 @@ describe("renderToolStart / renderPermissionPrompt", () => {
   it("renders the generic label for tools without a dedicated i18n key", () => {
     const out = captureStdout(() => renderPermissionPrompt("webfetch", { url: "https://x" }));
     expect(out).toContain("Webfetch operation");
+  });
+
+  it("strips terminal control sequences from an unknown tool name", () => {
+    const out = captureStdout(() => renderPermissionPrompt(`weird${OSC52}`, {}));
+    expect(out).not.toContain("52;c");
+    expect(out).not.toContain("\x07");
   });
 });

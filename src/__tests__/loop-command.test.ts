@@ -59,6 +59,16 @@ describe("/loop", () => {
     expect(out).toContain("Loop iteration: check CI");
   });
 
+  it("starting a new /loop replaces the previous one (review fix: clobbering)", async () => {
+    scheduleWakeup(120, "Loop iteration: old task", "test");
+    scheduleWakeup(240, "Loop iteration: old task", "test");
+    const r = await loopCommand.run("new task", ctx);
+    expect(r?.prompt).toContain("new task");
+    // The old loop's wakeups are gone — one loop owns the session.
+    expect(listWakeupJobs()).toHaveLength(0);
+    expect(consoleOutput()).toContain("cancelled 2 stale wakeup(s)");
+  });
+
   it("bare /loop with no pending wakeups prints usage only", async () => {
     await loopCommand.run("   ", ctx);
     const out = consoleOutput();

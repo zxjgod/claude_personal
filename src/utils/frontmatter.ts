@@ -35,6 +35,10 @@ export function parseFrontmatter(raw: string): ParsedFrontmatter {
       : {};
   // Retain the loader's string scalar convention, while supporting nested hook and MCP config.
   for (const [key, entry] of Object.entries(frontmatter)) {
+    // Review fix (§五 "__proto__ 隐患"): assigning into a "__proto__" key
+    // mutates the object's PROTOTYPE, not an own property — a SKILL.md with
+    // `__proto__: 1` would silently poison lookups on the returned map.
+    if (key === "__proto__" || key === "constructor" || key === "prototype") continue;
     if (typeof entry === "boolean" || typeof entry === "number") frontmatter[key] = String(entry);
   }
   return { frontmatter, body: (m[2] ?? "").trim() };

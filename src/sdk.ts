@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import * as fs from "node:fs";
 import * as readline from "node:readline";
 import { fileURLToPath } from "node:url";
 export interface QueryOptions {
@@ -29,6 +30,17 @@ export async function* query(input: {
   options?: QueryOptions;
 }): AsyncGenerator<SDKMessage> {
   const options = input.options ?? {};
+  // The default CLI entry sits next to THIS module — which only exists after a
+  // build (dist/sdk.js ↔ dist/cli.js). From source (src/sdk.ts) there is no
+  // cli.js, and without an early error the failure surfaces later as a
+  // downstream "CLI exited 1: Cannot find module …" from a doomed child.
+  const defaultModule = fileURLToPath(new URL("./cli.js", import.meta.url));
+  if (!options.cliExecutable && !options.cliModule && !fs.existsSync(defaultModule)) {
+    throw new Error(
+      `SDK query() found no CLI entry at ${defaultModule}. ` +
+        "Build the project first, or pass options.cliModule / options.cliExecutable.",
+    );
+  }
   const argv = [
     "--print",
     "--verbose",
@@ -37,8 +49,7 @@ export async function* query(input: {
     "--output-format",
     "stream-json",
   ];
-  if (!options.cliExecutable)
-    argv.unshift(options.cliModule ?? fileURLToPath(new URL("./cli.js", import.meta.url)));
+  if (!options.cliExecutable) argv.unshift(options.cliModule ?? defaultModule);
   for (const [flag, value] of [
     ["--max-turns", options.maxTurns],
     ["--max-budget-usd", options.maxBudgetUsd],
@@ -87,18 +98,37 @@ export async function* query(input: {
   })();
   void feeder.catch(() => child.kill());
   let resultSeen = false;
+  const lines = readline.createInterface({ input: child.stdout, crlfDelay: Infinity });
   try {
-    const lines = readline.createInterface({ input: child.stdout, crlfDelay: Infinity });
-    for await (const line of lines)
-      if (line.trim()) {
-        const message = JSON.parse(line) as SDKMessage;
-        if (message.type === "result") resultSeen = true;
-        yield message;
+    for await (const line of lines) {
+      if (!line.trim()) continue;
+      let message: SDKMessage;
+      try {
+        message = JSON.parse(line) as SDKMessage;
+      } catch {
+        // A stray non-JSON line on stdout (a hook/tool printing directly, a
+        // banner, a partial line after a kill) used to throw out of the
+        // generator: the caller lost every already-yielded message AND got an
+        // opaque SyntaxError instead of the CLI's own result frame. Report it
+        // as a protocol message and keep reading.
+        yield {
+          type: "system",
+          subtype: "non_json_stdout",
+          is_error: true,
+          message: line.slice(0, 2000),
+        };
+        continue;
       }
+      if (message.type === "result") resultSeen = true;
+      yield message;
+    }
     const code = await finished;
     await feeder;
     if (code && !resultSeen) throw new Error(`CLI exited ${code}: ${stderr}`);
   } finally {
+    // Release the stdout pipe even when the consumer abandons the generator
+    // early (otherwise the readline handle and the child both stay alive).
+    lines.close();
     child.kill();
   }
 }

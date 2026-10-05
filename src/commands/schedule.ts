@@ -10,6 +10,7 @@ import chalk from "chalk";
 import { listScheduledJobs, removeScheduledJob } from "../tools/breadth/orchestration.js";
 import { ensureDurableJobsLoaded } from "../tools/extended/cron-shared.js";
 import { cancelScheduledInputs } from "../tools/extended/schedule-scope.js";
+import { sanitizeTerminalText } from "../tui/terminal-width.js";
 import type { SlashCommand } from "./types.js";
 
 export const scheduleCommand: SlashCommand = {
@@ -49,8 +50,13 @@ export const scheduleCommand: SlashCommand = {
     for (const j of jobs) {
       const kind = j.recurring ? "recurring" : "one-shot";
       const flags = [kind, j.durable ? "durable" : null].filter(Boolean).join(", ");
-      const preview = j.prompt.length > 50 ? j.prompt.slice(0, 47) + "…" : j.prompt;
-      console.log(`    ${chalk.cyan(j.id)}  ${chalk.gray(`"${j.cron}"`)}  [${flags}]`);
+      // Durable jobs live in .claude/scheduled_tasks.json (workspace file), so
+      // the prompt/cron/id are untrusted input to this row, not our own echo.
+      const prompt = sanitizeTerminalText(j.prompt);
+      const preview = prompt.length > 50 ? `${prompt.slice(0, 47)}…` : prompt;
+      console.log(
+        `    ${chalk.cyan(sanitizeTerminalText(j.id))}  ${chalk.gray(`"${sanitizeTerminalText(j.cron)}"`)}  [${flags}]`,
+      );
       console.log(chalk.gray(`        ${preview}`));
     }
     console.log(chalk.gray("    Cancel with /schedule cancel <id> or /schedule clear."));

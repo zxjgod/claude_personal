@@ -1,6 +1,7 @@
 // /commit — draft a commit message from the current git changes
 import chalk from "chalk";
 import { gatherDiffSummary, suggestCommitSubject } from "../git-context.js";
+import { sanitizeTerminalText } from "../tui/terminal-width.js";
 import type { SlashCommand } from "./types.js";
 
 export const commitCommand: SlashCommand = {
@@ -17,9 +18,12 @@ export const commitCommand: SlashCommand = {
       return;
     }
     console.log("");
-    console.log(chalk.bold(`  Commit draft (${summary.branch}):`));
+    // Branch name, commit-subject suggestion and file paths all come from the git
+    // repo — author-controlled on a freshly cloned repository — and this
+    // command writes them straight to the parent terminal.
+    console.log(chalk.bold(`  Commit draft (${sanitizeTerminalText(summary.branch)}):`));
     console.log("");
-    console.log(`    ${chalk.green(suggestCommitSubject(summary))}`);
+    console.log(`    ${chalk.green(sanitizeTerminalText(suggestCommitSubject(summary)))}`);
     console.log("");
     console.log(chalk.bold("  Files:"));
     for (const f of summary.files) {
@@ -32,7 +36,7 @@ export const commitCommand: SlashCommand = {
         f.insertions !== undefined && f.deletions !== undefined
           ? chalk.gray(` +${f.insertions}/-${f.deletions}`)
           : "";
-      console.log(`    ${tag} ${chalk.cyan(f.path)}${stat}`);
+      console.log(`    ${tag} ${chalk.cyan(sanitizeTerminalText(f.path))}${stat}`);
     }
     if (summary.truncated) console.log(chalk.gray("    … (list truncated)"));
     console.log("");

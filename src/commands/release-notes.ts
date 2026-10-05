@@ -16,6 +16,7 @@ import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import chalk from "chalk";
+import { sanitizeTerminalText } from "../tui/terminal-width.js";
 import type { CommandResult, SlashCommand } from "./types.js";
 
 const require_ = createRequire(import.meta.url);
@@ -89,7 +90,9 @@ export const releaseNotesCommand: SlashCommand = {
 
     console.log(chalk.hex("#d77757").bold("  What's new"));
     console.log();
-    console.log(shown.join("\n"));
+    // Changelog body is a file read from the package root (repo file in a
+    // source checkout) — sanitize the lines before printing them verbatim.
+    console.log(sanitizeTerminalText(shown.join("\n")));
 
     const hidden = lines.length - shown.length;
     if (hidden > 0) {

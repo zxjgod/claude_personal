@@ -137,6 +137,25 @@ export function startScheduler(host: SchedulerHost): () => void {
       if (!next) break;
       host.deliver(next.prompt);
     }
+
+    // 拍板 #16: a finished background SUB-AGENT wakes the idle parent session.
+    // The AI may have ended its turn specifically to wait for that agent — the
+    // completion must reach the MODEL now, not whenever the human next types.
+    // The woken turn itself drains the pending <task_notification> block into
+    // the model-visible input (cli-repl turn path), so this prompt is only the
+    // trigger. Display-only kinds (bash jobs, teammate notes) never wake the
+    // model: that would burn a whole turn's tokens for a human-facing line.
+    if (!host.isBusy()) {
+      const agentCompletions = unseen.filter((n) => n.kind === "agent");
+      if (agentCompletions.length > 0) {
+        const lines = agentCompletions
+          .map((n) => `- ${n.id}: ${n.status} — ${n.summary}`)
+          .join("\n");
+        host.deliver(
+          `[系统] 以下后台子代理已结束，其完成通知已并入本轮输入，请阅读结果并继续：\n${lines}`,
+        );
+      }
+    }
   }, 1000);
   // Hygiene: the timer must not hold the event loop open at shutdown.
   (timer as { unref?: () => void }).unref?.();

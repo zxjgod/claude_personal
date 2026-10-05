@@ -13,7 +13,12 @@ import chalk from "chalk";
 import type { SubAgentProgress, ToolExecutionResult } from "../types.js";
 import { t } from "./i18n.js";
 import { renderMarkdown } from "./markdown.js";
-import { terminalColumns, truncateVisual, visualWidth } from "./terminal-width.js";
+import {
+  sanitizeTerminalText,
+  terminalColumns,
+  truncateVisual,
+  visualWidth,
+} from "./terminal-width.js";
 import { toolOutputLines } from "./tool-output.js";
 import { toolResultSummary } from "./tool-result-summary.js";
 
@@ -87,7 +92,7 @@ export class StreamingRenderer {
     }
     // Official: plain assistant text carries NO ● bullet (that glyph belongs
     // to tool calls) — matches the Ink path (transcript-lines.ts).
-    process.stdout.write(renderMarkdown(trimmed) + "\n");
+    process.stdout.write(renderMarkdown(sanitizeTerminalText(trimmed)) + "\n");
     this.wroteAnything = true;
   }
 }
@@ -133,9 +138,10 @@ function welcomeBoxLine(content: string, width: number): string {
 
 export function renderToolStart(name: string, input?: Record<string, unknown>): void {
   const detail = formatToolDetail(input);
-  const title = detail
-    ? `${chalk.bold(capitalize(name))}(${chalk.dim(detail)})`
-    : chalk.bold(capitalize(name));
+  // Tool names are model-controlled (MCP tool names come from the remote
+  // server), so they go through the same sanitizer as the detail string.
+  const label = chalk.bold(capitalize(sanitizeTerminalText(name)));
+  const title = detail ? `${label}(${chalk.dim(detail)})` : label;
   process.stdout.write(`${CLAUDE_ORANGE(BLACK_CIRCLE)} ${title}\n`);
 }
 
@@ -144,7 +150,9 @@ export function renderToolResult(result: ToolExecutionResult): void {
     typeof result.durationMs === "number" ? chalk.dim(` (${result.durationMs}ms)`) : "";
 
   if (result.error) {
-    process.stdout.write(`  ${chalk.red(BRANCH)} ${chalk.red(result.error)}${duration}\n`);
+    process.stdout.write(
+      `  ${chalk.red(BRANCH)} ${chalk.red(sanitizeTerminalText(result.error))}${duration}\n`,
+    );
     return;
   }
 
@@ -160,13 +168,15 @@ export function renderToolResult(result: ToolExecutionResult): void {
 }
 
 export function renderSubAgentActivity(event: SubAgentProgress): void {
-  const prefix = chalk.dim(`    ${BRANCH} [${event.subagentName}]`);
+  // subagentName comes from the Task tool's model-controlled `subagent_type`,
+  // and nested tool errors are raw tool output — both were printed verbatim
+  // here (unlike renderToolResult, which sanitizes its error).
+  const prefix = chalk.dim(`    ${BRANCH} [${sanitizeTerminalText(event.subagentName)}]`);
 
   if (event.phase === "tool_use") {
     const detail = formatToolDetail(event.input);
-    const title = detail
-      ? `${chalk.bold(capitalize(event.toolName ?? "tool"))}(${chalk.dim(detail)})`
-      : chalk.bold(capitalize(event.toolName ?? "tool"));
+    const label = chalk.bold(capitalize(sanitizeTerminalText(event.toolName ?? "tool")));
+    const title = detail ? `${label}(${chalk.dim(detail)})` : label;
     process.stdout.write(`${prefix} ${title}\n`);
     return;
   }
@@ -175,12 +185,14 @@ export function renderSubAgentActivity(event: SubAgentProgress): void {
     for (const result of event.results ?? []) {
       if (result.error) {
         process.stdout.write(
-          `${prefix} ${chalk.bold(result.toolName)} ${chalk.red(result.error)}\n`,
+          `${prefix} ${chalk.bold(sanitizeTerminalText(result.toolName))} ${chalk.red(sanitizeTerminalText(result.error))}\n`,
         );
       } else {
         const dur =
           typeof result.durationMs === "number" ? chalk.dim(` (${result.durationMs}ms)`) : "";
-        process.stdout.write(`${prefix} ${chalk.dim(result.toolName + dur)}\n`);
+        process.stdout.write(
+          `${prefix} ${chalk.dim(sanitizeTerminalText(result.toolName) + dur)}\n`,
+        );
       }
     }
     return;
@@ -211,7 +223,7 @@ export function renderPermissionPrompt(
   // "{name} operation" label instead.
   const known = t(`ui.tool.${toolName}`);
   const header = known.startsWith("ui.tool.")
-    ? t("ui.tool.fallback", { name: capitalize(toolName) })
+    ? t("ui.tool.fallback", { name: capitalize(sanitizeTerminalText(toolName)) })
     : known;
   process.stdout.write(boxLine("  " + chalk.bold(header), width) + "\n");
   process.stdout.write(boxLine("", width) + "\n");
@@ -222,7 +234,9 @@ export function renderPermissionPrompt(
   }
   if (riskHint) {
     process.stdout.write(boxLine("", width) + "\n");
-    const wrapped = wrapText(riskHint, width - 6);
+    // riskHint can be the LLM risk classifier's reason (permissions.ts M15.3)
+    // — model-produced text on the consent screen; sanitize before wrapping.
+    const wrapped = wrapText(sanitizeTerminalText(riskHint), width - 6);
     for (const line of wrapped) {
       process.stdout.write(boxLine("  " + chalk.yellow("⚠️ " + line), width) + "\n");
     }
@@ -282,10 +296,13 @@ function indentContinuation(text: string): string {
 
 function formatToolDetail(input?: Record<string, unknown>): string {
   if (!input) return "";
-  if (typeof input.command === "string") return truncate(input.command, 120);
-  if (typeof input.filePath === "string") return truncate(input.filePath, 120);
-  if (typeof input.pattern === "string") return truncate(input.pattern, 120);
-  if (typeof input.url === "string") return truncate(input.url, 120);
+  // Tool input is model-controlled — strip terminal control sequences before
+  // it reaches stdout (all three render call sites share this helper).
+  if (typeof input.command === "string") return truncate(sanitizeTerminalText(input.command), 120);
+  if (typeof input.filePath === "string")
+    return truncate(sanitizeTerminalText(input.filePath), 120);
+  if (typeof input.pattern === "string") return truncate(sanitizeTerminalText(input.pattern), 120);
+  if (typeof input.url === "string") return truncate(sanitizeTerminalText(input.url), 120);
   return "";
 }
 

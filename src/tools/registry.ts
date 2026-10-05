@@ -5,8 +5,15 @@
 import type { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { isToolHiddenByPolicy, type PermissionPolicy } from "../permission-policy.js";
+import { sanitizeTerminalText } from "../tui/terminal-width.js";
 import type { PermissionResult, Tool, ToolContext, ToolInput, ToolResult } from "../types.js";
 import { DEFAULT_MAX_RESULT_CHARS } from "./truncation.js";
+import { canonicalToolKey } from "./utils/official-names.js";
+import {
+  advertisedParamName,
+  applyOfficialParamAliases,
+  normalizeOfficialParams,
+} from "./utils/official-params.js";
 
 /**
  * The tool set a provider request should advertise: enabled, minus anything
@@ -30,6 +37,12 @@ export function visibleTools(tools: Tool[], policy?: PermissionPolicy): Tool[] {
 /** Where a tool came from — drives /tools-style listings. */
 export type ToolSource = "core" | "mcp";
 
+/** Canonical keys whose collisions are KNOWN and deliberate (see register()). */
+const KNOWN_CANONICAL_COLLISIONS = new Set([
+  canonicalToolKey("TaskList"),
+  canonicalToolKey("TaskGet"),
+]);
+
 export class ToolRegistry {
   private tools: Map<string, Tool> = new Map();
   // Registration-order source records, so /tools can show where each tool
@@ -40,6 +53,35 @@ export class ToolRegistry {
   register(tool: Tool, source: ToolSource = "core"): void {
     if (this.tools.has(tool.name)) {
       throw new Error(`Tool "${tool.name}" is already registered`);
+    }
+    // Review fix ("精确名查重 vs canonical 解析遮蔽"): resolveTool() matches
+    // by canonicalToolKey when the exact name misses, so two registrations
+    // whose names differ but canonicalize alike ("task_list" vs "TaskList")
+    // create a shadowing ambiguity — a model using a THIRD spelling silently
+    // gets whichever registered first. The project's own tool set contains
+    // deliberate pairs like this (snake_case team tools + official-style
+    // structured-task tools), so a hard reject is infeasible; warn loudly
+    // instead so a NEW accidental collision gets noticed in logs/tests,
+    // while resolution stays deterministic (exact match first, then
+    // registration order).
+    const key = canonicalToolKey(tool.name);
+    // Deliberate coexisting pairs: the snake_case team tools (task_list /
+    // task_get, tui orchestration surface) and the official-style
+    // structured-task tools (TaskList / TaskGet) are BOTH registered on
+    // purpose, so their canonical collision is expected — warning on it at
+    // every startup is pure noise. Any OTHER (accidental) collision outside
+    // this list still warns loudly.
+    if (!KNOWN_CANONICAL_COLLISIONS.has(key)) {
+      for (const existing of this.tools.values()) {
+        if (canonicalToolKey(existing.name) === key) {
+          // Tool names can come from remote MCP servers — sanitize before print.
+          console.error(
+            `Warning: tool "${sanitizeTerminalText(tool.name)}" canonically collides with registered tool "${sanitizeTerminalText(existing.name)}" — ` +
+              `a non-exact spelling resolves to "${sanitizeTerminalText(existing.name)}" (registration order).`,
+          );
+          break;
+        }
+      }
     }
     this.tools.set(tool.name, tool);
     this.sources.push({ tool, source });
@@ -231,8 +273,11 @@ export function createTool<T extends ToolInput = ToolInput>(config: BaseToolConf
 }
 
 // Cache by schema identity, not tool name: separate registries may legitimately
-// reuse a name with a different input contract.
-const jsonSchemaCache = new WeakMap<object, Tool["inputSchema"]>();
+// reuse a name with a different input contract. The inner map is keyed by tool
+// NAME because the generated schema also depends on it — official parameter
+// aliases are declared per tool — so two names sharing one schema object would
+// otherwise collide.
+const jsonSchemaCache = new WeakMap<object, Map<string, Tool["inputSchema"]>>();
 export interface BuildToolConfig<S extends z.ZodType>
   extends CommonToolConfig<z.infer<S> & ToolInput> {
   /**
@@ -253,7 +298,8 @@ export function buildTool<S extends z.ZodType>(
   config: BuildToolConfig<S>,
 ): Tool<z.infer<S> & ToolInput> {
   type T = z.infer<S> & ToolInput;
-  const cached = jsonSchemaCache.get(config.schema as object);
+  const byName = jsonSchemaCache.get(config.schema as object);
+  const cached = byName?.get(config.name);
   let inputSchema: Tool["inputSchema"];
   if (cached) {
     inputSchema = cached;
@@ -262,19 +308,44 @@ export function buildTool<S extends z.ZodType>(
       target: "openApi3",
       $refStrategy: "none",
     }) as Record<string, unknown>;
+    // Advertise official Claude Code parameter names (`file_path`) as the
+    // canonical spelling; the internal camelCase survives as an accepted
+    // alias. See utils/official-params.ts.
+    const aliased = applyOfficialParamAliases(
+      config.name,
+      (generated.properties as Tool["inputSchema"]["properties"]) ?? {},
+      (generated.required as string[]) ?? [],
+    );
     inputSchema = {
       type: "object",
-      properties: (generated.properties as Tool["inputSchema"]["properties"]) ?? {},
-      required: (generated.required as string[]) ?? [],
+      properties: aliased.properties as Tool["inputSchema"]["properties"],
+      required: aliased.required,
+      // Carry additionalProperties through (strictObject → false): without it
+      // providers enforce a looser schema than our runtime zod validation, so
+      // model-injected extra keys fail only at call time instead of being
+      // rejected/shaped by the provider.
+      ...(generated.additionalProperties !== undefined
+        ? { additionalProperties: generated.additionalProperties as boolean }
+        : {}),
     };
-    jsonSchemaCache.set(config.schema as object, inputSchema);
+    if (byName) byName.set(config.name, inputSchema);
+    else jsonSchemaCache.set(config.schema as object, new Map([[config.name, inputSchema]]));
   }
 
   const validateInput = (input: Record<string, unknown>): T => {
-    const parsed = config.schema.safeParse(input);
+    const parsed = config.schema.safeParse(normalizeOfficialParams(config.name, input));
     if (!parsed.success) {
       const detail = parsed.error.issues
-        .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
+        .map((i) => {
+          // Report the advertised (official) spelling so a model can act on
+          // the error against the schema it was actually given.
+          const path = i.path
+            .map((seg) =>
+              typeof seg === "number" ? String(seg) : advertisedParamName(config.name, String(seg)),
+            )
+            .join(".");
+          return `${path || "(root)"}: ${i.message}`;
+        })
         .join("; ");
       throw new InputValidationError(`Invalid arguments: ${detail}`, config.name);
     }

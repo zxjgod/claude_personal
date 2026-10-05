@@ -13,7 +13,13 @@
 import chalk, { type ChalkInstance } from "chalk";
 import hljs from "highlight.js";
 import { marked, type Token, type Tokens } from "marked";
-import { padAligned, stripAnsi, terminalColumns, visualWidth } from "./terminal-width.js";
+import {
+  padAligned,
+  sanitizeTerminalText,
+  stripAnsi,
+  terminalColumns,
+  visualWidth,
+} from "./terminal-width.js";
 import { palette } from "./theme.js";
 
 const EOL = "\n";
@@ -169,8 +175,12 @@ function renderTable(token: Tokens.Table): string {
     const result: string[] = [];
     for (let lineIdx = 0; lineIdx < maxLines; lineIdx++) {
       let line = "│";
-      for (let col = 0; col < cells.length; col++) {
-        const lines = cellLines[col]!;
+      // Review fix ("表格右边框"): iterate the HEADER's column count, not
+      // cells.length — a ragged body row (fewer/more cells than the header)
+      // used to stop/start early, ending its right border at a different
+      // column than borderLine's ┐/┤/┘ and leaving the table misaligned.
+      for (let col = 0; col < numCols; col++) {
+        const lines = cellLines[col] ?? [""];
         const idx = lineIdx - offsets[col]!;
         let cellText = idx >= 0 && idx < lines.length ? lines[idx]! : "";
         const align = isHeader ? "center" : (token.align?.[col] ?? "left");
@@ -255,6 +265,9 @@ function syntaxColor(classes: string): ChalkInstance {
 }
 
 export function highlightCode(code: string, language = ""): string {
+  // Code bodies come from tool output / file contents — sanitize BEFORE any
+  // styling is added (sanitizing after would strip our own SGR codes too).
+  code = sanitizeTerminalText(code);
   const lower = language.toLowerCase();
   const resolved = LANGUAGE_ALIASES[lower] ?? lower;
   let html = escapeHtml(code);
@@ -282,8 +295,18 @@ function parseHljsOutput(html: string): string {
   while (i < html.length) {
     // Check for closing tag
     if (html.slice(i, i + 7) === "</span>") {
-      // Pop this span's content, apply color, and add to parent
-      const [colorFn, content] = stack.pop()!;
+      // Pop this span's content, apply color, and add to parent.
+      // Review fix ("空栈 pop"): malformed hljs output with a STRAY closing
+      // tag hit stack.pop() on an empty stack and destructured undefined —
+      // a TypeError through the render path. Emit the tag literally instead.
+      const entry = stack.pop();
+      if (!entry) {
+        if (stack.length > 0) stack[stack.length - 1]![1] += "</span>";
+        else result += "</span>";
+        i += 7;
+        continue;
+      }
+      const [colorFn, content] = entry;
       const colored = colorFn(content);
       if (stack.length > 0) {
         stack[stack.length - 1]![1] += colored;
@@ -359,6 +382,10 @@ export interface ParsedError {
 /** Parse common error patterns into structured format.
  *  Used by ToolCard.tsx (StructuredError). */
 export function parseError(error: string): ParsedError {
+  // `error` is raw tool output (file contents, command stderr, a server's
+  // message), and every field below is sliced straight out of it. Strip
+  // terminal control sequences before the caller renders the pieces.
+  error = sanitizeTerminalText(error);
   // TypeScript errors: TS\d+
   const tsMatch = error.match(/TS(\d+):\s*(.+)/s);
   if (tsMatch) {
@@ -422,7 +449,10 @@ function formatToken(
         chalk.hex(palette.text).bold((token.tokens ?? []).map((t) => formatToken(t)).join("")) + EOL
       );
     case "hr":
-      return chalk.dim("─".repeat(Math.min(terminalColumns() - 1, 60))) + EOL;
+      // Review fix ("hr 宽度"): terminalColumns() can return 0 on a
+      // degenerate/non-TTY stream, and "─".repeat(0 - 1) throws a RangeError
+      // straight through the render path. Clamp to ≥1.
+      return chalk.dim("─".repeat(Math.max(1, Math.min(terminalColumns() - 1, 60)))) + EOL;
     case "blockquote": {
       const inner = (token.tokens ?? []).map((t) => formatToken(t)).join("");
       const bar = chalk.dim("▎");
@@ -487,8 +517,15 @@ function formatToken(
 /**
  * Render a complete markdown block (one or more lines) to ANSI text.
  * Bold/italic markers are consumed; tables get box borders.
+ *
+ * Every caller feeds this untrusted text — model replies (incl. the live
+ * stream), a plan under approval, tool output — and no caller besides the
+ * line-based renderer sanitized first, so a reply containing an OSC 52
+ * clipboard write or a private CSI reached the terminal verbatim. Sanitize
+ * the INPUT here, once, before any chalk styling is applied.
  */
 export function renderMarkdown(content: string): string {
+  content = sanitizeTerminalText(content);
   // Fast path: plain prose with no markdown syntax → skip the full GFM lex
   // (the hot cost when re-rendering a streaming tail every frame). Even plain
   // text may contain HTML entities from LLM output (e.g. `&quot;` from a model
@@ -509,7 +546,10 @@ export function renderMarkdown(content: string): string {
 // and slicing the probe let those markers leak through as literal text. The
 // regex test is O(n) and dwarfs the lexer's cost, so full-scan is cheap.
 // Matches any MD marker or an ordered-list start (`N. ` at line start).
-const MD_SYNTAX_RE = /[#*`|[>\-_~]|\n\n|^\d+\. |\n\d+\. /;
+// Review fix: `\n\n` was in the marker set — but a blank line is NOT
+// markdown syntax, so any multi-paragraph plain-text reply (the common
+// case) always took the lexer path and the sniff saved nothing.
+const MD_SYNTAX_RE = /[#*`|[>\-_~]|^\d+\. |\n\d+\. /;
 function hasMarkdownSyntax(s: string): boolean {
   return MD_SYNTAX_RE.test(s);
 }

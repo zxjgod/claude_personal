@@ -242,6 +242,50 @@ export function extractZip(bytes: Buffer, destDir: string): void {
   }
 }
 
+/** Whole-exchange timeout for every remote plugin/marketplace download. */
+const REMOTE_FETCH_TIMEOUT_MS = 60_000;
+/** Whole-archive budget for a remote plugin download. A plugin is source
+ *  files — bigger than this is a decompression-bomb target, not a plugin. */
+const MAX_PLUGIN_DOWNLOAD_BYTES = 64 * 1024 * 1024;
+/** Per-component file cap when installing from a bare manifest. */
+const MAX_PLUGIN_COMPONENT_BYTES = 8 * 1024 * 1024;
+/** A marketplace index is a JSON manifest list — a few hundred KB at most. */
+const MAX_MARKETPLACE_BYTES = 2 * 1024 * 1024;
+/**
+ * Every remote install path used a bare `fetch` + `arrayBuffer()`: no size cap
+ * and no timeout, so a hostile (or merely broken) URL could buffer an
+ * unbounded response into memory (OOM) or hang the install forever — while
+ * WebFetch/WebSearch cap and bound their downloads. Cap Content-Length first
+ * (cheap reject), then re-check while streaming because the header can lie or
+ * be absent, and time the whole exchange out.
+ */
+async function downloadBounded(url: string, maxBytes: number, label: string): Promise<Buffer> {
+  const response = await fetch(url, { signal: AbortSignal.timeout(REMOTE_FETCH_TIMEOUT_MS) });
+  if (!response.ok) throw new Error(`${label} failed: HTTP ${response.status}`);
+  const declared = Number(response.headers.get("content-length") ?? Number.NaN);
+  if (Number.isFinite(declared) && declared > maxBytes)
+    throw new Error(`${label} declares ${declared} bytes (cap ${maxBytes}): ${url}`);
+  if (!response.body) {
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.length > maxBytes) throw new Error(`${label} exceeds ${maxBytes} bytes: ${url}`);
+    return bytes;
+  }
+  const reader = response.body.getReader();
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      throw new Error(`${label} exceeds ${maxBytes} bytes: ${url}`);
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks);
+}
+
 /**
  * Install a plugin from a URL. Two source shapes are supported:
  *  - a .zip archive (or any URL whose bytes start PK\x03\x04) containing the
@@ -256,9 +300,7 @@ export async function installRemotePlugin(
   source: string,
 ): Promise<PluginManifest> {
   if (!/^https?:\/\//i.test(source)) throw new Error("Remote plugin source must be an http(s) URL");
-  const response = await fetch(source);
-  if (!response.ok) throw new Error(`Plugin download failed: HTTP ${response.status}`);
-  const bytes = Buffer.from(await response.arrayBuffer());
+  const bytes = await downloadBounded(source, MAX_PLUGIN_DOWNLOAD_BYTES, "Plugin download");
   // Stage under the OS temp dir: pluginRoot() may not exist yet in a fresh
   // workspace, and mkdtempSync there used to ENOENT before install's mkdir ran.
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-plugin-"));
@@ -282,14 +324,19 @@ export async function installRemotePlugin(
         const rel = manifest[key];
         if (!rel) continue;
         try {
-          const r = await fetch(new URL(rel, source));
-          if (!r.ok) continue;
           // A DIRECTORY-typed component (e.g. "skills/") can't be fetched as
           // one file — 404 lands here and the install stays manifest-only for
           // that component. Ship a zip to cover directory components.
           const target = path.join(temp, ...rel.replace(/\\/g, "/").split("/"));
           fs.mkdirSync(path.dirname(target), { recursive: true });
-          fs.writeFileSync(target, Buffer.from(await r.arrayBuffer()));
+          fs.writeFileSync(
+            target,
+            await downloadBounded(
+              new URL(rel, source).toString(),
+              MAX_PLUGIN_COMPONENT_BYTES,
+              "Plugin component download",
+            ),
+          );
         } catch {
           /* best effort — see comment above */
         }
@@ -309,6 +356,10 @@ export function setPluginDisabled(
   name: string,
   disabled: boolean,
 ): PluginManifest {
+  // Same floor as removePlugin (review fix: "setPluginDisabled 缺 validName
+  // 路径穿越") — the name becomes a path component under pluginRoot; without
+  // the check "../.." walks out of it and writes plugin.json anywhere.
+  if (!validName(name)) throw new Error("Invalid plugin name");
   const dir = path.join(pluginRoot(workspaceRoot), name);
   const m = readManifest(dir);
   if (!m) throw new Error(`Plugin not found: ${name}`);
@@ -368,9 +419,8 @@ export async function addMarketplaceFromUrl(
   url: string,
 ): Promise<MarketplaceIndex> {
   if (!/^https?:\/\//i.test(url)) throw new Error("Marketplace URL must be an http(s) URL");
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`Marketplace fetch failed: HTTP ${response.status}`);
-  const value = (await response.json()) as { plugins?: unknown[] };
+  const raw = await downloadBounded(url, MAX_MARKETPLACE_BYTES, "Marketplace fetch");
+  const value = JSON.parse(raw.toString("utf8")) as { plugins?: unknown[] };
   const plugins: MarketplaceIndex["plugins"] = [];
   for (const entry of Array.isArray(value.plugins) ? value.plugins : []) {
     const source = (entry as { source?: unknown })?.source;

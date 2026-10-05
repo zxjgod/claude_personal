@@ -39,6 +39,7 @@
 // ============================================================
 
 import * as path from "node:path";
+import { resolveTool } from "./tools/utils/official-names.js";
 import type { HookRunner, Tool, ToolContext, ToolResult } from "./types.js";
 
 export interface SpeculationOptions {
@@ -299,7 +300,7 @@ export class SpeculationCache {
         if (Date.now() - existing.at <= this.ttlMs) continue;
         this.pending.delete(key);
       }
-      const tool = tools.find((t) => t.name === pred.toolName);
+      const tool = resolveTool(pred.toolName, tools);
       // Pass the predicted input so data-driven tools (Bash) judge this exact
       // call: only a read-only + concurrency-safe call is safe to prefetch.
       if (!tool?.isReadOnly(pred.input) || !tool.isConcurrencySafe(pred.input)) continue;

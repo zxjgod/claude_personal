@@ -5,11 +5,12 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HookRegistry } from "../hooks.js";
 import {
   type HooksConfig,
   hooksConfigFingerprint,
+  hookTimeoutMs,
   loadHooksFromSettingsTrusted,
   parseHooksConfig,
   readSettings,
@@ -68,6 +69,26 @@ describe("warnUnknownSettings", () => {
     }
   });
 
+  it("stays silent for keys this replica DOES consume", () => {
+    // memory (/memory-approval), subagents (/agents) and disabledMcpjsonServers
+    // (cli-tools MCP loading) are all read at startup — flagging them would be
+    // a false positive at every launch.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const unknown = warnUnknownSettings({
+        memory: { requireApproval: true },
+        subagents: { thinking: false, sidechainMode: "audit" },
+        disabledMcpjsonServers: ["some-server"],
+        screenReader: { axScreenReader: false },
+        disableAgentView: false,
+      });
+      expect(unknown).toEqual([]);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("stays silent for null settings", () => {
     expect(warnUnknownSettings(null)).toEqual([]);
   });
@@ -99,6 +120,14 @@ describe("parseHooksConfig", () => {
     expect(config.Stop).toBeUndefined();
   });
 
+  it("clamps a hook's own timeout to the ceiling (round 3)", () => {
+    expect(hookTimeoutMs()).toBe(60_000);
+    expect(hookTimeoutMs(30)).toBe(30_000);
+    // Unbounded before: an absurd `timeout` pinned every matching tool call.
+    expect(hookTimeoutMs(1e12)).toBe(600_000);
+    expect(hookTimeoutMs(600)).toBe(600_000);
+  });
+
   it("returns empty config for missing / non-object hooks", () => {
     expect(parseHooksConfig(null)).toEqual({});
     expect(parseHooksConfig(undefined)).toEqual({});
@@ -108,6 +137,19 @@ describe("parseHooksConfig", () => {
 });
 
 describe("readSettings", () => {
+  // Hermetic user layer: readSettings merges the REAL user settings file, and
+  // a legit one may exist (e.g. /memory-approval off persists to it). Point
+  // CCR_USER_CONFIG_DIR at an empty temp dir so these assertions only cover
+  // the project/local layers they create.
+  const savedUserDir = process.env.CCR_USER_CONFIG_DIR;
+  beforeEach(() => {
+    process.env.CCR_USER_CONFIG_DIR = tmp();
+  });
+  afterEach(() => {
+    if (savedUserDir === undefined) delete process.env.CCR_USER_CONFIG_DIR;
+    else process.env.CCR_USER_CONFIG_DIR = savedUserDir;
+  });
+
   it("merges settings.json and settings.local.json (local wins)", () => {
     const repo = tmp();
     fs.mkdirSync(path.join(repo, ".claude"), { recursive: true });
@@ -248,6 +290,25 @@ describe("official hook protocol (exit codes, stdin envelope, env)", () => {
     registerHooksFromConfig(registry, preHook(`${node} ${JSON.stringify(script)}`));
     const outcome = await registry.runPre({ toolName: "Edit", input: {} });
     expect(outcome.block).toBeUndefined();
+  });
+
+  it("a hook that exits before reading stdin still blocks (stdin EPIPE)", async () => {
+    // `exit 2` without draining stdin makes the payload write fail with EPIPE.
+    // Settling the hook promise on that error raced `close` and dropped the
+    // official block decision — the gated tool call then proceeded. A large
+    // payload keeps the write in flight so the EPIPE is deterministic rather
+    // than a coin flip on child startup time.
+    const script = writeScript(
+      "process.stderr.write('blocked before reading stdin'); process.exit(2);",
+    );
+    const registry = new HookRegistry();
+    registerHooksFromConfig(registry, preHook(`${node} ${JSON.stringify(script)}`));
+    const outcome = await registry.runPre({
+      toolName: "Edit",
+      input: { filePath: "a.ts", content: "x".repeat(8 * 1024 * 1024) },
+    });
+    expect(outcome.block).toBe(true);
+    expect(outcome.reason).toBe("blocked before reading stdin");
   });
 
   it("stdin carries the official envelope and CLAUDE_PROJECT_DIR is exported", async () => {

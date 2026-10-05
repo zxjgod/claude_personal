@@ -3,6 +3,7 @@ import chalk from "chalk";
 import { listChanges } from "../change-tracker.js";
 import { getEffort } from "../effort.js";
 import { formatDuration } from "../tui/session-stats.js";
+import { sanitizeTerminalText } from "../tui/terminal-width.js";
 import type { SlashCommand } from "./types.js";
 
 export const statusCommand: SlashCommand = {
@@ -12,10 +13,10 @@ export const statusCommand: SlashCommand = {
     console.log("");
     console.log(chalk.bold("  Status:"));
     console.log(`    Session:     ${chalk.cyan(ctx.sessionId.slice(0, 8) + "...")}`);
-    console.log(`    Provider:    ${chalk.cyan(ctx.modelConfig.provider)}`);
-    console.log(`    Model:       ${chalk.cyan(ctx.modelConfig.model)}`);
+    console.log(`    Provider:    ${chalk.cyan(sanitizeTerminalText(ctx.modelConfig.provider))}`);
+    console.log(`    Model:       ${chalk.cyan(sanitizeTerminalText(ctx.modelConfig.model))}`);
     console.log(`    Effort:      ${chalk.cyan(getEffort(ctx.modelConfig.options))}`);
-    console.log(`    Workspace:   ${chalk.cyan(ctx.workspaceRoot)}`);
+    console.log(`    Workspace:   ${chalk.cyan(sanitizeTerminalText(ctx.workspaceRoot))}`);
     const permissionMode = ctx.getPermissionMode?.() ?? ctx.permissionMode;
     if (permissionMode) {
       console.log(`    Permissions: ${chalk.cyan(permissionMode)}`);

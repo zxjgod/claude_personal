@@ -80,6 +80,39 @@ it("resume releases old scheduling state after saving it, and can restore its qu
     "queued old prompt",
   );
 });
+it("resume drops the old session's stranded notification queue", async () => {
+  const { drainNotifications, pushTaskNotification, resetNotifications } = await import(
+    "../tools/notifications.js"
+  );
+  resetNotifications();
+  pushTaskNotification("old", {
+    id: "job-1",
+    kind: "bash",
+    status: "done",
+    summary: "old session background job",
+  });
+  expect(drainNotifications("old")).toHaveLength(1);
+  // Re-queue, then resume away: the stranded queue must be cleared.
+  pushTaskNotification("old", {
+    id: "job-2",
+    kind: "bash",
+    status: "done",
+    summary: "old session background job",
+  });
+  const session = { id: "old" };
+  const persistence = {
+    workspaceRoot: root,
+    searchSessions: async () => [{ sessionId: "new" }],
+    load: async () => ({ sessionId: "new", messages: [], updatedAt: new Date().toISOString() }),
+  };
+  await createResumeSession({
+    persistence: persistence as never,
+    session,
+    messages: [],
+  })("new");
+  expect(session.id).toBe("new");
+  expect(drainNotifications("old")).toEqual([]);
+});
 it("legacy goal snapshots remain suspended rather than silently recreating autonomous work", () => {
   const directory = path.join(root, ".claude", "session-runtime");
   fs.mkdirSync(directory, { recursive: true });

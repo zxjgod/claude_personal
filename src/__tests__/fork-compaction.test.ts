@@ -76,7 +76,13 @@ afterEach(() => {
 
 describe.each([TaskTool, AgentTool])("$name fork output after compaction", (tool) => {
   it("returns the fork's own final report once compaction shrinks the history", async () => {
-    const result = await tool.call({ description: "review", prompt: "review the fixture" }, ctx);
+    // 拍板 a: fork is explicit-only — pass the type parameter under each
+    // tool's own field name (task: subagent_name, Agent: subagent_type).
+    const forkInput = tool.name === "Agent" ? { subagent_type: "fork" } : { subagent_name: "fork" };
+    const result = await tool.call(
+      { description: "review", prompt: "review the fixture", ...forkInput },
+      ctx,
+    );
     // Compaction must actually have fired (the summary call carries no tools),
     // otherwise this test does not exercise the index-drift scenario.
     expect(fake.caller.mock.calls.some(([, tools]) => tools.length === 0)).toBe(true);

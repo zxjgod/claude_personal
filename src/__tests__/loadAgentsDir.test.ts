@@ -64,4 +64,14 @@ describe("loadAgentsDir", () => {
     writeAgent("empty", "---\ndescription: nothing\n---\n");
     expect(loadAgentsDir(repo)).toEqual([]);
   });
+
+  it("parses the official omitClaudeMd field (and its kebab-case alias)", () => {
+    writeAgent("skipmd", "---\nomitClaudeMd: true\n---\nbody");
+    writeAgent("skipmd2", "---\nomit-claude-md: true\n---\nbody");
+    writeAgent("keepmd", "---\ndescription: x\n---\nbody");
+    loadAgentsDir(repo);
+    expect(getSubagentType("skipmd")?.omitClaudeMd).toBe(true);
+    expect(getSubagentType("skipmd2")?.omitClaudeMd).toBe(true);
+    expect(getSubagentType("keepmd")?.omitClaudeMd).toBe(false);
+  });
 });

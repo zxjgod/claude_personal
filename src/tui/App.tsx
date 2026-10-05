@@ -43,6 +43,7 @@ import type { StoreState, TranscriptItem, TuiStore } from "./store.js";
 import { CTX_CRITICAL_PCT, CTX_WARN_PCT } from "./store.js";
 import { Toast } from "./Toast.js";
 import { TODO_MAX_ROWS, TodoList } from "./TodoList.js";
+import { TogglePicker } from "./TogglePicker.js";
 import { ActiveToolCard, CompletedToolCard } from "./ToolCard.js";
 import { TranscriptReview } from "./TranscriptReview.js";
 import { truncateVisual } from "./terminal-width.js";
@@ -492,6 +493,8 @@ function InteractionRegion({
         return <ProviderPicker overlay={overlay} />;
       case "modelPicker":
         return <ModelPicker overlay={overlay} />;
+      case "togglePicker":
+        return <TogglePicker overlay={overlay} />;
       case "planApproval":
         return <PlanApproval key={promptRequestKey(overlay)} overlay={overlay} />;
       case "commandPicker":

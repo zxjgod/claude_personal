@@ -28,6 +28,13 @@ export interface WakeupJob extends ScheduleScope {
 
 const WAKEUP_JOBS = new Map<string, WakeupJob>();
 export function restoreWakeups(root: string, sessionId: string, values: unknown[]): void {
+  // Review fix ("atMs 立即触发"): a wakeup whose absolute fireAtMs passed
+  // while the process was down used to restore with delaySeconds=0 and fire
+  // on the FIRST scheduler tick — a /loop paused days ago resurrected
+  // instantly on session resume. Past-due wakeups get a short catch-up
+  // grace; older ones are dropped (the loop is long dead — the user can
+  // restart it deliberately).
+  const CATCH_UP_GRACE_MS = 10 * 60_000;
   for (const value of values) {
     if (!value || typeof value !== "object") continue;
     const entry = value as Partial<WakeupJob> & { fireAtMs?: number };
@@ -36,7 +43,8 @@ export function restoreWakeups(root: string, sessionId: string, values: unknown[
       WAKEUP_JOBS.has(entry.id) ||
       typeof entry.prompt !== "string" ||
       typeof entry.fireAtMs !== "number" ||
-      entry.fireAtMs < Date.now() - 7 * 86400000
+      entry.fireAtMs < Date.now() - 7 * 86400000 ||
+      entry.fireAtMs < Date.now() - CATCH_UP_GRACE_MS
     )
       continue;
     const delaySeconds = Math.max(0, Math.ceil((entry.fireAtMs - Date.now()) / 1000));
@@ -71,7 +79,10 @@ export function scheduleWakeup(
   scope: ScheduleScope = {},
 ): WakeupJob {
   const now = process.hrtime.bigint();
-  const delayNs = BigInt(delaySeconds * 1_000_000_000);
+  // Review fix (§五 "小数 RangeError"): BigInt(non-integer) throws a
+  // RangeError — the tool schema rounds before calling, but scheduleWakeup
+  // is also reachable directly (tests, restore). Round at the boundary.
+  const delayNs = BigInt(Math.round(delaySeconds) * 1_000_000_000);
 
   const job: WakeupJob = {
     id: nextWakeupId(),

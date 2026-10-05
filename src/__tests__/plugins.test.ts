@@ -41,6 +41,13 @@ describe("workspace plugins", () => {
     setPluginDisabled(root, "demo", true);
     expect(listPlugins(root)[0]?.disabled).toBe(true);
   });
+  it("setPluginDisabled rejects path-traversal names (review fix)", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-plugin-ws-"));
+    // The name becomes a path component under .claude/plugins — without the
+    // validName floor "../x" would write plugin.json outside the root.
+    expect(() => setPluginDisabled(root, "../escape", true)).toThrow(/Invalid plugin name/);
+    expect(() => setPluginDisabled(root, "a/b", true)).toThrow(/Invalid plugin name/);
+  });
 });
 
 // ============================================================
@@ -230,6 +237,46 @@ describe("remote plugin install", () => {
       await srv.close();
     }
   });
+
+  it("refuses an oversized marketplace index instead of buffering it (round 3)", async () => {
+    const srv = await serve({
+      // 3MB > the 2MB marketplace cap. A bare fetch + response.json() used to
+      // buffer this (and anything larger) with no limit.
+      "/big.json": {
+        type: "application/json",
+        body: JSON.stringify({ plugins: [], pad: "x".repeat(3 * 1024 * 1024) }),
+      },
+    });
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-plugin-mkt-big-"));
+    try {
+      await expect(addMarketplaceFromUrl(root, srv.url("/big.json"))).rejects.toThrow(
+        /declares|exceeds/,
+      );
+      expect(readMarketplace(root).plugins).toHaveLength(0);
+    } finally {
+      await srv.close();
+    }
+  }, 30_000);
+
+  it("skips an oversized declared component but still installs the manifest", async () => {
+    const srv = await serve({
+      "/plugin.json": {
+        type: "application/json",
+        body: JSON.stringify({ name: "fat", version: "1.0.0", skills: "skills.md" }),
+      },
+      // 9MB > the 8MB per-component cap.
+      "/skills.md": { type: "text/markdown", body: "x".repeat(9 * 1024 * 1024) },
+    });
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-plugin-fat-"));
+    try {
+      const manifest = await installRemotePlugin(root, srv.url("/plugin.json"));
+      expect(manifest.name).toBe("fat");
+      // The oversized component is dropped (best-effort fetch), not written.
+      expect(fs.existsSync(path.join(root, ".claude", "plugins", "fat", "skills.md"))).toBe(false);
+    } finally {
+      await srv.close();
+    }
+  }, 30_000);
 
   it("addMarketplaceFromUrl persists the index; lookup resolves install sources", async () => {
     const srv = await serve({

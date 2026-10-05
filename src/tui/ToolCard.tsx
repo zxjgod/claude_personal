@@ -25,7 +25,7 @@ import {
   STATUS_GRAY,
   STATUS_GRAY_BRIGHT,
 } from "./spinner-core.js";
-import { truncateVisual } from "./terminal-width.js";
+import { sanitizeTerminalText, truncateVisual } from "./terminal-width.js";
 import { palette } from "./theme.js";
 import { toolOutputLines } from "./tool-output.js";
 import { toolResultSummary } from "./tool-result-summary.js";
@@ -122,9 +122,11 @@ export function CompletedToolCard({
       <ToolStatusGlyph isActive={false} isError={!!result.error} />
       <Text color={palette.text} bold>
         {" "}
-        {capitalize(result.toolName)}
+        {capitalize(sanitizeTerminalText(result.toolName))}
       </Text>
-      {detail ? <Text color={palette.text}>({truncate(detail, 100)})</Text> : null}
+      {detail ? (
+        <Text color={palette.text}>({truncate(sanitizeTerminalText(detail), 100)})</Text>
+      ) : null}
     </Box>
   );
 
@@ -218,7 +220,7 @@ function StructuredError({ error }: { error: string }) {
         <Box flexDirection="column" paddingLeft={3}>
           {stack.map((line, i) => (
             <Text key={i} dimColor>
-              {line.trim()}
+              {sanitizeTerminalText(line.trim())}
             </Text>
           ))}
         </Box>

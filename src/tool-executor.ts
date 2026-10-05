@@ -15,6 +15,7 @@ import { markRead } from "./read-tracker.js";
 import type { SpeculationCache } from "./speculation.js";
 import type { StreamingToolExecutor } from "./streaming-tool-executor.js";
 import { InputValidationError } from "./tools/registry.js";
+import { resolveTool } from "./tools/utils/official-names.js";
 import type {
   AskUserFn,
   HookRunner,
@@ -72,7 +73,7 @@ export type Batch = { safe: boolean; calls: IndexedCall[] };
  * since the cost of wrongly parallelizing a mutating call is a race condition.
  */
 export function callIsConcurrencySafe(call: ToolCall, tools: Tool[]): boolean {
-  const tool = tools.find((t) => t.name === call.function.name);
+  const tool = resolveTool(call.function.name, tools);
   if (!tool) return false;
   try {
     const input = JSON.parse(call.function.arguments);
@@ -109,6 +110,24 @@ export function abortedResult(call: ToolCall): ToolExecutionResult {
     toolName: call.function.name,
     error: "Aborted",
     formatted: `Aborted before executing ${call.function.name}.`,
+    isError: true,
+  };
+}
+
+/**
+ * Synthesize an "interrupted" result for a call that HAD started when the
+ * abort arrived. This must read differently from abortedResult (review
+ * finding "并行批次 abort 假结果"): telling the model the tool "did not run"
+ * when it may have completed side effects (a finished Write, a sent request)
+ * invites duplicate retries. State the uncertainty instead.
+ */
+export function interruptedResult(call: ToolCall): ToolExecutionResult {
+  return {
+    toolName: call.function.name,
+    error: "Interrupted",
+    formatted:
+      `${call.function.name} was interrupted while running — it may have PARTIALLY or FULLY ` +
+      `completed its side effects. Verify the current state before retrying it.`,
     isError: true,
   };
 }
@@ -240,7 +259,7 @@ export async function executeSingleTool(
     workspaceRoot: activeWorkspace(context.sessionId, context.workspaceRoot),
   };
   hooks = context.hooks ?? hooks;
-  const tool = tools.find((t) => t.name === toolCall.function.name);
+  const tool = resolveTool(toolCall.function.name, tools);
   // Captured once the call is cleared to execute, so the outer catch can
   // invalidate speculative entries even when the tool THREW or timed out
   // (review follow-up: the invalidation below only ran on returned results).
@@ -270,7 +289,12 @@ export async function executeSingleTool(
   try {
     let input: Record<string, unknown>;
     try {
-      input = JSON.parse(toolCall.function.arguments);
+      // Review fix: third-party OpenAI-compatible endpoints OMIT the
+      // arguments field (or stream zero deltas) for zero-parameter tools,
+      // leaving "" — JSON.parse("") throws and the call was misreported as
+      // "Invalid JSON arguments" instead of running with {}.
+      const rawArgs = toolCall.function.arguments;
+      input = rawArgs.trim() === "" ? {} : JSON.parse(rawArgs);
     } catch {
       return {
         toolName: tool.name,
@@ -298,60 +322,17 @@ export async function executeSingleTool(
       }
     }
 
-    // === PreToolUse hook (before permission + side effects) ===
-    if (hooks) {
-      const pre = await withToolWatchdog(
-        () => hooks.runPre({ toolName: tool.name, input }),
-        abortSignal,
-      );
-      if (pre.block) {
-        const reason = pre.reason ?? "blocked by hook";
-        return {
-          toolName: tool.name,
-          error: reason,
-          formatted: `Tool blocked by hook: ${reason}`,
-          isError: true,
-        };
-      }
-      if (pre.input) {
-        // Hooks may rewrite inputs, but the final value must satisfy the same
-        // schema and semantic constraints as the model-provided value.
-        if (tool.validateInput) {
-          try {
-            input = tool.validateInput(pre.input) as Record<string, unknown>;
-          } catch (err) {
-            const message =
-              err instanceof InputValidationError
-                ? err.message
-                : `Invalid hook arguments: ${err instanceof Error ? err.message : String(err)}`;
-            return {
-              toolName: tool.name,
-              error: message,
-              formatted: message,
-              isError: true,
-            };
-          }
-        } else {
-          input = pre.input;
-        }
-      }
-      hookContext = pre.additionalContext ?? "";
-      hookPermission = pre.permissionDecision;
-    }
-
-    // === Permission check (before any side effect) ===
-    // Two layers:
-    //   (a) tool-level checkPermissions() — the tool's own hard policy.
-    //   (b) system-level checkPermission() — mode + dangerous-pattern +
-    //       interactive askUser flow.
-    //
+    // === Audit plumbing (review fix: hoisted above the hook blocks) ===
     // Audit EVERY non-read-only call in EVERY mode — approvals, denials and
     // execution failures are all security-relevant. (Previously only auto-mode
     // decisions were logged, so default/bypass sessions left no trail at all.)
+    // This used to live below the PreToolUse/PermissionRequest blocks, which
+    // left BOTH hook-driven denial paths (pre.block, PermissionRequest deny)
+    // with no audit trail. Hoisted so every return below can record.
     // Fire-and-forget: a log write failure never blocks the turn, and the
     // auditRecorded guard keeps the several call sites below from emitting
     // duplicate entries for one call.
-    const isMutating = !tool.isReadOnly(input);
+    let isMutating = !tool.isReadOnly(input);
     let auditRecorded = false;
     const recordAudit = (
       outcome: OperationOutcome,
@@ -387,6 +368,56 @@ export async function executeSingleTool(
       }
     };
 
+    // === PreToolUse hook (before permission + side effects) ===
+    if (hooks) {
+      const pre = await withToolWatchdog(
+        () => hooks.runPre({ toolName: tool.name, input }),
+        abortSignal,
+      );
+      if (pre.block) {
+        const reason = pre.reason ?? "blocked by hook";
+        recordAudit("denied", { reason });
+        return {
+          toolName: tool.name,
+          error: reason,
+          formatted: `Tool blocked by hook: ${reason}`,
+          isError: true,
+        };
+      }
+      if (pre.input) {
+        // Hooks may rewrite inputs, but the final value must satisfy the same
+        // schema and semantic constraints as the model-provided value.
+        if (tool.validateInput) {
+          try {
+            input = tool.validateInput(pre.input) as Record<string, unknown>;
+          } catch (err) {
+            const message =
+              err instanceof InputValidationError
+                ? err.message
+                : `Invalid hook arguments: ${err instanceof Error ? err.message : String(err)}`;
+            return {
+              toolName: tool.name,
+              error: message,
+              formatted: message,
+              isError: true,
+            };
+          }
+        } else {
+          input = pre.input;
+        }
+      }
+      hookContext = pre.additionalContext ?? "";
+      hookPermission = pre.permissionDecision;
+      // A rewritten input may change mutability — keep the audit classification
+      // in sync with what will actually execute.
+      if (pre.input) isMutating = !tool.isReadOnly(input);
+    }
+
+    // === Permission check (before any side effect) ===
+    // Two layers:
+    //   (a) tool-level checkPermissions() — the tool's own hard policy.
+    //   (b) system-level checkPermission() — mode + dangerous-pattern +
+    //       interactive askUser flow.
     context.permissionMode = context.getPermissionMode?.() ?? context.permissionMode;
     if (hookPermission)
       context.permissionPolicy = mergePermissionPolicies(context.permissionPolicy, {
@@ -411,17 +442,25 @@ export async function executeSingleTool(
         tool_name: tool.name,
         tool_input: input,
       });
-      if (outcome?.block || outcome?.permissionDecision === "deny")
+      if (outcome?.block || outcome?.permissionDecision === "deny") {
+        recordAudit("denied", {
+          reason: outcome.reason ?? "Permission hook denied tool",
+        });
         return {
           toolName: tool.name,
           isError: true,
           error: outcome.reason ?? "Permission hook denied tool",
           formatted: outcome.reason ?? "Permission hook denied tool",
         };
+      }
       if (outcome?.input)
         input = tool.validateInput
           ? (tool.validateInput(outcome.input) as Record<string, unknown>)
           : outcome.input;
+      // The hook may have rewritten the input AFTER isMutating was computed
+      // (review fix: "isMutating 在 hook rewrite 之前判定") — recompute so the
+      // audit below reflects what will actually run.
+      if (outcome?.input) isMutating = !tool.isReadOnly(input);
       if (outcome?.input) {
         const rewrittenPolicy = await tool.checkPermissions(input, context);
         if (!rewrittenPolicy.allowed)
@@ -663,8 +702,10 @@ export async function* executeToolCalls(
     }
 
     // Parallel batch: merge per-call one-shot generators with bounded concurrency.
+    const started = new Set<number>();
     const gens = batch.calls.map(({ call, index }) =>
       (async function* (): AsyncGenerator<IndexedResult> {
+        started.add(index);
         yield { index, result: await runOne(call) };
       })(),
     );
@@ -716,9 +757,12 @@ export async function* executeToolCalls(
       if (abortSignal) abortSignal.removeEventListener("abort", onAbort);
     }
     if (wasAborted) {
-      // Surface aborted results for any call in this batch that never emitted.
+      // Surface results for any call in this batch that never emitted. Calls
+      // that had STARTED get the honest "interrupted, side effects unknown"
+      // wording; only never-started calls are "aborted before executing".
       for (const { call, index } of batch.calls) {
-        if (!emitted.has(index)) yield { index, result: abortedResult(call) };
+        if (emitted.has(index)) continue;
+        yield { index, result: started.has(index) ? interruptedResult(call) : abortedResult(call) };
       }
     }
   }

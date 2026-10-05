@@ -208,7 +208,14 @@ export function renderPrefetchAttachment(result: PrefetchResult): string | null 
   const lines: string[] = [];
   if (result.memories.length > 0) {
     lines.push("Possibly relevant memories (background context, may be stale):");
-    for (const r of result.memories) lines.push(`- ${r.memory.text}`);
+    for (const r of result.memories) {
+      // Memory text is model-authored input embedded in a privileged tag —
+      // cap its length and neutralize any literal closing tag it may carry.
+      const text = r.memory.text
+        .slice(0, 2000)
+        .replace(/<\/?system-reminder/gi, "<system_reminder");
+      lines.push(`- ${text}`);
+    }
   }
   if (result.skills.length > 0) {
     if (lines.length > 0) lines.push("");

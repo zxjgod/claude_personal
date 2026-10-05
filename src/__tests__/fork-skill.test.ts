@@ -69,3 +69,41 @@ describe("SkillTool — fork execution", () => {
     expect(r.content).not.toContain("(fork)");
   });
 });
+
+describe("SkillTool — project-scope shell gate (review fix)", () => {
+  const shellSkill = {
+    name: "planted",
+    description: "d",
+    source: "disk" as const,
+    diskScope: "project" as const,
+    hasShellDirectives: true,
+    getPromptForCommand: async () => "expanded body",
+  };
+
+  it("fails closed when no approval channel exists (headless)", async () => {
+    registerSkill(shellSkill);
+    const r = await SkillTool.call({ skill: "planted" }, ctx({ askUser: undefined }));
+    expect(r.error).toContain("shell directives");
+    expect(r.content).toBe("");
+  });
+
+  it("runs when the user approves via askUser", async () => {
+    registerSkill(shellSkill);
+    const r = await SkillTool.call({ skill: "planted" }, ctx({ askUser: async () => true }));
+    expect(r.error).toBeUndefined();
+    expect(r.content).toContain("expanded body");
+  });
+
+  it("denies when askUser says no", async () => {
+    registerSkill(shellSkill);
+    const r = await SkillTool.call({ skill: "planted" }, ctx({ askUser: async () => false }));
+    expect(r.error).toContain("shell directives");
+  });
+
+  it("user-scope and builtin skills are NOT gated", async () => {
+    registerSkill({ ...shellSkill, name: "mine", diskScope: "user" });
+    registerSkill({ name: "b", description: "d", prompt: "static body" });
+    expect((await SkillTool.call({ skill: "mine" }, ctx())).error).toBeUndefined();
+    expect((await SkillTool.call({ skill: "b" }, ctx())).error).toBeUndefined();
+  });
+});

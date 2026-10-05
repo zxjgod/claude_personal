@@ -14,6 +14,7 @@
 // ============================================================
 
 import type { ToolExecutionResult } from "../types.js";
+import { sanitizeTerminalText } from "./terminal-width.js";
 
 /**
  * Resolve the compact one-line summary for a finished tool result, or null when
@@ -21,5 +22,7 @@ import type { ToolExecutionResult } from "../types.js";
  * without a summary).
  */
 export function toolResultSummary(result: ToolExecutionResult): string | null {
-  return result.result?.metadata?.summary ?? null;
+  const summary = result.result?.metadata?.summary;
+  // Summary text is tool-controlled — sanitize before it reaches the terminal.
+  return typeof summary === "string" ? sanitizeTerminalText(summary) : null;
 }

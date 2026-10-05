@@ -85,6 +85,24 @@ export interface SkillDefinition extends SkillInfo {
    * field is ignored — it is not a permission mechanism for inline skills.
    */
   allowedTools?: string[];
+  /**
+   * Disk scope the skill was loaded from (loadSkillsDir). "user" templates
+   * (~/.claude/skills) are fully trusted; "project"/plugin templates sit in a
+   * cloned repo and are NOT. Drives the model-invocation shell gate below.
+   */
+  diskScope?: "user" | "project";
+  /**
+   * True when the raw template body contains a `!`shell`` directive
+   * (computed at load, before expansion). Review fix ("skill 非白名单
+   * command 形态触发执行无闸门" / "fork 模式无 shell 扫描"): the
+   * install-is-trust policy lets project templates CARRY shell, but the
+   * MODEL invoking such a skill is a different trigger — a prompt-injection
+   * could walk the model into skill=<planted> and execute repo shell with
+   * zero gate. SkillTool requires explicit user approval for a project-scope
+   * skill with shell directives (the user's own `/<name>` slash invocation
+   * stays ungated — that IS the explicit approval).
+   */
+  hasShellDirectives?: boolean;
 }
 
 /**

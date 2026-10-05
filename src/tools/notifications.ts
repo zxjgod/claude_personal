@@ -20,6 +20,8 @@
 // producer and the live loop of the same process. Nothing to persist.
 // ============================================================
 
+import { sanitizeTerminalText } from "../tui/terminal-width.js";
+
 export interface TaskNotificationInput {
   /** Stable id of the finished work (e.g. "job-3"). */
   id: string;
@@ -49,8 +51,11 @@ export function formatTaskNotification(input: TaskNotificationInput): string {
 
 /** Human-facing one-liner for the idle UI (no XML). */
 export function formatNotificationLine(input: TaskNotificationInput): string {
-  const what = input.summary.length > 60 ? `${input.summary.slice(0, 60)}…` : input.summary;
-  return `后台任务 ${input.id} (${input.kind}) ${input.status}: ${what}`;
+  // summary/kind/id come from background task output (model- or shell-
+  // produced) — strip terminal control sequences before the idle UI prints it.
+  const summary = sanitizeTerminalText(input.summary);
+  const what = summary.length > 60 ? `${summary.slice(0, 60)}…` : summary;
+  return `后台任务 ${sanitizeTerminalText(input.id)} (${sanitizeTerminalText(input.kind)}) ${sanitizeTerminalText(input.status)}: ${what}`;
 }
 
 interface PendingNotification {

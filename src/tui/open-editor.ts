@@ -51,10 +51,12 @@ export async function openInEditor(
   }
 
   const editor = pickEditor();
-  // A command with arguments (e.g. EDITOR="code --wait") is split naively —
-  // shell-quoting an env-provided editor is out of scope.
-  const parts = editor.split(/\s+/);
-  const cmd = parts[0];
+  // Review fix ("$EDITOR 空白切分"): a naive whitespace split breaks a
+  // quoted path (EDITOR="C:\Program Files\Code\code.cmd --wait" split
+  // into "C:\Program" … and spawned nothing). Tokenize with double-quote
+  // awareness — quotes group, whitespace outside quotes separates.
+  const parts = editor.match(/"([^"]*)"|\S+/g)?.map((t) => t.replace(/^"|"$/g, "")) ?? [];
+  const cmd = parts[0] ?? editor;
   const args = [...parts.slice(1), filePath];
 
   const stdin = process.stdin;
@@ -84,9 +86,22 @@ export async function openInEditor(
       };
       // Safety fuse: kill the child, then resolve — restoring stdin under a
       // live editor would have both processes fighting over the same TTY.
+      // Review fix ("fuse kill 只杀 cmd 外壳"): on Windows the child is a
+      // cmd.exe shell wrapper — killing IT alone orphans the editor
+      // grandchild (which keeps the TTY and the temp file). taskkill /T
+      // takes down the whole process tree; POSIX kill reaches the editor
+      // directly (no shell wrapper there).
       const fuse = setTimeout(() => {
         try {
-          child?.kill();
+          if (IS_WIN && child?.pid) {
+            const killer = spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
+              stdio: "ignore",
+            });
+            killer.on("error", () => {});
+            killer.unref();
+          } else {
+            child?.kill();
+          }
         } catch {
           /* already gone */
         }
@@ -151,7 +166,11 @@ export async function editInEditor(draft: string): Promise<{ ok: boolean; text: 
     // Strip the single trailing newline openInEditor appended on write.
     return { ok: true, text: edited.replace(/\r\n/g, "\n").replace(/\n$/, "") };
   } catch {
-    return { ok: true, text: draft };
+    // Review fix ("读回失败 ok:true"): a read-back failure must NOT report
+    // success — the caller shows "edited in editor" on ok, while the draft
+    // silently reverted. Report the failure (the original draft is still
+    // returned so nothing is lost).
+    return { ok: false, text: draft };
   } finally {
     try {
       fs.rmSync(filePath, { force: true });

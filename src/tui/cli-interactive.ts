@@ -15,7 +15,12 @@
 import chalk from "chalk";
 import { formatCommandMenuRow } from "./command-menu-layout.js";
 import { t } from "./i18n.js";
-import { terminalColumns, truncateVisual, visualWidth } from "./terminal-width.js";
+import {
+  sanitizeTerminalText,
+  terminalColumns,
+  truncateVisual,
+  visualWidth,
+} from "./terminal-width.js";
 import { palette } from "./theme.js";
 
 export interface CommandInfo {
@@ -311,7 +316,11 @@ export function createRawInputReader(opts: {
       activeWidgetCleanup = null;
       commit(line);
     } else {
-      injected.unshift(line);
+      // FIFO: readInput drains with shift(), so push at the TAIL. unshift()
+      // made a burst of injections replay in reverse order (last delivered
+      // prompt answered first) — the opposite of the queue's documented
+      // contract and of InputQueue's drain().
+      injected.push(line);
     }
   };
 
@@ -556,6 +565,12 @@ export function promptPermissionMenu(opts: {
 }): Promise<PermissionChoice> {
   const input = opts.input ?? process.stdin;
   const output = opts.output ?? process.stdout;
+  // This is the consent screen — the worst spoofing target. detail is the
+  // model-proposed command/path and header carries the (possibly MCP-remote)
+  // tool name; Region.paint writes raw, so sanitize once up front.
+  const header = opts.header ? sanitizeTerminalText(opts.header) : opts.header;
+  const detail = opts.detail ? sanitizeTerminalText(opts.detail) : opts.detail;
+  const riskHint = opts.riskHint ? sanitizeTerminalText(opts.riskHint) : opts.riskHint;
   // P3-13: labels/descs come from i18n — the same source the Ink permission
   // prompt uses, so both UI paths speak one language (follows LANG/CCR_LANGUAGE).
   const options: Array<{ label: string; value: PermissionChoice; desc: string }> = [
@@ -576,21 +591,21 @@ export function promptPermissionMenu(opts: {
       lines.push(boxLine(chalk.bold.cyan(t("ui.permission.title")), width));
       lines.push(boxLine("", width));
 
-      if (opts.header) {
-        lines.push(boxLine("  " + chalk.bold(opts.header), width));
+      if (header) {
+        lines.push(boxLine("  " + chalk.bold(header), width));
       }
 
-      if (opts.detail) {
+      if (detail) {
         lines.push(boxLine("", width));
-        for (const dl of wrapPlain(opts.detail, width - 4)) {
+        for (const dl of wrapPlain(detail, width - 4)) {
           lines.push(boxLine("  📄 " + dl, width));
         }
       }
 
-      if (opts.riskHint) {
+      if (riskHint) {
         lines.push(boxLine("", width));
         // P1-4: Better formatting for risk hints
-        lines.push(boxLine("  " + chalk.yellow("⚠️ " + opts.riskHint), width));
+        lines.push(boxLine("  " + chalk.yellow("⚠️ " + riskHint), width));
       }
 
       lines.push(bottom);
@@ -671,6 +686,16 @@ export function promptSelectMenu(opts: {
   const input = opts.input ?? process.stdin;
   const output = opts.output ?? process.stdout;
   const multi = opts.multiSelect === true;
+  // header/question/labels/descriptions are ask_user_question input —
+  // model-produced. Region.paint writes raw, so sanitize once up front
+  // (chalk styling is applied to the sanitized text at render time).
+  const header = sanitizeTerminalText(opts.header);
+  const question = sanitizeTerminalText(opts.question);
+  const options = opts.options.map((opt) => ({
+    ...opt,
+    label: sanitizeTerminalText(opt.label),
+    ...(opt.description ? { description: sanitizeTerminalText(opt.description) } : {}),
+  }));
 
   return new Promise((resolve) => {
     const region = new Region(output);
@@ -682,14 +707,14 @@ export function promptSelectMenu(opts: {
       const top = chalk.dim("┌" + "─".repeat(width - 2) + "┐");
       const bottom = chalk.dim("└" + "─".repeat(width - 2) + "┘");
       const lines: string[] = [top];
-      lines.push(boxLine(chalk.bold.cyan(opts.header), width));
+      lines.push(boxLine(chalk.bold.cyan(header), width));
       lines.push(boxLine("", width));
-      for (const ql of wrapPlain(opts.question, width - 4)) {
+      for (const ql of wrapPlain(question, width - 4)) {
         lines.push(boxLine(ql, width));
       }
       lines.push(bottom);
       lines.push("");
-      opts.options.forEach((opt, i) => {
+      options.forEach((opt, i) => {
         const pointer = i === cursor ? chalk.cyan("❯ ") : "  ";
         const box = multi ? (checked.has(i) ? "[x] " : "[ ] ") : "";
         const label = `${box}${opt.label}`;

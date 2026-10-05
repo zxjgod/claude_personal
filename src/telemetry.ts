@@ -14,6 +14,8 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { readSettings } from "./settings.js";
+import { renameSyncWithRetry } from "./utils/atomic-rename.js";
 import { ccrPath } from "./workspace-config.js";
 
 export interface TelemetryEvent {
@@ -41,12 +43,18 @@ export function resolveTelemetryOptions(workspaceRoot: string): TelemetryOptions
   if (env === "1" || env === "true") return { enabled: true, filePath };
   if (env === "0" || env === "false") return { enabled: false, filePath };
 
-  // settings.json { telemetry: { enabled: bool } }
+  // settings.json { telemetry: { enabled: bool } } — resolved through the
+  // normal layered reader (user → project → local → managed, later wins)
+  // instead of reading the PROJECT file directly. The direct read meant:
+  //   * a user-level `telemetry.enabled: true` was ignored for a global
+  //     install (the toggle was written to the user file and then never read
+  //     back), and
+  //   * managed settings could not force recording OFF.
+  // Precedence within the settings layers follows the documented merge order;
+  // env (above) still overrides everything.
   try {
-    const settingsPath = ccrPath(workspaceRoot, "settings.json");
-    const raw = fs.readFileSync(settingsPath, "utf-8");
-    const settings = JSON.parse(raw);
-    if (settings?.telemetry?.enabled === true) {
+    const telemetry = readSettings(workspaceRoot).telemetry as { enabled?: unknown } | undefined;
+    if (telemetry?.enabled === true) {
       return { enabled: true, filePath };
     }
   } catch {
@@ -88,6 +96,32 @@ export class Telemetry {
         ...(props ? { props } : {}),
       } satisfies Record<string, unknown>);
       fs.appendFileSync(this.filePath, line + "\n");
+      // Review fix (§五 "events.jsonl 无限增长"): an opted-in workspace
+      // accumulated events forever. Rotate past a cap: keep the newest tail
+      // and rewrite atomically (tmp + rename). Events are diagnostic, so
+      // dropping the oldest half loses nothing the user depends on.
+      const MAX_BYTES = 5 * 1024 * 1024;
+      if (fs.statSync(this.filePath).size > MAX_BYTES) {
+        const KEEP_BYTES = 2 * 1024 * 1024;
+        const fd = fs.openSync(this.filePath, "r");
+        let tail: string;
+        try {
+          const buf = Buffer.alloc(KEEP_BYTES);
+          const size = fs.fstatSync(fd).size;
+          fs.readSync(fd, buf, 0, KEEP_BYTES, size - KEEP_BYTES);
+          tail = buf.toString("utf-8");
+        } finally {
+          // Close BEFORE the rename: replacing a file that is still open for
+          // reading fails with EPERM/EBUSY on Windows, and the swallowed catch
+          // would then leave the sink un-rotated (and a stray .tmp behind).
+          fs.closeSync(fd);
+        }
+        // Drop the first partial line so the tail stays valid JSONL.
+        const firstNl = tail.indexOf("\n");
+        const tmp = `${this.filePath}.${process.pid}.tmp`;
+        fs.writeFileSync(tmp, firstNl >= 0 ? tail.slice(firstNl + 1) : tail);
+        renameSyncWithRetry(tmp, this.filePath);
+      }
     } catch {
       // Telemetry must never break the session.
     }

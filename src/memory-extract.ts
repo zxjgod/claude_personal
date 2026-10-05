@@ -52,6 +52,11 @@ const INTENT_RE_EN =
   /^(remember|always|never|prefer|from now on|note that|keep in mind|make sure)\b/i;
 const INTENT_RE_ZH = /^(请记住|记住|以后|今后|始终|永远|不要|别忘了|别|必须|偏好|注意)/;
 
+// Bounds on model-extracted memories: the extractor reads attacker-influenced
+// transcripts, so its output must not be able to flood the store.
+const MAX_EXTRACTED_MEMORIES = 50;
+const MAX_MEMORY_TEXT_CHARS = 2000;
+
 /** True when a user line reads like a durable intent worth remembering. */
 function isIntentLine(line: string): boolean {
   return INTENT_RE_EN.test(line) || INTENT_RE_ZH.test(line);
@@ -191,7 +196,11 @@ export async function extractMemoriesWithModel(
 
   const ts = new Date().toISOString();
   return parsed
-    .filter((x): x is string => typeof x === "string" && x.trim().length > 0)
+    .filter(
+      (x): x is string =>
+        typeof x === "string" && x.trim().length > 0 && x.trim().length <= MAX_MEMORY_TEXT_CHARS,
+    )
+    .slice(0, MAX_EXTRACTED_MEMORIES)
     .map((s) => ({
       id: crypto.randomUUID(),
       ts,
@@ -244,7 +253,17 @@ export class MemoryStore {
       if (!trimmed) continue;
       try {
         const parsed = JSON.parse(trimmed);
-        if (parsed && typeof parsed.text === "string") {
+        // Validate the fields consumers dereference (id in index rebuild,
+        // tags in recall): a hand-edited line missing them used to crash
+        // every subsequent append permanently.
+        if (
+          parsed &&
+          typeof parsed.text === "string" &&
+          typeof parsed.id === "string" &&
+          (parsed.tags === undefined ||
+            (Array.isArray(parsed.tags) &&
+              parsed.tags.every((t: unknown) => typeof t === "string")))
+        ) {
           out.push(parsed as ExtractedMemory);
         }
       } catch {

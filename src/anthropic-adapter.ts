@@ -8,6 +8,7 @@
 // ============================================================
 
 import Anthropic from "@anthropic-ai/sdk";
+import { BETA_HEADER, betaHeaderValue } from "./api-betas.js";
 import { anthropicEffort, getEffort, resolveEffortMaxTokens } from "./effort.js";
 import {
   DEFAULT_ANTHROPIC_MODEL,
@@ -18,6 +19,7 @@ import {
 import { checkResponseForCacheBreak, recordPromptState } from "./prompt-cache.js";
 import { DYNAMIC_BOUNDARY } from "./system-prompt.js";
 import { DEFAULT_MAX_RESULT_CHARS, truncateToolResult } from "./tools/truncation.js";
+import { resolveTool } from "./tools/utils/official-names.js";
 import type {
   Message,
   ModelCaller,
@@ -93,7 +95,7 @@ export function formatSystemForAnthropic(
 
 /** Get the max chars cap for a tool. Returns DEFAULT_MAX_RESULT_CHARS as fallback. */
 function getToolMaxChars(toolName: string, tools: Tool[]): number {
-  const tool = tools.find((t) => t.name === toolName);
+  const tool = resolveTool(toolName, tools);
   if (tool?.maxResultSizeChars) return tool.maxResultSizeChars;
   return DEFAULT_MAX_RESULT_CHARS;
 }
@@ -371,6 +373,12 @@ export const anthropicCaller: ModelCaller = async function* (
   config: ModelConfig,
   abortSignal?: AbortSignal,
 ): AsyncGenerator<StreamEvent> {
+  // Official `--betas`: already allowlist-filtered in cli.ts, so this only
+  // ever forwards headers the user was actually allowed to request.
+  const betaHeader = betaHeaderValue(
+    Array.isArray(config.options?.betas) ? (config.options.betas as string[]) : [],
+  );
+
   const client = new Anthropic({
     apiKey: config.apiKey,
     baseURL: config.baseURL,
@@ -378,6 +386,10 @@ export const anthropicCaller: ModelCaller = async function* (
     // The SDK default maxRetries:2 multiplied with it — a sustained 429 could
     // fire ~12 requests for one logical call (Top10 follow-up A4).
     maxRetries: 0,
+    // Official `--betas`. Only allowlisted headers ever reach here (api-betas.ts
+    // drops the rest with a warning), so this can't be used to smuggle an
+    // arbitrary beta onto the wire.
+    ...(betaHeader ? { defaultHeaders: { [BETA_HEADER]: betaHeader } } : {}),
   });
 
   // Compose the caller's AbortSignal (Ctrl+C / turn abort) with a STALL

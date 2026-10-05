@@ -95,6 +95,8 @@ export function retryAfterMsFrom(error: unknown): number | null {
 
 /** Smallest backoff we will actually sleep, even when the server says 0. */
 const MIN_BACKOFF_MS = 100;
+/** Longest explicit Retry-After hint we honor (review fix: hints are floors). */
+const SERVER_HINT_MAX_MS = 300_000;
 
 /**
  * Context-overflow error message wordings across BOTH provider families
@@ -106,11 +108,17 @@ const MIN_BACKOFF_MS = 100;
  */
 const CONTEXT_LENGTH_RE = /context_length|maximum context|prompt is too long/i;
 
-/** Check if an error is a context-length error (400 with an overflow wording). */
+/** Check if an error is a context-length error (overflow wording). */
 export function isContextLengthError(error: unknown): boolean {
   const err = error as { status?: number; message?: string } | null;
   const msg = err?.message ?? "";
-  return err?.status === 400 && CONTEXT_LENGTH_RE.test(msg);
+  // Review fix ("双门槛过严"): requiring status===400 AND the wording missed
+  // providers that report overflow as 413 (Payload Too Large) or with no
+  // status at all (some OpenAI-compatible gateways wrap the error). The
+  // overflow WORDING is the reliable signal; status only vetoes clearly
+  // unrelated statuses.
+  const statusOk = err?.status === undefined || err.status === 400 || err.status === 413;
+  return statusOk && CONTEXT_LENGTH_RE.test(msg);
 }
 
 /**
@@ -160,11 +168,22 @@ export async function handleModelError(
     // Retry-After header (normalized to ms) replaces the dead `retryAfter`
     // property; `?? 5000` (not `||`) so a legitimate 0 is honored — with a
     // small floor so we never busy-loop.
-    const baseDelay = Math.max(retryAfterMsFrom(error) ?? 5000, MIN_BACKOFF_MS);
+    // Review fix ("Retry-After 被 cap 覆盖"): an explicit server hint is a
+    // FLOOR — capping it to 60s and retrying early just earns another 429.
+    // Computed backoff still caps at 60s; a hint is honored up to 5 min.
+    const serverHint = retryAfterMsFrom(error);
+    const baseDelay = Math.max(serverHint ?? 5000, MIN_BACKOFF_MS);
     const exponentialDelay = baseDelay * 2 ** state.rateLimitRetries;
-    const cappedDelay = Math.min(exponentialDelay, 60000);
+    const cappedDelay =
+      serverHint != null
+        ? Math.max(Math.min(exponentialDelay, 60000), Math.min(serverHint, SERVER_HINT_MAX_MS))
+        : Math.min(exponentialDelay, 60000);
     const jitter = cappedDelay * 0.2 * (Math.random() * 2 - 1);
-    const finalDelay = Math.round(cappedDelay + jitter);
+    const jittered = Math.round(cappedDelay + jitter);
+    const finalDelay =
+      serverHint != null
+        ? Math.max(jittered, Math.round(Math.min(serverHint, SERVER_HINT_MAX_MS)))
+        : jittered;
 
     onRetry?.({ kind: "rate_limit", delayMs: finalDelay });
     await sleep(finalDelay, abortSignal);
@@ -186,12 +205,13 @@ export async function handleModelError(
     return "abort";
   }
 
-  // User-initiated abort (Ctrl+C / turn abort) → never retry. Message
-  // matching is case-insensitive (review follow-up 既有问题 E — see
-  // isFallbackableModelError above).
+  // User-initiated abort (Ctrl+C / turn abort) → never retry. The NAME check
+  // is unambiguous; the message-substring check is deferred until after the
+  // transient/5xx classification below, so a server error that merely
+  // mentions "aborted" still gets its retry budget.
   const name = err?.name as string | undefined;
   const msg = ((err?.message as string | undefined) ?? "").toLowerCase();
-  if (name === "AbortError" || msg.includes("aborted")) {
+  if (name === "AbortError") {
     return "abort";
   }
 
@@ -219,13 +239,30 @@ export async function handleModelError(
     // A server-provided Retry-After (normalized to ms) wins over the formula.
     const retryAfter = serverHiccup ? retryAfterMsFrom(error) : null;
     const exponentialDelay = retryAfter ?? 1000 * 2 ** state.transientRetries;
-    const cappedDelay = Math.min(exponentialDelay, 30_000);
+    // Same floor rule as the 429 path: an explicit Retry-After is honored
+    // (up to 5 min), not capped away to 30s.
+    const cappedDelay =
+      retryAfter != null
+        ? Math.max(Math.min(exponentialDelay, 30_000), Math.min(retryAfter, SERVER_HINT_MAX_MS))
+        : Math.min(exponentialDelay, 30_000);
     const jitter = cappedDelay * 0.2 * (Math.random() * 2 - 1);
-    const finalDelay = Math.round(Math.max(cappedDelay + jitter, MIN_BACKOFF_MS));
+    const jittered = Math.max(cappedDelay + jitter, MIN_BACKOFF_MS);
+    const finalDelay =
+      retryAfter != null
+        ? Math.round(Math.max(jittered, Math.min(retryAfter, SERVER_HINT_MAX_MS)))
+        : Math.round(jittered);
     onRetry?.({ kind: "transient", delayMs: finalDelay });
     await sleep(finalDelay, abortSignal);
     if (abortSignal?.aborted) return "abort";
     return "retry_transient";
+  }
+
+  // Provider errors that merely mention "aborted" in their message (no
+  // AbortError name, no transient classification) — treat as user-initiated
+  // and never retry. Runs after the transient check above so a 5xx carrying
+  // this wording keeps its retry budget.
+  if (msg.includes("aborted")) {
+    return "abort";
   }
 
   // Unknown error → abort

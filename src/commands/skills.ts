@@ -1,6 +1,7 @@
 // /skills — list registered skills
 import chalk from "chalk";
 import { listSkills } from "../skills.js";
+import { sanitizeTerminalText } from "../tui/terminal-width.js";
 import type { SlashCommand } from "./types.js";
 
 export const skillsCommand: SlashCommand = {
@@ -15,7 +16,11 @@ export const skillsCommand: SlashCommand = {
     console.log("");
     console.log(chalk.bold(`  Skills (${skills.length}):`));
     for (const s of skills) {
-      console.log(`    ${chalk.cyan(s.name.padEnd(20))} ${chalk.gray(s.description)}`);
+      // name/description come from SKILL.md frontmatter in the project or user
+      // directory — untrusted file content on a cloned repo.
+      console.log(
+        `    ${chalk.cyan(sanitizeTerminalText(s.name).padEnd(20))} ${chalk.gray(sanitizeTerminalText(s.description))}`,
+      );
     }
   },
 };

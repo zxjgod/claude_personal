@@ -52,8 +52,10 @@ export function providersFilePath(workspaceRoot: string): string {
 /**
  * Read and validate `.claude/providers.json`. Best-effort: a missing file,
  * unparseable JSON, or a malformed shape yields `[]` rather than throwing.
- * Entries without a string `name` are skipped; an unknown `provider` is dropped
- * (so it falls back to "openai" on apply).
+ * Entries without a string `name` are skipped. An entry whose `provider` is
+ * present but unrecognized is DROPPED entirely (not downgraded to "openai")
+ * — a typo'd provider must not silently inherit the current provider while
+ * carrying a baseURL/apiKey meant for another family (key-to-wrong-endpoint).
  */
 export function loadProviderProfiles(workspaceRoot: string): ProviderProfile[] {
   let raw: string;
@@ -78,11 +80,13 @@ export function loadProviderProfiles(workspaceRoot: string): ProviderProfile[] {
     if (!entry || typeof entry !== "object") continue;
     const e = entry as Record<string, unknown>;
     if (typeof e.name !== "string" || e.name.trim() === "") continue;
-    const provider =
-      typeof e.provider === "string" &&
-      VALID_PROVIDERS.includes(e.provider as ModelConfig["provider"])
-        ? (e.provider as ModelConfig["provider"])
-        : undefined;
+    if (
+      e.provider !== undefined &&
+      (typeof e.provider !== "string" ||
+        !VALID_PROVIDERS.includes(e.provider as ModelConfig["provider"]))
+    )
+      continue; // present-but-unrecognized provider → drop the whole profile
+    const provider = e.provider as ModelConfig["provider"] | undefined;
     profiles.push({
       name: e.name,
       provider,
@@ -113,16 +117,30 @@ export function findProfile(
 
 /**
  * Apply a profile to the live ModelConfig, mutating it in place so every holder
- * of the reference (REPL, TUI, agent loop) sees the change. Missing fields fall
- * back to provider defaults (via resolveProviderConfig); a missing apiKey reuses
- * the current key. maxTokens/temperature/options are preserved.
+ * of the reference (REPL, TUI, agent loop) sees the change. Omitted fields keep
+ * the CURRENT values (provider/baseURL/apiKey), so a model-only profile never
+ * disturbs the endpoint. Credential rule: an omitted apiKey is inherited ONLY
+ * when the effective endpoint is unchanged — otherwise the current key would be
+ * sent to a third-party host. Switching endpoints without a key throws.
  */
 export function applyProfile(modelConfig: ModelConfig, profile: ProviderProfile): void {
+  const provider = (profile.provider ?? modelConfig.provider) as ModelConfig["provider"];
+  const endpointChanged =
+    provider !== modelConfig.provider ||
+    (profile.baseURL !== undefined && profile.baseURL !== modelConfig.baseURL);
+  if (!profile.apiKey && endpointChanged) {
+    throw new Error(
+      `Profile "${profile.name}" changes the provider/endpoint but provides no apiKey; ` +
+        `refusing to send the current credentials there. Add an apiKey to the profile.`,
+    );
+  }
   const resolved = resolveProviderConfig({
-    provider: profile.provider ?? "openai",
+    provider,
     apiKey: profile.apiKey ?? modelConfig.apiKey,
     model: profile.model,
-    baseURL: profile.baseURL,
+    // Keep the current baseURL unless the profile overrides it — a model-only
+    // profile must not snap back to the provider's default endpoint.
+    baseURL: profile.baseURL ?? (endpointChanged ? undefined : modelConfig.baseURL),
     maxTokens: modelConfig.maxTokens,
     temperature: modelConfig.temperature,
     options: modelConfig.options,

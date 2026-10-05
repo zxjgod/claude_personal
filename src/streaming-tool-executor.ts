@@ -17,9 +17,13 @@
 // disabled) simply means STEP 5 runs it normally — no behavior change.
 //
 // Safety: only calls a tool reports as BOTH read-only AND concurrency-safe for
-// the given input are started early. Such calls are auto-approved by the
-// permission system anyway, so starting them before STEP 5's permission check
-// changes nothing observable. A write/destructive call is never early-started.
+// the given input are started early. Read-only alone is NOT enough (review
+// fix, "streaming 早启动假设"): an `ask` policy rule or a tool-level
+// requiresApproval makes even a read prompt the user — and a permission
+// prompt popping mid-stream, concurrently with other calls, is an ordering
+// and UX hazard. So the loop additionally injects `canAutoApprove`; a call
+// that would prompt loses early-start eligibility (and trips the barrier).
+// A write/destructive call is never early-started.
 //
 // Ordering barrier (Top10 #5): per-call safety is NOT enough. Within one
 // assistant message, `Write(f); Read(f)` early-started the Read during the
@@ -31,6 +35,7 @@
 // message/attempt boundary (STEP 5 finally, retry, abort) — resets the barrier.
 // ============================================================
 
+import { resolveTool } from "./tools/utils/official-names.js";
 import type { Tool, ToolExecutionResult } from "./types.js";
 import { CancellationScope } from "./utils/cancellation.js";
 
@@ -57,6 +62,12 @@ export class StreamingToolExecutor {
     tools: Tool[],
     run: SingleToolRunner,
     private readonly parentSignal?: AbortSignal,
+    /**
+     * Optional veto from the loop: returns false when the call would NOT be
+     * auto-approved (ask rule / tool-level requiresApproval), in which case
+     * early-starting it would pop a permission prompt mid-stream.
+     */
+    private readonly canAutoApprove?: (toolName: string, input: Record<string, unknown>) => boolean,
   ) {
     this.enabled = enabled;
     this.tools = tools;
@@ -69,7 +80,7 @@ export class StreamingToolExecutor {
 
   /** True when `input` names a tool that is read-only AND concurrency-safe. */
   private isSafeToStart(toolName: string, input: Record<string, unknown>): boolean {
-    const tool = this.tools.find((t) => t.name === toolName);
+    const tool = resolveTool(toolName, this.tools);
     if (!tool) return false;
     try {
       return tool.isReadOnly(input) === true && tool.isConcurrencySafe(input) === true;
@@ -93,6 +104,12 @@ export class StreamingToolExecutor {
     // hiding (a later Read may depend on the earlier Write).
     if (this.sawUnsafeCall) return;
     if (!this.isSafeToStart(toolName, input)) {
+      this.sawUnsafeCall = true;
+      return;
+    }
+    // Review fix: read-only+concurrency-safe does NOT imply auto-approved —
+    // an ask rule or requiresApproval tool would prompt mid-stream.
+    if (this.canAutoApprove && !this.canAutoApprove(toolName, input)) {
       this.sawUnsafeCall = true;
       return;
     }

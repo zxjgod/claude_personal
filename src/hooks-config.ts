@@ -36,9 +36,19 @@ import { spawn } from "node:child_process";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import {
+  emitHookProgress,
+  emitHookResponse,
+  emitHookStarted,
+  type HookOutcome,
+  hookIdentity,
+} from "./hook-events.js";
 import type { Hook, HookRegistry } from "./hooks.js";
 import { readProjectSettings, readSettings } from "./settings.js";
+import { hookToolInput } from "./tools/utils/official-params.js";
+import { sanitizeTerminalText } from "./tui/terminal-width.js";
 import { sanitizeChildEnv } from "./utils/env-sanitize.js";
+import { atomicWriteFile, withFileLock } from "./utils/file-lock.js";
 import { ccrPath } from "./workspace-config.js";
 
 export interface HookCommandSpec {
@@ -111,7 +121,42 @@ const PHASES = [
 ] as const;
 
 const DEFAULT_HOOK_TIMEOUT_MS = 60_000;
+/**
+ * Ceiling for a hook's own `timeout` (seconds in the config). Unbounded before:
+ * `"timeout": 1e12` in a settings/hooks.json — project-sourced and therefore
+ * behind a trust prompt, but a trust prompt does not review arithmetic — pinned
+ * every tool call that matched the hook for the effective lifetime of the
+ * process. 10 minutes is far beyond any real hook.
+ */
+const MAX_HOOK_TIMEOUT_MS = 600_000;
 const MAX_STDOUT_BYTES = 100_000;
+/** Official throttles `hook_progress` frames to one per second. */
+const HOOK_PROGRESS_INTERVAL_MS = 1_000;
+
+/**
+ * Sentinel rejection for a timed-out prompt/agent/MCP hook. Distinct from a
+ * genuine failure so the lifecycle event reports `cancelled`, not `error`.
+ */
+const HOOK_TIMEOUT = new Error("Hook timed out");
+
+/**
+ * How one hook invocation ended, from the lifecycle-event point of view.
+ *
+ * `malformed` is deliberately NOT an execution failure: the hook ran but
+ * produced nothing this runtime could read (a crash, a non-JSON exit). The
+ * fail-safe rule still treats it as a no-op — the distinction only reaches
+ * the stream, where a consumer can see that a hook misbehaved.
+ */
+type HookRunStatus = "ok" | "cancelled" | "transport_error" | "malformed";
+
+interface HookRunResult {
+  result: Record<string, unknown>;
+  status: HookRunStatus;
+  stdout: string;
+  stderr: string;
+  output: string;
+  exitCode?: number;
+}
 
 // ============================================================
 // Settings loading
@@ -137,13 +182,29 @@ const KNOWN_SETTINGS_KEYS = new Set([
   "telemetry",
   "env",
   "model",
+  // Official nests the screen-reader switch under a `screenReader` object
+  // (screenReader.axScreenReader); read by ax-screen-reader.ts.
+  "screenReader",
+  // Official's kill-switch for the whole background-agent surface; read by
+  // bg-startup.ts as the feature gate.
+  "disableAgentView",
+  // MemorySave approval gate (memory.requireApproval); read by
+  // initMemoryApproval (written by /memory-approval).
+  "memory",
+  // Sub-agent runtime settings (thinking / sidechainMode); read by
+  // initSubagentSettings (written by /agents).
+  "subagents",
+  // Official key: names of mcp.json servers to skip entirely; consumed by
+  // cli-tools.ts → MCPLoadOptions.disabledServers.
+  "disabledMcpjsonServers",
 ]);
 
 /** Emit diagnostics for settings keys that this replica does not consume. */
 export function warnUnknownSettings(settings: Record<string, unknown> | null): string[] {
   if (!settings) return [];
   const unknown = Object.keys(settings).filter((key) => !KNOWN_SETTINGS_KEYS.has(key));
-  for (const key of unknown) console.warn(`Warning: unsupported settings key ignored: ${key}`);
+  for (const key of unknown)
+    console.warn(`Warning: unsupported settings key ignored: ${sanitizeTerminalText(key)}`);
   return unknown;
 }
 
@@ -223,15 +284,17 @@ function parseJson(text: string): Record<string, unknown> | undefined {
 
 /**
  * Run one hook command with a JSON payload on stdin, returning its parsed
- * stdout JSON. Never rejects: any error/timeout/non-JSON resolves to `{}`
- * (a no-op). `decision` is the only field the callers interpret.
+ * stdout JSON plus the raw channels the lifecycle events report. Never
+ * rejects: any error/timeout/non-JSON resolves to a no-op `result`.
+ * `decision` is the only field the callers interpret.
  */
 function runCommandHook(
   command: string,
   stdin: Record<string, unknown>,
   cwd: string,
   timeoutMs: number,
-): Promise<Record<string, unknown>> {
+  onOutput?: (snapshot: { stdout: string; stderr: string }) => void,
+): Promise<HookRunResult> {
   return new Promise((resolve) => {
     // `shell: true` lets the platform shell (sh on Unix, cmd.exe on Windows)
     // handle quoting, which avoids cmd's well-known `/c` quote-stripping bug
@@ -267,15 +330,26 @@ function runCommandHook(
     let stdout = "";
     let stderrText = "";
     let settled = false;
-    const finish = (value: Record<string, unknown>): void => {
+    const finish = (
+      result: Record<string, unknown>,
+      status: HookRunStatus,
+      exitCode?: number,
+    ): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve(value);
+      resolve({
+        result,
+        status,
+        stdout,
+        stderr: stderrText,
+        output: stdout,
+        ...(exitCode !== undefined && { exitCode }),
+      });
     };
     const timer = setTimeout(() => {
       killTree();
-      finish({});
+      finish({}, "cancelled");
     }, timeoutMs);
 
     child.stdout?.on("data", (chunk: Buffer) => {
@@ -283,9 +357,10 @@ function runCommandHook(
       const text = chunk.toString();
       const remaining = MAX_STDOUT_BYTES - stdout.length;
       stdout += text.slice(0, remaining);
+      onOutput?.({ stdout, stderr: stderrText });
       if (text.length > remaining) {
         killTree();
-        finish({});
+        finish({}, "malformed");
       }
     });
     // stderr carries the exit-2 block reason; capture it, bounded like stdout.
@@ -293,10 +368,14 @@ function runCommandHook(
       if (stderrText.length >= MAX_STDOUT_BYTES) return;
       const text = chunk.toString();
       stderrText += text.slice(0, MAX_STDOUT_BYTES - stderrText.length);
+      onOutput?.({ stdout, stderr: stderrText });
     });
-    child.on("error", () => finish({}));
+    child.on("error", () => finish({}, "malformed"));
     child.on("close", (code) => {
       const parsed = parseJson(stdout);
+      // Exit 2 is the official blocking path, so a crash on any OTHER non-zero
+      // code with unreadable output is what "the hook misbehaved" looks like.
+      const status: HookRunStatus = parsed || code === 0 || code === 2 ? "ok" : "malformed";
       // Exit code 2 is the official no-JSON blocking path: stderr is the
       // reason fed back to the model and takes precedence over stdout JSON
       // (a JSON `reason` is the fallback when stderr is empty). Other exit
@@ -304,7 +383,11 @@ function runCommandHook(
       if (code === 2) {
         const reason =
           stderrText.trim() || (typeof parsed?.reason === "string" ? parsed.reason : "");
-        finish(reason ? { decision: "block", reason } : { decision: "block" });
+        finish(
+          reason ? { decision: "block", reason } : { decision: "block" },
+          status,
+          code ?? undefined,
+        );
         return;
       }
       finish(
@@ -313,13 +396,32 @@ function runCommandHook(
           ["UserPromptSubmit", "SessionStart"].includes(String(stdin.hook_event_name))
             ? { hookSpecificOutput: { additionalContext: stdout.trim() } }
             : {}),
+        status,
+        code ?? undefined,
       );
     });
 
-    child.stdin.on("error", () => finish({}));
-    child.stdin.write(JSON.stringify(stdin));
-    child.stdin.end();
+    // A hook that exits before reading stdin makes the write fail with EPIPE.
+    // That must NOT settle the promise: the `close` handler still has the exit
+    // code, and settling here dropped the official exit-2 block (stderr reason
+    // → `{decision:"block"}`) whenever the child exited fast. Just ignore it —
+    // `close` always follows.
+    child.stdin.on("error", () => {});
+    try {
+      child.stdin.write(JSON.stringify(stdin));
+      child.stdin.end();
+    } catch {
+      // Already destroyed (a timeout killed the child mid-write) — `close`
+      // decides the outcome.
+    }
   });
+}
+
+/**
+ * Effective timeout for one hook spec, in ms. Exported for testing.
+ */
+export function hookTimeoutMs(seconds?: number): number {
+  return Math.min((seconds ?? DEFAULT_HOOK_TIMEOUT_MS / 1000) * 1000, MAX_HOOK_TIMEOUT_MS);
 }
 
 /** Run a list of command specs in order; the first `block` decision wins. */
@@ -327,14 +429,27 @@ async function runSpecs(
   specs: HookCommandSpec[],
   stdin: Record<string, unknown>,
   cwd: string,
+  matcher?: string,
 ): Promise<Record<string, unknown>> {
+  const eventName = String(stdin.hook_event_name ?? "");
   let merged: Record<string, unknown> = {};
   for (const spec of specs) {
-    const execute = async (): Promise<Record<string, unknown>> => {
-      const timeoutMs = (spec.timeout ?? DEFAULT_HOOK_TIMEOUT_MS / 1000) * 1000;
+    const id = hookIdentity(eventName, matcher, crypto.randomUUID());
+    const startedAt = Date.now();
+    const execute = async (): Promise<HookRunResult> => {
+      const timeoutMs = hookTimeoutMs(spec.timeout);
+      // Official streams a hook's growing output on a 1s interval, so a hook
+      // that finishes inside the first second reports no progress at all.
+      let lastProgressAt = startedAt;
+      const onOutput = (snapshot: { stdout: string; stderr: string }): void => {
+        const now = Date.now();
+        if (now - lastProgressAt < HOOK_PROGRESS_INTERVAL_MS) return;
+        lastProgressAt = now;
+        emitHookProgress(id, snapshot);
+      };
       try {
         if (spec.type === "command")
-          return await runCommandHook(spec.command!, stdin, cwd, timeoutMs);
+          return await runCommandHook(spec.command!, stdin, cwd, timeoutMs, onOutput);
         if (spec.type === "http") {
           const response = await fetch(spec.url!, {
             method: "POST",
@@ -354,7 +469,15 @@ async function runSpecs(
               throw new Error("Hook output too large");
             }
           }
-          return parseJson(body) ?? {};
+          const parsed = parseJson(body);
+          return {
+            result: parsed ?? {},
+            status: parsed ? "ok" : "malformed",
+            stdout: body,
+            stderr: "",
+            output: body,
+            exitCode: response.status,
+          };
         }
         let timer: ReturnType<typeof setTimeout> | undefined;
         const expand = (value: unknown): unknown =>
@@ -384,25 +507,72 @@ async function runSpecs(
             : services.evaluate?.(spec.prompt!, stdin, spec.type === "agent");
         if (!invocation) throw new Error(`Hook ${spec.type} service is unavailable`);
         try {
-          return await Promise.race([
+          const out = await Promise.race([
             invocation,
             new Promise<never>((_, reject) => {
-              timer = setTimeout(() => reject(new Error("Hook timed out")), timeoutMs);
+              timer = setTimeout(() => reject(HOOK_TIMEOUT), timeoutMs);
             }),
           ]);
+          return {
+            result: out,
+            status: "ok",
+            stdout: "",
+            stderr: "",
+            output: JSON.stringify(out),
+          };
         } finally {
           clearTimeout(timer);
         }
       } catch (error) {
         console.warn(`Hook failed: ${String(error)}`);
-        return {};
+        const stderr = String(error);
+        return {
+          result: {},
+          status: error === HOOK_TIMEOUT ? "cancelled" : "transport_error",
+          stdout: "",
+          stderr,
+          output: stderr,
+        };
       }
     };
+    const report = (run: HookRunResult, specific: Record<string, unknown> | undefined): void => {
+      const blocked =
+        run.result.decision === "block" ||
+        run.result.ok === false ||
+        specific?.permissionDecision === "deny" ||
+        run.result.continue === false;
+      const outcome: HookOutcome =
+        run.status === "cancelled"
+          ? "cancelled"
+          : run.status === "transport_error"
+            ? "error"
+            : blocked
+              ? "blocking"
+              : run.status === "malformed"
+                ? "non_blocking_error"
+                : "success";
+      emitHookResponse(id, {
+        outcome,
+        output: run.output,
+        stdout: run.stdout,
+        stderr: run.stderr,
+        exitCode: run.exitCode,
+        durationMs: Date.now() - startedAt,
+      });
+    };
+    emitHookStarted(id);
     if (spec.async) {
-      void execute().catch(() => {});
+      // Fire-and-forget, but never unhandled: a throwing report()/sink would
+      // otherwise become an unhandled rejection and kill the CLI (Node >= 22).
+      void execute()
+        .then((run) =>
+          report(run, run.result.hookSpecificOutput as Record<string, unknown> | undefined),
+        )
+        .catch(() => {});
       continue;
     }
-    const out = await execute();
+    const run = await execute();
+    const out = run.result;
     const specific =
       out.hookSpecificOutput && typeof out.hookSpecificOutput === "object"
         ? (out.hookSpecificOutput as Record<string, unknown>)
@@ -423,12 +593,15 @@ async function runSpecs(
       out.ok === false ||
       specific.permissionDecision === "deny" ||
       out.continue === false
-    )
+    ) {
+      report(run, specific);
       return {
         ...merged,
         decision: "block",
         reason: out.reason || specific.permissionDecisionReason || out.stopReason,
       };
+    }
+    report(run, specific);
   }
   return merged;
 }
@@ -473,8 +646,9 @@ function buildPhaseHook(
         pre: async ({ toolName, input }) => {
           const out = await runSpecs(
             entry.hooks,
-            { ...envelope(), tool_name: toolName, tool_input: input },
+            { ...envelope(), tool_name: toolName, tool_input: hookToolInput(toolName, input) },
             cwd(),
+            entry.matcher,
           );
           if (out.decision === "block") {
             return { block: true, reason: (out.reason as string) || "blocked by PreToolUse hook" };
@@ -502,10 +676,11 @@ function buildPhaseHook(
             {
               ...envelope(),
               tool_name: toolName,
-              tool_input: input,
+              tool_input: hookToolInput(toolName, input),
               tool_response: result,
             },
             cwd(),
+            entry.matcher,
           );
           if (out.decision === "block") {
             return {
@@ -530,6 +705,7 @@ function buildPhaseHook(
             entry.hooks,
             { ...envelope(), stop_hook_active: stopHookActive },
             cwd(),
+            entry.matcher,
           );
           if (out.decision === "block") {
             return { blockingError: (out.reason as string) || "stop hook requested more work" };
@@ -543,7 +719,12 @@ function buildPhaseHook(
         eventName: phase,
         event: async (payload) => {
           if (payload.event !== phase) return;
-          const out = await runSpecs(entry.hooks, { ...envelope(), ...payload }, cwd());
+          const out = await runSpecs(
+            entry.hooks,
+            { ...envelope(), ...payload },
+            cwd(),
+            entry.matcher,
+          );
           const extra = (out.hookSpecificOutput as { additionalContext?: unknown })
             ?.additionalContext;
           const decision = (
@@ -673,7 +854,10 @@ export function trustHooksConfig(workspaceRoot: string, fingerprint: string): vo
       // Missing or corrupt store — start fresh.
     }
     store[workspaceRoot] = fingerprint;
-    fs.writeFileSync(file, JSON.stringify(store, null, 2));
+    // Locked + atomic (see cli-config's trust store): a plain overwrite could
+    // drop another workspace's approvals, and a half-written store parses as
+    // empty — silently re-prompting for every workspace's hooks.
+    withFileLock(file, () => atomicWriteFile(file, JSON.stringify(store, null, 2)));
   } catch {
     // Trust persistence is best-effort; failing to save just re-prompts next time.
   }

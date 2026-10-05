@@ -5,7 +5,7 @@ import { modelContextWindow } from "../model-metadata.js";
 import { listSkills, renderSkillCatalog } from "../skills.js";
 import { DYNAMIC_BOUNDARY } from "../system-prompt.js";
 import { estimateTokens } from "../token-estimator.js";
-import { terminalColumns, visualWidth } from "../tui/terminal-width.js";
+import { sanitizeTerminalText, terminalColumns, visualWidth } from "../tui/terminal-width.js";
 import { palette } from "../tui/theme.js";
 import type { CommandContext, SlashCommand } from "./types.js";
 
@@ -177,8 +177,10 @@ export const contextCommand: SlashCommand = {
       console.log(`${indent}${primary("Memory files")} ${secondary("· /memory")}`);
       if (loadedMemory.length === 0) console.log(secondary(`${indent}└ No memory files loaded`));
       loadedMemory.forEach((file, index) => {
+        // Path comes from memory-file discovery (project/user dirs) — sanitize
+        // the display of the discovered path.
         console.log(
-          `${indent}${secondary(index === loadedMemory.length - 1 ? "└" : "├")} ${primary(`${file.path}:`)} ${secondary(`${formatTokens(file.tokens)} tokens`)}`,
+          `${indent}${secondary(index === loadedMemory.length - 1 ? "└" : "├")} ${primary(`${sanitizeTerminalText(file.path)}:`)} ${secondary(`${formatTokens(file.tokens)} tokens`)}`,
         );
       });
       console.log("");
@@ -195,8 +197,9 @@ export const contextCommand: SlashCommand = {
         console.log(secondary(`${indent}${label}`));
         group.forEach((skill, index) => {
           const line = `- ${skill.name}: ${skill.description.length > 100 ? `${skill.description.slice(0, 97)}...` : skill.description}${skill.whenToUse ? ` — use when: ${skill.whenToUse}` : ""}`;
+          // name is SKILL.md frontmatter — project/user file content.
           console.log(
-            `${indent}${secondary(index === group.length - 1 ? "└" : "├")} ${primary(`${skill.name}:`)} ${secondary(`~${formatTokens(textTokens(line))} tokens`)}`,
+            `${indent}${secondary(index === group.length - 1 ? "└" : "├")} ${primary(`${sanitizeTerminalText(skill.name)}:`)} ${secondary(`~${formatTokens(textTokens(line))} tokens`)}`,
           );
         });
       }
