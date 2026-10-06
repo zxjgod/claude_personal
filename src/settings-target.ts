@@ -16,6 +16,7 @@
 // unreachable from a tmp workspace).
 // ============================================================
 
+import { existsSync } from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -26,9 +27,14 @@ import {
 } from "./settings.js";
 
 function defaultPackageRoot(): string {
-  // src/settings-target.ts (vitest) or dist/settings-target.js (built) —
-  // either way the package root is one level up.
-  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  // One level up in dev (src/) and the old flat dist/, two levels up from a
+  // bundled dist/chunks/ chunk — walk up to the first dir with package.json.
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  for (const rel of ["..", "../.."]) {
+    const candidate = path.resolve(here, rel);
+    if (existsSync(path.join(candidate, "package.json"))) return candidate;
+  }
+  return path.resolve(here, "..");
 }
 
 /** True when the running CLI's own package lives OUTSIDE the workspace. */

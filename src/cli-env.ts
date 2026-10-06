@@ -23,7 +23,15 @@ import dotenv from "dotenv";
  * globally and started inside an arbitrary project workspace.
  */
 export function getInstallDir(): string {
-  return path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+  // src/cli-env.ts sits one level below the root in dev, but the bundled CLI
+  // hoists this shared module into dist/chunks/ (two levels) — walk up to the
+  // first directory that actually contains a package.json.
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  for (const rel of ["..", "../.."]) {
+    const candidate = path.resolve(here, rel);
+    if (fs.existsSync(path.join(candidate, "package.json"))) return candidate;
+  }
+  return path.resolve(here, "..");
 }
 
 // Load environment variables: a workspace-local .env takes precedence (per-
@@ -39,10 +47,11 @@ dotenv.config({ path: path.join(getInstallDir(), ".env") });
 
 export function readPackageVersion(): string {
   try {
-    // src/cli.ts and dist/cli.js both sit one level below the repo root,
-    // so "../package.json" resolves correctly under tsx and the built CLI.
-    const pkgUrl = new URL("../package.json", import.meta.url);
-    const pkg = JSON.parse(fs.readFileSync(pkgUrl, "utf8")) as { version?: string };
+    // The install dir is located by walking up to the real package.json, so
+    // this resolves correctly under tsx, flat dist/, and dist/chunks/.
+    const pkg = JSON.parse(fs.readFileSync(path.join(getInstallDir(), "package.json"), "utf8")) as {
+      version?: string;
+    };
     return pkg.version ?? "0.0.0";
   } catch {
     return "0.0.0";

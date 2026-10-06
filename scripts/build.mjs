@@ -8,16 +8,18 @@
 //      imports it), kept external. CJS deps' `require()` calls are covered
 //      by the per-chunk createRequire banner below.
 //   2. lsp.ts createRequire(import.meta.url) resolving tsserver — RESOLVED:
-//      chunks live in dist/ (one level below the package root, same as the
-//      old flat layout), so require.resolve("typescript/lib/tsserver.js")
-//      walks up to the same node_modules. version.ts / cli-env.ts read
-//      ../package.json the same way — identical layout assumptions.
+//      require.resolve walks up to the package root's node_modules from any
+//      chunk depth. version.ts / release-notes.ts already probe both
+//      ../package.json and ../../package.json; cli-env.ts / settings-target.ts
+//      walk up to the first dir containing package.json, so the chunks/
+//      subdirectory (one extra level) is safe for every path-sensitive module.
 //
 // What bundling buys (measured, docs/个人复刻-需求台账-20261005.md round 4):
 //   - Interactive/REPL startup ~2.7s → ~2.0s (~27%) on Windows.
-//   - 582 dist files → ~90 (4 entries + shared chunks); every dynamic
-//     import (cli-main, TUI run, openai/anthropic SDKs, markdown/highlight)
-//     becomes an on-demand chunk, preserving the lazy-loading architecture.
+//   - 582 dist files → ~90 (4 entries + shared chunks under dist/chunks/);
+//     every dynamic import (cli-main, TUI run, openai/anthropic SDKs,
+//     markdown/highlight) becomes an on-demand chunk, preserving the
+//     lazy-loading architecture.
 //   - `--version` stays ~110ms (the slim entry's static graph is tiny).
 //
 // Entries beyond cli.ts exist for consumers with deep imports:
@@ -52,6 +54,10 @@ await build({
   platform: "node",
   target: "node20",
   outdir,
+  // Keep the dist top level clean: only the 4 named entries live there, all
+  // shared chunks go under dist/chunks/. Path-sensitive modules must not
+  // assume chunk depth — see the header note about the package.json walk-up.
+  chunkNames: "chunks/[name]-[hash]",
   sourcemap: true,
   jsx: "automatic",
   logLevel: "info",
