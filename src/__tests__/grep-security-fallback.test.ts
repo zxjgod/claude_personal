@@ -23,9 +23,11 @@ it("fallback rejects secrets and glob traversal while preserving valid searches"
   fs.writeFileSync(path.join(workspace, "public.txt"), "PROBE=PUBLIC");
   fs.writeFileSync(path.join(workspace, "credentials.json"), "PROBE=SECRET");
   fs.writeFileSync(path.join(fixture, "outside.txt"), "PROBE=OUTSIDE");
-  expect(
-    (await GrepTool.call({ pattern: "PROBE", path: "public.txt" }, context)).content,
-  ).toContain("PUBLIC");
+  // Surface the tool's error field on failure: a denied/failed search returns
+  // content:"" too, and a bare toContain diff hides the real cause on CI.
+  const first = await GrepTool.call({ pattern: "PROBE", path: "public.txt" }, context);
+  expect(first.error ?? "no error").toBe("no error");
+  expect(first.content).toContain("PUBLIC");
   const scan = await GrepTool.call({ pattern: "PROBE", glob: "**/*" }, context);
   expect(scan.content).toContain("PUBLIC");
   expect(scan.content).not.toContain("SECRET");

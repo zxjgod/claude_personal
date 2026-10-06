@@ -430,7 +430,13 @@ async function runNodeFallback(
   const collectLimit = skip + headLimit;
   const results: string[] = [];
   const fileMatchCount = new Map<string, number>();
-  const deadline = Date.now() + 5000;
+  // Both bounds below are WALL-CLOCK. CI runners are heavily oversubscribed
+  // (4 fork workers on 2 vCPUs), so a descheduled process can trip them on
+  // trivial inputs — scale them under CI only, keeping interactive latency
+  // protection unchanged for real sessions.
+  const ci = !!process.env.CI;
+  const deadline = Date.now() + (ci ? 30_000 : 5000);
+  const vmTimeout = ci ? 2000 : 100;
   // Execute all matching for one bounded file under V8's interruptible VM
   // deadline. A JS timer around regex.test cannot interrupt backtracking.
   const matcher = new Script(`
@@ -496,7 +502,7 @@ async function runNodeFallback(
             only: !!input["-o"],
             limit: collectLimit,
           },
-          { timeout: 100 },
+          { timeout: vmTimeout },
         );
       } catch {
         return { content: "", error: "Fallback regex search timed out; simplify the pattern" };
