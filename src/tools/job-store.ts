@@ -9,6 +9,7 @@
 // there is nothing meaningful to persist across a process restart.
 // ============================================================
 
+import { loopExecution } from "../loop-execution-context.js";
 import { pushTaskNotification } from "./notifications.js";
 
 export type JobStatus = "running" | "done" | "killed" | "error";
@@ -21,6 +22,7 @@ export interface Job {
   /** Owning session — jobs are session-scoped and notifications route by it. */
   sessionId: string;
   kind: "bash" | "agent";
+  loopId?: string;
   command: string;
   description?: string;
   status: JobStatus;
@@ -129,6 +131,7 @@ export function createJob(sessionId: string, entry: NewJob): Job {
     id: nextJobId(sessionId),
     sessionId,
     kind: entry.kind,
+    loopId: loopExecution()?.id,
     command: entry.command,
     description: entry.description,
     status: "running",
@@ -186,6 +189,7 @@ export function settleJob(job: Job, status: JobStatus, exitCode: number | null):
     status,
     summary: job.description || job.command.slice(0, 80),
     outputTail: tail || undefined,
+    loopId: job.loopId,
   });
 }
 

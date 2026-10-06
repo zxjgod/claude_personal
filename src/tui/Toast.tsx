@@ -17,8 +17,8 @@ function CenteredBanner({ text }: { text: string }) {
   // justifyContent), making the banner effectively full-width for English.
   return (
     <Box justifyContent="center">
-      <Box borderStyle="round" borderColor={palette.accent} paddingX={1}>
-        <Text color={palette.accent} bold>
+      <Box borderStyle="round" borderColor={palette.promptAccent} paddingX={1}>
+        <Text color={palette.promptAccent} bold>
           {text}
         </Text>
       </Box>

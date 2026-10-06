@@ -18,11 +18,13 @@
 // ============================================================
 
 import { Box, Text, useInput } from "ink";
-import type { ReactNode } from "react";
+import { useRef, useState } from "react";
 import { t } from "./i18n.js";
+import { wrapVisualLines } from "./live-window.js";
 import { EXIT_DOUBLE_PRESS_MS, PERMISSION_MODE_CYCLE } from "./store.js";
-import { padAligned, terminalColumns, visualWidth } from "./terminal-width.js";
+import { padAligned, visualWidth } from "./terminal-width.js";
 import { palette } from "./theme.js";
+import { useTerminalSize } from "./useTerminalSize.js";
 
 /** Interpolation values for the description — keeps copy that quotes a
  *  constant (the 800ms exit window) tied to the constant itself. */
@@ -72,94 +74,122 @@ const MODE_DESC_KEYS: Record<string, string> = {
  *  row regardless of which shortcuts are currently listed. */
 const KEY_COL = Math.max(...SHORTCUTS.map((s) => visualWidth(s.keys))) + 3;
 
-function Section({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <Box flexDirection="column" marginBottom={1}>
-      <Text bold color={palette.accent}>
-        {title}
-      </Text>
-      {children}
-    </Box>
-  );
-}
-
-function ShortcutRow({ keys, desc }: { keys: string; desc: string }) {
-  return (
-    <Box>
-      <Text color={palette.command} wrap="truncate">
-        {`  ${padAligned(keys, visualWidth(keys), KEY_COL, "left")}`}
-      </Text>
-      <Text dimColor wrap="truncate">
-        {desc}
-      </Text>
-    </Box>
-  );
-}
-
-function ModeRow({
-  name,
-  description,
-  current,
-}: {
-  name: string;
+export interface HelpLine {
+  label: string;
   description: string;
-  current: boolean;
-}) {
-  return (
-    <Box>
-      <Text color={current ? palette.accent : palette.command}>
-        {`  ${current ? "❯ " : "  "}${name.padEnd(18)}`}
-      </Text>
-      <Text dimColor wrap="truncate">
-        {description}
-      </Text>
-    </Box>
-  );
+  color: string;
+  heading?: boolean;
 }
 
-export function HelpPanel({ currentMode, onClose }: { currentMode: string; onClose: () => void }) {
-  useInput((_input, key) => {
-    if (key.escape || key.return) onClose();
-  });
+/** Explicit display rows keep columns aligned and make every wrapped line scrollable. */
+export function helpLines(contentWidth: number, currentMode: string): HelpLine[] {
+  const labelWidth = Math.min(KEY_COL, Math.max(8, Math.floor(contentWidth * 0.45)));
+  const descriptionWidth = Math.max(1, contentWidth - labelWidth - 2);
+  const lines: HelpLine[] = [];
+  const heading = (key: string) => {
+    for (const description of wrapVisualLines(t(key), contentWidth)) {
+      lines.push({ label: "", description, color: palette.promptAccent, heading: true });
+    }
+  };
+  const row = (label: string, description: string, color: string) => {
+    const labels = wrapVisualLines(label, labelWidth);
+    const descriptions = wrapVisualLines(description, descriptionWidth);
+    for (let i = 0; i < Math.max(labels.length, descriptions.length); i++) {
+      const left = labels[i] ?? "";
+      lines.push({
+        label: padAligned(left, visualWidth(left), labelWidth) + "  ",
+        description: descriptions[i] ?? "",
+        color,
+      });
+    }
+  };
+  const spacer = () => lines.push({ label: "", description: "", color: palette.secondary });
+  heading("ui.help.section.shortcuts");
+  for (const shortcut of SHORTCUTS) {
+    row(`  ${shortcut.keys}`, t(shortcut.descKey, shortcut.descParams), palette.promptAccent);
+  }
+  spacer();
+  heading("ui.help.section.modes");
+  for (const mode of PERMISSION_MODE_CYCLE) {
+    row(
+      `  ${mode === currentMode ? "❯ " : "  "}${mode}`,
+      t(MODE_DESC_KEYS[mode] ?? mode),
+      mode === currentMode ? palette.promptAccent : palette.secondary,
+    );
+  }
+  return lines;
+}
 
-  // Width-adaptive: fill the terminal up to a comfortable reading measure,
-  // while never collapsing below the point where the two columns still read.
-  const width = Math.max(56, Math.min(terminalColumns() - 2, 78));
+export function HelpPanel({
+  currentMode,
+  onClose,
+  maxHeight,
+}: {
+  currentMode: string;
+  onClose: () => void;
+  maxHeight?: number;
+}) {
+  const { columns, rows } = useTerminalSize();
+  const width = Math.max(16, Math.min(columns - 2, 140));
+  const lines = helpLines(width - 4, currentMode);
+  const visibleRows = Math.min(lines.length, Math.max(1, (maxHeight ?? rows - 4) - 6));
+  const maxOffset = Math.max(0, lines.length - visibleRows);
+  const [offset, setOffset] = useState(0);
+  const offsetRef = useRef(0);
+  const start = Math.min(offset, maxOffset);
+  const scrollable = maxOffset > 0;
+  useInput((input, key) => {
+    if (key.escape || key.return) return onClose();
+    let next = Math.min(offsetRef.current, maxOffset);
+    if (key.upArrow) next--;
+    else if (key.downArrow) next++;
+    else if (key.pageUp || (key.ctrl && input === "b")) next -= visibleRows;
+    else if (key.pageDown || (key.ctrl && input === "f")) next += visibleRows;
+    else if (key.home) next = 0;
+    else if (key.end) next = maxOffset;
+    else return;
+    next = Math.max(0, Math.min(next, maxOffset));
+    offsetRef.current = next;
+    setOffset(next);
+  });
 
   return (
     <Box justifyContent="center">
       <Box
         flexDirection="column"
         borderStyle="round"
-        borderColor={palette.accent}
+        borderColor={palette.promptAccent}
         paddingX={1}
         width={width}
       >
         <Box justifyContent="center" marginBottom={1}>
-          <Text bold color={palette.accent}>
+          <Text bold color={palette.promptAccent}>
             {t("ui.help.title")}
+            {scrollable ? ` ${start + 1}-${start + visibleRows}/${lines.length}` : ""}
           </Text>
         </Box>
 
-        <Section title={t("ui.help.section.shortcuts")}>
-          {SHORTCUTS.map((s) => (
-            <ShortcutRow key={s.keys} keys={s.keys} desc={t(s.descKey, s.descParams)} />
+        <Box flexDirection="column" height={visibleRows} flexShrink={0}>
+          {lines.slice(start, start + visibleRows).map((line, i) => (
+            <Text key={start + i}>
+              <Text color={line.color} bold={line.heading}>
+                {line.label}
+              </Text>
+              <Text
+                color={line.heading ? palette.promptAccent : palette.secondary}
+                bold={line.heading}
+              >
+                {line.description || (line.label ? "" : " ")}
+              </Text>
+            </Text>
           ))}
-        </Section>
-
-        <Section title={t("ui.help.section.modes")}>
-          {PERMISSION_MODE_CYCLE.map((mode) => (
-            <ModeRow
-              key={mode}
-              name={mode}
-              description={t(MODE_DESC_KEYS[mode] ?? mode)}
-              current={mode === currentMode}
-            />
-          ))}
-        </Section>
+        </Box>
 
         <Box justifyContent="center" marginTop={1}>
-          <Text dimColor>{t("ui.help.close")}</Text>
+          <Text color={palette.secondary}>
+            {scrollable ? "↑↓ · " : ""}
+            {t("ui.help.close")}
+          </Text>
         </Box>
       </Box>
     </Box>

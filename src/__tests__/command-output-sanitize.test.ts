@@ -40,6 +40,7 @@ import { listSkills, registerSkill, resetSkills } from "../skills.js";
 import { listWakeupJobs } from "../tools/extended/schedule-wakeup.js";
 import { loadUserBindings, parseBindings } from "../tui/keybindings/index.js";
 import type { Tool } from "../types.js";
+import { APP_VERSION } from "../version.js";
 import { listWorkflows } from "../workflow.js";
 
 const ESC = String.fromCharCode(27);
@@ -399,7 +400,7 @@ describe("slash command output sanitization", () => {
   });
 
   it("/release-notes — changelog body is sanitized", async () => {
-    memoryMocks.changelog = `# Changelog\n\n## v9.9.9\n- line with ${POISON}\n\n## v1.0.0\n- old\n`;
+    memoryMocks.changelog = `# Changelog\n\n## v${APP_VERSION}\n### 使用影响\n- line with ${POISON}\n\n## v1.0.0\n- old\n`;
     const out = await run(releaseNotesCommand, "", makeContext());
     assertNoControlSequences(out);
     expect(out).toContain("line with");

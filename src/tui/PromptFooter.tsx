@@ -39,9 +39,15 @@ function selectFooter(s: StoreState) {
     showExitHint: s.showExitHint,
     effortOverlay: s.overlay?.kind === "effort",
     askingOverlay: s.overlay
-      ? ["permission", "question", "confirm", "elicitation", "planApproval"].includes(
-          s.overlay.kind,
-        )
+      ? [
+          "permission",
+          "question",
+          "confirm",
+          "elicitation",
+          "planApproval",
+          "rewind",
+          "loopMenu",
+        ].includes(s.overlay.kind)
       : false,
   };
 }

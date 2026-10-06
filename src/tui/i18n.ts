@@ -144,7 +144,7 @@ const translations: Record<Language, Record<string, string>> = {
     "ui.fs.scrolled": "↑ viewing history — Ctrl+End or G to jump to latest",
 
     // Collapsed thinking (P0-2)
-    "ui.thinking.collapsed": "✻ Thought for {s}s · {n} lines (Ctrl+O to expand)",
+    "ui.thinking.collapsed": "Thought for {s}s (ctrl+o to expand)",
     "ui.thinking.thoughtFor": "Thought for {s}s",
     // No duration recorded (e.g. /resume replayed history)
     "ui.thinking.noSecs": "✻ Thinking · {n} lines (Ctrl+O to expand)",
@@ -168,8 +168,30 @@ const translations: Record<Language, Record<string, string>> = {
     "ui.viewer.editorFailed": "could not open the transcript in $VISUAL/$EDITOR — kept at {path}",
 
     // Rewind menu (P0-3 · C3 second-stage actions)
-    "ui.rewind.title": "Rewind to a previous message",
-    "ui.rewind.hint": "↑↓ select · Enter rewind (restores files) · Esc cancel",
+    "ui.rewind.title": "Rewind",
+    "ui.rewind.hint": "Enter to continue · Esc to cancel",
+    "ui.rewind.description": "Restore the code and/or conversation to the point before…",
+    "ui.rewind.confirm": "Confirm you want to restore to the point before you sent this message:",
+    "ui.rewind.current": "(current)",
+    "ui.rewind.noChanges": "No code changes",
+    "ui.rewind.noRestore": "No code restore",
+    "ui.rewind.filesChanged": "{n} files changed",
+    "ui.rewind.forked": "The conversation will be forked.",
+    "ui.rewind.conversationUnchanged": "The conversation will be unchanged.",
+    "ui.rewind.codeUnchanged": "The code will be unchanged.",
+    "ui.rewind.codeRestored":
+      "The code will be restored in {n} files. Files edited manually or via bash are not restored.",
+    "ui.rewind.afterSummarized": "Messages after this point will be summarized.",
+    "ui.rewind.beforeSummarized":
+      "Preceding messages will be summarized. This and subsequent messages will remain unchanged; you will stay at the end of the conversation.",
+    "ui.rewind.summarize": "Summarize from here",
+    "ui.rewind.summarizeUpTo": "Summarize up to here",
+    "ui.rewind.context": "add context (optional)",
+    "ui.rewind.summarizing": "Summarizing conversation…",
+    "ui.rewind.restoring": "Restoring…",
+    "ui.rewind.secondsAgo": "{n}s ago",
+    "ui.rewind.minutesAgo": "{n}m ago",
+    "ui.rewind.hoursAgo": "{n}h ago",
     "ui.rewind.armHint": "Esc again to open the rewind menu",
     "ui.rewind.draftCleared": "draft cleared — Esc again to rewind",
     "ui.rewind.both": "Restore code and conversation",
@@ -453,7 +475,7 @@ const translations: Record<Language, Record<string, string>> = {
     "ui.fs.scrolled": "↑ 正在查看历史 — Ctrl+End 或按 G 返回最新",
 
     // 折叠的思维块（P0-2）
-    "ui.thinking.collapsed": "✻ 已思考 {s} 秒 · 共 {n} 行（Ctrl+O 展开）",
+    "ui.thinking.collapsed": "已思考 {s} 秒（ctrl+o 展开）",
     "ui.thinking.thoughtFor": "已思考 {s} 秒",
     // 无时长记录（如 /resume 回放的历史）
     "ui.thinking.noSecs": "✻ 思考内容 · 共 {n} 行（Ctrl+O 展开）",
@@ -477,8 +499,29 @@ const translations: Record<Language, Record<string, string>> = {
     "ui.viewer.editorFailed": "无法在 $VISUAL/$EDITOR 中打开会话记录 — 已保留在 {path}",
 
     // 回退菜单（P0-3）
-    "ui.rewind.title": "回退到之前的某条消息",
-    "ui.rewind.hint": "↑↓ 选择 · Enter 回退（会还原文件）· Esc 取消",
+    "ui.rewind.title": "回退",
+    "ui.rewind.hint": "Enter 继续 · Esc 取消",
+    "ui.rewind.description": "将代码和／或对话还原到以下消息发送之前…",
+    "ui.rewind.confirm": "确认还原到发送以下消息之前的状态：",
+    "ui.rewind.current": "（当前）",
+    "ui.rewind.noChanges": "没有代码变更",
+    "ui.rewind.noRestore": "没有可用的代码检查点",
+    "ui.rewind.filesChanged": "{n} 个文件有变更",
+    "ui.rewind.forked": "对话将创建一个新分支。",
+    "ui.rewind.conversationUnchanged": "对话保持不变。",
+    "ui.rewind.codeUnchanged": "代码保持不变。",
+    "ui.rewind.codeRestored":
+      "将还原 {n} 个文件中的代码。手动或通过 Bash 修改的文件不在还原范围内。",
+    "ui.rewind.afterSummarized": "将总结从此处开始的消息。",
+    "ui.rewind.beforeSummarized": "将总结之前的消息。此消息及后续消息保持不变，仍停留在对话末尾。",
+    "ui.rewind.summarize": "从此处开始总结",
+    "ui.rewind.summarizeUpTo": "总结到此处之前",
+    "ui.rewind.context": "补充上下文（可选）",
+    "ui.rewind.summarizing": "正在总结对话…",
+    "ui.rewind.restoring": "正在还原…",
+    "ui.rewind.secondsAgo": "{n} 秒前",
+    "ui.rewind.minutesAgo": "{n} 分钟前",
+    "ui.rewind.hoursAgo": "{n} 小时前",
     "ui.rewind.armHint": "再按一次 Esc 打开回退菜单",
     "ui.rewind.draftCleared": "已清空输入 — 再按 Esc 回退",
     "ui.rewind.both": "还原代码和对话",

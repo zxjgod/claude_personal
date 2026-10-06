@@ -25,6 +25,8 @@ export type ThemeName = "dark" | "light";
 
 interface PaletteShape {
   text: string;
+  userText: string;
+  userBackground: string;
   secondary: string;
   muted: string;
   inlineCode: string;
@@ -64,6 +66,8 @@ interface PaletteShape {
 
 const DARK: PaletteShape = {
   text: "#d4d4d4",
+  userText: "#ffffff",
+  userBackground: "#383838",
   secondary: "#999999",
   muted: "#707070",
   inlineCode: "#b1b9f9",
@@ -122,6 +126,8 @@ const DARK: PaletteShape = {
  *  light background these native values are the legible ones. */
 const LIGHT: PaletteShape = {
   text: "#242424",
+  userText: "#242424",
+  userBackground: "#e5e5e5",
   secondary: "#595959",
   muted: "#707070",
   inlineCode: "#4b50a8",
@@ -180,6 +186,8 @@ export function applyTheme(name: string): ThemeName {
   const next: ThemeName = name === "light" ? "light" : "dark";
   const src = next === "light" ? LIGHT : DARK;
   palette.text = src.text;
+  palette.userText = src.userText;
+  palette.userBackground = src.userBackground;
   palette.secondary = src.secondary;
   palette.muted = src.muted;
   palette.inlineCode = src.inlineCode;

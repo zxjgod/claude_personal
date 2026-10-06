@@ -105,7 +105,7 @@ function hardWrapLine(line: string, width: number): string[] {
 }
 
 /** Hard-wrap every logical line of `text` at `width`, preserving blank lines. */
-function hardWrap(text: string, width: number): string[] {
+export function wrapVisualLines(text: string, width: number): string[] {
   const out: string[] = [];
   for (const line of text.split("\n")) {
     if (line === "") out.push("");
@@ -212,7 +212,7 @@ export function tailVisualLines(text: string, maxLines: number, colWidth: number
 
   if (total <= maxLines) {
     // Fits height-wise but has wide lines: re-wrap the whole text, keep all.
-    return { text: hardWrap(text, width).join("\n"), hiddenLines: 0 };
+    return { text: wrapVisualLines(text, width).join("\n"), hiddenLines: 0 };
   }
 
   // Take a generous raw tail before wrapping: CJK text can need up to
@@ -242,7 +242,7 @@ export function tailVisualLines(text: string, maxLines: number, colWidth: number
     tail = cps.slice(cut).join("");
   }
 
-  const wrapped = hardWrap(tail, width);
+  const wrapped = wrapVisualLines(tail, width);
   const kept = wrapped.slice(-maxLines);
   const hiddenLines = Math.max(1, total - kept.length);
   return { text: kept.join("\n"), hiddenLines };

@@ -1,171 +1,235 @@
-// ============================================================
-// RewindPicker — Esc+Esc rewind menu overlay (P0-3 · batch C3)
-// ============================================================
-// Two-stage menu, mirroring the official MessageSelector flow:
-//   Stage 1: pick a user turn (most recent first, preview + timestamp).
-//   Stage 2: pick WHAT to restore —
-//     • Restore code and conversation  (files + messages)
-//     • Restore conversation           (messages only)
-//     • Restore code                   (files only)
-//     • Never mind
-//   Enter on stage 1 jumps straight to stage 2 (default = the official
-//   "both"); Backspace/Esc on stage 2 goes back to turn selection.
-// The resolver receives { turnIndex, action }; the run.tsx handler executes.
-// ============================================================
-
 import { Box, Text, useInput } from "ink";
 import { useRef, useState } from "react";
 import { t } from "./i18n.js";
-import { nextOffset } from "./SessionPicker.js";
-import type { Overlay } from "./store.js";
+import { PromptOption, PromptPanel } from "./PromptPanel.js";
+import type { Overlay, RewindAction, RewindEntry } from "./store.js";
 import { truncateVisual } from "./terminal-width.js";
 import { palette } from "./theme.js";
+import { useTerminalSize } from "./useTerminalSize.js";
 
-// Read at RENDER time (see the header note in theme.ts) — a module-scope
-// `const ORANGE = "#d77757"` froze the dark accent forever.
-function orange(): string {
-  return palette.accent;
+type Action = { value: RewindAction | "nevermind"; labelKey: string };
+
+function actionsFor(entry: RewindEntry): Action[] {
+  const code = entry.canRestoreCode !== false && entry.filesChanged > 0;
+  return [
+    ...(code ? [{ value: "both" as const, labelKey: "ui.rewind.both" }] : []),
+    { value: "conversation", labelKey: "ui.rewind.conversation" },
+    ...(code ? [{ value: "code" as const, labelKey: "ui.rewind.code" }] : []),
+    { value: "summarize", labelKey: "ui.rewind.summarize" },
+    { value: "summarize_up_to", labelKey: "ui.rewind.summarizeUpTo" },
+    { value: "nevermind", labelKey: "ui.rewind.nevermind" },
+  ];
 }
-/** Rewind entries carry a message preview + timestamp — two rows each. */
-const VISIBLE = 5;
 
-function clamp(n: number, lo: number, hi: number): number {
-  return Math.max(lo, Math.min(hi, n));
+function relativeTime(entry: RewindEntry): string {
+  if (entry.timestampMs === undefined) return entry.timestamp;
+  const seconds = Math.max(0, Math.floor((Date.now() - entry.timestampMs) / 1000));
+  if (seconds < 60) return t("ui.rewind.secondsAgo", { n: seconds });
+  if (seconds < 3600) return t("ui.rewind.minutesAgo", { n: Math.floor(seconds / 60) });
+  return t("ui.rewind.hoursAgo", { n: Math.floor(seconds / 3600) });
 }
-
-type RewindAction = "both" | "conversation" | "code";
-/** Menu rows: the three restore actions + "Never mind" (a REAL row — it was
- *  previously rendered dim as an unselectable pseudo-option). */
-const ACTIONS: Array<{ value: RewindAction | "nevermind"; labelKey: string }> = [
-  { value: "both", labelKey: "ui.rewind.both" },
-  { value: "conversation", labelKey: "ui.rewind.conversation" },
-  { value: "code", labelKey: "ui.rewind.code" },
-  { value: "nevermind", labelKey: "ui.rewind.nevermind" },
-];
 
 export function RewindPicker({ overlay }: { overlay: Extract<Overlay, { kind: "rewind" }> }) {
-  const { entries } = overlay;
-  const [cursor, setCursor] = useState(0);
-  const [offset, setOffset] = useState(0);
-  // Stage 2 state: the chosen turn (null = still picking a turn).
-  const [chosenTurn, setChosenTurn] = useState<number | null>(null);
+  const entries = [...overlay.entries].sort((a, b) => a.turnIndex - b.turnIndex);
+  const { columns, rows } = useTerminalSize();
+  const [cursor, setCursor] = useState(entries.length);
+  const cursorRef = useRef(entries.length);
+  const [chosen, setChosen] = useState<RewindEntry | null>(null);
+  const chosenRef = useRef<RewindEntry | null>(null);
   const [actionCursor, setActionCursor] = useState(0);
-  // Synced refs: two arrow keys arriving in ONE stdin chunk run the same
-  // handler closure without a re-render between them — the second must see
-  // the first's cursor or it moves by one step total.
-  const cursorRef = useRef(0);
   const actionCursorRef = useRef(0);
-  const windowSize = Math.min(VISIBLE, entries.length);
+  const [contexts, setContexts] = useState<Record<string, string>>({});
+  const [editingContext, setEditingContext] = useState(false);
+  const windowSize = Math.max(2, Math.floor((rows - 10) / 3));
+  const total = entries.length + 1;
+  const start = Math.max(0, Math.min(cursor - Math.floor(windowSize / 2), total - windowSize));
+  const end = Math.min(total, start + windowSize);
+  const actions = chosen ? actionsFor(chosen) : [];
+  const selectedAction = actions[actionCursor]?.value;
+  const summarySelected = selectedAction === "summarize" || selectedAction === "summarize_up_to";
+  const previewWidth = Math.max(8, columns - 8);
 
-  const move = (delta: number) => {
-    const next = clamp(cursorRef.current + delta, 0, entries.length - 1);
-    cursorRef.current = next;
-    setCursor(next);
-    setOffset((off) => nextOffset(next, off, windowSize));
+  const goBack = () => {
+    chosenRef.current = null;
+    setChosen(null);
+    setEditingContext(false);
   };
 
   useInput((input, key) => {
-    // --- Stage 2: the action menu for the chosen turn ---
-    if (chosenTurn !== null) {
-      const pick = (idx: number) => {
-        const action = ACTIONS[idx];
-        if (!action) return;
-        // "Never mind" closes the menu without restoring (resolve null).
-        if (action.value === "nevermind") {
-          overlay.resolve(null);
-          return;
-        }
-        overlay.resolve({ turnIndex: chosenTurn, action: action.value });
+    if (overlay.processing) return;
+    const entry = chosenRef.current;
+    if (entry) {
+      const options = actionsFor(entry);
+      const action = options[actionCursorRef.current]?.value;
+      const pick = (index: number) => {
+        const selected = options[index]?.value;
+        if (!selected) return;
+        if (selected === "nevermind") return goBack();
+        const context = contexts[selected]?.trim();
+        overlay.resolve({
+          turnIndex: entry.turnIndex,
+          action: selected,
+          ...(context ? { context } : {}),
+        });
       };
-      if (key.upArrow) {
-        const next = (actionCursorRef.current - 1 + ACTIONS.length) % ACTIONS.length;
+      if (editingContext && (action === "summarize" || action === "summarize_up_to")) {
+        if (key.escape || key.tab) setEditingContext(false);
+        else if (key.return) pick(actionCursorRef.current);
+        else if (key.backspace || key.delete)
+          setContexts((value) => ({
+            ...value,
+            [action]: Array.from(value[action] ?? "")
+              .slice(0, -1)
+              .join(""),
+          }));
+        else if (key.ctrl && input === "u") setContexts((value) => ({ ...value, [action]: "" }));
+        else if (input && !key.ctrl && !key.meta)
+          setContexts((value) => ({ ...value, [action]: (value[action] ?? "") + input }));
+        return;
+      }
+      if (key.upArrow || key.downArrow) {
+        const next =
+          (actionCursorRef.current + (key.upArrow ? -1 : 1) + options.length) % options.length;
         actionCursorRef.current = next;
         setActionCursor(next);
-      } else if (key.downArrow) {
-        const next = (actionCursorRef.current + 1) % ACTIONS.length;
-        actionCursorRef.current = next;
-        setActionCursor(next);
-      } else if (key.return) {
-        pick(actionCursorRef.current);
-      } else if (/^[1-9]$/.test(input)) {
-        // Number shortcuts, same as every other picker.
-        pick(Number.parseInt(input, 10) - 1);
-      } else if (key.escape || key.backspace || key.tab) {
-        // Back to turn selection (Esc here is "go back", not cancel — the
-        // turn list is one Esc away from cancelling).
-        setChosenTurn(null);
+      } else if (key.return) pick(actionCursorRef.current);
+      else if (/^[1-9]$/.test(input)) pick(Number.parseInt(input, 10) - 1);
+      else if (key.escape || key.backspace) goBack();
+      else if (key.tab && (action === "summarize" || action === "summarize_up_to"))
+        setEditingContext(true);
+      else if (
+        input &&
+        !key.ctrl &&
+        !key.meta &&
+        (action === "summarize" || action === "summarize_up_to")
+      ) {
+        setEditingContext(true);
+        setContexts((value) => ({ ...value, [action]: (value[action] ?? "") + input }));
       }
       return;
     }
 
-    // --- Stage 1: pick a turn ---
-    if (key.upArrow) move(-1);
-    else if (key.downArrow) move(1);
-    else if (key.pageUp) move(-windowSize);
-    else if (key.pageDown) move(windowSize);
+    let next = cursorRef.current;
+    if (key.upArrow) next--;
+    else if (key.downArrow) next++;
+    else if (key.pageUp) next -= windowSize;
+    else if (key.pageDown) next += windowSize;
+    else if (key.home) next = 0;
+    else if (key.end) next = entries.length;
     else if (key.return) {
-      const turnIndex = entries[cursorRef.current]?.turnIndex;
-      if (turnIndex !== undefined) {
-        actionCursorRef.current = 0;
-        setActionCursor(0);
-        setChosenTurn(turnIndex);
-      }
-    } else if (key.escape) overlay.resolve(null);
+      const selected = entries[cursorRef.current];
+      if (!selected) return overlay.resolve(null);
+      chosenRef.current = selected;
+      setChosen(selected);
+      actionCursorRef.current = 0;
+      setActionCursor(0);
+      return;
+    } else if (key.escape) return overlay.resolve(null);
+    else return;
+    next = Math.max(0, Math.min(entries.length, next));
+    cursorRef.current = next;
+    setCursor(next);
   });
 
-  const start = clamp(offset, 0, Math.max(0, entries.length - windowSize));
-  const visible = entries.slice(start, start + windowSize);
-  const hiddenAbove = start;
-  const hiddenBelow = entries.length - (start + windowSize);
-  const chosenEntry =
-    chosenTurn !== null ? entries.find((e) => e.turnIndex === chosenTurn) : undefined;
+  let explanation = t("ui.rewind.forked");
+  if (selectedAction === "summarize") explanation = t("ui.rewind.afterSummarized");
+  else if (selectedAction === "summarize_up_to") explanation = t("ui.rewind.beforeSummarized");
+  else if (selectedAction === "code" || selectedAction === "nevermind")
+    explanation = t("ui.rewind.conversationUnchanged");
+
+  if (overlay.processing) {
+    return (
+      <PromptPanel title={t("ui.rewind.title")} footer={null}>
+        <Box marginTop={1}>
+          <Text color={palette.secondary}>
+            {t(
+              overlay.processing === "summarize" || overlay.processing === "summarize_up_to"
+                ? "ui.rewind.summarizing"
+                : "ui.rewind.restoring",
+            )}
+          </Text>
+        </Box>
+      </PromptPanel>
+    );
+  }
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={orange()} paddingX={1}>
-      <Text bold color={orange()}>
-        {t("ui.rewind.title")}
-      </Text>
-
-      {chosenEntry ? (
-        // --- Stage 2: action menu under the chosen turn's preview ---
-        <Box marginTop={1} flexDirection="column">
-          <Text
-            dimColor
-          >{`  #${chosenEntry.turnIndex} ${truncateVisual(chosenEntry.label, 60)}`}</Text>
-          <Box marginTop={1} flexDirection="column">
-            {ACTIONS.map((a, i) => (
-              <Text
-                key={a.value}
-                dimColor={a.value === "nevermind"}
-                color={i === actionCursor ? orange() : undefined}
-              >
-                {`${i === actionCursor ? "❯ " : "  "}${i + 1}. ${t(a.labelKey)}`}
+    <PromptPanel
+      title={t("ui.rewind.title")}
+      footer={chosen ? null : <Text italic>{t("ui.rewind.hint")}</Text>}
+    >
+      <Box marginTop={1} flexDirection="column">
+        <Text>{t(chosen ? "ui.rewind.confirm" : "ui.rewind.description")}</Text>
+        {chosen ? (
+          <>
+            <Box
+              marginTop={1}
+              flexDirection="column"
+              borderStyle="single"
+              borderColor={palette.secondary}
+              borderTop={false}
+              borderBottom={false}
+              borderRight={false}
+              paddingLeft={1}
+            >
+              <Text color={palette.userText}>{truncateVisual(chosen.label, previewWidth)}</Text>
+              <Text color={palette.secondary}>
+                {relativeTime(chosen) ? `(${relativeTime(chosen)})` : " "}
               </Text>
-            ))}
+            </Box>
+            <Box marginTop={1} flexDirection="column">
+              <Text color={palette.secondary}>{explanation}</Text>
+              {!summarySelected ? (
+                <Text color={palette.secondary}>
+                  {selectedAction === "both" || selectedAction === "code"
+                    ? t("ui.rewind.codeRestored", { n: chosen.filesChanged })
+                    : t("ui.rewind.codeUnchanged")}
+                </Text>
+              ) : null}
+            </Box>
+            <Box marginTop={1} flexDirection="column">
+              {actions.map((action, index) => (
+                <PromptOption key={action.value} index={index} selected={index === actionCursor}>
+                  {t(action.labelKey)}
+                  {contexts[action.value] ? `: ${contexts[action.value]}` : ""}
+                </PromptOption>
+              ))}
+              {summarySelected && editingContext ? (
+                <Text color={palette.secondary}>
+                  {`${t("ui.rewind.context")}: ${contexts[selectedAction] ?? ""}`}
+                  <Text inverse> </Text>
+                </Text>
+              ) : null}
+            </Box>
+          </>
+        ) : (
+          <Box marginTop={1} flexDirection="column">
+            {start > 0 ? (
+              <Text color={palette.secondary}>{t("ui.suggest.moreAbove", { n: start })}</Text>
+            ) : null}
+            {Array.from({ length: end - start }, (_, offset) => {
+              const index = start + offset;
+              const entry = entries[index];
+              const selected = index === cursor;
+              return (
+                <Box key={entry?.turnIndex ?? "current"} marginBottom={1} flexDirection="column">
+                  <Text color={selected ? palette.promptAccent : palette.text} italic={!entry}>
+                    {`${selected ? "> " : "  "}${entry ? truncateVisual(entry.label, previewWidth) : t("ui.rewind.current")}`}
+                  </Text>
+                  {entry ? (
+                    <Text
+                      color={palette.secondary}
+                    >{`  ${entry.filesChanged > 0 ? t("ui.rewind.filesChanged", { n: entry.filesChanged }) : t(entry.checkpointAvailable === false ? "ui.rewind.noRestore" : "ui.rewind.noChanges")}`}</Text>
+                  ) : null}
+                </Box>
+              );
+            })}
+            {end < total ? (
+              <Text color={palette.secondary}>{t("ui.suggest.moreBelow", { n: total - end })}</Text>
+            ) : null}
           </Box>
-        </Box>
-      ) : (
-        <Box marginTop={1} flexDirection="column">
-          <Text dimColor>{hiddenAbove > 0 ? `  ↑ ${hiddenAbove} more` : " "}</Text>
-          {visible.map((e, i) => {
-            const realIdx = start + i;
-            const selected = realIdx === cursor;
-            return (
-              <Box key={e.turnIndex} flexDirection="column">
-                <Text color={selected ? orange() : undefined}>
-                  {`${selected ? "❯ " : "  "}#${e.turnIndex} ${truncateVisual(e.label, 60)}`}
-                </Text>
-                <Text dimColor>
-                  {`     ${e.timestamp}${e.filesChanged > 0 ? ` · ${e.filesChanged} file${e.filesChanged === 1 ? "" : "s"} changed` : ""}`}
-                </Text>
-              </Box>
-            );
-          })}
-          <Text dimColor>{hiddenBelow > 0 ? `  ↓ ${hiddenBelow} more` : " "}</Text>
-        </Box>
-      )}
-
-      <Text dimColor>{chosenEntry ? t("ui.rewind.actionHint") : t("ui.rewind.hint")}</Text>
-    </Box>
+        )}
+      </Box>
+    </PromptPanel>
   );
 }

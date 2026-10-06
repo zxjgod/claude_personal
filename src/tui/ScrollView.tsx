@@ -98,7 +98,13 @@ export function ScrollView({
       {slice.map((line, i) => {
         const l = typeof line === "string" ? { text: line } : line;
         return (
-          <Text key={start + i} wrap="truncate-end" color={l.color} dimColor={l.dim}>
+          <Text
+            key={start + i}
+            wrap="truncate-end"
+            color={l.color}
+            backgroundColor={l.backgroundColor}
+            dimColor={l.dim}
+          >
             {l.text.length > 0 ? l.text : " "}
           </Text>
         );

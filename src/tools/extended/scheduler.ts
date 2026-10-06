@@ -15,6 +15,13 @@
 // `deliver` (synthetic user input) and `displayNotifications` (idle UI line).
 // ============================================================
 
+import {
+  currentLoop,
+  loopSessionRoots,
+  refreshLoopLease,
+  releaseLoopSession,
+  takeDueLoop,
+} from "../../loop-runtime.js";
 import { type TaskNotificationInput, takeUnseenForDisplay } from "../notifications.js";
 import {
   collectDueCronJobs,
@@ -30,6 +37,8 @@ import {
 } from "./schedule-scope.js";
 import { cancelWakeup, listWakeupJobs } from "./schedule-wakeup.js";
 export function releaseSessionSchedules(sessionId: string): void {
+  for (const root of loopSessionRoots(sessionId))
+    releaseLoopSession({ workspaceRoot: root, sessionId });
   releaseSessionCronJobs(sessionId);
   for (const job of listWakeupJobs({ sessionId }))
     if (job.sessionId === sessionId) cancelWakeup(job.id, { sessionId });
@@ -58,6 +67,7 @@ export interface SchedulerHost {
   displayNotifications(items: TaskNotificationInput[]): void;
   /** Surface a "parked until idle" notice. Optional (no-op default). */
   displayParked?(prompt: ScheduledPrompt): void;
+  displayError?(message: string): void;
 }
 
 /**
@@ -105,6 +115,7 @@ export function schedulerTick(now: Date, scope?: ScheduleScope): ScheduledPrompt
  */
 export function startScheduler(host: SchedulerHost): () => void {
   let stopped = false;
+  let lastError = "";
   /** Schedules that fell due mid-turn, delivered at the busy→idle flip. */
   const timer = setInterval(() => {
     if (stopped) return;
@@ -117,6 +128,18 @@ export function startScheduler(host: SchedulerHost): () => void {
     const root =
       typeof host.workspaceRoot === "function" ? host.workspaceRoot() : host.workspaceRoot;
     ensureDurableJobsLoaded(root);
+    try {
+      refreshLoopLease({ workspaceRoot: root, sessionId });
+      if (!host.isBusy()) {
+        const managed = takeDueLoop({ workspaceRoot: root, sessionId });
+        if (managed) host.deliver(managed);
+      }
+      lastError = "";
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (lastError !== message) host.displayError?.(`Loop scheduler: ${message}`);
+      lastError = message;
+    }
     const prompts = schedulerTick(new Date(), { workspaceRoot: root, sessionId });
     for (const prompt of prompts) enqueueScheduledInput(prompt);
 
@@ -147,10 +170,12 @@ export function startScheduler(host: SchedulerHost): () => void {
     // model: that would burn a whole turn's tokens for a human-facing line.
     if (!host.isBusy()) {
       const agentCompletions = unseen.filter((n) => n.kind === "agent");
-      if (agentCompletions.length > 0) {
-        const lines = agentCompletions
-          .map((n) => `- ${n.id}: ${n.status} — ${n.summary}`)
-          .join("\n");
+      const managed = currentLoop({ workspaceRoot: root, sessionId });
+      const wakeable = agentCompletions.filter(
+        (item) => !item.loopId || item.loopId !== managed?.id,
+      );
+      if (wakeable.length > 0 && !managed?.status.match(/^(running|waiting|paused)$/)) {
+        const lines = wakeable.map((n) => `- ${n.id}: ${n.status} — ${n.summary}`).join("\n");
         host.deliver(
           `[系统] 以下后台子代理已结束，其完成通知已并入本轮输入，请阅读结果并继续：\n${lines}`,
         );

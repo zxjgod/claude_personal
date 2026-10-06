@@ -8,6 +8,7 @@ import * as path from "node:path";
 import type { OperationOutcome } from "./audit-log.js";
 import { logBashOperation, logFileOperation, logToolExecution } from "./audit-log.js";
 import { languageServerFor } from "./language-servers.js";
+import { loopExecution } from "./loop-execution-context.js";
 import { mergePermissionPolicies, policyDecision } from "./permission-policy.js";
 import { checkPermission } from "./permissions.js";
 import { instructionAttachment } from "./project-instructions.js";
@@ -260,6 +261,18 @@ export async function executeSingleTool(
   };
   hooks = context.hooks ?? hooks;
   const tool = resolveTool(toolCall.function.name, tools);
+  if (
+    (loopExecution() || context.modelConfig?.options?.ccrLoopExecution) &&
+    ["croncreate", "schedule_cron", "sleep"].includes(tool?.name.toLowerCase() ?? "")
+  ) {
+    return {
+      toolName: tool?.name ?? toolCall.function.name,
+      error:
+        "Managed loops own their schedule. Use the Loop menu or ScheduleWakeup instead of creating independent timers.",
+      formatted: "Independent scheduling is disabled inside a managed loop.",
+      isError: true,
+    };
+  }
   // Captured once the call is cleared to execute, so the outer catch can
   // invalidate speculative entries even when the tool THREW or timed out
   // (review follow-up: the invalidation below only ran on returned results).

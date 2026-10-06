@@ -18,15 +18,12 @@ import { nextOffset } from "./SessionPicker.js";
 import type { Overlay } from "./store.js";
 import { palette } from "./theme.js";
 
-// Palette values are read at RENDER time, never snapshotted at module scope —
-// see the header note in theme.ts. ACCENT used to be a literal "#5769f7" (the
-// DARK palette.permission), so /theme light left this picker on dark-theme
-// blue; CURRENT is palette.accent.
+// Read the live palette so theme switches update the picker immediately.
 function accentColor(): string {
-  return palette.permission;
+  return palette.promptAccent;
 }
 function currentColor(): string {
-  return palette.accent;
+  return palette.success;
 }
 
 /** How many model rows are visible at once before the list scrolls. */

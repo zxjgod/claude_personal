@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { restoreGoal, sessionGoal } from "./goal-runtime.js";
+import { restoreLoop, saveLoop } from "./loop-runtime.js";
 import { listTasks, restoreStructuredTasks } from "./structured-tasks.js";
 import { listAgents, restoreTeam } from "./team.js";
 import { listScheduledJobs, restoreSessionJobs } from "./tools/extended/cron-shared.js";
@@ -10,6 +11,7 @@ import { listJobs, restoreJobs } from "./tools/job-store.js";
 import { renameSyncWithRetry } from "./utils/atomic-rename.js";
 export function saveSessionRuntime(root: string, sessionId: string): void {
   if (!/^[a-zA-Z0-9_-]+$/.test(sessionId)) return;
+  saveLoop({ workspaceRoot: root, sessionId });
   const file = path.join(root, ".claude", "session-runtime", `${sessionId}.json`);
   const value = {
     version: 1,
@@ -43,6 +45,7 @@ export function saveSessionRuntime(root: string, sessionId: string): void {
 }
 export function restoreSessionRuntime(root: string, sessionId: string): void {
   if (!/^[a-zA-Z0-9_-]+$/.test(sessionId)) return;
+  restoreLoop({ workspaceRoot: root, sessionId });
   restoreGoal(sessionId, undefined);
   try {
     const value = JSON.parse(

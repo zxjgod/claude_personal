@@ -23,6 +23,7 @@
 import { sanitizeTerminalText } from "../tui/terminal-width.js";
 
 export interface TaskNotificationInput {
+  loopId?: string;
   /** Stable id of the finished work (e.g. "job-3"). */
   id: string;
   /** Kind of work ("bash", "agent", …). */

@@ -20,10 +20,12 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import { CommandPicker } from "./CommandPicker.js";
 import { EffortPrompt } from "./EffortPrompt.js";
 import { FullScreenApp } from "./FullScreenApp.js";
+import { BLACK_CIRCLE } from "./figures.js";
 import { HelpPanel } from "./HelpPanel.js";
 import { type CommandInfo, InputBox } from "./InputBox.js";
 import { t } from "./i18n.js";
 import { createResolver, DEFAULT_BINDINGS, loadUserBindings } from "./keybindings/index.js";
+import { LoopMenu } from "./LoopMenu.js";
 import { tailVisualLines } from "./live-window.js";
 import { ModelPicker } from "./ModelPicker.js";
 import { renderMarkdown } from "./markdown.js";
@@ -48,18 +50,20 @@ import { ActiveToolCard, CompletedToolCard } from "./ToolCard.js";
 import { TranscriptReview } from "./TranscriptReview.js";
 import { truncateVisual } from "./terminal-width.js";
 import { palette } from "./theme.js";
-import { collapsedThinkingLine } from "./transcript-lines.js";
+import { collapsedThinkingLine, userMessageLines } from "./transcript-lines.js";
 import { useStoreField, useStoreSelector } from "./useStoreSelector.js";
 import { useTerminalSize } from "./useTerminalSize.js";
 
-/**
- * The assistant text body column. Official rendering has NO bullet on plain
- * assistant text — ⏺ belongs to tool calls only — so this is now a plain
- * column wrapper; it exists so the committed row and the live streaming
- * region share one layout (the body just stops re-parsing its tail at commit).
- */
+/** Shared layout for committed and streaming replies. */
 function AssistantMessage({ children }: { children: ReactNode }) {
-  return <Box flexDirection="column">{children}</Box>;
+  return (
+    <Box>
+      <Text color={palette.userText}>{`${BLACK_CIRCLE} `}</Text>
+      <Box flexDirection="column" flexGrow={1} flexShrink={1}>
+        {children}
+      </Box>
+    </Box>
+  );
 }
 
 /**
@@ -91,31 +95,18 @@ function PasteGuard(): null {
 function TranscriptRow({ item }: { item: TranscriptItem }) {
   switch (item.kind) {
     case "user":
-      // Official rendering: the user's turn is dim gray with a "> " marker —
-      // quiet against the assistant's plain text, so the eye tracks the
-      // answers, not the prompts. B1/B2: `!command` lines keep the pink "!"
-      // marker (UserBashInputMessage) and `#memory` lines the blue "#"
-      // (UserMemoryInputMessage).
-      if (item.bash) {
-        return (
-          <Box>
-            <Text color="#ff0087">{"! "}</Text>
-            <Text dimColor>{item.text}</Text>
-          </Box>
-        );
-      }
-      if (item.memory) {
-        return (
-          <Box>
-            <Text color="#7aa2f7">{"# "}</Text>
-            <Text dimColor>{item.text}</Text>
-          </Box>
-        );
-      }
       return (
-        <Box>
-          <Text dimColor>{"> "}</Text>
-          <Text dimColor>{item.text}</Text>
+        <Box flexDirection="column">
+          {userMessageLines(item).map((line, i) => (
+            <Text key={i} color={line.color} backgroundColor={line.backgroundColor}>
+              <Text
+                color={item.bash ? palette.bashBorder : item.memory ? "#7aa2f7" : palette.secondary}
+              >
+                {line.text.slice(0, 2)}
+              </Text>
+              {line.text.slice(2)}
+            </Text>
+          ))}
         </Box>
       );
     case "assistant":
@@ -189,7 +180,12 @@ function TranscriptRegion({ store }: { store: TuiStore }) {
   return (
     <Static key={epoch} items={transcript}>
       {(item) => (
-        <Box key={item.id} marginBottom={item.kind === "assistant" || item.kind === "tool" ? 1 : 0}>
+        <Box
+          key={item.id}
+          marginBottom={
+            ["user", "assistant", "tool", "thought", "thinking_text"].includes(item.kind) ? 1 : 0
+          }
+        >
           <TranscriptRow item={item} />
         </Box>
       )}
@@ -481,6 +477,8 @@ function InteractionRegion({
   );
   if (overlay) {
     switch (overlay.kind) {
+      case "loopMenu":
+        return <LoopMenu overlay={overlay} />;
       case "permission":
         return <PermissionPrompt key={promptRequestKey(overlay)} overlay={overlay} store={store} />;
       case "question":
@@ -548,14 +546,12 @@ function selectHelp(s: StoreState) {
 
 function HelpRegion({ store }: { store: TuiStore }) {
   const { showHelp, permissionMode } = useStoreSelector(store, selectHelp);
-  const { rows } = useTerminalSize();
   if (!showHelp) return null;
-  // Clip the panel so it can never push the live frame past the viewport
-  // while a stream is running underneath (frame-height invariant).
   return (
-    <Box maxHeight={Math.max(5, rows - 8)} overflowY="hidden" flexDirection="column">
-      <HelpPanel currentMode={permissionMode} onClose={() => store.setShowHelp(false)} />
-    </Box>
+    <HelpPanel
+      currentMode={permissionMode}
+      onClose={() => queueMicrotask(() => store.setShowHelp(false))}
+    />
   );
 }
 
@@ -582,7 +578,7 @@ function ModeHotkey({
     if (result.type !== "match") return;
     // Overlays own the keyboard: flipping `reviewing` under an open overlay
     // would unmount the overlay component and hang its resolve() promise.
-    if (store.getSnapshot().overlay) return;
+    if (store.getSnapshot().overlay || store.getSnapshot().showHelp) return;
     if (result.action === "transcript:review") {
       // PgUp opens the viewer; while reviewing, the viewer owns the keyboard
       // (PgUp/PgDn scroll there) so this becomes a no-op.
@@ -664,6 +660,8 @@ function ReviewableBody({
   onLargePaste?: (content: string) => string;
 }) {
   const reviewing = useStoreField(store, "reviewing");
+  const showHelp = useStoreField(store, "showHelp");
+  const loopMenu = useStoreSelector(store, (state) => state.overlay?.kind === "loopMenu");
   if (reviewing) {
     return (
       <>
@@ -675,14 +673,19 @@ function ReviewableBody({
   return (
     <>
       <TranscriptRegion store={store} />
-      <ThinkingRegion store={store} />
-      <StreamingRegion store={store} />
-      <ActiveToolsRegion store={store} />
-      <RetryRegion store={store} />
-      <TokenWarningRegion store={store} />
-      <StatusLineRegion store={store} />
-      <TodoRegion store={store} />
-      <HelpRegion store={store} />
+      {loopMenu ? null : showHelp ? (
+        <HelpRegion store={store} />
+      ) : (
+        <>
+          <ThinkingRegion store={store} />
+          <StreamingRegion store={store} />
+          <ActiveToolsRegion store={store} />
+          <RetryRegion store={store} />
+          <TokenWarningRegion store={store} />
+          <StatusLineRegion store={store} />
+          <TodoRegion store={store} />
+        </>
+      )}
       <InteractionRegion
         store={store}
         commands={commands}

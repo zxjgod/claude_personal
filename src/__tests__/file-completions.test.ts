@@ -64,15 +64,17 @@ describe("completeFiles", () => {
     touch("node_modules/pkg/index.js");
     touch(".git/config");
     touch("src/real.ts");
-    expect(completeFiles(root, "")).toEqual([]);
+    expect(completeFiles(root, "")).toEqual(["src/real.ts"]);
     const hits = completeFiles(root, "s");
     expect(hits).toEqual(["src/real.ts"]);
   });
 
-  it("returns nothing for an empty query (no unfocused dumping)", () => {
+  it("lists local files for a bare @ and puts root files before nested files", () => {
     touch("src/App.tsx");
-    expect(completeFiles(root, "")).toEqual([]);
-    expect(completeFiles(root, "   ")).toEqual([]);
+    touch("README.md");
+    touch("package.json");
+    expect(completeFiles(root, "")).toEqual(["README.md", "package.json", "src/App.tsx"]);
+    expect(completeFiles(root, "   ")).toEqual(completeFiles(root, ""));
   });
 
   it("treats backslash queries like forward slashes (Windows typing)", () => {

@@ -9,6 +9,8 @@
 // testable. Components read snapshots via useSyncExternalStore.
 // ============================================================
 
+import type { LoopScope } from "../loop-runtime.js";
+import type { LoopConfig, LoopProfile } from "../loop-settings.js";
 import type { PermissionMode, TodoDisplayItem, ToolExecutionResult } from "./../types.js";
 import type { EffortLevel } from "./effort.js";
 import { sanitizeTerminalText } from "./terminal-width.js";
@@ -109,6 +111,16 @@ export interface RewindEntry {
   timestamp: string;
   /** Files first modified in this turn (checkpoint data). */
   filesChanged: number;
+  timestampMs?: number;
+  canRestoreCode?: boolean;
+  checkpointAvailable?: boolean;
+}
+
+export type RewindAction = "both" | "conversation" | "code" | "summarize" | "summarize_up_to";
+export interface RewindChoice {
+  turnIndex: number;
+  action: RewindAction;
+  context?: string;
 }
 
 /** Live model-error retry countdown (P0-4): "⚠ … — retrying in Ns · a/m". */
@@ -122,6 +134,14 @@ export interface RetryStatus {
 
 /** A pending interactive prompt the App should overlay. */
 export type Overlay =
+  | {
+      kind: "loopMenu";
+      scope: LoopScope;
+      config: LoopConfig;
+      onConfigure: (profile: LoopProfile, partial: Partial<LoopConfig>) => LoopConfig;
+      onStart: (objective: string) => void;
+      resolve: () => void;
+    }
   | {
       kind: "permission";
       header: string;
@@ -190,10 +210,9 @@ export type Overlay =
   | {
       kind: "rewind";
       entries: RewindEntry[];
+      processing?: RewindAction;
       /** Batch C3: the second-stage action — what to restore. */
-      resolve: (
-        choice: { turnIndex: number; action: "both" | "conversation" | "code" } | null,
-      ) => void;
+      resolve: (choice: RewindChoice | null) => void;
     }
   | {
       kind: "confirm";
@@ -673,6 +692,21 @@ export class TuiStore {
     this.set({ spinner: mode, spinnerActivityAt: Date.now() });
   }
 
+  openLoopMenu(
+    options: Omit<Extract<Overlay, { kind: "loopMenu" }>, "kind" | "resolve">,
+  ): Promise<void> {
+    return new Promise((resolve) =>
+      this.openOverlay({
+        ...options,
+        kind: "loopMenu",
+        resolve: () => {
+          this.set({ overlay: null });
+          resolve();
+        },
+      }),
+    );
+  }
+
   setSpinnerTokens(n: number): void {
     this.set({ spinnerTokens: n, spinnerActivityAt: Date.now() });
   }
@@ -1038,6 +1072,8 @@ export class TuiStore {
   private overlayQueue: Overlay[] = [];
 
   private openOverlay(overlay: Overlay): void {
+    if (this.state.overlay?.kind === "loopMenu" && overlay.kind !== "loopMenu")
+      this.state.overlay.resolve();
     if (this.state.overlay) {
       this.overlayQueue.push(overlay);
       return;
@@ -1059,11 +1095,11 @@ export class TuiStore {
         if (!settled && this.state.overlay === visible) amend(feedback);
       };
     }
-    this.set({ overlay: visible, reviewing: false });
+    this.set({ overlay: visible, reviewing: false, showHelp: false });
   }
 
   /** Cancel all waiting interactions on interruption/turn teardown. */
-  cancelOverlays(): void {
+  cancelOverlays(preserveLoopMenu = false): void {
     const queued = this.overlayQueue.splice(0);
     const cancel = (overlay: Overlay) => {
       switch (overlay.kind) {
@@ -1079,7 +1115,8 @@ export class TuiStore {
           return overlay.resolve(null);
       }
     };
-    if (this.state.overlay) cancel(this.state.overlay);
+    if (this.state.overlay && !(preserveLoopMenu && this.state.overlay.kind === "loopMenu"))
+      cancel(this.state.overlay);
     queued.forEach(cancel);
   }
 
@@ -1175,22 +1212,39 @@ export class TuiStore {
    */
   askRewind(
     entries: RewindEntry[],
-  ): Promise<{ turnIndex: number; action: "both" | "conversation" | "code" } | null> {
-    return new Promise((resolve) => {
+    applyChoice?: (choice: RewindChoice) => Promise<void>,
+  ): Promise<RewindChoice | null> {
+    return new Promise((resolve, reject) => {
       if (this.state.overlay !== null) {
         resolve(null);
         return;
       }
-      this.openOverlay({
+      const overlay: Extract<Overlay, { kind: "rewind" }> = {
         kind: "rewind",
         // `label` previews the turn's user message, replayed from the session
         // file — untrusted text on a reloaded session.
         entries: entries.map((e) => ({ ...e, label: sanitizeTerminalText(e.label) })),
         resolve: (choice) => {
+          if (choice && applyChoice) {
+            if (this.state.overlay?.kind === "rewind" && this.state.overlay.processing) return;
+            this.set({ overlay: { ...overlay, processing: choice.action } });
+            void Promise.resolve()
+              .then(() => applyChoice(choice))
+              .then(() => {
+                this.set({ overlay: null });
+                resolve(choice);
+              })
+              .catch((error) => {
+                this.set({ overlay: null });
+                reject(error);
+              });
+            return;
+          }
           this.set({ overlay: null });
           resolve(choice);
         },
-      });
+      };
+      this.openOverlay(overlay);
     });
   }
 

@@ -15,6 +15,7 @@
 // with its result inlined (so the standalone tool messages are not re-emitted).
 // ============================================================
 
+import { displayLoopInput } from "../loop-runtime.js";
 import type { Message, ToolExecutionResult } from "./../types.js";
 import type { TranscriptItem } from "./store.js";
 import { truncateVisual } from "./terminal-width.js";
@@ -60,7 +61,7 @@ export function messagesToTranscript(messages: Message[]): ReplayItem[] {
           .map((b) => (b.type === "text" ? b.text : "[image]"))
           .join("")
           .trim();
-        if (text) items.push({ kind: "user", text } as ReplayItem);
+        if (text) items.push({ kind: "user", text: displayLoopInput(text) } as ReplayItem);
         break;
       }
       case "assistant": {

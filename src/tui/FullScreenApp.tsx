@@ -32,6 +32,7 @@ import { HelpPanel } from "./HelpPanel.js";
 import { type CommandInfo, InputBox } from "./InputBox.js";
 import { t } from "./i18n.js";
 import { createResolver, DEFAULT_BINDINGS, loadUserBindings } from "./keybindings/index.js";
+import { LoopMenu } from "./LoopMenu.js";
 import { ModelPicker } from "./ModelPicker.js";
 import { PlanApproval } from "./PlanApproval.js";
 import { PromptFooter } from "./PromptFooter.js";
@@ -106,7 +107,12 @@ function selectHelp(s: StoreState) {
 function FsHelpRegion({ store }: { store: TuiStore }) {
   const { showHelp, permissionMode } = useStoreSelector(store, selectHelp);
   if (!showHelp) return null;
-  return <HelpPanel currentMode={permissionMode} onClose={() => store.setShowHelp(false)} />;
+  return (
+    <HelpPanel
+      currentMode={permissionMode}
+      onClose={() => queueMicrotask(() => store.setShowHelp(false))}
+    />
+  );
 }
 
 /** Overlay (when present) or the InputBox — pinned to the bottom, no bottom
@@ -139,6 +145,8 @@ function FsInteraction({
   );
   if (overlay) {
     switch (overlay.kind) {
+      case "loopMenu":
+        return <LoopMenu overlay={overlay} />;
       case "permission":
         return <PermissionPrompt key={promptRequestKey(overlay)} overlay={overlay} store={store} />;
       case "question":
@@ -236,7 +244,7 @@ function FsModeHotkey({
     if (result.type !== "match") return;
     // Overlays own the keyboard: flipping `reviewing` under an open overlay
     // would unmount the overlay component and hang its resolve() promise.
-    if (store.getSnapshot().overlay) return;
+    if (store.getSnapshot().overlay || store.getSnapshot().showHelp) return;
     if (result.action === "chat:stash") {
       store.dispatchInputAction("stash");
     } else if (result.action === "chat:externalEditor") {
@@ -383,7 +391,12 @@ export function FullScreenApp({
   useInput((input, key) => {
     // Pickers/overlays bind PgUp/PgDn themselves; the transcript viewer owns
     // the whole keyboard while open — don't scroll the background too.
-    if (store.getSnapshot().overlay || store.getSnapshot().reviewing) return;
+    if (
+      store.getSnapshot().overlay ||
+      store.getSnapshot().reviewing ||
+      store.getSnapshot().showHelp
+    )
+      return;
     if (key.pageUp) return void scrollBy(-1, 0.5);
     if (key.pageDown) return void scrollBy(1, 0.5);
     if (key.ctrl && input === "b") return void scrollBy(-1, 0.95);
@@ -394,6 +407,8 @@ export function FullScreenApp({
   });
 
   const reviewing = useStoreField(store, "reviewing");
+  const showHelp = useStoreField(store, "showHelp");
+  const loopMenu = useStoreSelector(store, (state) => state.overlay?.kind === "loopMenu");
   if (reviewing) {
     // P0-1: the verbose transcript viewer replaces the scroll view and owns
     // the keyboard (the InputBox unmounts so its history keys don't fight it).
@@ -407,6 +422,52 @@ export function FullScreenApp({
         <Toast store={store} />
         <TranscriptReview store={store} />
         <PromptFooter store={store} />
+      </Box>
+    );
+  }
+  if (loopMenu) {
+    return (
+      <Box flexDirection="column" height={rows}>
+        <FsModeHotkey
+          store={store}
+          onModelPicker={onModelPicker}
+          onThinkingToggle={onThinkingToggle}
+        />
+        <FsInteraction
+          store={store}
+          commands={commands}
+          onSubmit={onSubmit}
+          editorMode={editorMode}
+          completeFiles={completeFiles}
+          onRewind={onRewind}
+          onImagePaste={onImagePaste}
+          onQueuePop={onQueuePop}
+          onLargePaste={onLargePaste}
+        />
+      </Box>
+    );
+  }
+  if (showHelp) {
+    return (
+      <Box flexDirection="column" height={rows}>
+        <FsModeHotkey
+          store={store}
+          onModelPicker={onModelPicker}
+          onThinkingToggle={onThinkingToggle}
+        />
+        <FsHelpRegion store={store} />
+        <PromptFooter store={store} />
+        <FsInteraction
+          store={store}
+          commands={commands}
+          onSubmit={onSubmit}
+          editorMode={editorMode}
+          completeFiles={completeFiles}
+          onRewind={onRewind}
+          onImagePaste={onImagePaste}
+          onQueuePop={onQueuePop}
+          onLargePaste={onLargePaste}
+        />
       </Box>
     );
   }

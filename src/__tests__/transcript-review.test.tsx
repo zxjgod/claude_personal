@@ -22,7 +22,7 @@ function flush(): Promise<void> {
   return new Promise((r) => setTimeout(r, 10));
 }
 
-/** 30 one-line transcript rows → viewport (20) scrolls; rows 10..29 visible at bottom. */
+/** User rows plus spacing exceed the viewport, exercising scrolling. */
 function storeWithTranscript(n = 30): TuiStore {
   const store = new TuiStore("p/m");
   for (let i = 0; i < n; i++) store.addUserMessage(`message ${i}`);
@@ -35,7 +35,7 @@ describe("TranscriptReview", () => {
     const { lastFrame } = render(<TranscriptReview store={store} />);
     await flush();
     const frame = lastFrame()!;
-    expect(frame).toContain("Transcript — 30 lines");
+    expect(frame).toContain("Transcript — 60 lines");
     expect(frame).toContain("message 29");
     expect(frame).not.toContain("message 0");
   });
@@ -45,8 +45,7 @@ describe("TranscriptReview", () => {
     const { stdin, lastFrame } = render(<TranscriptReview store={store} />);
     await flush();
 
-    stdin.write(PGUP); // half page up
-    stdin.write(PGUP); // half page up → top
+    for (let i = 0; i < 6; i++) stdin.write(PGUP);
     await flush();
     expect(lastFrame()).toContain("message 0");
     expect(lastFrame()).not.toContain("message 29");
@@ -75,8 +74,7 @@ describe("TranscriptReview", () => {
     const { stdin, lastFrame } = render(<TranscriptReview store={store} />);
     await flush();
 
-    stdin.write(PGUP);
-    stdin.write(PGUP); // → top
+    for (let i = 0; i < 6; i++) stdin.write(PGUP);
     await flush();
     expect(lastFrame()).toContain("message 0");
 
@@ -85,7 +83,7 @@ describe("TranscriptReview", () => {
     store.addUserMessage("late arrival 31");
     await flush();
     const frame = lastFrame()!;
-    expect(frame).toContain("Transcript — 32 lines"); // content grew
+    expect(frame).toContain("Transcript — 64 lines"); // content grew
     expect(frame).toContain("message 0"); // viewport stayed at the top
     expect(frame).not.toContain("late arrival 31");
   });

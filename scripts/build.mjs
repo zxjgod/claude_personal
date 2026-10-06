@@ -29,13 +29,19 @@
 // Type-checking stays separate: `npm run typecheck` (tsc --noEmit) and CI.
 // ============================================================
 
-import { rmSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
+import { tsImport } from "tsx/esm/api";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const outdir = resolve(root, "dist");
+
+// Validate before replacing dist, so an incomplete release keeps the previous build usable.
+const { validateCurrentRelease } = await tsImport("../src/release-notes.ts", import.meta.url);
+const { version } = JSON.parse(readFileSync(resolve(root, "package.json"), "utf-8"));
+validateCurrentRelease(readFileSync(resolve(root, "docs/CHANGELOG.md"), "utf-8"), version);
 
 // Fresh dist each build so stale files (renamed chunks/modules) never linger.
 rmSync(outdir, { recursive: true, force: true });

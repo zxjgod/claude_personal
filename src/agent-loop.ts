@@ -18,6 +18,7 @@ import {
   type ModelErrorRecovery,
 } from "./error-recovery.js";
 import { evaluateSessionGoal, sessionGoal, suspendGoal } from "./goal-runtime.js";
+import { loopExecution } from "./loop-execution-context.js";
 import { modelContextWindow } from "./model-metadata.js";
 import { policyDecision } from "./permission-policy.js";
 import {
@@ -942,7 +943,14 @@ export async function* agentLoop(
         }
 
         const goal = sessionGoal(baseContext.sessionId);
-        if (goal && !goal.complete && !goal.suspended && goalContinuations < 12) {
+        if (
+          goal &&
+          !goal.complete &&
+          !goal.suspended &&
+          goalContinuations < 12 &&
+          !loopExecution() &&
+          !modelConfig.options?.ccrLoopExecution
+        ) {
           try {
             const evaluated = await evaluateSessionGoal(
               baseContext.sessionId,

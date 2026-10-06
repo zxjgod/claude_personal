@@ -10,6 +10,7 @@ import { setLanguage, t } from "../tui/i18n.js";
 import { bottomScrollTop, clampScrollTop, ScrollView, visibleWindow } from "../tui/ScrollView.js";
 import type { TranscriptItem } from "../tui/store.js";
 import { TuiStore } from "../tui/store.js";
+import { terminalColumns, visualWidth } from "../tui/terminal-width.js";
 import { transcriptToLines } from "../tui/transcript-lines.js";
 
 // Pin the UI language so literal-string assertions hold on zh-locale machines.
@@ -65,6 +66,33 @@ describe("ScrollView rendering", () => {
 });
 
 describe("transcriptToLines", () => {
+  it("wraps long user messages into full-width background rows without losing text", () => {
+    const columns = process.stdout.columns;
+    try {
+      process.stdout.columns = 24;
+      const text = "中文测试😀".repeat(8);
+      const lines = transcriptToLines([{ kind: "user", id: 1, text }], "");
+      const rows = lines.filter((line) => line.backgroundColor);
+      expect(rows.length).toBeGreaterThan(1);
+      expect(rows.every((line) => visualWidth(line.text) === 23)).toBe(true);
+      expect(rows.map((line) => line.text.slice(2).trimEnd()).join("")).toBe(text);
+      expect(rows.filter((line) => line.role === "user")).toHaveLength(1);
+    } finally {
+      process.stdout.columns = columns;
+    }
+  });
+
+  it("uses the same bullet and body indent for committed and streamed replies", () => {
+    const text = "first line\nsecond line";
+    const committed = transcriptToLines([{ kind: "assistant", id: 1, text }], "");
+    const streaming = transcriptToLines([], text);
+    expect(committed.slice(0, -1)).toEqual(streaming);
+    expect(streaming.map((line) => line.text)).toEqual([
+      `${BLACK_CIRCLE} first line`,
+      "  second line",
+    ]);
+  });
+
   it("flattens user / assistant / tool items to text rows", () => {
     const items: TranscriptItem[] = [
       { kind: "user", id: 1, text: "hello" },
@@ -78,7 +106,8 @@ describe("transcriptToLines", () => {
       },
     ];
     const lines = transcriptToLines(items, "");
-    expect(lines[0]!.text).toBe("> hello");
+    expect(lines[0]!.text.trimEnd()).toBe("> hello");
+    expect(visualWidth(lines[0]!.text)).toBe(terminalColumns() - 1);
     expect(lines.some((l) => l.text.includes("hi there"))).toBe(true);
     expect(lines.some((l) => l.text.includes("Read") && l.text.includes("a.ts"))).toBe(true);
     expect(lines.some((l) => l.text.includes("file body"))).toBe(true);
@@ -89,7 +118,7 @@ describe("transcriptToLines", () => {
     expect(lines.some((l) => l.text.includes("streaming now"))).toBe(true);
   });
 
-  it("styles rows by role: muted user, neutral tool body, muted notices", () => {
+  it("styles rows by role: white user on gray, neutral tool body, muted notices", () => {
     const items: TranscriptItem[] = [
       { kind: "user", id: 1, text: "hello" },
       {
@@ -102,8 +131,10 @@ describe("transcriptToLines", () => {
       { kind: "notice", id: 3, text: "system note" },
     ];
     const lines = transcriptToLines(items, "thinking…", "reasoning line");
-    const user = lines.find((l) => l.text === "> hello")!;
-    expect(user.dim).toBe(true); // official: quiet gray user turns
+    const user = lines.find((l) => l.text.trimEnd() === "> hello")!;
+    expect(user.dim).toBeUndefined();
+    expect(user.color).toBe("#ffffff");
+    expect(user.backgroundColor).toBe("#383838");
     const head = lines.find((l) => l.text.startsWith(`${BLACK_CIRCLE} Read`))!;
     expect(head.color).toBeUndefined(); // official: no accent tint on the head
     const body = lines.find((l) => l.text.includes("file body"))!;
@@ -173,7 +204,7 @@ describe("full-screen App scrolling (M25.2 fix)", () => {
     // so the prompt ("❯ …" under the rounded top border) must be that row —
     // otherwise the cursor blinks one line too low (the original bug).
     const last = rows[rows.length - 1]!;
-    expect(last.trimStart().startsWith("❯")).toBe(true);
+    expect(last.trimStart().startsWith(">")).toBe(true);
   });
 
   it("PgUp scrolls up to reveal earlier lines; PgDn returns toward bottom", async () => {

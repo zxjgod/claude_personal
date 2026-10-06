@@ -14,17 +14,16 @@ import { render, useApp, useInput } from "ink";
 import { type RefObject, useCallback, useEffect, useRef } from "react";
 import { agentLoop } from "./../agent-loop.js";
 import { isAxScreenReaderEnabled } from "../ax-screen-reader.js";
-import {
-  beginUserTurn,
-  changedFiles,
-  listTurns,
-  restoreToTurn,
-  turnOfMessage,
-} from "./../checkpoint.js";
+import { beginUserTurn } from "./../checkpoint.js";
 import { formatCliError } from "./../cli-errors.js";
 import type { CommandContext } from "./../commands.js";
 import { handleSlashCommand } from "./../commands.js";
 import { debugLogger } from "../debug-logger.js";
+import { withLoopBudget } from "../loop-budget.js";
+import type { LoopTicket } from "../loop-runtime.js";
+import { currentLoop, displayLoopInput } from "../loop-runtime.js";
+import { type LoopTurnOutcome, runLoopTurn } from "../loop-turn.js";
+import { loopVerificationTools } from "../loop-verification-tools.js";
 import {
   applyProfile,
   loadProviderProfiles,
@@ -33,7 +32,7 @@ import {
 import type { TaskState } from "../session-memory.js";
 import { normalizeFinishReason } from "../session-memory.js";
 import { formatSpeculationLine } from "./../speculation.js";
-import { estimateContextUsed } from "../token-estimator.js";
+import { estimateContextUsed, estimateTokens, estimateTokensQuick } from "../token-estimator.js";
 import { startScheduler } from "../tools/extended/scheduler.js";
 import { drainNotifications, formatNotificationLine } from "../tools/notifications.js";
 import { expandFileRefs } from "../tools/utils/file-refs.js";
@@ -61,14 +60,15 @@ import type { CommandInfo } from "./InputBox.js";
 import { t } from "./i18n.js";
 import { appendHistory, loadHistory } from "./input-history.js";
 import { InputQueue } from "./input-queue.js";
+import { runLoopMenu } from "./loop-menu-flow.js";
 import { runModelPicker } from "./model-picker-flow.js";
 import { expandPastedChips, makePasteChip } from "./paste-chip.js";
 import { permissionPresentation } from "./permission-presentation.js";
+import { applyRewindChoice, rewindEntries } from "./rewind-flow.js";
 import { lookupContextWindow } from "./session-stats.js";
 import {
   EXIT_DOUBLE_PRESS_MS,
   type ProviderPickerItem,
-  type RewindEntry,
   type SessionPickerItem,
   TuiStore,
 } from "./store.js";
@@ -181,6 +181,74 @@ export async function runTurn(
   queue: InputQueue,
   prepareQueuedLine: (text: string) => Promise<ContentBlock[] | null>,
 ): Promise<void> {
+  const scope = {
+    workspaceRoot: deps.getWorkspaceRoot?.() ?? deps.workspaceRoot,
+    sessionId: deps.getSessionId?.() ?? deps.sessionId,
+  };
+  const cancelLoopPrompts = () => store.cancelOverlays(true);
+  controller.signal.addEventListener("abort", cancelLoopPrompts, { once: true });
+  try {
+    await runLoopTurn(scope, controller, {
+      messages: deps.messages,
+      callModel: deps.callModel,
+      modelConfig: deps.modelConfig,
+      execute: (ticket, instruction) =>
+        runTurnBody(
+          store,
+          deps,
+          controller,
+          askUser,
+          askUserQuestion,
+          queue,
+          prepareQueuedLine,
+          ticket,
+          instruction,
+        ),
+      verifying: () => {
+        store.setBusy(true);
+        store.setSpinner("thinking");
+        store.setActivityLabel("Verifying loop completion");
+      },
+      ...loopVerificationTools(
+        deps.tools,
+        {
+          ...scope,
+          modelConfig: deps.modelConfig,
+          permissionMode: store.getPermissionMode(),
+          getPermissionMode: () => store.getPermissionMode(),
+          hooks: deps.hooks,
+          permissionPolicy: deps.permissionPolicy,
+          allowedDirectories: deps.allowedDirectories,
+          abortSignal: controller.signal,
+        },
+        askUser,
+        deps.hooks,
+        (result) =>
+          store.addLog((result.formatted || result.error || "Check finished.").split("\n")),
+      ),
+      notice: (message) => store.addNotice(message),
+    });
+  } finally {
+    controller.signal.removeEventListener("abort", cancelLoopPrompts);
+    store.setBusy(false);
+    store.setSpinner("idle");
+    store.setActivityLabel(null);
+    deps.onSave();
+  }
+}
+
+async function runTurnBody(
+  store: TuiStore,
+  deps: TuiDeps,
+  controller: AbortController,
+  askUser: AskUserFn,
+  askUserQuestion: (q: UserQuestion) => Promise<string[] | null>,
+  queue: InputQueue,
+  prepareQueuedLine: (text: string) => Promise<ContentBlock[] | null>,
+  ticket: LoopTicket | null,
+  instruction: string,
+): Promise<LoopTurnOutcome> {
+  let outcome: LoopTurnOutcome = {};
   // Initialize debug monitoring if enabled via DEBUG_STREAM env var
   if (DEBUG_STREAM && DEBUG_STREAM !== "off") {
     debugLogger.enable(DEBUG_STREAM);
@@ -200,13 +268,16 @@ export async function runTurn(
   // MCP tool changes, /memory edits and git refreshes reach the model instead
   // of being frozen at startup. Memoized sections keep this cheap.
   const goal = deps.makeCommandContext().goal?.value;
-  const turnSystemPrompt = resolveTurnSystemPrompt(deps, goal);
+  const turnSystemPrompt = resolveTurnSystemPrompt(deps, goal) + instruction;
   // Live session id (see TuiDeps.getSessionId): reads session.id at turn
   // start so /resume's in-place rewrite can't leave checkpoint buckets split.
   const sid = deps.getSessionId?.() ?? deps.sessionId;
-  const cancelPrompts = () => store.cancelOverlays();
+  const cancelPrompts = () => store.cancelOverlays(true);
   controller.signal.addEventListener("abort", cancelPrompts, { once: true });
-  const loop = agentLoop(deps.messages, deps.tools, deps.callModel, deps.modelConfig, {
+  const roundConfig = ticket
+    ? { ...deps.modelConfig, options: { ...deps.modelConfig.options, ccrLoopExecution: ticket } }
+    : deps.modelConfig;
+  const loop = agentLoop(deps.messages, deps.tools, withLoopBudget(deps.callModel), roundConfig, {
     systemPrompt: turnSystemPrompt,
     toolContext: {
       workspaceRoot: deps.getWorkspaceRoot?.() ?? deps.workspaceRoot,
@@ -214,7 +285,7 @@ export async function runTurn(
       permissionMode: store.getPermissionMode(),
       getPermissionMode: () => store.getPermissionMode(),
       setPermissionMode: (mode) => store.setPermissionMode(mode),
-      modelConfig: deps.modelConfig,
+      modelConfig: roundConfig,
       askUserQuestion,
       // M15.3: thread the LLM permission classifier (when enabled) so flagged
       // dangerous calls get a model-assessed risk hint/block in the TUI too.
@@ -472,6 +543,7 @@ export async function runTurn(
           deps.modelConfig.model = event.to;
           break;
         case "error":
+          outcome.error = event.error;
           deps.onSave("failed");
           streamBuffer.flush();
           settleThinking();
@@ -479,6 +551,7 @@ export async function runTurn(
           store.addNotice(`⎿ ${formatCliError(event.error)}`);
           break;
         case "aborted":
+          outcome.aborted = true;
           deps.onSave("stopped_by_user", "aborted_by_user");
           streamBuffer.flush();
           settleThinking();
@@ -492,6 +565,7 @@ export async function runTurn(
           );
           break;
         case "done":
+          outcome = { completed: event.finishReason === "end_turn" };
           streamBuffer.flush();
           settleThinking();
           store.commitStreaming();
@@ -508,7 +582,7 @@ export async function runTurn(
     }
   } finally {
     controller.signal.removeEventListener("abort", cancelPrompts);
-    store.cancelOverlays();
+    store.cancelOverlays(true);
     streamBuffer.stop();
     store.setSpinner("idle");
     store.setSpinnerTokens(0);
@@ -528,6 +602,7 @@ export async function runTurn(
       committedOutputTokens,
     });
   }
+  return outcome;
 }
 
 function toolDetail(input?: Record<string, unknown>): string {
@@ -550,13 +625,6 @@ function toolDetail(input?: Record<string, unknown>): string {
 
 function capitalize(name: string): string {
   return name.length === 0 ? name : name[0]!.toUpperCase() + name.slice(1);
-}
-
-/** How many checkpoint first-writes landed on exactly `turn` (menu badge). */
-function countIf(firstWrites: Map<string, number>, turn: number): number {
-  let n = 0;
-  for (const t of firstWrites.values()) if (t === turn) n++;
-  return n;
 }
 
 function truncate(value: string, max: number): string {
@@ -931,7 +999,7 @@ function queuedLinePreparer(
  * the agent loop, and installs a process-level SIGINT handler that aborts the
  * current turn (9.6) without tearing down the session.
  */
-function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
+export function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
   // M36: one type-ahead queue per session. Stable across renders so a message
   // typed while the agent is busy survives until the loop drains it.
   const queueRef = useRef<InputQueue>(new InputQueue());
@@ -1032,96 +1100,48 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
     }
   }, [store, deps]);
 
-  // P0-3: Esc+Esc rewind menu. Truncates `messages` to BEFORE the chosen user
-  // turn and restores on-disk files from the checkpoint snapshots. Each entry
-  // maps to its checkpoint turn via the message tag (turnOfMessage) — no
-  // ordinal arithmetic that synthetic injections or /resume could skew.
+  // Keep the overlay mounted until the operation completes and its draft is ready.
   const openRewindMenu = useCallback(async () => {
     const sid = sessionId();
-    const userTurns: Array<{ index: number; text: string; cpTurn: number | null }> = [];
-    deps.messages.forEach((m, i) => {
-      if (m.role !== "user") return;
-      const text =
-        typeof m.content === "string"
-          ? m.content
-          : m.content
-              .filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text")
-              .map((b) => b.text)
-              .join(" ");
-      userTurns.push({ index: i, text, cpTurn: turnOfMessage(m, sid) });
-    });
-    if (userTurns.length === 0) {
+    const entries = rewindEntries(deps.messages, sid);
+    if (entries.length === 0) {
       store.addNotice("  Nothing to rewind — no user turns yet.");
       return;
     }
-    // filesChanged per turn: paths whose first write was that turn.
-    const firstWrites = changedFiles(sid);
-    const entries: RewindEntry[] = [];
-    for (let turn = userTurns.length; turn >= 1; turn--) {
-      const t = userTurns[turn - 1]!;
-      const filesChanged = t.cpTurn === null ? 0 : countIf(firstWrites, t.cpTurn);
-      const meta = t.cpTurn === null ? null : listTurns(sid).find((x) => x.turn === t.cpTurn);
-      entries.push({
-        turnIndex: turn,
-        label: t.text.replace(/\s+/g, " ").slice(0, 80) || "(empty)",
-        timestamp: meta ? new Date(meta.timestamp).toLocaleTimeString() : "",
-        filesChanged,
-      });
-    }
-    // Batch C3: the picker resolves with the second-stage action — WHAT to
-    // restore (official MessageSelector semantics).
-    const chosen = await store.askRewind(entries);
-    if (chosen === null) return;
-    const { turnIndex, action } = chosen;
-    const target = userTurns[turnIndex - 1]!;
-    const cutAt = target.index;
-    const before = deps.messages.length;
-
-    // Files: restore the tagged boundary when present; turns loaded by
-    // /resume have none — the conversation still rewinds, honestly reported.
-    // "conversation" skips this entirely; "code" does ONLY this.
-    const restoreFiles = action !== "conversation";
-    const restoration =
-      restoreFiles && target.cpTurn !== null
-        ? restoreToTurn(sid, target.cpTurn)
-        : { restored: [], deleted: [] };
-    if (restoration.failures?.length) {
-      store.addNotice(
-        `Rewind incomplete: ${restoration.failures.map((f) => `${f.path}: ${f.error}`).join("; ")}. Conversation and checkpoints retained for retry.`,
-      );
-      return;
-    }
-    const { restored, deleted } = restoration;
-
-    if (action !== "code") {
-      deps.messages.length = cutAt;
-      // Reset the on-screen transcript to the SURVIVING history (same replay
-      // semantics as /resume). resetTranscript bumps an epoch that remounts
-      // the <Static> region — without it Ink's write-once Static would
-      // swallow all future items (its internal index only grows, so a
-      // shrunk array leaves slice(index) empty forever).
-      store.resetTranscript();
-      store.addNotice(
-        `  ⏪ Rewound to before message #${turnIndex} (${before} → ${deps.messages.length} messages)`,
-      );
-    } else {
-      store.addNotice(`  ⏪ Code restored to before message #${turnIndex} (conversation kept)`);
-    }
-    if (restoreFiles && target.cpTurn === null) {
-      store.addNotice("  ⎿ no file checkpoint for this turn — files not restored");
-    } else if (restored.length > 0 || deleted.length > 0) {
-      store.addNotice(
-        `  ⎿ files restored: ${restored.length} rewritten · ${deleted.length} deleted (Bash-side edits are not checkpointed)`,
-      );
-    }
-    if (action !== "code") {
-      store.loadTranscript(messagesToTranscript(deps.messages));
-      store.setTodos([]);
-    }
     try {
-      deps.onSave();
-    } catch {
-      /* best-effort persistence */
+      await store.askRewind(entries, async (choice) => {
+        const controller = new AbortController();
+        turnControllerRef.current = controller;
+        store.setBusy(true);
+        try {
+          await captureConsole(() =>
+            applyRewindChoice(
+              store,
+              {
+                messages: deps.messages,
+                sessionId: sid,
+                context: deps.makeCommandContext(),
+                callModel: deps.callModel,
+                modelConfig: deps.modelConfig,
+                signal: controller.signal,
+              },
+              choice,
+            ),
+          );
+          store.addUsage(
+            0,
+            0,
+            undefined,
+            estimateTokens(deps.messages) + estimateTokensQuick(resolveTurnSystemPrompt(deps)),
+          );
+          deps.onSave();
+        } finally {
+          store.setBusy(false);
+          turnControllerRef.current = null;
+        }
+      });
+    } catch (error) {
+      store.addNotice(`Rewind failed: ${formatCliError(error)}`);
     }
   }, [store, deps, sessionId]);
 
@@ -1191,7 +1211,8 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
       const value = raw.trim();
       if (!value) return;
       // Batch C5: persist every submitted line (consecutive dups collapse).
-      appendHistory(deps.getWorkspaceRoot?.() ?? deps.workspaceRoot, value);
+      if (!value.startsWith("[Managed loop "))
+        appendHistory(deps.getWorkspaceRoot?.() ?? deps.workspaceRoot, value);
       if (value.toLowerCase() === "exit" || value.toLowerCase() === "/exit") {
         // Tear down resources before exiting. Previously this was a bare
         // process.exit(0) that skipped onSave (session lost), MCP disconnect,
@@ -1219,12 +1240,37 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
       // never saw, and the transcript never diverges from `messages` (rewind's
       // data source). Slash commands typed while busy are queued as plain
       // follow-up text (run them when idle for local handling).
+      if (/^\/loop\s*$/i.test(value)) {
+        if (!store.getSnapshot().overlay)
+          void runLoopMenu(store, {
+            workspaceRoot: deps.getWorkspaceRoot?.() ?? deps.workspaceRoot,
+            sessionId: sessionId(),
+          });
+        return;
+      }
+      if (/^\/loop\s+(status|pause|resume|stop|history)\b/i.test(value)) {
+        void captureConsole(() => handleSlashCommand(value, deps.makeCommandContext()))
+          .then(({ lines }) => {
+            if (lines.length) store.addLog(lines);
+            deps.onSave();
+          })
+          .catch((error) => store.addNotice(formatCliError(error)));
+        return;
+      }
       if (store.getSnapshot().busy) {
         store.addNotice(`  ${t("ui.queue.queued")}`);
         queueRef.current.push(value);
         store.setQueuedInputs(queueRef.current.size);
         store.setQueuedMessages(queueRef.current.snapshot());
         return;
+      }
+      if (value.startsWith("[Managed loop ")) {
+        const managed = currentLoop({
+          workspaceRoot: deps.getWorkspaceRoot?.() ?? deps.workspaceRoot,
+          sessionId: sessionId(),
+        });
+        if (!managed?.deliveryPending) return;
+        store.setBusy(true);
       }
 
       // B1: `!command` — bash mode. Runs the shell directly (no permission
@@ -1257,9 +1303,13 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
       // Echo the user's input line once. For prompt-injecting slash commands
       // the echoed line is the command itself (e.g. "/review"); the injected
       // prompt is pushed only into `deps.messages`, not re-echoed.
-      store.addUserMessage(value);
+      store.addUserMessage(displayLoopInput(value));
 
       void (async () => {
+        if (/^\/rewind\s*$/i.test(value)) {
+          await openRewindMenu();
+          return;
+        }
         // /help (or /commands) with no args → open the interactive command
         // palette overlay instead of dumping a static list. Selecting a command
         // dispatches it exactly as if the user had typed "/name"; Esc cancels.
@@ -1417,7 +1467,7 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
         store.setBusy(false);
       });
     },
-    [store, deps, askUser, askUserQuestion, buildUserContent, sessionId],
+    [store, deps, askUser, askUserQuestion, buildUserContent, sessionId, openRewindMenu],
   );
 
   // Feedback on a background request starts only after all overlays close.
@@ -1443,6 +1493,7 @@ function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
         for (const item of items) store.addNotice(`⎿ ${formatNotificationLine(item)}`);
       },
       displayParked: (p) => store.addNotice(t("ui.schedule.parked", { label: p.label })),
+      displayError: (message) => store.addNotice(sanitizeTerminalText(message)),
     });
   }, [deps, onSubmit, store, sessionId]);
 
@@ -1506,7 +1557,13 @@ export function InterruptHotkey({
     const isCtrlD = key.ctrl && input === "d";
     const isEsc = key.escape === true;
     if (!isCtrlC && !isCtrlD && !isEsc) return;
-    if (store.getSnapshot().overlay || store.getSnapshot().reviewing) return;
+    const state = store.getSnapshot();
+    if (
+      state.reviewing ||
+      state.showHelp ||
+      (state.overlay && !(state.overlay.kind === "rewind" && state.overlay.processing))
+    )
+      return;
     if (isEsc && editorMode?.value === "vim") return;
     const controller = controllerRef.current;
     if (controller && store.getSnapshot().busy) {

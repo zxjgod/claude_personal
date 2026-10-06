@@ -3,6 +3,7 @@ import chalk from "chalk";
 import { clearChanges } from "../change-tracker.js";
 import { resetCheckpoints } from "../checkpoint.js";
 import { releaseSessionGoal } from "../goal-runtime.js";
+import { stopLoop } from "../loop-runtime.js";
 import { resetSystemPromptCache } from "../system-prompt.js";
 import { clearTodos } from "../tools/extended/todo.js";
 import { clearJobs } from "../tools/job-store.js";
@@ -13,6 +14,10 @@ export const clearCommand: SlashCommand = {
   name: "clear",
   description: "Clear the conversation history",
   run: (_args, ctx): undefined => {
+    stopLoop(
+      { workspaceRoot: ctx.workspaceRoot, sessionId: ctx.sessionId },
+      "Conversation cleared.",
+    );
     ctx.messages.length = 0;
     releaseSessionGoal(ctx.sessionId);
     if (ctx.goal) ctx.goal.value = "";

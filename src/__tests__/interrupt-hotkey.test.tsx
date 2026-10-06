@@ -26,6 +26,25 @@ function setup(opts?: { editorMode?: { value: "default" | "vim" } }) {
 }
 
 describe("InterruptHotkey (P2-9)", () => {
+  it("Esc cancels summarization while the rewind progress overlay is displayed", async () => {
+    const { store, controller, stdin } = setup();
+    store.setBusy(true);
+    const pending = store.askRewind([], async () => {
+      await new Promise<void>((resolve) =>
+        controller.signal.addEventListener("abort", () => resolve(), { once: true }),
+      );
+    });
+    const overlay = store.getSnapshot().overlay;
+    if (overlay?.kind !== "rewind") throw new Error("missing rewind overlay");
+    overlay.resolve({ turnIndex: 1, action: "summarize" });
+    await flush();
+    stdin.write("\x1b");
+    await escFlush();
+    expect(controller.signal.aborted).toBe(true);
+    await pending;
+    expect(store.getSnapshot().overlay).toBeNull();
+  });
+
   it("Esc aborts the running turn when busy", async () => {
     const { store, controller, stdin } = setup();
     store.setBusy(true);

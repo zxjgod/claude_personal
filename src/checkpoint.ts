@@ -652,6 +652,58 @@ export function changedFiles(sessionId: string): Map<string, number> {
   return new Map(s.firstWriteTurn);
 }
 
+/** Compare the restore boundary with disk, including files edited in several turns. */
+export function previewRestore(
+  sessionId: string,
+  turn: number,
+): { files: string[]; available: boolean } {
+  const key = bucketKey(sessionId);
+  const s = bucket(sessionId);
+  const boundary = boundaryFor(key, s, turn);
+  if (!boundary) return { files: [], available: false };
+  const files: string[] = [];
+  for (const [path, firstTurn] of s.firstWriteTurn) {
+    const before = firstTurn >= turn ? s.originals.get(path) : boundary.get(path);
+    if (before === undefined) return { files: [], available: false };
+    let current: string | null;
+    try {
+      current = fs.readFileSync(path, "utf-8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT")
+        return { files: [], available: false };
+      current = null;
+    }
+    if (current !== before) files.push(path);
+  }
+  return { files, available: true };
+}
+
+/** A conversation fork keeps independent checkpoints so either session remains rewindable. */
+export function forkCheckpoints(sourceId: string, destinationId: string): void {
+  const sourceKey = bucketKey(sourceId);
+  const destinationKey = bucketKey(destinationId);
+  if (sourceKey === destinationKey) throw new Error("Checkpoint fork requires a new session id.");
+  const source = bucket(sourceId);
+  const sourceDir = bucketDir(sourceKey);
+  storageRoots.set(destinationKey, storageRoots.get(sourceKey)!);
+  if (fs.existsSync(sourceDir))
+    fs.cpSync(sourceDir, bucketDir(destinationKey), { recursive: true });
+  const copy: SessionCheckpoints = {
+    ...source,
+    originals: new Map(source.originals),
+    firstWriteTurn: new Map(source.firstWriteTurn),
+    turnSnapshots: new Map(
+      [...source.turnSnapshots].map(([turn, snapshot]) => [turn, new Map(snapshot)]),
+    ),
+    turnTimestamps: new Map(source.turnTimestamps),
+    contentCache: new Map(),
+  };
+  sessions.set(destinationKey, copy);
+  const mirror = diskMirrors.get(sourceKey);
+  if (mirror) diskMirrors.set(destinationKey, structuredClone(mirror));
+  persistState(destinationKey, copy);
+}
+
 /** Turn boundaries recorded so far: [{turn, timestamp, filesChanged}].
  *  Hydrates from the disk mirror after a restart (C8). */
 export function listTurns(sessionId: string): Array<{

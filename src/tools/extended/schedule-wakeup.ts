@@ -8,6 +8,9 @@
 // ============================================================
 
 import { z } from "zod";
+import { executionForConfig } from "../../loop-budget.js";
+import { loopExecution } from "../../loop-execution-context.js";
+import { suggestLoopWakeup, ticketRecord } from "../../loop-runtime.js";
 import type { Tool, ToolResult } from "../../types.js";
 import { buildTool } from "../registry.js";
 import {
@@ -212,6 +215,29 @@ export const ScheduleWakeupTool: Tool = buildTool({
   isConcurrencySafe: true,
 
   async call(input, context): Promise<ToolResult> {
+    const execution = context.modelConfig
+      ? executionForConfig(context.modelConfig)
+      : loopExecution();
+    if (execution) {
+      if (context.sessionId !== execution.scope.sessionId)
+        return {
+          content: "The parent managed loop owns scheduling. Return the findings to the parent.",
+        };
+      if (!ticketRecord(execution))
+        return { content: "", error: "This loop iteration is no longer active." };
+      suggestLoopWakeup(
+        execution.scope,
+        input.delaySeconds ?? 180,
+        input.reason ?? "Completion check requested.",
+        input.stop === true,
+      );
+      return {
+        content:
+          input.stop === true
+            ? "Completion requested. The runtime will independently verify the objective before ending the loop."
+            : "Delay suggestion recorded. The runtime applies the 3-30 minute interval and the selected profile.",
+      };
+    }
     // Stop the loop
     if (input.stop === true) {
       // Clear all pending wakeups

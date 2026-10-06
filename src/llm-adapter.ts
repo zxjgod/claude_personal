@@ -1,3 +1,4 @@
+import { withLoopBudget } from "./loop-budget.js";
 import { withModelBudget } from "./model-budget.js";
 // ============================================================
 // Multi-Provider LLM Client Adapter
@@ -384,10 +385,10 @@ export function createModelCaller(cfg: ModelConfig): ModelCaller {
         const { anthropicCaller } = await import("./anthropic-adapter.js");
         yield* anthropicCaller(messages, tools, systemPrompt, config, abortSignal);
       })();
-    return withModelBudget(lazyAnthropic);
+    return withLoopBudget(withModelBudget(lazyAnthropic));
   }
   // All non-Anthropic providers use OpenAI-compatible API for now.
-  return withModelBudget(openAICompatibleCaller);
+  return withLoopBudget(withModelBudget(openAICompatibleCaller));
 }
 
 // --- Error Detection Helpers ---

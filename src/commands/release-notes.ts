@@ -7,7 +7,7 @@
 // the official client's behaviour of showing its own release notes rather than
 // the current project's.
 //
-//   /release-notes        most recent entry only
+//   /release-notes        installed version only
 //   /release-notes all    the whole changelog
 // ============================================================
 
@@ -16,7 +16,11 @@ import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import chalk from "chalk";
+import { validateCurrentRelease } from "../release-notes.js";
+import { renderMarkdown } from "../tui/markdown.js";
 import { sanitizeTerminalText } from "../tui/terminal-width.js";
+import { palette } from "../tui/theme.js";
+import { APP_VERSION } from "../version.js";
 import type { CommandResult, SlashCommand } from "./types.js";
 
 const require_ = createRequire(import.meta.url);
@@ -41,32 +45,15 @@ export function packageRoot(): string | null {
   return null;
 }
 
-/** Default line cap — enough for one entry, short of flooding the transcript. */
-const MAX_LINES = 60;
-
-/**
- * Trim the changelog to its most recent entry. The file separates releases
- * with `---` rules, so the first block after the document header is the newest.
- * Exported for unit testing.
- */
-export function latestEntry(changelog: string): string {
-  const lines = changelog.split("\n");
-  // Find the second "## " heading — everything before it is the newest release.
-  const headings: number[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    if (/^##\s/.test(lines[i]!)) headings.push(i);
-  }
-  const end = headings.length > 1 ? headings[1]! : lines.length;
-  // Drop a trailing "---" separator so the entry doesn't end on a rule.
-  let stop = end;
-  while (stop > 0 && (lines[stop - 1]!.trim() === "" || lines[stop - 1]!.trim() === "---")) stop--;
-  return lines.slice(0, stop).join("\n");
-}
-
 export const releaseNotesCommand: SlashCommand = {
   name: "release-notes",
   description: "Show what's new in this version",
   run: (args): CommandResult | undefined => {
+    const argument = args.trim().toLowerCase();
+    if (argument && argument !== "all") {
+      console.log(chalk.gray("  Usage: /release-notes [all]"));
+      return { handled: true };
+    }
     const root = packageRoot();
     const file = root ? resolve(root, "docs", "CHANGELOG.md") : null;
     if (!file || !existsSync(file)) {
@@ -83,21 +70,27 @@ export const releaseNotesCommand: SlashCommand = {
       return { handled: true };
     }
 
-    const showAll = args.trim().toLowerCase() === "all";
-    const text = showAll ? body.trim() : latestEntry(body).trim();
-    const lines = text.split("\n");
-    const shown = showAll ? lines : lines.slice(0, MAX_LINES);
+    const showAll = argument === "all";
+    let text = body;
+    if (!showAll) {
+      try {
+        text = validateCurrentRelease(body, APP_VERSION).markdown;
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.log(chalk.yellow(`  ${sanitizeTerminalText(detail)}`));
+        console.log(chalk.gray("  /release-notes all to inspect the bundled history."));
+        return { handled: true };
+      }
+    }
 
-    console.log(chalk.hex("#d77757").bold("  What's new"));
+    console.log(
+      chalk
+        .hex(palette.promptAccent)
+        .bold(`  What's new · v${APP_VERSION}${showAll ? " (all releases)" : ""}`),
+    );
     console.log();
-    // Changelog body is a file read from the package root (repo file in a
-    // source checkout) — sanitize the lines before printing them verbatim.
-    console.log(sanitizeTerminalText(shown.join("\n")));
-
-    const hidden = lines.length - shown.length;
-    if (hidden > 0) {
-      console.log(chalk.gray(`\n  … ${hidden} more lines — /release-notes all, or read ${file}`));
-    } else if (!showAll) {
+    console.log(renderMarkdown(text));
+    if (!showAll) {
       console.log(chalk.gray(`\n  /release-notes all for the full changelog (${file})`));
     }
     return { handled: true };

@@ -464,7 +464,12 @@ describe("transcriptToLines verbose mode (P0-1/P0-2)", () => {
     const store = new TuiStore("p/m");
     store.addUserMessage("line one\nline two\nline three");
     const lines = transcriptToLines(store.getSnapshot().transcript, "");
-    expect(lines.map((l) => l.text)).toEqual(["> line one", "  line two", "  line three"]);
+    expect(lines.map((l) => l.text.trimEnd())).toEqual([
+      "> line one",
+      "  line two",
+      "  line three",
+      "",
+    ]);
     // The { / } jump marker rides the head row only — jumps target the turn
     // head, not its tail.
     expect(lines[0]!.role).toBe("user");
@@ -514,7 +519,7 @@ describe("TranscriptReview viewer", () => {
     expect(Math.max(...visible)).toBeLessThan(24);
     expect(after).not.toContain("turn 24");
     // Repeated steps walk back to the first prompt.
-    for (let i = 0; i < 6; i++) stdin.write("{");
+    for (let i = 0; i < 25; i++) stdin.write("{");
     await flush();
     expect(lastFrame()).toContain("turn 0");
   });

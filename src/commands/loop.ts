@@ -1,84 +1,94 @@
-// /loop — dynamic self-paced loop mode (M41)
-// ============================================================
-// Starts a task that runs in iterations: each turn the agent works one pass,
-// then calls ScheduleWakeup to schedule the next iteration (choosing its own
-// delay — see the prompt-cache TTL guidance in the tool). The scheduler loop
-// (tools/extended/scheduler.ts) fires due wakeups as synthetic user input
-// while the REPL is idle, which re-enters this loop without the user driving
-// it. "/loop stop" cancels everything.
-// ============================================================
 import chalk from "chalk";
+import {
+  currentLoop,
+  type LoopScope,
+  loopArchive,
+  pauseLoop,
+  resumeLoop,
+  startLoop,
+  stopLoop,
+  takeDueLoop,
+} from "../loop-runtime.js";
+import { LOOP_PROFILES, loopConfig } from "../loop-settings.js";
 import { cancelAllWakeupJobs, listWakeupJobs } from "../tools/extended/schedule-wakeup.js";
 import { sanitizeTerminalText } from "../tui/terminal-width.js";
 import type { SlashCommand } from "./types.js";
 
-function loopPrompt(task: string): string {
-  return (
-    `[Loop mode] You are iterating on this task until it is fully done:\n${task}\n\n` +
-    "Run ONE iteration of work now (don't try to finish a long-running task in a single pass). " +
-    "At the end of this iteration:\n" +
-    "- If the task needs another pass — or you are waiting on something external (a build, a test " +
-    "run, time passing) — call the ScheduleWakeup tool with a suitable delaySeconds (60-3600), " +
-    'prompt "Loop iteration: <one-line task summary>", and a short reason for the chosen delay.\n' +
-    "- If the task is complete, call ScheduleWakeup with stop=true to end the loop.\n" +
-    "Never end a loop iteration without calling ScheduleWakeup one way or the other."
-  );
+export function loopStatusLines(scope: LoopScope): string[] {
+  const record = currentLoop(scope);
+  if (!record) return ["No managed loop in this session."];
+  return [
+    `${LOOP_PROFILES[record.config.profile].name} · ${record.status}${record.pauseRequested ? " (pause requested)" : ""}`,
+    `Task: ${sanitizeTerminalText(record.objective)}`,
+    `Rounds: ${record.rounds}/${record.config.maxRounds ?? "continuous"} · ${record.config.cadence} · ${record.config.intervalMinutes} min`,
+    `Tokens: ${(record.inputTokens + record.outputTokens).toLocaleString()}/${record.config.tokenBudget || "unlimited"} · reserved ${record.reservedTokens.toLocaleString()}`,
+    `Estimated cost: ${record.costKnown ? `$${record.estimatedUsd.toFixed(4)}` : "unknown"}${record.config.usdBudget ? `/$${record.config.usdBudget}` : ""}`,
+    `Next: ${record.nextRunAt === null ? "none" : new Date(record.nextRunAt).toLocaleString("en", { timeZone: record.config.timezone })}`,
+    `Reason: ${sanitizeTerminalText(record.reason)}`,
+  ];
 }
-
 export const loopCommand: SlashCommand = {
   name: "loop",
-  description: "Run a task in self-paced iterations via ScheduleWakeup (/loop <task> | stop)",
+  description: "Manage verified iterations and scheduled checks (/loop)",
   run: (args, ctx) => {
+    const scope = { workspaceRoot: ctx.workspaceRoot, sessionId: ctx.sessionId };
     const trimmed = args.trim();
-
-    if (trimmed === "stop") {
-      const n = cancelAllWakeupJobs(ctx);
-      console.log(chalk.gray(`  Loop stopped — cancelled ${n} pending wakeup(s).`));
-      return;
-    }
-
-    if (!trimmed) {
-      const wakeups = listWakeupJobs(ctx);
-      console.log(chalk.gray("  Usage: /loop <task>  — run the task in self-paced iterations"));
-      console.log(chalk.gray("         /loop stop   — cancel all pending wakeups"));
-      if (wakeups.length > 0) {
-        console.log("");
-        console.log(chalk.bold(`  Pending wakeups (${wakeups.length}):`));
-        for (const w of wakeups) {
-          // The prompt is model/user text and the id may come from a durable
-          // .claude/scheduled_tasks.json — sanitize before printing.
-          const prompt = sanitizeTerminalText(w.prompt);
-          const preview = prompt.length > 50 ? `${prompt.slice(0, 47)}…` : prompt;
-          const secs = Math.max(
-            0,
-            Math.round(Number((w.fireAt - process.hrtime.bigint()) / 1_000_000n)),
-          );
-          console.log(
-            `    ${chalk.cyan(sanitizeTerminalText(w.id))}  in ${secs}s  ${chalk.gray(preview)}`,
-          );
-        }
-      }
-      return;
-    }
-
-    // Review fix ("loop state clobbering"): starting a new /loop while an
-    // old one still had pending wakeups used to leave BOTH alive — two
-    // loops interleaving turns and rescheduling themselves, with /loop stop
-    // as the only way out. New-loop-is-replace: cancel the session's stale
-    // wakeups first so at most one dynamic loop owns this session.
-    const replaced = cancelAllWakeupJobs(ctx);
-    if (replaced > 0) {
+    const [action] = trimmed.split(/\s+/);
+    if (!trimmed || action === "status") {
+      for (const line of loopStatusLines(scope)) console.log(chalk.gray(`  ${line}`));
       console.log(
-        chalk.gray(`  Replaced the previous loop — cancelled ${replaced} stale wakeup(s).`),
+        chalk.gray(
+          "  /loop <task> · /loop pause [now] · /loop resume · /loop stop · /loop history",
+        ),
       );
+      for (const wakeup of listWakeupJobs(ctx))
+        console.log(
+          chalk.gray(
+            `  Legacy wakeup ${sanitizeTerminalText(wakeup.id)}: ${sanitizeTerminalText(wakeup.prompt)}`,
+          ),
+        );
+      return;
     }
+    if (action === "stop") {
+      const record = currentLoop(scope);
+      if (record) stopLoop(scope);
+      else {
+        const cancelled = cancelAllWakeupJobs(ctx);
+        console.log(chalk.gray(`  Cancelled ${cancelled} legacy wakeup(s).`));
+      }
+      console.log(chalk.gray("  Loop stopped. No further iterations will be scheduled."));
+      return;
+    }
+    if (action === "pause") {
+      pauseLoop(scope, trimmed === "pause now");
+      for (const line of loopStatusLines(scope)) console.log(chalk.gray(`  ${line}`));
+      return;
+    }
+    if (action === "resume") {
+      resumeLoop(scope);
+      console.log(chalk.gray("  Loop resumed with counters and limits retained."));
+      return;
+    }
+    if (action === "history") {
+      const record = currentLoop(scope);
+      for (const entry of record?.history ?? [])
+        console.log(
+          chalk.gray(
+            `  ${new Date(entry.at).toLocaleTimeString()} · round ${entry.round} · ${entry.event} · ${sanitizeTerminalText(entry.summary)}`,
+          ),
+        );
+      console.log(chalk.gray(`  ${loopArchive(scope).length} previous loop(s) saved.`));
+      return;
+    }
+    const task = action === "start" ? trimmed.slice(5).trim() : trimmed;
+    startLoop(scope, task, loopConfig(scope.workspaceRoot));
+    const prompt = takeDueLoop(scope);
     console.log(
       chalk.gray(
-        `  Loop started. Each iteration runs while you're away; watch for "[Scheduled wakeup]" turns. /loop stop ends it.`,
+        `  Loop started in ${LOOP_PROFILES[loopConfig(scope.workspaceRoot).profile].name} mode.`,
       ),
     );
-    return { prompt: loopPrompt(trimmed) };
+    return prompt ? { prompt } : undefined;
   },
 };
-
 export default loopCommand;

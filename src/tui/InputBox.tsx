@@ -11,7 +11,7 @@
 //   • Delete     delete the char *under* the cursor
 //   • Enter      submit · Tab accept highlighted completion
 //   • Ctrl+J     insert a newline (multi-line input; "\" + Enter also works)
-//   • ↑/↓        move history (palette closed) or selection (palette open)
+//   • ↑/↓        move multi-line cursor, single-line history, or palette selection
 //   • Ctrl+U     delete from cursor to beginning of line (M41)
 //   • Ctrl+K     delete from cursor to end of line (M41)
 //   • Ctrl+W     delete word before cursor (M41)
@@ -47,12 +47,11 @@
 import { Box, Text, useInput, usePaste } from "ink";
 import { useEffect, useRef, useState } from "react";
 import { formatCommandMenuRow } from "./command-menu-layout.js";
-import { POINTER } from "./figures.js";
 import { t } from "./i18n.js";
 import { editInEditor } from "./open-editor.js";
 import { PASTE_FOLD_CHARS } from "./paste-chip.js";
 import { nextOffset } from "./SessionPicker.js";
-import { terminalColumns } from "./terminal-width.js";
+import { graphemes, terminalColumns, visualWidth } from "./terminal-width.js";
 import { palette } from "./theme.js";
 import { useTerminalSize } from "./useTerminalSize.js";
 import { VimEngine } from "./vim/index.js";
@@ -175,14 +174,13 @@ function inkKeyToVim(
  * The "@word" at the cursor: the run of non-whitespace ending at the cursor
  * that begins with '@'. Returns the query plus the buffer offset of the '@'
  * so an accepted completion can replace exactly that span (nothing before or
- * after the word moves). `@` alone (no chars typed) opens nothing — dumping
- * eight arbitrary paths before the user narrows is noise.
+ * after the word moves). A bare `@` opens the workspace's initial file list.
  */
 function atTokenAt(buffer: string, cursor: number): { query: string; start: number } | null {
   let start = cursor;
   while (start > 0 && !/\s/.test(buffer[start - 1]!)) start--;
   const word = buffer.slice(start, cursor);
-  if (!word.startsWith("@") || word.length < 2) return null;
+  if (!word.startsWith("@")) return null;
   return { query: word.slice(1), start };
 }
 
@@ -208,6 +206,9 @@ export interface InputBoxProps {
   disabled: boolean;
   busy?: boolean;
   onSubmit: (value: string) => void;
+  preserveDraftOnSubmit?: boolean;
+  maxVisibleRows?: number;
+  maxColumns?: number;
   editorMode?: { value: "default" | "vim" };
   keepColorWhenDisabled?: boolean;
   hideBottomRule?: boolean;
@@ -268,6 +269,9 @@ export function InputBox({
   disabled,
   busy,
   onSubmit,
+  preserveDraftOnSubmit,
+  maxVisibleRows,
+  maxColumns,
   editorMode,
   keepColorWhenDisabled,
   hideBottomRule,
@@ -764,7 +768,7 @@ export function InputBox({
           value = "/" + suggestions[safeSelected].name;
         }
         pushHistory(value);
-        reset();
+        if (!preserveDraftOnSubmit) reset();
         onSubmit(value);
         return;
       }
@@ -839,19 +843,15 @@ export function InputBox({
         // Queue empty: fall through to history navigation below.
       }
 
-      // --- ↑/↓: multi-line cursor movement FIRST, history only at the edge ---
-      // Official priority: with a multi-line draft the cursor moves between
-      // logical lines; history navigation kicks in only when the cursor can't
-      // move further (first line ↑ / last line ↓) or the draft is single-line.
-      // While BROWSING history (historyIndex !== -1) ↑/↓ keep walking entries.
+      // Multi-line buffers always own the arrows, including recalled messages.
+      if ((key.upArrow || key.downArrow) && bufferRef.current.includes("\n")) {
+        const { row, col } = offsetToRowCol(bufferRef.current, cursorRef.current);
+        setCursor(rowColToOffset(bufferRef.current, row + (key.upArrow ? -1 : 1), col));
+        return;
+      }
+
+      // Single-line buffers use the arrows to browse submitted history.
       if (key.upArrow && suggestions.length === 0) {
-        if (historyIndex === -1) {
-          const { row, col } = offsetToRowCol(bufferRef.current, cursorRef.current);
-          if (row > 0) {
-            setCursor(rowColToOffset(bufferRef.current, row - 1, col));
-            return;
-          }
-        }
         if (history.length > 0) {
           // If user was editing (not browsing history), save current buffer.
           if (historyIndex === -1 && bufferRef.current.length > 0) {
@@ -1069,8 +1069,8 @@ export function InputBox({
 
   // Read terminal size at render time so the box tracks resize. (See
   // ruleWidth's note on why we leave one column of slack.)
-  const { rows: termRows } = useTerminalSize();
-  const boxWidth = ruleWidth();
+  const { rows: termRows, columns: termColumns } = useTerminalSize();
+  const boxWidth = Math.min(ruleWidth(), Math.max(4, termColumns - 1), maxColumns ?? termColumns);
 
   // M25.1: render each logical line on its own row so a multi-line buffer
   // displays as multiple rows. The "❯" prompt sits on the first line; wrapped
@@ -1081,7 +1081,7 @@ export function InputBox({
   // Official input-area cap: past maxVisiblePromptRows the buffer scrolls
   // INSIDE the box, windowed around the cursor row (anchored to the tail when
   // the cursor is at the end — the common case while writing).
-  const maxVisible = maxVisiblePromptRows(termRows);
+  const maxVisible = maxVisibleRows ?? maxVisiblePromptRows(termRows);
   const clippedRows = Math.max(0, lines.length - maxVisible);
   let windowStart = 0;
   if (clippedRows > 0) {
@@ -1136,14 +1136,14 @@ export function InputBox({
   const pasteNoteLine = pasteNote ? <Text color="#e0af68">{`  ${pasteNote}`}</Text> : null;
 
   // The "@" file dropdown — mirrors the slash palette's styling, rows are
-  // "@relative/path", highlighted row in accent orange.
+  // "@relative/path", with a lavender selection and gray unselected rows.
   const fileList =
     fileSuggestions.length > 0 ? (
       <Box flexDirection="column">
         {fileSuggestions.map((path, i) => {
           const sel = i === safeFileSelected;
           return (
-            <Text key={path} color={sel ? palette.accent : palette.command}>
+            <Text key={path} color={sel ? palette.promptAccent : palette.secondary}>
               {`${sel ? "❯ " : "  "}@${path}`}
             </Text>
           );
@@ -1155,19 +1155,34 @@ export function InputBox({
   // Whichever dropdown is open (they're mutually exclusive by trigger).
   const dropdown = suggestionList ?? fileList;
 
-  // Official input chrome: ONE rounded top border (╭…╮) above the prompt —
-  // no side/bottom borders, no bottom rule. The prompt pointer is "❯"
-  // (figures.POINTER); continuation rows indent two spaces under it. When the
+  // The prompt sits between horizontal rules; continuation rows indent two
+  // spaces under the marker. When the
   // buffer outgrows maxVisible the window keeps the cursor row on screen.
   // B1/B2: in bash/memory mode the buffer's leading "!" / "#" is rendered AS
   // the prompt marker (official PromptInputModeIndicator: "! " pink, "#" blue)
   // — row 0's payload drops the raw mode char so it isn't shown twice, and
   // the cursor column shifts accordingly.
-  const marker = bashMode ? "! " : memoryMode ? "# " : `${POINTER} `;
+  const marker = bashMode ? "! " : memoryMode ? "# " : "> ";
   const markerColor = bashMode ? palette.bashBorder : memoryMode ? "#7aa2f7" : frameColor;
   const promptRows = visibleLines.map((line, i) => {
     const realRow = windowStart + i;
     const rowText = realRow === 0 && (bashMode || memoryMode) ? line.slice(1) : line;
+    const rowCursor =
+      !disabled && realRow === curRow
+        ? realRow === 0 && (bashMode || memoryMode)
+          ? Math.max(0, curCol - 1)
+          : curCol
+        : -1;
+    const displayed = maxVisibleRows
+      ? inputLineWindow(
+          rowText,
+          rowCursor,
+          Math.max(
+            4,
+            (boxWidth - 2) * Math.max(1, Math.floor(maxVisibleRows / visibleLines.length)) - 3,
+          ),
+        )
+      : { line: rowText, cursor: rowCursor };
     return (
       <Box key={realRow}>
         {realRow === 0 && vimActive ? (
@@ -1177,16 +1192,10 @@ export function InputBox({
         ) : null}
         <Text color={markerColor}>{realRow === 0 ? marker : "  "}</Text>
         <CursorLine
-          line={rowText}
+          line={displayed.line}
           // The cursor is only drawn on the row it sits on; other rows render
           // their text plainly.
-          cursorCol={
-            !disabled && realRow === curRow
-              ? realRow === 0 && (bashMode || memoryMode)
-                ? Math.max(0, curCol - 1)
-                : curCol
-              : -1
-          }
+          cursorCol={displayed.cursor}
         />
       </Box>
     );
@@ -1204,16 +1213,9 @@ export function InputBox({
       </>
     ) : null;
 
-  // Classic full-round box (╭…╮ prompt ╰…╯). Drawn as manual rule lines, not a
-  // bordered Box: Ink only renders corner glyphs when the adjacent side
-  // borders exist, so borderStyle="round" with borderLeft/Right=false comes
-  // out as bare ─── rules. Hand-drawing the ╭╮/╰╯ rows reproduces the official
-  // input chrome exactly (sides stay invisible). The full-screen path drops
-  // the bottom rule (hideBottomRule) so the prompt row stays the very last
-  // rendered line and the terminal parks its real cursor on it.
-  const ruleRepeat = Math.max(3, boxWidth - 2);
-  const topRule = <Text color={frameColor}>{`╭${"─".repeat(ruleRepeat)}╮`}</Text>;
-  const bottomRule = <Text color={frameColor}>{`╰${"─".repeat(ruleRepeat)}╯`}</Text>;
+  // Full-screen mode omits the bottom rule to keep the real cursor on input.
+  const topRule = <Text color={frameColor}>{"─".repeat(boxWidth)}</Text>;
+  const bottomRule = <Text color={frameColor}>{"─".repeat(boxWidth)}</Text>;
 
   // B4 (ctrl+g): the external editor owns the TTY — the official client
   // replaces the whole input box with a dim italic waiting line.
@@ -1279,6 +1281,45 @@ export function InputBox({
  * (−1 = no cursor on this line). Splitting at the cursor and drawing the char
  * under it inverse keeps the cursor attached to its glyph as the text wraps.
  */
+function inputLineWindow(
+  line: string,
+  cursor: number,
+  cells: number,
+): { line: string; cursor: number } {
+  if (visualWidth(line) < cells) return { line, cursor };
+  const glyphs = [...graphemes(line)];
+  const offsets: number[] = [];
+  let offset = 0;
+  for (const glyph of glyphs) {
+    offsets.push(offset);
+    offset += glyph.segment.length;
+  }
+  let at =
+    cursor < 0
+      ? 0
+      : offsets.findIndex(
+          (start, i) => cursor >= start && cursor < (offsets[i + 1] ?? line.length),
+        );
+  if (at < 0) at = glyphs.length;
+  let start = at;
+  let width = 0;
+  while (start > 0 && width + glyphs[start - 1].width < Math.floor(cells / 2))
+    width += glyphs[--start].width;
+  let end = start;
+  width = 2;
+  while (end < glyphs.length && width + glyphs[end].width < cells) width += glyphs[end++].width;
+  const prefix = start > 0 ? "…" : "";
+  return {
+    line:
+      prefix +
+      glyphs
+        .slice(start, end)
+        .map((glyph) => glyph.segment)
+        .join("") +
+      (end < glyphs.length ? "…" : ""),
+    cursor: cursor < 0 ? -1 : cursor - (offsets[start] ?? line.length) + prefix.length,
+  };
+}
 function CursorLine({ line, cursorCol }: { line: string; cursorCol: number }) {
   if (cursorCol < 0) {
     // No cursor on this row. Render a space for an empty line so the row keeps

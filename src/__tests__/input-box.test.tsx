@@ -123,6 +123,8 @@ describe("InputBox horizontal rule width (M24.4 — DECAWM fix)", () => {
     );
     await flush();
     const frame = lastFrame()!;
+    expect(frame).not.toMatch(/[╭╮╰╯│]/);
+    expect(frame.split("\n").filter((line) => /^─+$/.test(line))).toHaveLength(2);
     // Find the longest run of box-drawing dashes in any rendered line.
     const longestRule = Math.max(
       0,
@@ -499,6 +501,35 @@ describe("InputBox line editing shortcuts (M41)", () => {
 // P2-10: "@" file completion — dropdown at the cursor's '@'-word, Tab inserts.
 describe("InputBox @ file completion (P2-10)", () => {
   const files = ["src/tui/App.tsx", "src/util.ts"];
+
+  it("opens local file suggestions on @ alone and inserts a selected file with Tab", async () => {
+    const onSubmit = vi.fn();
+    const completeFiles = vi.fn((q: string) => (q === "" ? files : []));
+    const { stdin, lastFrame, unmount } = render(
+      <InputBox
+        commands={commands}
+        disabled={false}
+        onSubmit={onSubmit}
+        completeFiles={completeFiles}
+      />,
+    );
+    try {
+      await flush();
+      stdin.write("@");
+      await flush();
+      expect(completeFiles).toHaveBeenCalledWith("");
+      expect(lastFrame()).toContain("@src/tui/App.tsx");
+      stdin.write(ARROW_DOWN);
+      await flush();
+      stdin.write("\t");
+      await flush();
+      stdin.write(ENTER);
+      await flush();
+      expect(onSubmit).toHaveBeenCalledWith("@src/util.ts ");
+    } finally {
+      unmount();
+    }
+  });
 
   it("shows matching paths while typing an @word", async () => {
     const { stdin, lastFrame } = render(

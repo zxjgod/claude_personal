@@ -20,7 +20,13 @@ import { BLACK_CIRCLE, TOOL_RESULT } from "./figures.js";
 import { t } from "./i18n.js";
 import { renderMarkdown } from "./markdown.js";
 import type { TranscriptItem } from "./store.js";
-import { sanitizeTerminalText, terminalColumns, truncateVisual } from "./terminal-width.js";
+import {
+  graphemes,
+  sanitizeTerminalText,
+  terminalColumns,
+  truncateVisual,
+  visualWidth,
+} from "./terminal-width.js";
 import { currentTheme, palette } from "./theme.js";
 import { toolOutputLines } from "./tool-output.js";
 
@@ -40,6 +46,7 @@ export interface TranscriptLine {
   text: string;
   /** Ink color for the row (undefined = default foreground). */
   color?: string;
+  backgroundColor?: string;
   /** Dim the row (system notices, tool bodies). */
   dim?: boolean;
   /** Marks user-prompt rows ({ / } jump targets in the transcript viewer). */
@@ -67,6 +74,35 @@ export function collapsedThinkingLine(seconds: number | undefined, lineCount: nu
     : t("ui.thinking.collapsed", { s: seconds, n: lineCount });
 }
 
+/** Physical, padded rows shared by the transcript and the history viewer. */
+export function userMessageLines(
+  item: Extract<TranscriptItem, { kind: "user" }>,
+): TranscriptLine[] {
+  const width = Math.max(3, terminalColumns() - 1);
+  const marker = item.bash ? "! " : item.memory ? "# " : "> ";
+  const rows: string[] = [];
+  for (const line of sanitizeTerminalText(item.text).split("\n")) {
+    let row = rows.length === 0 ? marker : "  ";
+    let cells = 2;
+    for (const glyph of graphemes(line.replace(/\t/g, "    "))) {
+      if (cells + glyph.width > width) {
+        rows.push(row);
+        row = "  ";
+        cells = 2;
+      }
+      row += glyph.segment;
+      cells += glyph.width;
+    }
+    rows.push(row);
+  }
+  return rows.map((text, i) => ({
+    text: text + " ".repeat(Math.max(0, width - visualWidth(text))),
+    color: palette.userText,
+    backgroundColor: palette.userBackground,
+    ...(i === 0 ? { role: "user" as const } : {}),
+  }));
+}
+
 /** One transcript item → its display rows. */
 function itemLines(
   item: TranscriptItem,
@@ -74,27 +110,14 @@ function itemLines(
   opts: TranscriptRenderOptions,
 ): TranscriptLine[] {
   switch (item.kind) {
-    case "user": {
-      // Official: dim user turns with a "> " marker. A multi-line draft
-      // (Ctrl+J / paste) flattens to ONE row per physical line: the pagers
-      // window over this array 1:1 (ScrollView counts lines, not wrapped
-      // rows), so an embedded "\n" inside a single row desyncs the viewport
-      // math (sticky-bottom drift, clipped tail). "> " marks the first row;
-      // "  " aligns continuations under it, mirroring the InputBox's own
-      // prompt rows. Only the first row carries the role marker — { / }
-      // prompt jumps target the turn head, not its tail.
-      const rows = item.text.split("\n");
-      return rows.map((l, i) =>
-        i === 0
-          ? { text: `> ${l}`, dim: true, role: "user" as const }
-          : { text: `  ${l}`, dim: true },
-      );
-    }
+    case "user":
+      return userMessageLines(item);
     case "assistant": {
-      // Official: plain assistant text carries NO bullet (⏺ belongs to tool
-      // calls); rows render unindented at full width.
       const md = renderMarkdown(item.text).split("\n");
-      return md.map((l) => ({ text: l, color: palette.text }));
+      return md.map((l, i) => ({
+        text: `${i === 0 ? `${BLACK_CIRCLE} ` : "  "}${l}`,
+        color: palette.text,
+      }));
     }
     case "thought":
       return [{ text: `  ${t("ui.thinking.thoughtFor", { s: item.seconds })}`, dim: true }];
@@ -209,7 +232,8 @@ export function transcriptToLines(
       variants.set(variant, rows);
     }
     out.push(...rows);
-    if (item.kind === "assistant" || item.kind === "tool") out.push({ text: "" });
+    if (["user", "assistant", "tool", "thought", "thinking_text"].includes(item.kind))
+      out.push({ text: "" });
   }
   if (streamingThinking.trim()) {
     out.push(
@@ -219,9 +243,13 @@ export function transcriptToLines(
     );
   }
   if (streamingText.trim()) {
-    // Plain assistant text — no bullet (official rendering).
     const md = renderMarkdown(streamingText).split("\n");
-    out.push(...md.map((l) => ({ text: l, color: palette.text })));
+    out.push(
+      ...md.map((l, i) => ({
+        text: `${i === 0 ? `${BLACK_CIRCLE} ` : "  "}${l}`,
+        color: palette.text,
+      })),
+    );
   }
   return out;
 }

@@ -1,78 +1,89 @@
-// ============================================================
-// Tests: /loop command — dynamic self-paced loop mode (M41)
-// ============================================================
-
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loopCommand } from "../commands/loop.js";
 import type { CommandContext } from "../commands/types.js";
+import { currentLoop, pauseLoop, resetLoopsForTests, startLoop } from "../loop-runtime.js";
+import { defaultLoopConfig } from "../loop-settings.js";
 import {
+  cancelWakeup,
   listWakeupJobs,
   resetWakeupJobs,
   scheduleWakeup,
 } from "../tools/extended/schedule-wakeup.js";
 
-const ctx = {} as CommandContext;
-
-function consoleOutput(): string {
-  return (console.log as unknown as ReturnType<typeof vi.fn>).mock.calls.flat().join("\n");
+let root: string;
+let ctx: CommandContext;
+function output() {
+  return vi.mocked(console.log).mock.calls.flat().join("\n");
 }
+beforeEach(() => {
+  root = mkdtempSync(join(tmpdir(), "ccr-loop-command-"));
+  mkdirSync(join(root, ".claude"));
+  writeFileSync(join(root, ".claude/settings.json"), JSON.stringify({ loop: {} }));
+  vi.stubEnv("CCR_USER_CONFIG_DIR", join(root, "user"));
+  ctx = {
+    workspaceRoot: root,
+    sessionId: "loop-command",
+    messages: [],
+    modelConfig: { provider: "openai", model: "test", apiKey: "test" },
+    callModel: async function* () {},
+  };
+  resetLoopsForTests();
+  resetWakeupJobs();
+  vi.spyOn(console, "log").mockImplementation(() => {});
+});
+afterEach(() => {
+  resetLoopsForTests();
+  resetWakeupJobs();
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+  rmSync(root, { recursive: true, force: true });
+});
 
-describe("/loop", () => {
-  beforeEach(() => {
-    resetWakeupJobs();
-    vi.spyOn(console, "log").mockImplementation(() => {});
+describe("managed /loop commands", () => {
+  it("starts a task with a runtime-owned iteration instead of a model-owned timer", async () => {
+    const result = await loopCommand.run("keep the build green", ctx);
+    expect(result?.prompt).toContain("[Managed loop ");
+    expect(result?.prompt).toContain("keep the build green");
+    expect(currentLoop(ctx)?.status).toBe("waiting");
+    expect(listWakeupJobs()).toEqual([]);
   });
-  afterEach(() => {
-    vi.restoreAllMocks();
-    resetWakeupJobs();
+  it("supports status, pause and resume without resetting state", async () => {
+    await loopCommand.run("work", ctx);
+    await loopCommand.run("pause", ctx);
+    expect(currentLoop(ctx)?.status).toBe("paused");
+    await loopCommand.run("status", ctx);
+    expect(output()).toContain("Rounds: 0/10");
+    await loopCommand.run("resume", ctx);
+    expect(currentLoop(ctx)?.status).toBe("waiting");
   });
-
-  it("/loop <task> returns a prompt embedding the task and the ScheduleWakeup protocol", async () => {
-    const r = await loopCommand.run("keep the build green", ctx);
-    expect(r?.prompt).toBeTruthy();
-    expect(r?.prompt).toContain("[Loop mode]");
-    expect(r?.prompt).toContain("keep the build green");
-    expect(r?.prompt).toContain("ScheduleWakeup");
-    expect(r?.prompt).toContain("delaySeconds (60-3600)");
+  it("stops the managed loop without deleting an unrelated wakeup", async () => {
+    await loopCommand.run("work", ctx);
+    const unrelated = scheduleWakeup(180, "unrelated", "test", ctx);
+    await loopCommand.run("stop", ctx);
+    expect(currentLoop(ctx)?.status).toBe("stopped");
+    expect(listWakeupJobs()).toHaveLength(1);
+    cancelWakeup(unrelated.id);
   });
-
-  it("/loop stop cancels every pending wakeup and reports the count", async () => {
-    scheduleWakeup(120, "Loop iteration: one", "test");
-    scheduleWakeup(240, "Loop iteration: two", "test");
-    expect(listWakeupJobs()).toHaveLength(2);
-
-    const r = await loopCommand.run("stop", ctx);
-    expect(r?.prompt).toBeUndefined();
-    expect(listWakeupJobs()).toHaveLength(0);
-    expect(consoleOutput()).toContain("cancelled 2 pending wakeup(s)");
+  it("keeps legacy cancellation available when no managed loop exists", async () => {
+    scheduleWakeup(180, "legacy", "test", ctx);
+    await loopCommand.run("stop", ctx);
+    expect(listWakeupJobs()).toEqual([]);
   });
-
-  it("bare /loop prints usage and lists pending wakeups", async () => {
-    const job = scheduleWakeup(120, "Loop iteration: check CI", "test");
-    const r = await loopCommand.run("", ctx);
-    expect(r?.prompt).toBeUndefined();
-    const out = consoleOutput();
-    expect(out).toContain("Usage: /loop <task>");
-    expect(out).toContain("/loop stop");
-    expect(out).toContain("Pending wakeups (1)");
-    expect(out).toContain(job.id);
-    expect(out).toContain("Loop iteration: check CI");
+  it("replaces a previous managed task and retains its history", async () => {
+    const previous = startLoop(ctx, "first", defaultLoopConfig("conservative"));
+    pauseLoop(ctx);
+    await loopCommand.run("second", ctx);
+    expect(currentLoop(ctx)?.objective).toBe("second");
+    expect(currentLoop(ctx)?.id).not.toBe(previous.id);
+    await loopCommand.run("history", ctx);
+    expect(output()).toContain("1 previous loop(s)");
   });
-
-  it("starting a new /loop replaces the previous one (review fix: clobbering)", async () => {
-    scheduleWakeup(120, "Loop iteration: old task", "test");
-    scheduleWakeup(240, "Loop iteration: old task", "test");
-    const r = await loopCommand.run("new task", ctx);
-    expect(r?.prompt).toContain("new task");
-    // The old loop's wakeups are gone — one loop owns the session.
-    expect(listWakeupJobs()).toHaveLength(0);
-    expect(consoleOutput()).toContain("cancelled 2 stale wakeup(s)");
-  });
-
-  it("bare /loop with no pending wakeups prints usage only", async () => {
-    await loopCommand.run("   ", ctx);
-    const out = consoleOutput();
-    expect(out).toContain("Usage: /loop <task>");
-    expect(out).not.toContain("Pending wakeups");
+  it("bare /loop prints status for the line-based interface", async () => {
+    await loopCommand.run("", ctx);
+    expect(output()).toContain("No managed loop");
+    expect(output()).toContain("/loop pause");
   });
 });

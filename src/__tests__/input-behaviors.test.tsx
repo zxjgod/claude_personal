@@ -182,12 +182,13 @@ describe("Review fixes — ghost actions & ↑↓ priority (2026-09-07)", () => 
     second.unmount();
   });
 
-  it("↑ moves within a multi-line draft before touching history", async () => {
+  it("↑ stays in a multi-line draft even at the first row", async () => {
+    const onSubmit = vi.fn();
     const { lastFrame, stdin, unmount } = render(
       <InputBox
         commands={[]}
         disabled={false}
-        onSubmit={() => {}}
+        onSubmit={onSubmit}
         history={["old-command"]}
         initialDraft={{ text: "first line\nsecond line", cursor: 22 }}
       />,
@@ -197,10 +198,42 @@ describe("Review fixes — ghost actions & ↑↓ priority (2026-09-07)", () => 
     await flush();
     expect(lastFrame()).toContain("second line");
     expect(lastFrame()).not.toContain("old-command");
-    // Cursor is now on row 0: a second ↑ can't move → history takes over.
+    // At row 0, another Up must leave the draft and cursor intact.
     stdin.write("\x1b[A");
     await flush();
-    expect(lastFrame()).toContain("old-command");
+    expect(lastFrame()).not.toContain("old-command");
+    stdin.write("X");
+    await flush();
+    stdin.write("\r");
+    await flush();
+    expect(onSubmit).toHaveBeenCalledWith("first lineX\nsecond line");
+    unmount();
+  });
+
+  it("↓ moves a recalled multi-line message's cursor and stops at the last row", async () => {
+    const onSubmit = vi.fn();
+    const { stdin, unmount } = render(
+      <InputBox
+        commands={[]}
+        disabled={false}
+        onSubmit={onSubmit}
+        history={["older", "abc\ndef"]}
+      />,
+    );
+    await flush();
+    stdin.write("\x1b[A");
+    await flush();
+    stdin.write("\x1b[A");
+    await flush();
+    stdin.write("\x1b[B");
+    await flush();
+    stdin.write("\x1b[B");
+    await flush();
+    stdin.write("X");
+    await flush();
+    stdin.write("\r");
+    await flush();
+    expect(onSubmit).toHaveBeenCalledWith("abc\ndefX");
     unmount();
   });
 

@@ -113,8 +113,15 @@ export function clearFileCompletionCache(): void {
  */
 export function completeFiles(workspaceRoot: string, query: string): string[] {
   const q = query.trim().toLowerCase().replace(/\\/g, "/");
-  if (q.length === 0) return [];
   const files = listFiles(workspaceRoot);
+  if (q.length === 0) {
+    return [...files]
+      .sort(
+        (a, b) =>
+          a.split("/").length - b.split("/").length || a.length - b.length || a.localeCompare(b),
+      )
+      .slice(0, MAX_FILE_SUGGESTIONS);
+  }
   const prefix: string[] = [];
   const substr: string[] = [];
   for (const f of files) {

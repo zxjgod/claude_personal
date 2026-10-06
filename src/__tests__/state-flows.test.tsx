@@ -20,7 +20,11 @@ import { setLanguage } from "../tui/i18n.js";
 import { appendHistory, loadHistory } from "../tui/input-history.js";
 import { PlanApproval } from "../tui/PlanApproval.js";
 import { RewindPicker } from "../tui/RewindPicker.js";
-import { nextPermissionMode, TuiStore } from "../tui/store.js";
+import {
+  nextPermissionMode,
+  type RewindChoice as StoreRewindChoice,
+  TuiStore,
+} from "../tui/store.js";
 import type { Tool } from "../types.js";
 
 const flush = () => new Promise((r) => setTimeout(r, 30));
@@ -138,7 +142,7 @@ describe("C3 — two-stage rewind menu", () => {
     { turnIndex: 1, label: "first prompt", timestamp: "08:00", filesChanged: 1 },
   ];
 
-  type RewindChoice = { turnIndex: number; action: "both" | "conversation" | "code" } | null;
+  type RewindChoice = StoreRewindChoice | null;
   function makeOverlay() {
     let resolve: (c: RewindChoice) => void = () => {};
     const done = new Promise<RewindChoice>((r) => (resolve = r));
@@ -149,12 +153,16 @@ describe("C3 — two-stage rewind menu", () => {
     const { overlay, done } = makeOverlay();
     const { lastFrame, stdin, unmount } = render(<RewindPicker overlay={overlay} />);
     await flush();
+    stdin.write("\x1b[A");
+    await flush();
     stdin.write("\r"); // pick turn #3
     await flush();
     const frame = lastFrame()!;
     expect(frame).toContain("Restore code and conversation");
     expect(frame).toContain("Restore conversation");
     expect(frame).toContain("Restore code");
+    expect(frame).toContain("Summarize from here");
+    expect(frame).toContain("Summarize up to here");
     expect(frame).toContain("Never mind");
     // Down twice → "code"; Enter resolves with the chosen action.
     stdin.write("\x1b[B");
@@ -170,38 +178,51 @@ describe("C3 — two-stage rewind menu", () => {
     const { overlay } = makeOverlay();
     const { lastFrame, stdin, unmount } = render(<RewindPicker overlay={overlay} />);
     await flush();
+    stdin.write("\x1b[A");
+    await flush();
     stdin.write("\r");
     await flush();
     expect(lastFrame()).toContain("Restore code and conversation");
     stdin.write("\x1b"); // back
     await flush();
     expect(lastFrame()!).not.toContain("Restore code and conversation");
-    expect(lastFrame()).toContain("#3 third prompt");
+    expect(lastFrame()).toContain("third prompt");
     unmount();
   });
 
-  it('"Never mind" is a real selectable row that resolves null', async () => {
+  it('"Never mind" returns to the turn list; Enter on current closes', async () => {
     const { overlay, done } = makeOverlay();
     const { stdin, unmount } = render(<RewindPicker overlay={overlay} />);
     await flush();
+    stdin.write("\x1b[A");
+    await flush();
     stdin.write("\r"); // pick turn #3 → action stage
     await flush();
-    stdin.write("4"); // number shortcut for the 4th row
+    stdin.write("6");
+    await flush();
+    stdin.write("\x1b[B");
+    await flush();
+    stdin.write("\r");
     await expect(done).resolves.toBeNull();
     unmount();
   });
 
-  it('"Never mind" is reachable by arrows too (down ×3 + Enter)', async () => {
+  it('"Never mind" is reachable by arrows too (down ×5 + Enter)', async () => {
     const { overlay, done } = makeOverlay();
     const { stdin, unmount } = render(<RewindPicker overlay={overlay} />);
     await flush();
+    stdin.write("\x1b[A");
+    await flush();
     stdin.write("\r");
     await flush();
-    for (const _ of [1, 2, 3]) {
+    for (const _ of [1, 2, 3, 4, 5]) {
       stdin.write("\x1b[B");
       await flush();
     }
     stdin.write("\r");
+    await flush();
+    stdin.write("\x1b");
+    await new Promise((resolve) => setTimeout(resolve, 60));
     await expect(done).resolves.toBeNull();
     unmount();
   });
