@@ -117,11 +117,6 @@ const slots = new Semaphore(MAX_CONCURRENCY, "Sub-agent");
 const acquireSlot = (signal?: AbortSignal): Promise<void> => slots.acquire(signal);
 const releaseSlot = (): void => slots.release();
 
-/** Test teardown: drop held slots so a case can't strand the next one. */
-export function resetTaskSlots(): void {
-  slots.reset();
-}
-
 // --- Tool ---
 
 // Build the promptDescription dynamically to include current subagent types.

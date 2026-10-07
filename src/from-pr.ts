@@ -23,7 +23,7 @@
 //    a fresh session is reported, and the new session is tagged with
 //    the PR so the next `--from-pr <same>` actually resumes it.
 //
-// Not implemented (see docs/claude-code差距评估-20261002.md): the
+// Not implemented (see docs/20261002-claude-code差距评估.md): the
 // interactive PR picker, and the automatic branch→PR linkage official
 // gets from its GitHub integration.
 // ============================================================

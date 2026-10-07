@@ -29,7 +29,7 @@ CLI Entry --> Config/API Client --> System Prompt Builder --> Agent Loop --> Too
 
 ## Reference Material
 
-- `reference/` — Claude Code decompiled source (reference implementation, gitignored)
+- `../claude_personal-self-local/reference/` — local Claude Code reference material, kept outside the checkout
 - `Claude Code 源码架构深度分析.pdf` — architecture analysis (gitignored, kept at repo root)
 - `docs/` — project documentation
   - `项目架构.md` — current architecture and invariants (updated 2026-10-01).
@@ -38,10 +38,10 @@ CLI Entry --> Config/API Client --> System Prompt Builder --> Agent Loop --> Too
     are historical; use current architecture and maintenance docs for verification.
   - `快速开始.md` — install / config / run / smoke-test flow
   - `项目总览.md` — architecture, module list, completion status
-  - `项目评审报告.md` — source-level review with findings & fixes
-  - `架构分析与升级总纲-202609.md` — 2026-09 全景架构审查存档（宏观架构、
+  - `archive/reports/20260623-项目评审报告.md` — historical source-level review with findings & fixes
+  - `archive/reports/20260925-架构分析与升级总纲.md` — 2026-09 全景架构审查存档（宏观架构、
     Top10 重大问题、分部升级建议、中长期演进方向）；规划任何架构分部工作前
-    先读此文件，再按附录 A 指引读 `架构审查-202609/` 下对应分册（01 核心
+    先读此文件，再按附录 A 指引读 `archive/202609-架构审查/` 下对应分册（01 核心
     引擎 / 02 LLM接入 / 03 工具系统 / 04 权限安全 / 05 TUI / 06 持久化扩展，
     含行号级证据；行号基于 v1.5.0，编辑后会漂移需 grep 重新锚定）。
     **Top10 已于 2026-09-26 全部处置完毕**（修复或经用户拍板决策保留，
@@ -58,7 +58,7 @@ CLI Entry --> Config/API Client --> System Prompt Builder --> Agent Loop --> Too
 ## Implementation Phases
 
 ### Phase 1: MVP ✅
-- CLI entry with argument parsing (commander)
+- CLI entry with local argument parsing
 - LLM client abstraction (OpenAI-compatible API)
 - System prompt builder (6 sections)
 - 3 core tools: Bash, Read, Write

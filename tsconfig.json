@@ -14,19 +14,11 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
-    "noUnusedLocals": false,
+    "noUnusedLocals": true,
     "noUnusedParameters": false,
     "noImplicitReturns": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src/**/*", "debug-logs/**/*"],
-  "exclude": [
-    "node_modules",
-    "dist",
-    "reference/**",
-    "claude-code-*/**",
-    "claude-code-2.1.88/**",
-    "claude-code-main/**",
-    "claude-code-0331-2016/**"
-  ]
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
 }

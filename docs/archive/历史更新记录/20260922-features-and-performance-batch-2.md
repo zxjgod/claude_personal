@@ -1,0 +1,70 @@
+# 功能与性能增强 · 批次 2
+
+> 完成时间：2026-09-22
+> 方案来源：[功能与性能增强实施方案](../reports/20260922-功能与性能增强实施方案.md)（批次 2 / 共 4 批）
+> 状态：✅ **全部完成** — typecheck 0 错误、vitest 1776/1776 全绿、smoke PASSED
+
+---
+
+## 本批内容（5 项接线类改动）
+
+### F2 · RestoreContext 工具 — 裁剪内容可恢复
+
+**问题**：`CollapseStore.restore()` 只写不读——pipeline Layer 2/3 裁剪掉的原文实际找不回，模型只能重跑工具；且 `evictionStub` 不含 tool_call_id，模型无从得知用什么恢复。
+
+**实现**：
+- `evictionStub()` 与 Layer 2 的截断标记现在都**嵌入 tool_call_id 与恢复指引**（`[evicted: read result (id: toolu_xxx), 8k chars — call RestoreContext …]`）。
+- `ToolContext` 新增 `collapseStore` 字段（`types.ts`），agent-loop 把自己创建的 store 挂进 `baseContext`。
+- 新工具 `RestoreContext`（`src/tools/extended/restore-context.ts`，别名 `restore_context`）：按 id 取回原文作为**本次调用结果**返回（不回填历史——回填会破坏 prompt-cache 前缀）；单次上限 50k 字符，超出提示 `offset` 续取。
+
+### F1 · 记忆闭环 — 写路径接线
+
+**问题**：`saveAgentMemory` 与 `extractMemoriesWithModel` 双双零生产调用——`.claude/memories.jsonl` 只能靠手动 `/memory extract` 增长，子代理 `MEMORY.md` 只读不写。
+
+**实现**：
+- 新工具 `MemorySave`（别名 `memory_save`）：写入 memories.jsonl（主会话检索闭环，保存后下一轮 prefetch 即可召回）；可选 `agent_type` 参数同时合并进该子代理类型的 `MEMORY.md`（`appendAgentMemory()` 新增：读-合-写，单一 `## Auto-saved` 标题，按行幂等去重）。
+- `/memory save <text>` 子命令 + `/memory extract --model`（模型辅助提取，走 `extractMemoriesWithModel`）。
+- **会话结束自动提取**（`autoExtractMemoriesOnExit()`）：TUI 与 REPL 两条退出路径都接线；启发式默认开（只保留 preference 行，跳过会话级文件清单噪音），模型路径 `CCR_AUTO_MEMORY_EXTRACT=1` 开启、`=0` 全关。
+
+### F5 · 时间驱动微压缩接线 + 死代码清理
+
+**问题**：`services/micro-compact.ts` 是从未接线的死代码，且触发依赖生产消息并不携带的 `timestamp` 字段。
+
+**实现**：
+- 更名 `services/time-micro-compact.ts`，导出 `microCompactByTime(messages, lastActivityMs?)`——**显式时间戳优先**（接线方传 session 的 `updatedAt`），消息内 timestamp 作为兼容回退。
+- 接线两个会话加载点（`cli-session.ts` 启动 resume + `/resume` 命令）：闲置超过阈值（默认 60min，env 可调）的旧工具结果在恢复时清理。
+- **删除** `context/context-snip.ts` 及其测试（与 pipeline Layer 2 完全重复的死代码）。
+
+### M2 · 工具结果去重折叠（pipeline Layer 1.5）
+
+- 新层 `dedupeToolResults()`：对旧工具结果做 FNV-1a 内容 hash，与更早同 hash 结果重复的替换为 `[duplicate of earlier tool result <id>]`（首个保留全文）。
+- **只在超阈值时运行**（保持 under-threshold 字节稳定，遵守缓存前缀契约）；保护最近 4 条与语义类工具；幂等；修掉了 `slice(-0)` 会保护全部结果的边界 bug。
+
+### M3 · grep/glob 文件列举 TTL 缓存
+
+- 新 `utils/fs-cache.ts`：`cachedFileListing()` 异步 memoize（缓存 Promise，并发共享单次列举；失败的 producer 不缓存），TTL 默认 10s（`CCR_FS_CACHE_TTL_MS` 可调，0 关闭）。
+- grep 的 `rg --files` 列举与 glob 的 fast-glob 结果走缓存；**搜索本身不缓存**（内容变更正确性优先）。
+- write/edit/multi_edit 落盘后、bash/powershell 每条命令完成后主动 `invalidateWorkspaceFiles()`，TTL 兜底。
+
+---
+
+## 验证
+
+| 检查 | 结果 |
+|---|---|
+| `npm run typecheck` | ✅ 0 错误 |
+| `npm test` | ✅ 143 文件 / **1776 用例全绿**（批次 1 后 1752 + 新增 24） |
+| `npm run smoke` | ✅ PASSED |
+| `npx biome check`（改动文件） | ✅ 无 error（存量风格警告不变） |
+
+**新增测试**：`restore-context.test.ts`（7）、`memory-save.test.ts`（9）、`time-micro-compact.test.ts`（12，含迁移的 10 个 + lastActivityMs 新用例）、`fs-cache.test.ts`（8）、`context-pipeline.test.ts` +4（去重折叠）。
+
+## 涉及文件
+
+**新增**：`src/utils/fs-cache.ts`、`src/tools/extended/{restore-context,memory-save}.ts`、`src/services/time-micro-compact.ts` 及 4 个测试文件。
+**删除**：`src/services/micro-compact.ts`、`src/context/context-snip.ts`、`src/__tests__/{micro-compact,context-snip}.test.ts`。
+**修改**：`src/{context-pipeline,agent-loop,types,memory-extract,agent-memory,cli,cli-session}.ts`、`src/commands/memory.ts`、`src/tools/core/{grep,glob,bash,powershell,write,edit}.ts`、`src/tools/core-tools.ts`。
+
+## 下一批（批次 3）
+
+P1（Anthropic 逐块 tool_use 流中早启动）、F3（后台子代理，依赖批次 1 的 F4 信号量）、S3（子代理可用 MCP 工具）、S5（enter_worktree 真切 cwd）。

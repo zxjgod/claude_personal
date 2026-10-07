@@ -29,6 +29,7 @@ describe("smoke script wiring", () => {
   it("package.json exposes the smoke + quality scripts", () => {
     const pkg = JSON.parse(readRoot("package.json"));
     expect(pkg.scripts.smoke).toBe("node scripts/smoke.mjs");
+    expect(pkg.scripts["smoke:package"]).toBe("node scripts/package-smoke.mjs");
     expect(pkg.scripts.typecheck).toContain("tsc");
     expect(pkg.scripts.test).toContain("vitest");
     expect(pkg.scripts.check).toContain("biome");
@@ -58,6 +59,7 @@ describe("GitHub Actions CI gate", () => {
     expect(ci).toContain("npm run check");
     expect(ci).toContain("npm test");
     expect(ci).toContain("npm run smoke");
+    expect(ci).toContain("npm run smoke:package");
   });
 
   it("runs smoke after the unit tests (build/start/exit is the last gate)", () => {

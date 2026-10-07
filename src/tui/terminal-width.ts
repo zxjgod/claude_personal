@@ -176,8 +176,3 @@ export function padAligned(
 export function terminalColumns(): number {
   return process.stdout.columns && process.stdout.columns > 0 ? process.stdout.columns : 80;
 }
-
-/** The terminal's row count, with a sensible fallback. */
-export function terminalRows(): number {
-  return process.stdout.rows && process.stdout.rows > 0 ? process.stdout.rows : 24;
-}

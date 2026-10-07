@@ -6,6 +6,7 @@
 
 ### 使用影响
 
+- **项目收紧（2026-10-07 本地增量）**：发布包仅包含运行代码、SDK、必要示例与用户文档，不再包含 source map、测试源码、历史报告或本地 `.claude` 设置；开发构建仍保留 source map。供应商模板移至 `examples/providers.json`，按需复制到自己的工作区。未接入产品的旧健康检查与资源限制实现已移除，实际 `/doctor`、并发限制和超时控制保持现有行为。
 - **受控循环（2026-10-06 本地增量）**：输入 `/loop` 后回车打开二级管理菜单。`Collaborative`、`Autonomous`、`Scheduled`、`Conservative` 分别保存配置，均不限制总时长。`Collaborative`、`Autonomous` 和 `Conservative` 设置最大轮数，倒数阶段注入收敛提示，最后一轮仅做验证与收尾；未通过验收会暂停并保存进度。`Scheduled` 固定周期巡检不限轮数，直到手动停止或预算耗尽。间隔可用左右键调整为3～30分钟；菜单提供状态、暂停、恢复、停止、完成检查、重试与通知、执行历史、限额及恢复时段设置。累计预算计入子代理与评估调用；未知单价使用token限制，启用金额限制前应配置输入／输出单价。程序关闭期间不执行，默认恢复后需手动继续。
 
 - **终端输入与帮助（2026-10-06 本地增量）**：多行消息的上下键现在只移动光标，到首尾行停留；单行或空输入仍可回顾已发送消息。输入 `@` 即显示当前项目的文件，继续输入可筛选，Tab 插入所选路径。按 `?` 打开的帮助页已加宽并统一两列对齐，长介绍完整换行，超出窗口时可用上下键或 PgUp/PgDn 查看。
@@ -30,6 +31,7 @@
 
 - [v1.6.1 审查问题修复与运行环境调整](./更新日志/20261002-review-remediation.md)
 - 2026-10-06 本地增量：消息布局、输入与文件补全、帮助页、选择器配色、会话回退和版本说明。
+- 2026-10-07 本地增量：发布白名单、无调用代码清理、文档与旧计划归档。
 
 ---
 
@@ -54,7 +56,7 @@
 
 - 新增 `scripts/doc-sync.mjs`（`npm run docs:sync`）一键复核项目指标（版本/行数/文件数/命令数/工具数/测试文件数），`--check` 与 `项目总览.md` 比对，已挂 `.husky/pre-commit` 作警告。
 - `new-tools.test.ts` 的 WebFetchTool URL 测试改为 stub `fetch`，不再依赖真实网络（此前受限网络下超时，套件 951/952）。
-- `package.json` version 定为 **1.2.0**（唯一版本真源），`项目总览.md`/`架构.md`/`维护方案.md`/`快速开始.md`/`.env.example`/CHANGELOG 同步校正。详见 [`更新日志/20260802-doc-sync-and-hermetic-tests.md`](./更新日志/20260802-doc-sync-and-hermetic-tests.md)。
+- `package.json` version 定为 **1.2.0**（唯一版本真源），`项目总览.md`/`架构.md`/`维护方案.md`/`快速开始.md`/`.env.example`/CHANGELOG 同步校正。详见 [`更新日志/20260802-doc-sync-and-hermetic-tests.md`](archive/历史更新记录/20260802-doc-sync-and-hermetic-tests.md)。
 
 ---
 
@@ -149,7 +151,7 @@ Smoke Test: PASSED
 
 ### 安全与架构修复（`0ca3cd4`：S-2 / S-4 / P1-1 / P1-4 / M-7）
 
-详见 [`更新日志/20260708-three-week-security-architecture-fixes.md`](./更新日志/20260708-three-week-security-architecture-fixes.md)。
+详见 [`更新日志/20260708-three-week-security-architecture-fixes.md`](archive/历史更新记录/20260708-three-week-security-architecture-fixes.md)。
 
 - **S-2 子代理权限继承**：Team 子代理改用 `createSubAgentApprover()`，破坏性工具（bash/write/edit）不再绕过父级审批，与 task.ts fork 模式一致。
 - **S-4 统一 usage 口径**：移除 Anthropic 路径的 cache token 重复计数，`input_tokens` 用 provider 上报值。
@@ -159,7 +161,7 @@ Smoke Test: PASSED
 
 ### 代码审查修复（M41 改动复审）
 
-对未提交的 M41 改动（输入历史导航 + Emacs 行编辑 + highlight.js 语法高亮 + 结构化错误显示）进行代码审查，修复 4 个问题并清理死代码。详见 [`更新日志/20260708-code-review-fixes.md`](./更新日志/20260708-code-review-fixes.md)。
+对未提交的 M41 改动（输入历史导航 + Emacs 行编辑 + highlight.js 语法高亮 + 结构化错误显示）进行代码审查，修复 4 个问题并清理死代码。详见 [`更新日志/20260708-code-review-fixes.md`](archive/历史更新记录/20260708-code-review-fixes.md)。
 
 #### 修复
 

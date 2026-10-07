@@ -7,7 +7,7 @@
 > 主题：官方 `file_path` 等 snake_case 参数此前完全不可用；现作为对外契约的规范名，camelCase 保留为别名
 > 状态：已落地
 > 验证：`npm run typecheck` 通过、`npm run build` 通过、`npm run smoke` 通过、`npm test` 2,238 项通过 0 失败
-> 关联文档：[差距评估](../claude-code差距评估-20261002.md)、[v1.6.1 审查修复](20261002-review-remediation.md)
+> 关联文档：[差距评估](../20261002-claude-code差距评估.md)、[v1.6.1 审查修复](20261002-review-remediation.md)
 
 ---
 

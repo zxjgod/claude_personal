@@ -10,6 +10,17 @@
   "bin": {
     "ccr": "./dist/cli.js"
   },
+  "files": [
+    "dist/**/*.js",
+    "python/ccr_sdk.py",
+    "examples/*.json",
+    ".env.example",
+    "docs/CHANGELOG.md",
+    "docs/快速开始.md",
+    "docs/深度使用指南.md",
+    "docs/局限性说明.md",
+    "docs/loop-management.md"
+  ],
   "scripts": {
     "build": "node scripts/build.mjs",
     "build:tsc": "tsc",
@@ -23,6 +34,7 @@
     "format": "biome format --write src",
     "check": "biome check src",
     "smoke": "node scripts/smoke.mjs",
+    "smoke:package": "node scripts/package-smoke.mjs",
     "smoke:provider": "node scripts/provider-smoke.mjs",
     "docs:sync": "node --import tsx scripts/doc-sync.mjs",
     "prepare": "husky",
@@ -34,7 +46,6 @@
     "@vscode/ripgrep": "^1.18.0",
     "ajv": "^8.20.0",
     "chalk": "^5.3.0",
-    "commander": "^12.1.0",
     "dotenv": "^16.4.5",
     "fast-glob": "^3.3.2",
     "highlight.js": "^11.11.1",

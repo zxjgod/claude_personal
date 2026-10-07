@@ -2,7 +2,7 @@
 // Output Styles — named response-format presets (kernel §Output style)
 // ============================================================
 // Real Claude Code ships a set of output styles (default / explanatory /
-// learning, plus user-defined ones) that reshape the model's response voice via
+// learning) that reshape the model's response voice via
 // a system-prompt section. This module is the registry of those presets; the
 // active style is resolved into the "OUTPUT STYLE" section by system-prompt.ts
 // and switched at runtime by the /output-style command.
@@ -60,12 +60,6 @@ function ensureSeeded(): void {
   if (seeded) return;
   for (const s of BUILTIN_STYLES) STYLES.set(s.name, s);
   seeded = true;
-}
-
-/** Register or override an output style. */
-export function registerOutputStyle(style: OutputStyle): void {
-  ensureSeeded();
-  STYLES.set(style.name, style);
 }
 
 /** Look up a style by name; undefined when unknown. */

@@ -1606,7 +1606,7 @@ export function runTui(deps: TuiDeps): Promise<void> {
   // is left untouched on exit. CRITICAL: every exit path must restore the main
   // screen — a leaked alt-screen leaves the user's terminal blank. We install a
   // restore on Ink unmount AND on process exit/signals, and guard against double
-  // restore. (See archive/终端界面bug修复-20260626.md for the history that makes
+  // restore. (See archive/历史更新记录/20260626-terminal-ui-fix.md for the history that makes
   // this opt-in and carefully torn down.)
   const ENTER_ALT = "\x1B[?1049h\x1B[2J\x1B[H";
   const EXIT_ALT = "\x1B[?1049l";

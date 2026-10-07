@@ -118,10 +118,6 @@ export function listWorkflows(): WorkflowRecord[] {
   return [...WORKFLOWS.values()].sort((a, b) => b.startedAt - a.startedAt);
 }
 
-export function getWorkflow(id: string): WorkflowRecord | undefined {
-  return WORKFLOWS.get(id);
-}
-
 export function resetWorkflows(): void {
   WORKFLOWS.clear();
   wfCounter = 0;

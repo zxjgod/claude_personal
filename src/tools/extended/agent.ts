@@ -85,11 +85,6 @@ const MAX_CONCURRENCY = (() => {
 
 const agentSlots = new Semaphore(MAX_CONCURRENCY, "Agent");
 
-/** Test teardown: drop held slots so a case can't strand the next one. */
-export function resetAgentSlots(): void {
-  agentSlots.reset();
-}
-
 // ============================================================
 // Worktree isolation helpers
 // ============================================================

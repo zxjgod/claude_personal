@@ -61,3 +61,6 @@ jobs:
 
       - name: Smoke (build, start, graceful exit without an API key)
         run: npm run smoke
+
+      - name: Published package (unpack, CLI, SDK, release notes)
+        run: npm run smoke:package

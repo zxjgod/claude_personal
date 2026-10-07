@@ -645,13 +645,6 @@ export function restoreToTurn(sessionId: string, turn: number): RestoreResult {
   return { restored, deleted };
 }
 
-/** Files modified so far this session (path → first-write turn). Hydrates
- *  from the disk mirror after a restart (C8). */
-export function changedFiles(sessionId: string): Map<string, number> {
-  const s = bucket(sessionId);
-  return new Map(s.firstWriteTurn);
-}
-
 /** Compare the restore boundary with disk, including files edited in several turns. */
 export function previewRestore(
   sessionId: string,

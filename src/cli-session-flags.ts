@@ -13,7 +13,7 @@
 // an existing command line over silently lost those controls.
 //
 // Deliberate deviations from the official flag set are documented
-// in the `--help` text and in docs/claude-code差距评估-20261002.md;
+// in the `--help` text and in docs/20261002-claude-code差距评估.md;
 // nothing here claims a capability the runtime does not have.
 // ============================================================
 

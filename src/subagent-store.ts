@@ -197,16 +197,7 @@ export function listRuns(workspaceRoot: string, sessionId: string): SubagentRunR
   }
 }
 
-/** Delete all run records of a session (used when the session is deleted). */
-export function deleteRuns(workspaceRoot: string, sessionId: string): void {
-  try {
-    fs.rmSync(runsDir(workspaceRoot, sessionId), { recursive: true, force: true });
-  } catch {
-    // Best-effort.
-  }
-}
-
-/** Same, for a caller that already resolved the sessions directory. */
+/** Delete all run records of a session from its resolved sessions directory. */
 export function deleteRunsInDir(sessionsDir: string, sessionId: string): void {
   try {
     fs.rmSync(runsDirFor(sessionsDir, sessionId), { recursive: true, force: true });

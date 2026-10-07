@@ -3,14 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { render } from "ink-testing-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  currentLoop,
-  type LoopScope,
-  pauseLoop,
-  resetLoopsForTests,
-  startLoop,
-} from "../loop-runtime.js";
-import { defaultLoopConfig, loopConfig, persistLoopConfig } from "../loop-settings.js";
+import { currentLoop, type LoopScope, resetLoopsForTests, startLoop } from "../loop-runtime.js";
+import { loopConfig, persistLoopConfig } from "../loop-settings.js";
 import { App } from "../tui/App.js";
 import { runLoopMenu } from "../tui/loop-menu-flow.js";
 import { Root, type TuiDeps } from "../tui/run.js";

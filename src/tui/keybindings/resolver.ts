@@ -2,9 +2,9 @@
 // Keybindings — resolve an Ink keystroke to an action
 // ============================================================
 
-import { getKeyName, type InkKey, matchesBinding } from "./match.js";
+import { type InkKey, matchesBinding } from "./match.js";
 import { parseBindings } from "./parser.js";
-import type { KeybindingBlock, ParsedBinding, ParsedKeystroke } from "./types.js";
+import type { KeybindingBlock, ParsedBinding } from "./types.js";
 
 export type ResolveResult =
   | { type: "match"; action: string }
@@ -32,33 +32,6 @@ export function resolveKey(
   if (!match) return { type: "none" };
   if (match.action === null) return { type: "unbound" };
   return { type: "match", action: match.action };
-}
-
-/** Build a ParsedKeystroke from an Ink input + Key (null if no key name). */
-export function buildKeystroke(input: string, key: InkKey): ParsedKeystroke | null {
-  const keyName = getKeyName(input, key);
-  if (!keyName) return null;
-  // Escape quirk: Ink sets meta=true on Escape; don't record it as a modifier.
-  const effectiveMeta = key.escape ? false : (key.meta ?? false);
-  return {
-    key: keyName,
-    ctrl: key.ctrl ?? false,
-    alt: effectiveMeta,
-    shift: key.shift ?? false,
-    meta: effectiveMeta,
-    super: key.super ?? false,
-  };
-}
-
-/** Compare two ParsedKeystrokes, collapsing alt/meta into one logical modifier. */
-export function keystrokesEqual(a: ParsedKeystroke, b: ParsedKeystroke): boolean {
-  return (
-    a.key === b.key &&
-    a.ctrl === b.ctrl &&
-    a.shift === b.shift &&
-    (a.alt || a.meta) === (b.alt || b.meta) &&
-    a.super === b.super
-  );
 }
 
 /**

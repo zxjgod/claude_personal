@@ -19,6 +19,3 @@ export const TOOL_RESULT = "⎿";
 /** Permission-mode symbols shown in the prompt footer. */
 export const FAST_FORWARD = "⏵⏵"; // acceptEdits / bypassPermissions
 export const PAUSE = "⏸"; // plan mode
-
-/** Separator row drawn above permission dialogs (official modal divider). */
-export const HORIZONTAL_BAR = "▔";

@@ -14,7 +14,7 @@
 //      walk up to the first dir containing package.json, so the chunks/
 //      subdirectory (one extra level) is safe for every path-sensitive module.
 //
-// What bundling buys (measured, docs/个人复刻-需求台账-20261005.md round 4):
+// What bundling buys (measured, docs/20261005-个人复刻-需求台账.md round 4):
 //   - Interactive/REPL startup ~2.7s → ~2.0s (~27%) on Windows.
 //   - 582 dist files → ~90 (4 entries + shared chunks under dist/chunks/);
 //     every dynamic import (cli-main, TUI run, openai/anthropic SDKs,

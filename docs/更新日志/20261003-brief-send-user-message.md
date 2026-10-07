@@ -54,7 +54,7 @@ ct(aRe, {
 | `src/cli.ts` | 把 `cliArgs.brief` 透进 `buildSystemPrompt` |
 | `src/cli-env.ts` | help 增补 `--brief`（含全部偏差说明） |
 | `docs/项目总览.md` | 指标 + 本日志链接 |
-| `docs/claude-code差距评估-20261002.md` | 新增核验小节，`--brief` 移出"仍未实现" |
+| `docs/20261002-claude-code差距评估.md` | 新增核验小节，`--brief` 移出"仍未实现" |
 
 ### 三条实现决策
 

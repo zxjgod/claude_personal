@@ -14,7 +14,7 @@ coverage/
 .env.local
 .env.*.local
 
-# Provider profiles — contains plaintext API keys (commit providers.json.example instead)
+# Provider profiles — contains plaintext API keys (see examples/providers.json)
 .claude/providers.json
 
 # Editor / OS noise
@@ -43,7 +43,7 @@ npm-debug.log*
 .ccr/
 
 # Bundled reference materials (large files)
-reference/
+/reference/
 *.pdf
 claude-code-参考标准/
 

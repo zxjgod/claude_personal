@@ -324,7 +324,6 @@ export function stalledGlyphColor(idleMs: number): string {
 }
 
 /** Status dot colors */
-export const STATUS_GREEN = "#4EBA65"; // completed tool - Claude Code dark success green (rgb 78,186,101)
 export const STATUS_GRAY = "#666666"; // Tool executing - gray
 export const STATUS_GRAY_BRIGHT = "#999999"; // Tool executing flash - lighter gray
 

@@ -3,7 +3,7 @@
 > `claude_personal` 的变更记录。**每次修复 bug 或更新功能后在此追加一条**，让某个子功能日后出问题时可以「查表回溯」——是哪次改动引入的、改了哪些文件、当时为什么这么做、对应哪次 commit。
 > 配套：定位看 [`../项目架构.md`](../项目架构.md)，改动方法看 [`../模块维护方案.md`](../模块维护方案.md)。
 
-> ⚠️ **诚实声明**：本目录下若干**里程碑总结**（如 `20260705-*-report.md`、`phase1-2-final-summary.md`、`phase2-final-report.md` 等）里出现的「⭐⭐⭐⭐⭐ 卓越 5/5」「生产就绪 (Production Ready)」「企业级」「90% 对齐官方」等结论，是**当天的自我评价，语气过满，不应作为客观结论采信**。它们记录"改了什么"是如实的，但"打几分 / 有多好"是自评。准确的边界见 **[`../局限性说明.md`](../局限性说明.md)**。
+> ⚠️ **诚实声明**：归档记录中的若干**里程碑总结**（如 `20260705-*-report.md`、`20260705-phase1-2-final-summary.md`、`20260705-phase2-final-report.md` 等）里出现的「⭐⭐⭐⭐⭐ 卓越 5/5」「生产就绪 (Production Ready)」「企业级」「90% 对齐官方」等结论，是**当天的自我评价，语气过满，不应作为客观结论采信**。它们记录"改了什么"是如实的，但"打几分 / 有多好"是自评。准确的边界见 **[`../局限性说明.md`](../局限性说明.md)**。
 
 ## 为什么要写
 
@@ -36,6 +36,8 @@
 - 分析类：`20260626-bash-deadlock-analysis.md`（放 `analysis/` 子目录）
 - 特性/里程碑类：`20260620-terminal-ui.md`（无 `-fix` 后缀）
 - 同日多篇用主题区分；**同一问题当日二次修复不另起文件**，在原文件追加「七、二次修复（同日）」小节。
+- 当前与归档日志共用规则；`README.md` 和 `_模板.md` 保持固定名称。日期以记录元信息为准，不使用引用文档或预期完成日期。
+- 一般历史报告的日期精度和固定入口例外见 [文档命名](../README.md#文档命名)。
 
 ### 目录布局
 
@@ -47,7 +49,7 @@ docs/更新日志/
   analysis/          ← 深度分析（*-analysis.md），与对应 fix 互链
 ```
 
-> 历史日志仍在 [`../archive/`](../archive/)（数字偏旧、只读归档），已在下方索引登记，不迁移文件、只建索引。
+> 6 至 9 月及早期 phase 日志已归档到 [历史更新记录](../archive/历史更新记录/README.md)，下方索引保留可追溯链接。阶段总结、旧计划和参考分析见 [归档索引](../archive/README.md)。
 
 ### 必记的可追溯字段
 
@@ -59,50 +61,53 @@ docs/更新日志/
 
 | 日期 | 类型 | 模块 | 主题 | commit | 关联 |
 |---|---|---|---|---|---|
+| 2026-10-07 | refactor / chore | 内部接口 / 开发材料 | [第二轮冗余清理](20261007-project-cleanup-round-2.md) | 工作区改动 | [当前总览](../项目总览.md) |
+| 2026-10-07 | docs | 文档 / 更新记录 | [文档日期与命名统一](20261007-document-naming.md) | 工作区改动 | [命名规则](../README.md#文档命名) |
+| 2026-10-07 | refactor / build / docs | 仓库 / 发布包 | [项目收紧与发布包白名单](20261007-project-cleanup.md) | 工作区改动 | [归档索引](../archive/README.md) |
 | 2026-10-02 | style | TUI / 启动横幅 | [启动横幅文字配色](./20261002-banner-text-colors.md) | 本次提交 | [当前架构](../项目架构.md) |
-| 2026-10-02 | feature / fix | 核心执行 / 扩展 / 协议 / 恢复 | [v1.6.0 本地能力全面升级](./20261002-comprehensive-upgrade.md) | 工作区改动 | [升级实施](../升级实施-20261002.md) |
-| 2026-10-02 | fix | 权限 / LSP / MCP / goal / 恢复 | [v1.6.1 审查问题修复](./20261002-review-remediation.md) | 工作区改动 | [核验报告](../问题清单核验-20261002.md) |
-| 2026-10-02 | fix | 工具契约 / 参数名 / Hooks | [官方工具参数名对齐（snake_case）](./20261002-official-param-parity.md) | 工作区改动 | [差距评估](../claude-code差距评估-20261002.md) |
+| 2026-10-02 | feature / fix | 核心执行 / 扩展 / 协议 / 恢复 | [v1.6.0 本地能力全面升级](./20261002-comprehensive-upgrade.md) | 工作区改动 | [升级实施](../archive/reports/20261002-升级实施.md) |
+| 2026-10-02 | fix | 权限 / LSP / MCP / goal / 恢复 | [v1.6.1 审查问题修复](./20261002-review-remediation.md) | 工作区改动 | [核验报告](../archive/reports/20261002-问题清单核验.md) |
+| 2026-10-02 | fix | 工具契约 / 参数名 / Hooks | [官方工具参数名对齐（snake_case）](./20261002-official-param-parity.md) | 工作区改动 | [差距评估](../20261002-claude-code差距评估.md) |
 | 2026-10-02 | fix | 工具契约 / 工具名 / Grep / CI | [官方工具名对齐 + Grep context/offset](./20261002-official-name-parity.md) | 工作区改动 | [前一轮：参数名](./20261002-official-param-parity.md) |
 | 2026-10-02 | fix | 工具契约 / Workflow / Agent / Notebook | [官方工具契约缺口收尾（第二批）](./20261002-official-contract-batch3.md) | 工作区改动 | [前一轮：工具名](./20261002-official-name-parity.md) |
 | 2026-10-02 | fix | 持久化 / session / Windows | [修复 Windows 上 session 保存被瞬时共享冲突吞掉](./20261002-windows-rename-share-violation.md) | 工作区改动 | [前一批：工具契约](./20261002-official-contract-batch3.md) |
 | 2026-10-02 | fix | checkpoint / 原子写 / Windows | [原子 rename 重试覆盖面补全（9 处 renameSync）](./20261002-atomic-rename-coverage.md) | 工作区改动 | [上一轮：session 保存](./20261002-windows-rename-share-violation.md) |
 | 2026-10-02 | feature | TUI / 询问面板 | [开放询问布局与 Tab 补充回答](./20261002-open-asking-panel.md) | 本次提交 | [当前架构](../项目架构.md) |
 | 2026-10-01 | fix | 权限 / 会话 / 调度 / MCP / 文档 | [执行约束与运行时归属修复](./20261001-runtime-ownership-fix.md) | 本次提交 | [当前设计决策](../architecture/decisions.md) |
-| 2026-09-30 | feature / fix | TUI / EffortPrompt / 动画 | [/effort 灰紫布局与 Ultracode 紫色线性扩散波纹](./20260930-effort-layout-ultracode-ripple.md) | 待提交 | — |
-| 2026-09-30 | fix | TUI / 命令菜单 / 主题 | [命令菜单灰色文字与淡紫色选中主题](./20260930-command-menu-colors.md) | 待提交 | — |
-| 2026-09-30 | feature / fix | commands / CLI | [/context 彩色使用量网格、分类统计与内存/技能清单](./20260930-context-usage-display.md) | 待提交 | — |
-| 2026-09-10 | fix / feature | TUI / commands / tools / 测试基建 | [修复第一批+第二批：`/release-notes` 死链、`/theme` 在 picker 失效、HelpPanel 模式顺序自相矛盾、diff 缺行号槽、CI 抖动；新增 `/copy` 与 `/release-notes`；订正 DesignSync 文档吹嘘](./20260910-tui-batch1-batch2-fixes.md) | 待提交 | [TUI官方对齐方案](../TUI官方对齐方案.md)（D2/D3）、[批次B](./20260906-TUI官方对齐批次B.md)（B5） |
-| 2026-08-28 | feature | TUI / StatusBar / InputBox / ToolCard | [TUI 状态显示与交互升级（StatusBar v2 含 ctx 水位/成本/queued、ctrl+r 展开兑现、Esc 中断、@ 文件补全、usePaste 粘贴、按键冲突修复、reduced-motion 贯通、P3 i18n/列宽截断/翻页器上色）](./20260828-tui-status-interaction-upgrade.md) | 待提交 | — |
-| 2026-08-14 | feature | 上下文压缩 | [按工具类型选择性清除（`COMPACTABLE_TOOLS` 保护 Task/Skill 语义工具，只清 bulk I/O 工具结果）](./20260814-tool-type-aware-microcompact.md) | 待提交 | [参考源码移植路线图](../参考源码移植路线图.md) |
-| 2026-08-14 | feature | 权限系统 | [`dontAsk` 权限档（ask→deny）+ 权限模式配置优先级链（`--permission-mode`/env/settings）](./20260814-dontask-mode-precedence.md) | 待提交 | [参考源码移植路线图](../参考源码移植路线图.md) |
-| 2026-08-14 | feature | 权限分类器 | [权限分类器规则层（allow/soft_deny/environment + 用户覆盖，从 yoloClassifier 结构移植 + 6 测试）](./20260814-classifier-rule-layer.md) | 待提交 | [参考源码移植路线图](../参考源码移植路线图.md) |
-| 2026-08-14 | feature | prompt cache 诊断 | [Prompt 缓存断裂检测 + 根因归因（`src/prompt-cache.ts` + Anthropic 适配器接线 + 6 测试）](./20260814-prompt-cache-break-detection.md) | 待提交 | [参考源码移植路线图](../参考源码移植路线图.md) |
-| 2026-08-14 | feature | 键位系统 | [Keybindings 系统（解析/匹配/解析器 + 用户配置加载 + App 全局热键接线 + 10 测试）](./20260814-keybindings-system.md) | 待提交 | [参考源码盘点](20260814-network-dependency-audit.md) |
-| 2026-08-14 | feature | vim 输入模式 | [Vim 模式引擎移植（claude-code `vim/` 状态机 + 操作符 → 框架无关 `src/tui/vim/` 引擎 + 11 测试）](./20260814-vim-engine-port.md) | 待提交 | [参考源码盘点](20260814-network-dependency-audit.md) |
-| 2026-08-14 | fix | web_search / web_fetch | [网络依赖审计 + web 工具代理/端点配置（可配置 `WEB_SEARCH_ENDPOINT` + 可操作网络错误提示）](./20260814-network-dependency-audit.md) | 待提交 | [项目评审报告](../项目评审报告.md) |
-| 2026-08-13 | feature | 自定义命令 / 自定义子代理 / 输出风格 / 配置驱动 hooks / 测试基建 | [对齐官方 Claude Code 的五大能力补齐（`.claude/commands`、`.claude/agents`、`/output-style`、settings.json hooks、vitest 纳入 `.test.tsx`）](./20260813-parity-features.md) | 待提交 | [项目总览](../项目总览.md) |
-| 2026-08-02 | fix | 工程基建 / 测试 / 文档体系 | [文档同步脚本（`doc-sync.mjs`）+ WebFetchTool 测试封闭化 + 文档数字校正](./20260802-doc-sync-and-hermetic-tests.md) | 待提交 | [项目评审报告](../项目评审报告.md) |
-| 2026-07-08 | fix | BashTool / team / agent-loop / MCP / web-fetch / session-memory | [三周安全与架构优化（子代理权限继承、usage 口径统一、Web URL 验证增强、会话异步 I/O）](./20260708-three-week-security-architecture-fixes.md) | 待提交 | [项目评审报告](../项目评审报告.md) |
-| 2026-07-08 | fix | markdown / InputBox / command / store | [代码审查修复（语法高亮 HTML 实体、历史输入位置、命令换行绕过、死代码清理）](./20260708-code-review-fixes.md) | 待提交 | [项目评审报告](../项目评审报告.md) |
-| 2026-07-06 | fix | TypeScript / TUI 测试 | [修复类型收窄错误和 TUI 滚动测试超时问题](./20260706-typecheck-tui-timeout-fix.md) | 待提交 | — |
-| 2026-07-04 | feature | TUI / commands / theme | [Shift+Tab 模式切换体验优化（Toast 反馈、帮助面板、/mode 命令、状态栏颜色）](./20260704-m38-mode-switch-ux.md) | 待提交 | [M38 计划表](../archive/M38计划表-指令深化与权限模式.md) |
-| 2026-07-02 | feature | commands / sessions / compact / effort / permissions / TUI | [M38 `/` 指令深化（effort 定义、sessions 删除、compact 进度条）+ Shift+Tab 权限模式即时切换](./20260702-m38-command-permission-mode.md) | 待提交 | [M38 计划表](../archive/M38计划表-指令深化与权限模式.md) |
-| 2026-07-02 | feature | TUI / theme / spinner-core / InputBox / CommandPicker | [角色分色（`theme.ts`）+ 思考态趣味动词循环（`verbAt`）+ `/help` 命令面板（方向键选择 + 视口滚动）](./20260702-tui-role-color-verb-command-palette.md) | 待提交 | — |
-| 2026-06-29 | fix | TUI / FullScreenApp / InputBox / ScrollView | [全屏 TUI 实测修复（光标漂移 prompt 末行、busy 变色/缩小、Ctrl+U/D 滚动）+ 抽 FullScreenApp 独立模块解耦](./20260629-fullscreen-tui-fixes.md) | 待提交 | [M25 计划表](../archive/M25计划表-全屏TUI.md) |
-| 2026-06-29 | feature | TUI / InputBox / 全屏布局 | [M25 多行输入（Ctrl+J / 行间光标）+ 可选全屏布局（alt-screen / ScrollView 回看，默认关）](../archive/M25计划表-全屏TUI.md) | 7db7a98 | [M25 计划表](../archive/M25计划表-全屏TUI.md) |
-| 2026-06-28 | fix | TUI / store / InputBox / 流式响应 | [M24 TUI 响应平滑 + 输入框稳定（帧合批 + 字段订阅 + 流式区隔离 + 分隔线留 1 列治跳位）](./20260628-m24-tui-smoothing.md) | 待提交 | [M计划表 §十一 M24](../archive/M计划表-对齐CCB.md) |
-| 2026-06-28 | feature | TUI / 状态行 / 流式响应 | [M23 TUI 体验对齐参考版（StatusLine / SpinnerGlyph / StreamBuffer / spinner-core）](./20260628-m23-tui-statusline.md) | 待提交 | [M计划表 §七 M23](../archive/M计划表-对齐CCB.md) |
-| 2026-06-28 | feature | provider 路由 / 配置 | [`/provider` 多 API 端点档案热切换（中转站/国内平台免重启切换）](./20260628-provider-profiles.md) | 待提交 | [M计划表 §六 M22](../archive/M计划表-对齐CCB.md) |
-| 2026-06-28 | feature | 测试基建 / 集成测试 | [M21 测试广度（5 大集成测试 + CI 冒烟元测试，508→613）](./20260628-m21-testing.md) | 待提交 | [M计划表](../archive/M计划表-对齐CCB.md) |
-| 2026-06-28 | fix | TUI / InputBox | [`/` 命令面板陈旧选中索引越界崩溃修复](./20260628-inputbox-stale-suggestion-crash-fix.md) | 待提交 | — |
-| 2026-06-28 | feature | 工程基建 / CI / 构建 | [M20 工程化对齐（Biome / esbuild / 冒烟 / husky / CI）](./20260628-m20-engineering.md) | 待提交 | [M计划表](../archive/M计划表-对齐CCB.md) |
-| 2026-06-28 | feature | TUI / resume | [/resume 交互式 Session Picker（方向键 + 滚动窗口 + 历史回放）](./20260628-resume-session-picker.md) | 待提交 | — |
-| 2026-06-26 | fix | BashTool / agent-loop / permissions | [Bash 工具死循环 / 转圈卡死修复](../archive/bash-deadlock-fix-20260626.md) | ecabdae | [analysis](../archive/bash-deadlock-analysis.md) |
-| 2026-06-26 | analysis | BashTool / 进程管理 | [Bash 死锁根因分析](../archive/bash-deadlock-analysis.md) | — | [fix](../archive/bash-deadlock-fix-20260626.md) |
-| 2026-06-26 | fix | TUI 终端界面 | [终端界面 bug 修复](../archive/终端界面bug修复-20260626.md) | — | — |
-| 2026-06（里程碑） | feature | 终端渲染层 | [终端界面对齐记录](../archive/更新日志-终端界面.md) | — | — |
-| M1–M6（里程碑） | feature | 全局 | [M 计划实现日志](../archive/M计划更新日志.md) | — | 仅到 M6，已断档 |
+| 2026-09-30 | feature / fix | TUI / EffortPrompt / 动画 | [/effort 灰紫布局与 Ultracode 紫色线性扩散波纹](../archive/历史更新记录/20260930-effort-layout-ultracode-ripple.md) | 待提交 | — |
+| 2026-09-30 | fix | TUI / 命令菜单 / 主题 | [命令菜单灰色文字与淡紫色选中主题](../archive/历史更新记录/20260930-command-menu-colors.md) | 待提交 | — |
+| 2026-09-30 | feature / fix | commands / CLI | [/context 彩色使用量网格、分类统计与内存/技能清单](../archive/历史更新记录/20260930-context-usage-display.md) | 待提交 | — |
+| 2026-09-10 | fix / feature | TUI / commands / tools / 测试基建 | [修复第一批+第二批：`/release-notes` 死链、`/theme` 在 picker 失效、HelpPanel 模式顺序自相矛盾、diff 缺行号槽、CI 抖动；新增 `/copy` 与 `/release-notes`；订正 DesignSync 文档吹嘘](../archive/历史更新记录/20260910-tui-batch1-batch2-fixes.md) | 待提交 | [TUI官方对齐方案](../archive/reports/20260906-TUI官方对齐方案.md)（D2/D3）、[批次B](../archive/历史更新记录/20260906-tui-alignment-batch-b.md)（B5） |
+| 2026-08-28 | feature | TUI / StatusBar / InputBox / ToolCard | [TUI 状态显示与交互升级（StatusBar v2 含 ctx 水位/成本/queued、ctrl+r 展开兑现、Esc 中断、@ 文件补全、usePaste 粘贴、按键冲突修复、reduced-motion 贯通、P3 i18n/列宽截断/翻页器上色）](../archive/历史更新记录/20260828-tui-status-interaction-upgrade.md) | 待提交 | — |
+| 2026-08-14 | feature | 上下文压缩 | [按工具类型选择性清除（`COMPACTABLE_TOOLS` 保护 Task/Skill 语义工具，只清 bulk I/O 工具结果）](../archive/历史更新记录/20260814-tool-type-aware-microcompact.md) | 待提交 | [参考源码移植路线图](../archive/reports/参考源码移植路线图.md) |
+| 2026-08-14 | feature | 权限系统 | [`dontAsk` 权限档（ask→deny）+ 权限模式配置优先级链（`--permission-mode`/env/settings）](../archive/历史更新记录/20260814-dontask-mode-precedence.md) | 待提交 | [参考源码移植路线图](../archive/reports/参考源码移植路线图.md) |
+| 2026-08-14 | feature | 权限分类器 | [权限分类器规则层（allow/soft_deny/environment + 用户覆盖，从 yoloClassifier 结构移植 + 6 测试）](../archive/历史更新记录/20260814-classifier-rule-layer.md) | 待提交 | [参考源码移植路线图](../archive/reports/参考源码移植路线图.md) |
+| 2026-08-14 | feature | prompt cache 诊断 | [Prompt 缓存断裂检测 + 根因归因（`src/prompt-cache.ts` + Anthropic 适配器接线 + 6 测试）](../archive/历史更新记录/20260814-prompt-cache-break-detection.md) | 待提交 | [参考源码移植路线图](../archive/reports/参考源码移植路线图.md) |
+| 2026-08-14 | feature | 键位系统 | [Keybindings 系统（解析/匹配/解析器 + 用户配置加载 + App 全局热键接线 + 10 测试）](../archive/历史更新记录/20260814-keybindings-system.md) | 待提交 | [参考源码盘点](../archive/历史更新记录/20260814-network-dependency-audit.md) |
+| 2026-08-14 | feature | vim 输入模式 | [Vim 模式引擎移植（claude-code `vim/` 状态机 + 操作符 → 框架无关 `src/tui/vim/` 引擎 + 11 测试）](../archive/历史更新记录/20260814-vim-engine-port.md) | 待提交 | [参考源码盘点](../archive/历史更新记录/20260814-network-dependency-audit.md) |
+| 2026-08-14 | fix | web_search / web_fetch | [网络依赖审计 + web 工具代理/端点配置（可配置 `WEB_SEARCH_ENDPOINT` + 可操作网络错误提示）](../archive/历史更新记录/20260814-network-dependency-audit.md) | 待提交 | [项目评审报告](../archive/reports/20260623-项目评审报告.md) |
+| 2026-08-13 | feature | 自定义命令 / 自定义子代理 / 输出风格 / 配置驱动 hooks / 测试基建 | [对齐官方 Claude Code 的五大能力补齐（`.claude/commands`、`.claude/agents`、`/output-style`、settings.json hooks、vitest 纳入 `.test.tsx`）](../archive/历史更新记录/20260813-parity-features.md) | 待提交 | [项目总览](../项目总览.md) |
+| 2026-08-02 | fix | 工程基建 / 测试 / 文档体系 | [文档同步脚本（`doc-sync.mjs`）+ WebFetchTool 测试封闭化 + 文档数字校正](../archive/历史更新记录/20260802-doc-sync-and-hermetic-tests.md) | 待提交 | [项目评审报告](../archive/reports/20260623-项目评审报告.md) |
+| 2026-07-08 | fix | BashTool / team / agent-loop / MCP / web-fetch / session-memory | [三周安全与架构优化（子代理权限继承、usage 口径统一、Web URL 验证增强、会话异步 I/O）](../archive/历史更新记录/20260708-three-week-security-architecture-fixes.md) | 待提交 | [项目评审报告](../archive/reports/20260623-项目评审报告.md) |
+| 2026-07-08 | fix | markdown / InputBox / command / store | [代码审查修复（语法高亮 HTML 实体、历史输入位置、命令换行绕过、死代码清理）](../archive/历史更新记录/20260708-code-review-fixes.md) | 待提交 | [项目评审报告](../archive/reports/20260623-项目评审报告.md) |
+| 2026-07-06 | fix | TypeScript / TUI 测试 | [修复类型收窄错误和 TUI 滚动测试超时问题](../archive/历史更新记录/20260706-typecheck-tui-timeout-fix.md) | 待提交 | — |
+| 2026-07-04 | feature | TUI / commands / theme | [Shift+Tab 模式切换体验优化（Toast 反馈、帮助面板、/mode 命令、状态栏颜色）](../archive/历史更新记录/20260704-m38-mode-switch-ux.md) | 待提交 | [M38 计划表](../archive/20260702-M38计划表-指令深化与权限模式.md) |
+| 2026-07-02 | feature | commands / sessions / compact / effort / permissions / TUI | [M38 `/` 指令深化（effort 定义、sessions 删除、compact 进度条）+ Shift+Tab 权限模式即时切换](../archive/历史更新记录/20260702-m38-command-permission-mode.md) | 待提交 | [M38 计划表](../archive/20260702-M38计划表-指令深化与权限模式.md) |
+| 2026-07-02 | feature | TUI / theme / spinner-core / InputBox / CommandPicker | [角色分色（`theme.ts`）+ 思考态趣味动词循环（`verbAt`）+ `/help` 命令面板（方向键选择 + 视口滚动）](../archive/历史更新记录/20260702-tui-role-color-verb-command-palette.md) | 待提交 | — |
+| 2026-06-29 | fix | TUI / FullScreenApp / InputBox / ScrollView | [全屏 TUI 实测修复（光标漂移 prompt 末行、busy 变色/缩小、Ctrl+U/D 滚动）+ 抽 FullScreenApp 独立模块解耦](../archive/历史更新记录/20260629-fullscreen-tui-fixes.md) | 待提交 | [M25 计划表](../archive/20260629-M25计划表-全屏TUI.md) |
+| 2026-06-29 | feature | TUI / InputBox / 全屏布局 | [M25 多行输入（Ctrl+J / 行间光标）+ 可选全屏布局（alt-screen / ScrollView 回看，默认关）](../archive/20260629-M25计划表-全屏TUI.md) | 7db7a98 | [M25 计划表](../archive/20260629-M25计划表-全屏TUI.md) |
+| 2026-06-28 | fix | TUI / store / InputBox / 流式响应 | [M24 TUI 响应平滑 + 输入框稳定（帧合批 + 字段订阅 + 流式区隔离 + 分隔线留 1 列治跳位）](../archive/历史更新记录/20260628-m24-tui-smoothing.md) | 待提交 | [M计划表 §十一 M24](../archive/20260627-M计划表-对齐CCB.md) |
+| 2026-06-28 | feature | TUI / 状态行 / 流式响应 | [M23 TUI 体验对齐参考版（StatusLine / SpinnerGlyph / StreamBuffer / spinner-core）](../archive/历史更新记录/20260628-m23-tui-statusline.md) | 待提交 | [M计划表 §七 M23](../archive/20260627-M计划表-对齐CCB.md) |
+| 2026-06-28 | feature | provider 路由 / 配置 | [`/provider` 多 API 端点档案热切换（中转站/国内平台免重启切换）](../archive/历史更新记录/20260628-provider-profiles.md) | 待提交 | [M计划表 §六 M22](../archive/20260627-M计划表-对齐CCB.md) |
+| 2026-06-28 | feature | 测试基建 / 集成测试 | [M21 测试广度（5 大集成测试 + CI 冒烟元测试，508→613）](../archive/历史更新记录/20260628-m21-testing.md) | 待提交 | [M计划表](../archive/20260627-M计划表-对齐CCB.md) |
+| 2026-06-28 | fix | TUI / InputBox | [`/` 命令面板陈旧选中索引越界崩溃修复](../archive/历史更新记录/20260628-inputbox-stale-suggestion-crash-fix.md) | 待提交 | — |
+| 2026-06-28 | feature | 工程基建 / CI / 构建 | [M20 工程化对齐（Biome / esbuild / 冒烟 / husky / CI）](../archive/历史更新记录/20260628-m20-engineering.md) | 待提交 | [M计划表](../archive/20260627-M计划表-对齐CCB.md) |
+| 2026-06-28 | feature | TUI / resume | [/resume 交互式 Session Picker（方向键 + 滚动窗口 + 历史回放）](../archive/历史更新记录/20260628-resume-session-picker.md) | 待提交 | — |
+| 2026-06-26 | fix | BashTool / agent-loop / permissions | [Bash 工具死循环 / 转圈卡死修复](../archive/历史更新记录/20260626-bash-deadlock-fix.md) | ecabdae | [analysis](../archive/bash-deadlock-analysis.md) |
+| 2026-06-26 | analysis | BashTool / 进程管理 | [Bash 死锁根因分析](../archive/bash-deadlock-analysis.md) | — | [fix](../archive/历史更新记录/20260626-bash-deadlock-fix.md) |
+| 2026-06-26 | fix | TUI 终端界面 | [终端界面 bug 修复](../archive/历史更新记录/20260626-terminal-ui-fix.md) | — | — |
+| 2026-06（里程碑） | feature | 终端渲染层 | [终端界面对齐记录](../archive/历史更新记录/20260620-terminal-ui.md) | — | — |
+| M1–M6（里程碑） | feature | 全局 | [M 计划实现日志](../archive/历史更新记录/20260619-milestone-history.md) | — | 仅到 M6，已断档 |
 
 > 新条目加在表格**最上方**。
 
@@ -121,11 +126,11 @@ docs/更新日志/
 
 - **执行约束 / checkpoint / 调度归属 / 工具目录 / 文档**：[20261001-runtime-ownership-fix](./20261001-runtime-ownership-fix.md)（父权限继承、统一 hook、恢复回退、任务归属与取消、实时目录及文档检查）。
 
-- **/effort / Ultracode 动画**：[`20260930-effort-layout-ultracode-ripple`](./20260930-effort-layout-ultracode-ripple.md)（灰紫轨道、简洁布局、八档紫色像素波纹；档位中心线性扩散至操作提示行，保留键盘交互与减少动态效果模式）。
+- **/effort / Ultracode 动画**：[`20260930-effort-layout-ultracode-ripple`](../archive/历史更新记录/20260930-effort-layout-ultracode-ripple.md)（灰紫轨道、简洁布局、八档紫色像素波纹；档位中心线性扩散至操作提示行，保留键盘交互与减少动态效果模式）。
 
-- **命令菜单配色**：[`20260930-command-menu-colors`](./20260930-command-menu-colors.md)（`/` 与 `/help` 普通灰色、选中淡紫色，名称/说明同色；兼容暗/浅主题与原始 TTY）。
+- **命令菜单配色**：[`20260930-command-menu-colors`](../archive/历史更新记录/20260930-command-menu-colors.md)（`/` 与 `/help` 普通灰色、选中淡紫色，名称/说明同色；兼容暗/浅主题与原始 TTY）。
 
-- **/context / 上下文使用量**：[`20260930-context-usage-display`](./20260930-context-usage-display.md)（彩色网格、六类统计、已加载内存与技能来源清单；修复系统提示/消息计数，支持窄终端与模型容量覆盖）。
+- **/context / 上下文使用量**：[`20260930-context-usage-display`](../archive/历史更新记录/20260930-context-usage-display.md)（彩色网格、六类统计、已加载内存与技能来源清单；修复系统提示/消息计数，支持窄终端与模型容量覆盖）。
 
 > 某个子功能再出问题时，先在这里找它涉及过哪些日志，再顺藤摸瓜到 commit 与设计决策。
 
@@ -168,4 +173,4 @@ docs/更新日志/
 
 `已落地` / `进行中` / `已回滚` / `已知未修`。
 
-当前已知未修缺口（详见 [`../项目评审报告.md`](../项目评审报告.md) 与 [`../模块维护方案.md`](../模块维护方案.md) 的「高风险区」）：已全部修复（2026-07-08）：Bash 审批链路、S-2 子代理权限继承、MCP 默认免审批、Web-fetch SSRF（统一到 InputValidator）、usage 口径、session-memory 同步 I/O。`bashCommandIsReadOnly` 换行符绕过已修复，见 `20260708-code-review-fixes`。
+当前已知未修缺口（详见 [`../20260623-项目评审报告.md`](../archive/reports/20260623-项目评审报告.md) 与 [`../模块维护方案.md`](../模块维护方案.md) 的「高风险区」）：已全部修复（2026-07-08）：Bash 审批链路、S-2 子代理权限继承、MCP 默认免审批、Web-fetch SSRF（统一到 InputValidator）、usage 口径、session-memory 同步 I/O。`bashCommandIsReadOnly` 换行符绕过已修复，见 `20260708-code-review-fixes`。

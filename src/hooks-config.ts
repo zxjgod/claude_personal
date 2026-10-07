@@ -44,7 +44,7 @@ import {
   hookIdentity,
 } from "./hook-events.js";
 import type { Hook, HookRegistry } from "./hooks.js";
-import { readProjectSettings, readSettings } from "./settings.js";
+import { readProjectSettings } from "./settings.js";
 import { hookToolInput } from "./tools/utils/official-params.js";
 import { sanitizeTerminalText } from "./tui/terminal-width.js";
 import { sanitizeChildEnv } from "./utils/env-sanitize.js";
@@ -768,24 +768,6 @@ export function registerHooksFromConfig(
   return count;
 }
 
-/**
- * Load hooks from the project settings and register them. Convenience wrapper:
- * readSettings → parseHooksConfig → registerHooksFromConfig. Returns the count.
- *
- * LOW-LEVEL: this bypasses the trust gate. Interacting with a checked-out
- * repository should go through loadHooksFromSettingsTrusted instead — project
- * hooks execute arbitrary shell commands with the user's environment.
- */
-export function loadHooksFromSettings(
-  workspaceRoot: string,
-  registry: HookRegistry,
-  ctx?: HookRunContext,
-): number {
-  const settings = readSettings(workspaceRoot);
-  const config = parseHooksConfig(settings);
-  return registerHooksFromConfig(registry, config, ctx);
-}
-
 // --- Project-hook trust gate ------------------------------------------------
 // Hooks declared by a checked-out repo run arbitrary shell commands inheriting
 // the user's full environment (API keys included). Loading them unconditionally
@@ -871,7 +853,7 @@ export interface TrustedHooksResult {
 }
 
 /**
- * Trust-gated variant of loadHooksFromSettings. Hooks are registered only when
+ * Load configured hooks through the trust gate. Hooks are registered only when
  * the config fingerprint is already trusted, or the user confirms via the
  * `confirm` callback (pass null in non-interactive contexts → fail-closed).
  */

@@ -21,7 +21,7 @@ describe("output style registry", () => {
     expect(listOutputStyles().map((s) => s.name)).toEqual(["default", "explanatory", "learning"]);
   });
 
-  it("looks up and registers styles", () => {
+  it("looks up built-in styles and rejects unknown names", () => {
     resetOutputStyles();
     expect(getOutputStyle("explanatory")?.description).toContain("trade-offs");
     expect(getOutputStyle("nope")).toBeUndefined();

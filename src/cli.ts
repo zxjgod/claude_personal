@@ -3,7 +3,7 @@
 // ============================================================
 // Claude Code Replica — slim CLI entry point
 // ------------------------------------------------------------
-// Startup performance is a feature (see docs/个人复刻-需求台账-20261005.md,
+// Startup performance is a feature (see docs/20261005-个人复刻-需求台账.md,
 // pillar C). The full module graph (agent loop, provider SDKs, markdown/
 // highlight, TUI) costs ~1.5s of ESM resolution+evaluation, so this entry
 // keeps ONLY the two light decisions every invocation needs:
