@@ -2,13 +2,22 @@
 // Tests: LSP real connection + legacy helpers (M14.5)
 // ============================================================
 
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { clearLspClientCache, disposeAllLspClients, getLspClient } from "../lsp.js";
 import { filterByFile, formatDiagnostics, parseTscOutput } from "../lsp-legacy.js";
+
+const execFileAsync = promisify(execFile);
+
+async function cleanupWorkspace(dir: string): Promise<void> {
+  await disposeAllLspClients();
+  // Windows may briefly retain tsserver/antivirus handles after process close.
+  await fs.promises.rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+}
 
 afterEach(async () => {
   await disposeAllLspClients();
@@ -76,7 +85,7 @@ describe("LspClient (real tsserver)", () => {
       );
       await client.dispose();
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      await cleanupWorkspace(dir);
     }
   }, 40000);
 
@@ -114,7 +123,7 @@ describe("LspClient (real tsserver)", () => {
       );
       await client.dispose();
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      await cleanupWorkspace(dir);
     }
   }, 40000);
 
@@ -138,7 +147,7 @@ describe("LspClient (real tsserver)", () => {
       expect(diags.filter((d) => d.severity === "error")).toHaveLength(0);
       await client.dispose();
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      await cleanupWorkspace(dir);
     }
   }, 40000);
 });
@@ -160,21 +169,24 @@ describe("LspClient.getProjectDiagnostics (S4, real tsserver)", () => {
       // identity even on machines whose default TEMP has no short component.
       const workspace =
         process.platform === "win32"
-          ? execFileSync(
-              "powershell.exe",
-              [
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                "(New-Object -ComObject Scripting.FileSystemObject).GetFolder($env:CCR_LSP_TEST_ROOT).ShortPath",
-              ],
-              {
-                env: { ...process.env, CCR_LSP_TEST_ROOT: dir },
-                encoding: "utf8",
-                windowsHide: true,
-                timeout: 5000,
-              },
-            ).trim()
+          ? (
+              await execFileAsync(
+                "powershell.exe",
+                [
+                  "-NoProfile",
+                  "-NonInteractive",
+                  "-Command",
+                  "(New-Object -ComObject Scripting.FileSystemObject).GetFolder($env:CCR_LSP_TEST_ROOT).ShortPath",
+                ],
+                {
+                  env: { ...process.env, CCR_LSP_TEST_ROOT: dir },
+                  encoding: "utf8",
+                  windowsHide: true,
+                  // Cold PowerShell + COM startup can exceed 5s on a busy runner.
+                  timeout: 30000,
+                },
+              )
+            ).stdout.trim()
           : dir;
       clearLspClientCache(workspace);
       const client = getLspClient(workspace)!;
@@ -186,17 +198,9 @@ describe("LspClient.getProjectDiagnostics (S4, real tsserver)", () => {
       expect(errors.some((d) => d.file.includes("node_modules"))).toBe(false);
       await client.dispose();
     } finally {
-      // Windows: tsserver can hold the temp dir briefly after dispose.
-      for (let i = 0; i < 5; i++) {
-        try {
-          fs.rmSync(dir, { recursive: true, force: true });
-          break;
-        } catch {
-          await new Promise((r) => setTimeout(r, 200));
-        }
-      }
+      await cleanupWorkspace(dir);
     }
-  }, 90_000);
+  }, 120_000);
 
   it("returns [] for a project with no script files", async () => {
     if (!hasTsserver) return;
@@ -208,7 +212,7 @@ describe("LspClient.getProjectDiagnostics (S4, real tsserver)", () => {
       expect(await client.getProjectDiagnostics(50, 30_000)).toEqual([]);
       await client.dispose();
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      await cleanupWorkspace(dir);
     }
   }, 60_000);
 });
