@@ -96,6 +96,14 @@ export function loadConfig(): ModelConfig {
       : undefined,
   });
 
+  const imageInputOverride = process.env.LLM_SUPPORTS_IMAGES ?? "";
+  if (/^(true|false|1|0)$/i.test(imageInputOverride)) {
+    config.options = {
+      ...(config.options ?? {}),
+      supportsImages: /^(true|1)$/i.test(imageInputOverride),
+    };
+  }
+
   // Fallback model chain (same provider). Precedence: official
   // `--fallback-model a,b,c` flag → LLM_FALLBACK_MODELS="a,b,c". The official
   // flag is documented as --print only; here the chain is provider-agnostic and

@@ -5,6 +5,8 @@
 import * as fs from "node:fs";
 import chalk from "chalk";
 import { z } from "zod";
+import { supportsImageInput } from "../../multimodal.js";
+import { MAX_PDF_BYTES, readPdf } from "../../pdf.js";
 import { markRead } from "../../read-tracker.js";
 import type { Tool, ToolResult } from "../../types.js";
 import { InputValidator } from "../../utils/input-validator.js";
@@ -21,6 +23,10 @@ const ReadSchema = z.strictObject({
     .optional()
     .describe("Line number to start reading from (1-based)"),
   limit: z.number().int().min(1).optional().describe("Maximum number of lines to read"),
+  pages: z
+    .string()
+    .optional()
+    .describe('PDF page or range (1-based), e.g. "1" or "2-5"; at most 5 pages, default first 5'),
 });
 
 export const ReadTool: Tool = buildTool({
@@ -32,7 +38,9 @@ export const ReadTool: Tool = buildTool({
     "is also accepted), " +
     "offset (optional, line number to start reading from, 1-based), " +
     "limit (optional, maximum number of lines to read, default 2000). " +
-    "Images (PNG/JPG/GIF/WebP) and PDFs are returned as visual content blocks you can see directly.",
+    "Images (PNG/JPG/GIF/WebP) are returned as visual content blocks. " +
+    "PDFs are processed locally into page text and PNG images; pages selects a 1-based page/range (maximum 5 per read, default first 5). " +
+    "Use pages for PDFs, offset/limit for text. Text-only models receive extracted PDF text without page images.",
   schema: ReadSchema,
   isReadOnly: true,
   isConcurrencySafe: true,
@@ -74,6 +82,14 @@ export const ReadTool: Tool = buildTool({
       }
 
       const mediaType = imageMediaType(filePath);
+      const isPdf = mediaType === "application/pdf";
+      if (input.pages !== undefined && !isPdf)
+        return {
+          content: "",
+          error: "pages is only supported for PDF files; use offset/limit for text.",
+        };
+      if (isPdf && (input.offset !== undefined || input.limit !== undefined))
+        return { content: "", error: 'PDF reads use pages (e.g. "1-5"), not offset/limit.' };
 
       // Speculative prefetch (Top10 #6): a background read the model has not
       // seen must NOT satisfy the read-before-edit gate. Skip markRead and
@@ -89,12 +105,19 @@ export const ReadTool: Tool = buildTool({
       // Images/PDFs are loaded wholesale into memory below, so the size gate
       // MUST run before any read: a multi-GB PNG rejected only after
       // readFileSync would already have OOM'd the process.
-      if (mediaType && stat.size > MAX_IMAGE_BYTES) {
+      const maxMediaBytes = isPdf ? MAX_PDF_BYTES : MAX_IMAGE_BYTES;
+      if (mediaType && stat.size > maxMediaBytes) {
         return {
-          content: `[Image too large to load: ${input.filePath} (${stat.size} bytes, max ${MAX_IMAGE_BYTES})]`,
+          content: "",
+          error: `${isPdf ? "PDF" : "Image"} too large to load: ${input.filePath} (${stat.size} bytes, max ${maxMediaBytes})`,
           metadata: { fileSize: stat.size },
         };
       }
+      if (mediaType && !isPdf && !supportsImageInput(context.modelConfig))
+        return {
+          content: "",
+          error: `The current model (${context.modelConfig?.model}) is configured for text input only. Switch to a vision model to read this image.`,
+        };
 
       // Never load an unbounded text file wholesale into memory: a multi-GB
       // file would be read into RAM and split into lines with no cap, risking
@@ -117,7 +140,21 @@ export const ReadTool: Tool = buildTool({
         buffer = fs.readFileSync(filePath);
       }
 
-      // Images and PDFs return as multimodal content blocks.
+      if (isPdf) {
+        const result = await readPdf(buffer, {
+          pages: input.pages,
+          renderImages: supportsImageInput(context.modelConfig),
+          signal: context.abortSignal,
+        });
+        noteRead();
+        return {
+          ...result,
+          content: `[Read PDF: ${input.filePath}]\n${result.content}`,
+          metadata: { ...result.metadata, fileSize: stat.size, ...specMeta },
+        };
+      }
+
+      // Images return as multimodal content blocks.
       if (mediaType) {
         noteRead();
         return {

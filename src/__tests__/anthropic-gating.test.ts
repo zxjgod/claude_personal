@@ -29,6 +29,7 @@ vi.mock("@anthropic-ai/sdk", () => {
 
 import { anthropicCaller } from "../anthropic-adapter.js";
 import type { Message, ModelConfig, StreamEvent } from "../types.js";
+import { makePdf } from "./fixtures/pdf.js";
 
 const messages: Message[] = [{ role: "user", content: [{ type: "text", text: "hi" }] }];
 
@@ -69,6 +70,38 @@ beforeEach(() => {
 
 describe("anthropic request gating", () => {
   const base = { provider: "anthropic" as const, apiKey: "k" };
+
+  it("sends locally rendered pages for a legacy PDF on Kimi's compatible endpoint", async () => {
+    const history: Message[] = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "image",
+            source: {
+              type: "base64",
+              media_type: "application/pdf",
+              data: makePdf().toString("base64"),
+            },
+          },
+        ],
+      },
+      ...messages,
+    ];
+    for await (const _e of anthropicCaller(history, [], "sys", {
+      ...base,
+      model: "k3",
+      baseURL: "https://api.kimi.com/coding/",
+    })) {
+      /* drain */
+    }
+    const request = JSON.stringify(streamSpy.mock.calls[0][0].messages);
+    expect(request).toContain("Page 1 content");
+    expect(request).toContain("image/png");
+    expect(request).not.toContain('"type":"document"');
+    expect(request).not.toContain("application/pdf");
+    expect(request).toContain("hi");
+  });
 
   it("sends effort + adaptive thinking for a supporting model (opus-4-8)", async () => {
     await drain({ ...base, model: "claude-opus-4-8" });

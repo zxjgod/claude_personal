@@ -16,6 +16,7 @@ import {
   modelSupportsAdaptiveThinking,
   modelSupportsEffort,
 } from "./model-metadata.js";
+import { prepareMultimodalMessages } from "./multimodal.js";
 import { checkResponseForCacheBreak, recordPromptState } from "./prompt-cache.js";
 import { DYNAMIC_BOUNDARY } from "./system-prompt.js";
 import { DEFAULT_MAX_RESULT_CHARS, truncateToolResult } from "./tools/truncation.js";
@@ -373,6 +374,7 @@ export const anthropicCaller: ModelCaller = async function* (
   config: ModelConfig,
   abortSignal?: AbortSignal,
 ): AsyncGenerator<StreamEvent> {
+  const preparedMessages = await prepareMultimodalMessages(messages, config, abortSignal);
   // Official `--betas`: already allowlist-filtered in cli.ts, so this only
   // ever forwards headers the user was actually allowed to request.
   const betaHeader = betaHeaderValue(
@@ -413,7 +415,7 @@ export const anthropicCaller: ModelCaller = async function* (
       model,
       effort: getEffort(config.options),
     },
-    messages,
+    preparedMessages,
   );
   // Adaptive thinking is an Opus 4.6+ / Sonnet 4.6+ / Sonnet 5 / Fable 5
   // feature; sending `thinking: {type:"adaptive"}` to a model without it
@@ -447,7 +449,7 @@ export const anthropicCaller: ModelCaller = async function* (
       max_tokens: maxTokens,
       system: formatSystemForAnthropic(systemPrompt),
       messages: withMessageCacheBreakpoint(
-        convertMessagesToAnthropic(messages, tools),
+        convertMessagesToAnthropic(preparedMessages, tools),
       ) as unknown as Anthropic.MessageParam[],
       tools: tools.length > 0 ? formatToolsForAnthropic(tools) : undefined,
       ...(thinking ? { thinking } : {}),

@@ -29,6 +29,7 @@ vi.mock("openai", () => {
 
 import { createModelCaller } from "../llm-adapter.js";
 import type { Message, ModelConfig, StreamEvent } from "../types.js";
+import { makePdf } from "./fixtures/pdf.js";
 
 const config: ModelConfig = {
   provider: "openai",
@@ -266,7 +267,7 @@ describe("openAICompatibleCaller", () => {
     expect(text).toEqual(["answer"]);
   });
 
-  it("rejects PDF content with an actionable provider error instead of a doomed image_url", async () => {
+  it("converts a legacy PDF to text and image_url PNGs before calling the provider", async () => {
     createSpy.mockResolvedValue(makeStream([]));
     const pdfMessages: Message[] = [
       {
@@ -274,16 +275,43 @@ describe("openAICompatibleCaller", () => {
         content: [
           {
             type: "image",
-            source: { type: "base64", media_type: "application/pdf", data: "eHl6" },
+            source: {
+              type: "base64",
+              media_type: "application/pdf",
+              data: makePdf().toString("base64"),
+            },
           } as any,
         ],
       },
     ];
-    await expect(async () => {
-      for await (const _e of createModelCaller(config)(pdfMessages, [], "sys", config)) {
-        // drain
-      }
-    }).rejects.toThrow(/does not support application\/pdf/);
-    expect(createSpy).not.toHaveBeenCalled(); // never reaches the wire
+    for await (const _e of createModelCaller(config)(pdfMessages, [], "sys", config)) {
+      /* drain */
+    }
+    expect(createSpy).toHaveBeenCalledOnce();
+    const request = JSON.stringify(createSpy.mock.calls[0][0].messages);
+    expect(request).toContain("Page 1 content");
+    expect(request).toContain("data:image/png;base64,");
+    expect(request).not.toContain("application/pdf");
+  });
+
+  it("omits old image attachments on text-only models and still sends the follow-up", async () => {
+    createSpy.mockResolvedValue(makeStream([]));
+    const cfg: ModelConfig = { provider: "deepseek", model: "deepseek-chat", apiKey: "test" };
+    const history: Message[] = [
+      {
+        role: "user",
+        content: [
+          { type: "image", source: { type: "base64", media_type: "image/png", data: "abc" } },
+        ],
+      },
+      ...messages,
+    ];
+    for await (const _e of createModelCaller(cfg)(history, [], "sys", cfg)) {
+      /* drain */
+    }
+    const request = JSON.stringify(createSpy.mock.calls[0][0].messages);
+    expect(request).not.toContain("image_url");
+    expect(request).toContain("has not been inspected");
+    expect(request).toContain("hi");
   });
 });

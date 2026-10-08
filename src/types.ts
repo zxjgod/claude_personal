@@ -117,7 +117,7 @@ export interface ToolResult {
   truncated?: boolean;
   metadata?: ToolResultMetadata;
   /**
-   * Optional image blocks produced by the tool (e.g. Read on a PNG/PDF).
+   * Optional image blocks produced by the tool (e.g. PNG or rendered PDF pages).
    * The agent loop injects these into the conversation as a follow-up user
    * message, since both providers accept images only in user content.
    */

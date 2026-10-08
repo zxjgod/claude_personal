@@ -25,10 +25,10 @@ export function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-// Max bytes for an inline image/PDF (base64 inflates ~33%, so keep modest).
+// Max bytes for an inline image (base64 inflates ~33%, so keep modest).
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
-// Extensions the Anthropic/OpenAI vision APIs accept as image/document blocks.
+// PDFs are recognized here but parsed locally instead of sent as raw media.
 const IMAGE_MEDIA_TYPES: Record<string, string> = {
   ".png": "image/png",
   ".jpg": "image/jpeg",

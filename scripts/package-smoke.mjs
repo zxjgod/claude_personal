@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { tsImport } from "tsx/esm/api";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const npmCli = process.env.npm_execpath;
@@ -26,6 +27,7 @@ try {
     "dist/index.js",
     "dist/sdk.js",
     "dist/llm-adapter.js",
+    "dist/pdf-worker.mjs",
     "python/ccr_sdk.py",
     "examples/providers.json",
     "docs/CHANGELOG.md",
@@ -77,6 +79,38 @@ try {
     "--input-type=module",
     "-e",
     "const adapter = await import('./dist/llm-adapter.js'); for (const name of ['createModelCaller', 'resolveProviderConfig', 'isRateLimitError', 'isAuthError', 'isProviderError']) if (typeof adapter[name] !== 'function') process.exit(1);",
+  ]);
+  const { makePdf } = await tsImport("../src/__tests__/fixtures/pdf.ts", import.meta.url);
+  run([
+    "--input-type=module",
+    "-e",
+    `
+import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import { createModelCaller } from './dist/llm-adapter.js';
+let captured;
+const server = createServer(async (req, res) => {
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  captured = JSON.parse(Buffer.concat(chunks).toString());
+  res.writeHead(200, { 'content-type': 'text/event-stream' });
+  res.end('data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\\n\\ndata: [DONE]\\n\\n');
+});
+await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+try {
+  const config = { provider: 'custom', model: 'vision-fixture', apiKey: 'offline', baseURL: 'http://127.0.0.1:' + server.address().port + '/v1' };
+  const history = [{ role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: 'application/pdf', data: process.argv[1] } }] }];
+  for await (const event of createModelCaller(config)(history, [], 's', config)) { }
+  assert(captured, 'Unpacked adapter did not send a request.');
+  const payload = JSON.stringify(captured.messages);
+  assert(payload.includes('Page 1 content'), 'Unpacked PDF text extraction failed.');
+  assert(payload.includes('data:image/png;base64,'), 'Unpacked PDF rendering failed.');
+  assert(!payload.includes('application/pdf'), 'Raw PDF reached the compatible endpoint.');
+} finally {
+  await new Promise(resolve => server.close(resolve));
+}
+`,
+    makePdf().toString("base64"),
   ]);
   console.log(
     `package-smoke: PASSED (${pack.entryCount} files, ${(pack.unpackedSize / 1048576).toFixed(2)} MiB unpacked, ${(pack.size / 1048576).toFixed(2)} MiB archive)`,

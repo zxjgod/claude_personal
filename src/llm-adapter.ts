@@ -23,6 +23,7 @@ import {
   isOpenAIReasoningModel,
   modelMaxOutput,
 } from "./model-metadata.js";
+import { prepareMultimodalMessages } from "./multimodal.js";
 import { DEFAULT_MAX_RESULT_CHARS, truncateToolResult } from "./tools/truncation.js";
 import { resolveTool } from "./tools/utils/official-names.js";
 import type { Message, ModelCaller, ModelConfig, StreamEvent, Tool } from "./types.js";
@@ -96,17 +97,15 @@ function convertToOpenAIMessage(
             return { type: "text", text: block.text } as const;
           }
           if (block.type === "image") {
-            // PDFs ride the image-block channel from the Read tool, but the
-            // OpenAI-compatible API has no PDF-over-image_url path — the data
-            // URL is a guaranteed 400. Fail with an actionable message instead
-            // (Top10 follow-up T2); the Anthropic native path handles PDFs.
+            // PDFs are rendered locally before conversion. Reject other
+            // non-image MIME types rather than putting them in image_url.
             if (
               block.source.type === "base64" &&
               block.source.media_type &&
               !block.source.media_type.startsWith("image/")
             ) {
               throw new Error(
-                `The current provider does not support ${block.source.media_type} input (only the Anthropic native path accepts PDFs). Ask for the document as text/images, or switch provider.`,
+                `Unsupported image media type: ${block.source.media_type}. Read the document as text/images.`,
               );
             }
             const url =
@@ -171,10 +170,11 @@ async function* openAICompatibleCaller(
   });
 
   const model = config.model || PROVIDER_CONFIGS[config.provider]?.defaultModel || "gpt-4o";
+  const preparedMessages = await prepareMultimodalMessages(messages, config, abortSignal);
 
   const requestMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
     { role: "system", content: systemPrompt },
-    ...messages.map((m) => convertToOpenAIMessage(m, tools)),
+    ...preparedMessages.map((m) => convertToOpenAIMessage(m, tools)),
   ];
 
   // Reasoning effort (/effort). Only reasoning-capable models accept

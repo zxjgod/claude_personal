@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resetReadTracker } from "../read-tracker.js";
 import { EditTool, MultiEditTool, ReadTool } from "../tools/index.js";
 import type { ToolContext } from "../types.js";
+import { makePdf } from "./fixtures/pdf.js";
 
 let tmpDir: string;
 let ctx: ToolContext;
@@ -195,12 +196,37 @@ describe("multimodal Read", () => {
     expect(result.images![0].source.type).toBe("base64");
   });
 
-  it("maps PDF to application/pdf", async () => {
+  it("returns locally extracted PDF text and PNG pages", async () => {
     const fp = path.join(tmpDir, "doc.pdf");
-    fs.writeFileSync(fp, Buffer.from("%PDF-1.4 fake"));
+    fs.writeFileSync(fp, makePdf());
 
     const result = await ReadTool.call({ filePath: "doc.pdf" }, ctx);
-    expect(result.images![0].source.media_type).toBe("application/pdf");
+    expect(result.error).toBeUndefined();
+    expect(result.content).toContain("Page 1 content");
+    expect(result.images![0].source.media_type).toBe("image/png");
+  });
+
+  it("returns a tool error for bad PDFs and incompatible PDF parameters", async () => {
+    fs.writeFileSync(path.join(tmpDir, "bad.pdf"), "%PDF-1.4 fake");
+    const result = await ReadTool.call({ filePath: "bad.pdf" }, ctx);
+    expect(result.error).toBeDefined();
+    expect(result.images).toBeUndefined();
+    expect((await ReadTool.call({ filePath: "bad.pdf", offset: 1 }, ctx)).error).toContain(
+      "PDF reads use pages",
+    );
+  });
+
+  it("keeps PDFs readable and blocks images on text-only models", async () => {
+    ctx.modelConfig = { provider: "deepseek", model: "deepseek-chat", apiKey: "test" };
+    fs.writeFileSync(path.join(tmpDir, "text.pdf"), makePdf());
+    const pdf = await ReadTool.call({ filePath: "text.pdf" }, ctx);
+    expect(pdf.error).toBeUndefined();
+    expect(pdf.content).toContain("Page 1 content");
+    expect(pdf.images).toBeUndefined();
+    fs.writeFileSync(path.join(tmpDir, "pic.png"), "fake");
+    const image = await ReadTool.call({ filePath: "pic.png" }, ctx);
+    expect(image.error).toContain("text input only");
+    expect(image.images).toBeUndefined();
   });
 
   it("reads normal text files as text (no images)", async () => {

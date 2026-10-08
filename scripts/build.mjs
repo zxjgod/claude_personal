@@ -29,7 +29,7 @@
 // Type-checking stays separate: `npm run typecheck` (tsc --noEmit) and CI.
 // ============================================================
 
-import { readFileSync, rmSync } from "node:fs";
+import { copyFileSync, readFileSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
@@ -82,5 +82,7 @@ await build({
     "react-devtools-core",
   ],
 });
+
+copyFileSync(resolve(root, "src/pdf-worker.mjs"), resolve(outdir, "pdf-worker.mjs"));
 
 console.log(`build: bundled 4 entries → dist/ in ${Date.now() - t0}ms`);
