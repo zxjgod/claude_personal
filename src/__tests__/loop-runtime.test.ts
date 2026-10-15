@@ -228,4 +228,32 @@ describe("managed loop lifecycle", () => {
     const atNight = Date.parse("2026-10-09T23:00:00+08:00");
     expect(nextAllowedLoopTime(overnight, atNight)).toBe(atNight);
   });
+
+  it("handles retryable and fatal errors on the final wrap-up round instead of masking as paused (F5)", () => {
+    const record = startLoop(scope, "Work", {
+      ...defaultLoopConfig(),
+      maxRounds: 1,
+      retryLimit: 1,
+    });
+    const first = begin();
+    expect(first.ticket.final).toBe(true);
+    settleLoopRound(first.ticket, {
+      complete: false,
+      reason: "network timeout",
+      error: "network timeout",
+      retryable: true,
+    });
+    expect(record.status).toBe("waiting");
+    expect(record.rounds).toBe(0);
+    record.nextRunAt = Date.now();
+    const second = begin();
+    expect(second.ticket.final).toBe(true);
+    settleLoopRound(second.ticket, {
+      complete: false,
+      reason: "network timeout",
+      error: "network timeout",
+      retryable: true,
+    });
+    expect(record.status).toBe("failed");
+  });
 });

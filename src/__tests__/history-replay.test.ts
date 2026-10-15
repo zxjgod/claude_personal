@@ -91,6 +91,26 @@ describe("messagesToTranscript", () => {
     expect((item as any).result.result.content).toBe("rm: permission denied");
   });
 
+  it("skips synthetic tool-image and continuation user messages (F2)", () => {
+    const msgs: Message[] = [
+      { role: "user", content: [{ type: "text", text: "read report.pdf" }] },
+      {
+        role: "user",
+        synthetic: true,
+        content: [
+          { type: "text", text: "Attached image(s) from the tool result above:" },
+          { type: "image", source: { type: "base64", media_type: "image/png", data: "AA==" } },
+        ],
+      },
+      { role: "assistant", content: "parsed pdf" },
+    ];
+    expect(messagesToTranscript(msgs)).toEqual([
+      { kind: "user", text: "read report.pdf" },
+      { kind: "assistant", text: "parsed pdf" },
+    ]);
+    expect(firstUserPreview(msgs.slice(1))).toBe("");
+  });
+
   it("flattens image content blocks in user messages", () => {
     const msgs: Message[] = [
       {

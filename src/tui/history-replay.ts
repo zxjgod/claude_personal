@@ -23,6 +23,27 @@ import { truncateVisual } from "./terminal-width.js";
 /** Transcript item without the store-assigned numeric id. */
 export type ReplayItem = Omit<TranscriptItem, "id">;
 
+/**
+ * Identify runtime-injected `role: "user"` messages (tool-result image
+ * attachments, continuation nudges, stop-hook feedback, goal evaluator
+ * prompts, and background notifications) so UI history replay and `/rewind`
+ * treat only human-authored prompts as user turns.
+ */
+export function isSyntheticUserMessage(message: Message): boolean {
+  if (message.role !== "user") return false;
+  if (message.synthetic) return true;
+  if (message.checkpoint) return false;
+  const first = message.content[0];
+  return (
+    first?.type === "text" &&
+    (first.text === "Attached image(s) from the tool result above:" ||
+      first.text.startsWith("[GOAL EVALUATOR]\n") ||
+      first.text.startsWith(
+        "Your previous response was interrupted by a transient network error right after the text above.",
+      ))
+  );
+}
+
 /** Pull the display detail (filePath/command/…) out of a tool_call's args. */
 function argDetail(argsJson: string): string {
   let parsed: Record<string, unknown>;
@@ -57,6 +78,7 @@ export function messagesToTranscript(messages: Message[]): ReplayItem[] {
   for (const m of messages) {
     switch (m.role) {
       case "user": {
+        if (isSyntheticUserMessage(m)) break;
         const text = m.content
           .map((b) => (b.type === "text" ? b.text : "[image]"))
           .join("")
@@ -116,7 +138,7 @@ export function messagesToTranscript(messages: Message[]): ReplayItem[] {
 /** Short snippet of the first user message — used as a picker preview line. */
 export function firstUserPreview(messages: Message[], maxLen = 72): string {
   for (const m of messages) {
-    if (m.role !== "user") continue;
+    if (m.role !== "user" || isSyntheticUserMessage(m)) continue;
     const text = m.content
       .map((b) => (b.type === "text" ? b.text : ""))
       .join(" ")

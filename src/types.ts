@@ -28,6 +28,8 @@ export interface UserMessage {
   content: ContentBlock[];
   /** Local persistence metadata; provider adapters send only the content. */
   checkpoint?: { sessionId: string; turn: number };
+  /** True for runtime-injected continuation/attachment messages, not human turns. */
+  synthetic?: boolean;
 }
 
 export interface AssistantMessage {

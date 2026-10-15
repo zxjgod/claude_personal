@@ -239,8 +239,9 @@ export async function* agentLoop(
   // that window on boundaries the rewind UI can't meaningfully target. These
   // messages stay untagged, which rewind already maps to conversation-only
   // truncation — the honest semantics for an injected nudge.
-  const noTurnBoundary = (_msg: Message): void => {
+  const noTurnBoundary = (msg: Message): void => {
     /* synthetic injection — deliberately no checkpoint boundary */
+    if (msg.role === "user") msg.synthetic = true;
   };
 
   // Recoverable stash for content the cheap layers trim/evict (layer 4). On
@@ -779,6 +780,7 @@ export async function* agentLoop(
           messages.push({ role: "assistant", content: textBuffer });
           messages.push({
             role: "user",
+            synthetic: true,
             content: [
               {
                 type: "text",
@@ -836,6 +838,7 @@ export async function* agentLoop(
             }
             const stopMsg: Message = {
               role: "user",
+              synthetic: true,
               content: [{ type: "text", text: stop.blockingError }],
             };
             messages.push(stopMsg);
@@ -854,6 +857,7 @@ export async function* agentLoop(
         if (decision.shouldContinue) {
           messages.push({
             role: "user",
+            synthetic: true,
             content: [{ type: "text", text: buildContinuationNudge(decision.state) }],
           });
           state = {
@@ -893,6 +897,7 @@ export async function* agentLoop(
           }
           const nudgeMsg: Message = {
             role: "user",
+            synthetic: true,
             content: [{ type: "text", text: buildContinuationNudge(state.budget) }],
           };
           messages.push(nudgeMsg);
@@ -963,6 +968,7 @@ export async function* agentLoop(
               goalContinuations++;
               messages.push({
                 role: "user",
+                synthetic: true,
                 content: [
                   {
                     type: "text",
@@ -1116,6 +1122,7 @@ export async function* agentLoop(
       if (images.length > 0) {
         const imageMsg: Message = {
           role: "user",
+          synthetic: true,
           content: [
             { type: "text", text: "Attached image(s) from the tool result above:" },
             ...images,

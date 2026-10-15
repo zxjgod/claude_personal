@@ -12,13 +12,14 @@
 // ============================================================
 import chalk from "chalk";
 import { restoreToTurn, turnOfMessage } from "../checkpoint.js";
+import { isSyntheticUserMessage } from "../tui/history-replay.js";
 import type { Message } from "../types.js";
 import type { SlashCommand } from "./types.js";
 
-function findUserTurnBoundaries(messages: { role: string }[]): number[] {
+function findUserTurnBoundaries(messages: Message[]): number[] {
   const idx: number[] = [];
   messages.forEach((m, i) => {
-    if (m.role === "user") idx.push(i);
+    if (m.role === "user" && !isSyntheticUserMessage(m)) idx.push(i);
   });
   return idx;
 }

@@ -34,7 +34,7 @@ try {
       let text = "";
       for (const item of extracted.items) {
         if ("str" in item) text += item.str + (item.hasEOL ? "\n" : " ");
-        if (text.length >= 20000) break;
+        if (text.length > 20000) break;
       }
       const truncated = text.length > 20000;
       text = text.slice(0, 20000);

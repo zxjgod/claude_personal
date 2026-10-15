@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 from typing import AsyncIterator, Optional, Dict, Any
 
+STREAM_LINE_LIMIT = 16 * 1024 * 1024
+
 
 async def query(prompt: str, *, cwd: Optional[str] = None,
                 env: Optional[Dict[str, str]] = None, model: Optional[str] = None,
@@ -21,7 +23,7 @@ async def query(prompt: str, *, cwd: Optional[str] = None,
     kwargs = {"creationflags": 0x08000000} if os.name == "nt" else {}
     process = await asyncio.create_subprocess_exec(*args, cwd=cwd, env=config,
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE, **kwargs)
+        stderr=asyncio.subprocess.PIPE, limit=STREAM_LINE_LIMIT, **kwargs)
     error_task = asyncio.create_task(process.stderr.read())
     try:
         process.stdin.write((json.dumps({"type": "user", "message": {

@@ -3,13 +3,14 @@ import {
   forkCheckpoints,
   listTurns,
   previewRestore,
+  resetCheckpoints,
   restoreToTurn,
   turnOfMessage,
 } from "../checkpoint.js";
 import type { CommandContext } from "../commands/types.js";
 import { resetSystemPromptCache } from "../system-prompt.js";
 import type { Message, ModelCaller, ModelConfig } from "../types.js";
-import { messagesToTranscript } from "./history-replay.js";
+import { isSyntheticUserMessage, messagesToTranscript } from "./history-replay.js";
 import type { RewindChoice, RewindEntry, TuiStore } from "./store.js";
 
 function messageText(message: Message): string {
@@ -23,7 +24,7 @@ function messageText(message: Message): string {
 export function rewindEntries(messages: Message[], sessionId: string): RewindEntry[] {
   const turns = listTurns(sessionId);
   return messages
-    .filter((message) => message.role === "user")
+    .filter((message) => message.role === "user" && !isSyntheticUserMessage(message))
     .map((message, index) => {
       const turn = turnOfMessage(message, sessionId);
       const preview =
@@ -56,7 +57,7 @@ export async function applyRewindChoice(
 ): Promise<void> {
   const { messages, sessionId, context } = deps;
   const userIndices = messages.flatMap((message, index) =>
-    message.role === "user" ? [index] : [],
+    message.role === "user" && !isSyntheticUserMessage(message) ? [index] : [],
   );
   const cutAt = userIndices[choice.turnIndex - 1];
   if (cutAt === undefined)
@@ -107,6 +108,8 @@ export async function applyRewindChoice(
   } else {
     if (!context.persistence || !context.resumeSession)
       throw new Error("Session persistence is required to fork this conversation.");
+    if (action === "both" && (turn === null || !previewRestore(sessionId, turn).available))
+      throw new Error("No file checkpoint is available for this message.");
     // Save the original before creating and activating the restored conversation.
     await context.persistence.save(sessionId, messages);
     const newId = context.persistence.generateId();
@@ -117,20 +120,26 @@ export async function applyRewindChoice(
         : message;
     });
     forkCheckpoints(sessionId, newId);
-    await context.persistence.save(newId, next);
-    if (action === "both") {
-      if (turn === null || !previewRestore(newId, turn).available)
-        throw new Error("No file checkpoint is available for this message.");
-      const result = restoreToTurn(newId, turn);
-      if (result.failures?.length)
+    try {
+      if (action === "both") {
+        if (turn === null || !previewRestore(newId, turn).available)
+          throw new Error("No file checkpoint is available for this message.");
+        const result = restoreToTurn(newId, turn);
+        if (result.failures?.length)
+          throw new Error(
+            result.failures.map((failure) => `${failure.path}: ${failure.error}`).join("; "),
+          );
+      }
+      await context.persistence.save(newId, next);
+      if (!(await context.resumeSession(newId)))
         throw new Error(
-          result.failures.map((failure) => `${failure.path}: ${failure.error}`).join("; "),
+          "Could not activate the restored session; the original conversation is preserved.",
         );
+    } catch (error) {
+      resetCheckpoints(newId);
+      await context.persistence.deleteSession?.(newId).catch(() => {});
+      throw error;
     }
-    if (!(await context.resumeSession(newId)))
-      throw new Error(
-        "Could not activate the restored session; the original conversation is preserved.",
-      );
     store.resetTranscript();
     store.loadTranscript(messagesToTranscript(messages));
     store.setTodos([]);

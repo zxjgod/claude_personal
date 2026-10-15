@@ -13,6 +13,8 @@ import {
 } from "../loop-runtime.js";
 import { defaultLoopConfig, type LoopConfig } from "../loop-settings.js";
 import { runLoopTurn } from "../loop-turn.js";
+import { loopVerificationTools } from "../loop-verification-tools.js";
+import { ReadTool } from "../tools/core/read.js";
 import {
   listWakeupJobs,
   resetWakeupJobs,
@@ -20,6 +22,7 @@ import {
 } from "../tools/extended/schedule-wakeup.js";
 import { createJob, settleJob } from "../tools/job-store.js";
 import type { Message, ModelCaller, ModelConfig } from "../types.js";
+import { makePdf } from "./fixtures/pdf.js";
 
 let scope: LoopScope;
 const config: ModelConfig = { provider: "openai", model: "test", apiKey: "test", maxTokens: 64 };
@@ -243,5 +246,32 @@ describe("managed turn orchestration", () => {
       record.status = "paused";
       record.deliveryPending = false;
     }
+  });
+  it("verifies PDF and image completion files even under text-only models (F1)", async () => {
+    const pdfPath = join(scope.workspaceRoot, "report.pdf");
+    const pngPath = join(scope.workspaceRoot, "chart.png");
+    writeFileSync(pdfPath, makePdf(1));
+    writeFileSync(
+      pngPath,
+      Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+        "base64",
+      ),
+    );
+    const tools = loopVerificationTools(
+      [ReadTool],
+      {
+        ...scope,
+        permissionMode: "default",
+        modelConfig: { provider: "deepseek", model: "deepseek-chat", apiKey: "test" },
+      },
+      async () => true,
+    );
+    const pdfCheck = await tools.runFileCheck(pdfPath);
+    const pngCheck = await tools.runFileCheck(pngPath);
+    expect(pdfCheck.passed).toBe(true);
+    expect(pdfCheck.output).toMatch(/^[0-9a-f]{64}$/);
+    expect(pngCheck.passed).toBe(true);
+    expect(pngCheck.output).toMatch(/^[0-9a-f]{64}$/);
   });
 });

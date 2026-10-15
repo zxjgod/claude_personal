@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import type { LoopCheckResult } from "./loop-completion.js";
 import { executeSingleTool } from "./tool-executor.js";
 import { clearCwd, getCwd, setCwd } from "./tools/session-cwd.js";
+import { imageMediaType } from "./tools/utils/file.js";
 import type { AskUserFn, HookRunner, Tool, ToolContext, ToolExecutionResult } from "./types.js";
 import { activeWorkspace } from "./worktrees.js";
 
@@ -14,7 +15,11 @@ export function loopVerificationTools(
   hooks?: HookRunner,
   display?: (result: ToolExecutionResult) => void,
 ) {
-  const execute = async (name: string, input: Record<string, unknown>) => {
+  const execute = async (
+    name: string,
+    input: Record<string, unknown>,
+    contextOverride?: ToolContext,
+  ) => {
     const result = await executeSingleTool(
       {
         id: `loop-check-${Date.now()}`,
@@ -22,7 +27,7 @@ export function loopVerificationTools(
         function: { name, arguments: JSON.stringify(input) },
       },
       tools,
-      context,
+      contextOverride ?? context,
       askUser,
       hooks,
       undefined,
@@ -49,7 +54,25 @@ export function loopVerificationTools(
       }
     },
     runFileCheck: async (file: string): Promise<LoopCheckResult> => {
-      const result = await execute("Read", { filePath: file, limit: 1 });
+      const mediaType = imageMediaType(file);
+      const isPdf = mediaType === "application/pdf";
+      const fileContext: ToolContext = mediaType
+        ? {
+            ...context,
+            modelConfig: {
+              ...context.modelConfig,
+              options: {
+                ...context.modelConfig?.options,
+                supportsImages: !isPdf,
+              },
+            },
+          }
+        : context;
+      const result = await execute(
+        "Read",
+        isPdf ? { filePath: file, pages: "1" } : { filePath: file, limit: 1 },
+        fileContext,
+      );
       if (result.error || result.result?.error)
         return {
           name: file,

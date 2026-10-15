@@ -662,19 +662,20 @@ export function settleLoopRound(
       record.status = "paused";
       record.pauseRequested = false;
     }
-  } else if (ticket.final) {
-    record.status = "paused";
-    record.reason = `Round limit reached; wrap-up saved. ${record.reason}`;
   } else if (result.error?.startsWith("Loop budget:")) {
     record.status = "paused";
   } else if (result.error) {
     record.failures++;
     if (!result.retryable || record.failures > record.config.retryLimit) record.status = "failed";
     else {
+      if (ticket.final && record.rounds > 0) record.rounds--;
       record.status = "waiting";
       record.nextRunAt =
         Date.now() + Math.min(30, record.config.intervalMinutes * 2 ** record.failures) * 60000;
     }
+  } else if (ticket.final) {
+    record.status = "paused";
+    record.reason = `Round limit reached; wrap-up saved. ${record.reason}`;
   } else {
     record.failures = 0;
     record.status = "waiting";

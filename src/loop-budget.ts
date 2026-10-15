@@ -88,6 +88,9 @@ export function withLoopBudget(caller: ModelCaller): ModelCaller {
     if (!["running", "waiting"].includes(record.status) || record.generation !== ticket.generation)
       throw new Error("Loop execution is no longer active.");
     let accounted = false;
+    let sawOutput = false;
+    let sawDone = false;
+    let outputChars = 0;
     const limited = {
       ...config,
       [accountedCall]: ticket,
@@ -96,7 +99,17 @@ export function withLoopBudget(caller: ModelCaller): ModelCaller {
     };
     try {
       for await (const event of caller(messages, tools, prompt, limited, signal)) {
-        if (event.type === "done" && !accounted) {
+        if (event.type === "text_delta") {
+          sawOutput = true;
+          outputChars += event.delta.length;
+        } else if (event.type === "thinking") {
+          sawOutput = true;
+          outputChars += event.delta?.length ?? 0;
+        } else if (event.type === "tool_use") {
+          sawOutput = true;
+          outputChars += (event.rawArguments ?? JSON.stringify(event.input)).length;
+        } else if (event.type === "done" && !accounted) {
+          sawDone = true;
           const input = providerPromptTokens(event.usage, config.provider);
           const output = event.usage.output_tokens;
           if (Number.isFinite(input) && input >= 0 && Number.isFinite(output) && output >= 0) {
@@ -110,9 +123,14 @@ export function withLoopBudget(caller: ModelCaller): ModelCaller {
         yield event;
       }
     } finally {
-      if (!accounted) {
-        record.inputTokens += reservedTokens;
-        record.estimatedUsd += reservedUsd;
+      if (!accounted && (sawDone || sawOutput)) {
+        const fallbackOutput = sawDone
+          ? maxTokens
+          : Math.min(maxTokens, Math.max(1, Math.ceil(outputChars / 3)));
+        record.inputTokens += estimate;
+        record.outputTokens += fallbackOutput;
+        if (prices)
+          record.estimatedUsd += (estimate * prices.input + fallbackOutput * prices.output) / 1e6;
       }
       record.reservedTokens = Math.max(0, record.reservedTokens - reservedTokens);
       record.reservedUsd = Math.max(0, record.reservedUsd - reservedUsd);

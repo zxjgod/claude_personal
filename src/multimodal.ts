@@ -38,7 +38,6 @@ export async function prepareMultimodalMessages(
       continue;
     }
     const content: ContentBlock[] = [];
-    let cacheable = true;
     for (const block of message.content) {
       if (block.type === "image" && block.source.media_type === "application/pdf") {
         try {
@@ -58,7 +57,6 @@ export async function prepareMultimodalMessages(
           );
         } catch (error) {
           signal?.throwIfAborted();
-          cacheable = false;
           content.push({
             type: "text",
             text: `[PDF attachment could not be processed: ${error instanceof Error ? error.message : String(error)}. Its content has not been inspected. Read the local PDF again with a small pages range.]`,
@@ -72,11 +70,9 @@ export async function prepareMultimodalMessages(
       } else content.push(block);
     }
     const prepared: UserMessage = { ...message, content };
-    if (cacheable) {
-      const cache = preparedCache.get(message) ?? new Map<boolean, UserMessage>();
-      cache.set(vision, prepared);
-      preparedCache.set(message, cache);
-    }
+    const cache = preparedCache.get(message) ?? new Map<boolean, UserMessage>();
+    cache.set(vision, prepared);
+    preparedCache.set(message, cache);
     out.push(prepared);
   }
   return out;

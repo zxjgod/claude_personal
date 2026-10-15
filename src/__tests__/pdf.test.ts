@@ -113,6 +113,7 @@ describe("local PDF input", () => {
     expect(JSON.stringify(prepared)).toContain("could not be processed");
     expect(prepared[1]).toBe(messages[1]);
     expect(JSON.stringify(prepared)).not.toContain("application/pdf");
+    expect((await prepareMultimodalMessages(messages, config))[0]).toBe(prepared[0]);
   });
 
   it("gates known text models and permits explicit relay overrides", () => {

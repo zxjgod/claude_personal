@@ -193,4 +193,27 @@ describe("rewind operations", () => {
     expect(store.getSnapshot().overlay).toBeNull();
     expect(store.getSnapshot().draft.text).toBe("restored prompt");
   });
+
+  it("ignores synthetic tool-result image and nudge messages when indexing user turns (F2)", async () => {
+    const { store, deps } = fixture();
+    deps.messages.splice(2, 0, {
+      role: "user",
+      synthetic: true,
+      content: [{ type: "text", text: "Attached image(s) from the tool result above:" }],
+    });
+    const entries = rewindEntries(deps.messages, deps.sessionId);
+    expect(entries.map((entry) => entry.label)).toEqual(["first prompt", "second prompt"]);
+    await applyRewindChoice(store, deps, { turnIndex: 2, action: "conversation" });
+    expect(store.getSnapshot().draft.text).toBe("second prompt");
+  });
+
+  it("cleans up forked session and checkpoints if session activation fails (F5)", async () => {
+    const { store, deps, persistence } = fixture();
+    deps.context.resumeSession = async () => false;
+    await expect(
+      applyRewindChoice(store, deps, { turnIndex: 2, action: "conversation" }),
+    ).rejects.toThrow("Could not activate the restored session");
+    const sessions = await persistence.listSessions();
+    expect(sessions.map((s) => s.sessionId)).toEqual([deps.sessionId]);
+  });
 });

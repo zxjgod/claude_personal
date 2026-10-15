@@ -115,4 +115,22 @@ describe("shared loop budgets", () => {
     ).rejects.toThrow("no longer active");
     expect(actual).not.toHaveBeenCalled();
   });
+  it("releases reservation without charging full maxTokens when a call fails before output (F4)", async () => {
+    const { record, ticket } = prepare({ usdBudget: 1, inputPrice: 2, outputPrice: 4 });
+    // biome-ignore lint/correctness/useYield: must throw before producing any event to exercise the pre-output failure path
+    const failingCaller: ModelCaller = async function* () {
+      throw new Error("HTTP 429 rate limited");
+    };
+    await expect(
+      withLoopExecution(ticket, async () => {
+        for await (const _event of withLoopBudget(failingCaller)([], [], "test", config)) {
+        }
+      }),
+    ).rejects.toThrow("429");
+    expect(record.reservedTokens).toBe(0);
+    expect(record.reservedUsd).toBe(0);
+    expect(record.inputTokens).toBe(0);
+    expect(record.outputTokens).toBe(0);
+    expect(record.estimatedUsd).toBe(0);
+  });
 });
