@@ -56,18 +56,21 @@ export function loopVerificationTools(
     runFileCheck: async (file: string): Promise<LoopCheckResult> => {
       const mediaType = imageMediaType(file);
       const isPdf = mediaType === "application/pdf";
-      const fileContext: ToolContext = mediaType
-        ? {
-            ...context,
-            modelConfig: {
-              ...context.modelConfig,
-              options: {
-                ...context.modelConfig?.options,
-                supportsImages: !isPdf,
+      // Overriding media support only makes sense with a concrete modelConfig;
+      // spreading an absent one would fabricate an invalid partial config.
+      const fileContext: ToolContext =
+        mediaType && context.modelConfig
+          ? {
+              ...context,
+              modelConfig: {
+                ...context.modelConfig,
+                options: {
+                  ...context.modelConfig.options,
+                  supportsImages: !isPdf,
+                },
               },
-            },
-          }
-        : context;
+            }
+          : context;
       const result = await execute(
         "Read",
         isPdf ? { filePath: file, pages: "1" } : { filePath: file, limit: 1 },
