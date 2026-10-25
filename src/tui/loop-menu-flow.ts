@@ -24,7 +24,14 @@ export async function runLoopMenu(store: TuiStore, scope: LoopScope): Promise<vo
       return config;
     },
     onStart: (objective) => {
-      startLoop(scope, objective, loopConfig(scope.workspaceRoot));
+      const config = loopConfig(scope.workspaceRoot);
+      startLoop(scope, objective, config);
+      // Same quality guidance as the CLI path: a loop without machine-
+      // checkable acceptance can only end on the model's self-assessment.
+      if (config.completion !== "continuous" && !config.commands.length && !config.files.length)
+        store.addNotice(
+          "  No completion checks configured — add commands/files (menu item 6) so quality is verified objectively.",
+        );
     },
   });
 }

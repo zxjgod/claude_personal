@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   beginLoopRound,
   currentLoop,
+  displayLoopInput,
   type LoopScope,
   loopSystemInstruction,
   nextAllowedLoopTime,
@@ -255,5 +256,79 @@ describe("managed loop lifecycle", () => {
       retryable: true,
     });
     expect(record.status).toBe("failed");
+  });
+});
+
+describe("managed loop — durable progress file (progress anchor)", () => {
+  const progressPath = () => join(scope.workspaceRoot, ".claude/loops/session.progress.md");
+
+  it("seeds the progress file on start and re-injects its current contents every iteration", () => {
+    startLoop(scope, "Ship a high-quality report");
+    const seeded = readFileSync(progressPath(), "utf8");
+    expect(seeded).toContain("## Objective");
+    expect(seeded).toContain("Ship a high-quality report");
+    expect(seeded).toContain("## Next iteration plan");
+
+    // The model "works" round 1 and records durable state in the file.
+    writeFileSync(
+      progressPath(),
+      "# Loop Progress\n\n## Done\n- round 1: collected all sources\n\n## Next iteration plan\n- draft the report",
+    );
+    const prompt = takeDueLoop(scope);
+    expect(prompt).toContain("[Loop progress file — current durable state]");
+    expect(prompt).toContain("collected all sources");
+    // Objective still leads; the first line stays the stable round marker.
+    expect(prompt!.split("\n")[0]).toMatch(/^\[Managed loop [0-9a-f-]+:\d+\]$/);
+    const controller = new AbortController();
+    const ticket = beginLoopRound(scope, prompt!, controller);
+    expect(ticket).toBeTruthy();
+
+    // The display echo hides the re-injected bulk.
+    expect(displayLoopInput(prompt!)).not.toContain("collected all sources");
+    expect(displayLoopInput(prompt!)).not.toContain("[Loop progress file");
+  });
+
+  it("instructs the model to maintain the file, and the final round demands a written report", () => {
+    startLoop(scope, "Iterate to a high-quality result", {
+      ...defaultLoopConfig("autonomous"),
+      maxRounds: 2,
+    });
+    const first = begin();
+    const instruction = loopSystemInstruction(first.ticket);
+    expect(instruction).toContain(join(scope.workspaceRoot, ".claude/loops/session.progress.md"));
+    expect(instruction).toContain("single source of accumulated truth");
+    settleLoopRound(first.ticket, { complete: false, reason: "more work", evidenceHash: "" });
+
+    // The settle scheduled the next run one interval out; advance past it.
+    const secondPrompt = takeDueLoop(scope, Date.now() + 4 * 60_000);
+    if (!secondPrompt) throw new Error("loop not due after interval");
+    const controller2 = new AbortController();
+    const ticket2 = beginLoopRound(scope, secondPrompt, controller2);
+    if (!ticket2) throw new Error("loop did not start");
+    expect(ticket2.final).toBe(true);
+    expect(loopSystemInstruction(ticket2)).toContain("## Final Report");
+    // ...and completion files the outcome into the progress file itself.
+    settleLoopRound(ticket2, { complete: true, reason: "all checks green", evidenceHash: "" });
+    expect(readFileSync(progressPath(), "utf8")).toContain("Loop completed: all checks green");
+    expect(currentLoop(scope)?.status).toBe("completed");
+  });
+
+  it("stopping appends the reason; progressFile:false disables the whole anchor", () => {
+    startLoop(scope, "Anchored task");
+    stopLoop(scope);
+    expect(readFileSync(progressPath(), "utf8")).toContain("Loop stopped");
+
+    resetLoopsForTests();
+    rmSync(join(scope.workspaceRoot, ".claude/loops"), { recursive: true, force: true });
+    startLoop(scope, "Unanchored task", {
+      ...defaultLoopConfig("collaborative"),
+      progressFile: false,
+    });
+    expect(() => readFileSync(progressPath())).toThrow();
+    const prompt = takeDueLoop(scope);
+    expect(prompt).not.toContain("[Loop progress file");
+    const controller = new AbortController();
+    const ticket = beginLoopRound(scope, prompt!, controller);
+    expect(loopSystemInstruction(ticket!)).not.toContain("Durable state:");
   });
 });

@@ -61,6 +61,8 @@ docs/更新日志/
 
 | 日期 | 类型 | 模块 | 主题 | commit | 关联 |
 |---|---|---|---|---|---|
+| 2026-10-25 | feature | 受控循环 | [/loop 进度锚定与交付物落盘](20261025-loop-progress-anchor.md) | 工作区改动 | [Loop management](../loop-management.md) |
+| 2026-10-24 | fix / build / security | 全仓 | [全面代码审查修复](20261024-comprehensive-review-fixes.md) | 工作区改动 | [CHANGELOG v1.6.1](../CHANGELOG.md) |
 | 2026-10-07 | refactor / chore | 内部接口 / 开发材料 | [第二轮冗余清理](20261007-project-cleanup-round-2.md) | 工作区改动 | [当前总览](../项目总览.md) |
 | 2026-10-07 | docs | 文档 / 更新记录 | [文档日期与命名统一](20261007-document-naming.md) | 工作区改动 | [命名规则](../README.md#文档命名) |
 | 2026-10-07 | refactor / build / docs | 仓库 / 发布包 | [项目收紧与发布包白名单](20261007-project-cleanup.md) | 工作区改动 | [归档索引](../archive/README.md) |

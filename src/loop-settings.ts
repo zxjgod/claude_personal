@@ -33,6 +33,12 @@ export const loopConfigSchema = z
     retryLimit: z.number().int().min(0).max(10),
     notifications: z.enum(["important", "changes", "all"]),
     historyLimit: z.number().int().min(10).max(1000),
+    /**
+     * Durable per-loop progress file (`.claude/loops/<session>.progress.md`):
+     * injected into every iteration and updated by the model, so quality does
+     * not decay when the chat history is auto-compacted mid-loop.
+     */
+    progressFile: z.boolean(),
     recovery: z.enum(["confirm", "auto", "manual"]),
     missedRun: z.enum(["skip", "once", "confirm"]),
     timezone: z.string().refine((value) => {
@@ -84,6 +90,7 @@ export function defaultLoopConfig(profile: LoopProfile = "collaborative"): LoopC
     notifications:
       profile === "conservative" ? "all" : profile === "scheduled" ? "changes" : "important",
     historyLimit: 100,
+    progressFile: true,
     recovery: "confirm",
     missedRun: "skip",
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",

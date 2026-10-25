@@ -81,13 +81,20 @@ export const loopCommand: SlashCommand = {
       return;
     }
     const task = action === "start" ? trimmed.slice(5).trim() : trimmed;
-    startLoop(scope, task, loopConfig(scope.workspaceRoot));
+    const config = loopConfig(scope.workspaceRoot);
+    startLoop(scope, task, config);
     const prompt = takeDueLoop(scope);
-    console.log(
-      chalk.gray(
-        `  Loop started in ${LOOP_PROFILES[loopConfig(scope.workspaceRoot).profile].name} mode.`,
-      ),
-    );
+    console.log(chalk.gray(`  Loop started in ${LOOP_PROFILES[config.profile].name} mode.`));
+    // Quality guidance (progress-anchor design): without machine-checkable
+    // acceptance the loop can only end on a model's self-assessment, which
+    // is exactly the "declares victory" failure mode the completion gate
+    // exists to prevent.
+    if (config.completion !== "continuous" && !config.commands.length && !config.files.length)
+      console.log(
+        chalk.yellow(
+          "  No completion checks configured — add commands/files (menu item 6) so quality is verified objectively, not self-reported.",
+        ),
+      );
     return prompt ? { prompt } : undefined;
   },
 };
