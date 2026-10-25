@@ -102,3 +102,39 @@ describe("expandFileRefs", () => {
     expect(r.attachments).toHaveLength(0);
   });
 });
+
+describe("expandFileRefs — aliased workspace root (CI regression)", () => {
+  // GitHub's Windows runner gives the temp dir an 8.3 short name, so
+  // realpathSync(root) ≠ the lexical root. Reproduce that deterministically
+  // on every platform: enter the workspace through an alias (a junction on
+  // Windows — no privilege needed; the type argument is ignored elsewhere,
+  // yielding a plain symlink). The first cut of the boundary fix compared a
+  // MISSING target's lexical path against the realpath'd root, so every
+  // missing file was misreported as "outside the workspace" on CI.
+  let aliased: string;
+
+  beforeEach(() => {
+    aliased = `${workspace}-alias`;
+    fs.symlinkSync(workspace, aliased, "junction");
+  });
+  afterEach(() => {
+    fs.rmSync(aliased, { force: true });
+  });
+
+  it("reports a missing file as not found (not outside) under an aliased root", () => {
+    const r = expandFileRefs("@nope.txt", aliased);
+    expect(r.attachments).toHaveLength(0);
+    expect(r.notes.some((n) => n.includes("not found"))).toBe(true);
+    expect(r.notes.some((n) => n.includes("outside the workspace"))).toBe(false);
+  });
+
+  it("still attaches existing files and still blocks escapes under an aliased root", () => {
+    const ok = expandFileRefs("@hello.txt", aliased);
+    expect(ok.attachments).toHaveLength(1);
+    expect(ok.attachments[0]).toContain("hello world");
+
+    const blocked = expandFileRefs("@../../etc/passwd", aliased);
+    expect(blocked.attachments).toHaveLength(0);
+    expect(blocked.notes.some((n) => n.includes("outside the workspace"))).toBe(true);
+  });
+});

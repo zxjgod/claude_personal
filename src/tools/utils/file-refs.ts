@@ -44,16 +44,25 @@ export function expandFileRefs(input: string, workspaceRoot: string): FileRefRes
     // `path.resolve` is lexical only, so a workspace symlink (or Windows
     // junction) pointing outside would sail through while statSync/readFile
     // happily follow it (review fix; the Read tool already does this).
-    let realRoot = root;
-    let realResolved = resolved;
+    //
+    // CI regression (self-review round 2): the real check is only comparable
+    // when BOTH sides resolve. A MISSING target keeps its lexical path, so
+    // comparing it against the realpath'd ROOT mismatches whenever the root
+    // itself sits behind an alias (GitHub's Windows runner temp dir is an
+    // 8.3 short name; realpath expands it) — every missing file was then
+    // misreported as "outside the workspace". When the target cannot be
+    // realpath'd, fall back to the lexical floor: a nonexistent entry cannot
+    // be stat'd or read anyway, and any EXISTING escape must resolve.
+    let realOutside = false;
+    let statTarget = resolved;
     try {
-      realRoot = fs.realpathSync.native(root);
-      realResolved = fs.realpathSync.native(resolved);
+      const realRoot = fs.realpathSync.native(root);
+      const realResolved = fs.realpathSync.native(resolved);
+      realOutside = realResolved !== realRoot && !realResolved.startsWith(realRoot + path.sep);
+      statTarget = realResolved;
     } catch {
-      // Missing target falls through to the not-found note below; a root that
-      // cannot be realpath'd keeps the lexical check as the only floor.
+      /* missing/broken target — lexical check below is the floor */
     }
-    const realOutside = realResolved !== realRoot && !realResolved.startsWith(realRoot + path.sep);
     const lexicalOutside = resolved !== root && !resolved.startsWith(root + path.sep);
     // EITHER check failing means outside. The first cut of this fix ANDed the
     // two conditions — which is exactly backwards for a symlink: lexical
@@ -66,7 +75,7 @@ export function expandFileRefs(input: string, workspaceRoot: string): FileRefRes
 
     let stat: fs.Stats;
     try {
-      stat = fs.statSync(realResolved);
+      stat = fs.statSync(statTarget);
     } catch {
       notes.push(`  ⚠️  @${ref} not found — skipped`);
       continue;
@@ -81,7 +90,7 @@ export function expandFileRefs(input: string, workspaceRoot: string): FileRefRes
     }
 
     try {
-      const contents = fs.readFileSync(realResolved, "utf-8");
+      const contents = fs.readFileSync(statTarget, "utf-8");
       attachments.push(
         [
           `<file path="${ref}" attached_by="@file">`,
