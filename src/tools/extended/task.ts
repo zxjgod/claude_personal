@@ -2,6 +2,7 @@ import {
   activateSkill,
   activeSkill,
   clearSkillActivation,
+  prepareAgentHooks,
   scopedHooks,
 } from "../../scoped-execution.js";
 // ============================================================
@@ -272,6 +273,12 @@ export const TaskTool: Tool = buildTool({
       subagentType && !isFork ? await prepareAgentMcpServers(subagentType, context) : undefined;
     if (agentMcp?.kind === "error") return { content: "", error: agentMcp.error };
     const agentMcpHandle = agentMcp?.kind === "ready" ? agentMcp.handle : undefined;
+    // Trust-gate the agent's declared hooks (review fix: project agent hooks
+    // used to register with no gate at all) before the prompt is assembled.
+    const agentHooks =
+      subagentType && !isFork
+        ? await prepareAgentHooks(subagentType, context.askUser, context.workspaceRoot)
+        : {};
     // 拍板 #19: hoisted so the outer finally (after the try) can persist the
     // terminal record even when an exception unwinds the run.
     let runRecord: SubagentRunRecord | undefined;
@@ -346,6 +353,12 @@ export const TaskTool: Tool = buildTool({
           };
         }
         runClaimed = true;
+        // Seed the record with the live conversation BEFORE the first save:
+        // a crash before the terminal finally used to leave an orphan whose
+        // messages were empty, so a resume knew nothing about the original
+        // task (review fix). The loop mutates this array in place; the
+        // terminal finally persists the same reference again.
+        runRecord.messages = subMessages;
         saveRun(context.workspaceRoot, runRecord);
       }
       // Fork reuses the parent prompt verbatim (shared cache); a typed sub-agent
@@ -358,7 +371,8 @@ export const TaskTool: Tool = buildTool({
               subagentType!.systemPrompt,
               "",
               `Your task: ${input.description}`,
-              await preloadAgentSkills(subagentType!, context.workspaceRoot),
+              await preloadAgentSkills(subagentType!, context.workspaceRoot, context.askUser),
+              ...(agentHooks.note ? ["", agentHooks.note] : []),
             ].join("\n"),
             { workspaceRoot: context.workspaceRoot },
           );
@@ -420,9 +434,16 @@ export const TaskTool: Tool = buildTool({
             abortSignal: scope.signal,
             // Thread the nesting depth so a fork-of-a-fork is capped.
             subagentDepth: depth + 1,
+            // Own skill-activation scope for typed agents (a fork shares the
+            // parent's — see ToolContext.skillScopeId).
+            skillScopeId: isFork
+              ? context.skillScopeId
+              : `task-${subagentName}-${Date.now().toString(36)}-${Math.random()
+                  .toString(36)
+                  .slice(2, 8)}`,
             hooks: scopedHooks(
               context.hooks,
-              isFork ? undefined : subagentType?.hooks,
+              isFork ? undefined : agentHooks.hooksConfig,
               context.sessionId,
               context.workspaceRoot,
             ),
@@ -582,7 +603,7 @@ export const TaskTool: Tool = buildTool({
       // Subagent output scanning (official 2.1.202 parity, 拍板 d=A): run the
       // report through a prompt-injection classifier before handing it back.
       // Fail-open: an unavailable classifier never blocks a legitimate report.
-      const scan = await scanSubagentOutput(output, config);
+      const scan = await scanSubagentOutput(output, config, scope.signal);
       if (scan.blocked) {
         return {
           content: header + blockedOutputNotice(subagentName),

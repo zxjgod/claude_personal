@@ -650,6 +650,13 @@ export class SessionMemory {
       taskState?: TaskState;
       lastTerminalReason?: string;
       name?: string;
+      /**
+       * Final-save marker (review fix "退出时最后一次保存被静默跳过"):
+       * wait out a competing process's lock instead of skipping — there is
+       * no "next save" after an exit. On unrecoverable lock failure the save
+       * rejects so the exit path reports it.
+       */
+      waitForLock?: boolean;
     },
   ): Promise<void> {
     // Snapshot semantics, for real this time (Top10 follow-up C1): capture a
@@ -676,6 +683,7 @@ export class SessionMemory {
           taskState?: TaskState;
           lastTerminalReason?: string;
           name?: string;
+          waitForLock?: boolean;
         }
       | undefined,
   ): Promise<void> {
@@ -705,7 +713,12 @@ export class SessionMemory {
       }
       try {
         release = await lockfile.lock(filePath, {
-          retries: { retries: 5, minTimeout: 50, maxTimeout: 200 },
+          retries: options?.waitForLock
+            ? // Exit-path save (review fix "退出时最后一次保存被静默跳过"): a
+              // competing process may hold the lock for a while — wait it out
+              // instead of skipping, because there is no "next save" coming.
+              { retries: 100, minTimeout: 50, maxTimeout: 500 }
+            : { retries: 5, minTimeout: 50, maxTimeout: 200 },
           stale: 10000,
           // proper-lockfile's DEFAULT onCompromised throws synchronously from
           // a timer when another process steals a lock it deems stale — an
@@ -726,6 +739,10 @@ export class SessionMemory {
         // there surfaces as an unhandledRejection that tears down the whole
         // REPL. The next turn re-saves the same (in-memory) messages, so
         // skipping costs at most one save point. Warn once per session.
+        // EXCEPTION (review fix): a waitForLock save is the FINAL save —
+        // skipping it silently loses the tail of the conversation, so it
+        // throws and the exit path reports the failure.
+        if (options?.waitForLock) throw lockError;
         if (!this.warnedLockSkip.has(sessionId)) {
           this.warnedLockSkip.add(sessionId);
           console.warn(
@@ -745,6 +762,11 @@ export class SessionMemory {
       // divergence once instead of blindly clobbering it.
       const cached = this.lastSaved.get(sessionId);
       let existing: SessionData | null;
+      // True when the on-disk state is NOT what this instance last wrote —
+      // i.e. a foreign writer (another terminal) may have added messages.
+      // Only then is a MERGE allowed; a same-writer save (including an
+      // intentional truncation like /rewind) must overwrite.
+      let foreignWrite = false;
       if (cached) {
         const diskMtime = await fsPromises.stat(filePath).then(
           (s) => s.mtimeMs,
@@ -754,15 +776,41 @@ export class SessionMemory {
           existing = cached.data;
         } else {
           existing = await this.load(sessionId);
+          foreignWrite = true;
           if (!this.warnedDivergence.has(sessionId)) {
             this.warnedDivergence.add(sessionId);
             console.warn(
-              `session-memory: session ${sessionId} was modified by another process since this instance last saved it; reloading the on-disk state as the base (this save's messages take precedence). Avoid resuming the same session in two terminals.`,
+              `session-memory: session ${sessionId} was modified by another process since this instance last saved it; merging both writers' messages (ours appended after the disk side). Avoid resuming the same session in two terminals.`,
             );
           }
         }
       } else {
         existing = await this.load(sessionId);
+        // No cached write of ours: anything on disk came from somewhere else
+        // (a resume's origin or another terminal) — treat as foreign so a
+        // forked history is merged, while a plain resume (ours a superset)
+        // degrades to the no-op overwrite.
+        foreignWrite = existing !== null;
+      }
+      // Review fix ("双终端互相覆盖丢消息"): when the on-disk history is not
+      // a prefix of ours (another terminal saved since our base), our
+      // snapshot is a FORK, not a superset. Replace the old wholesale
+      // `messages` overwrite with a common-prefix merge: the disk side's
+      // newer messages survive, and ours continue after them. Same-writer
+      // saves (incl. intentional truncations like /rewind) still overwrite.
+      let messagesOut = messages;
+      if (foreignWrite && existing && existing.messages.length > 0) {
+        const theirs = existing.messages;
+        let common = 0;
+        while (
+          common < messages.length &&
+          common < theirs.length &&
+          JSON.stringify(messages[common]) === JSON.stringify(theirs[common])
+        )
+          common++;
+        if (theirs.length > common) {
+          messagesOut = [...theirs, ...messages.slice(common)];
+        }
       }
 
       const name = options?.name ?? this.pendingNames.get(sessionId) ?? undefined;
@@ -771,8 +819,8 @@ export class SessionMemory {
         data = {
           ...existing,
           updatedAt: now,
-          messages,
-          messageCount: messages.length,
+          messages: messagesOut,
+          messageCount: messagesOut.length,
           completed: options?.completed ?? existing.completed,
           taskState: options?.taskState ?? existing.taskState,
           lastTerminalReason: options?.lastTerminalReason ?? existing.lastTerminalReason,
@@ -788,8 +836,8 @@ export class SessionMemory {
           createdAt: now,
           updatedAt: now,
           workspaceRoot: path.dirname(this.sessionsDir),
-          messages,
-          messageCount: messages.length,
+          messages: messagesOut,
+          messageCount: messagesOut.length,
           completed: options?.completed ?? false,
           taskState: options?.taskState ?? "paused",
           lastTerminalReason: options?.lastTerminalReason,

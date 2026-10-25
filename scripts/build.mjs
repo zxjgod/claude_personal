@@ -29,6 +29,7 @@
 // Type-checking stays separate: `npm run typecheck` (tsc --noEmit) and CI.
 // ============================================================
 
+import { execFileSync } from "node:child_process";
 import { copyFileSync, readFileSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -84,5 +85,15 @@ await build({
 });
 
 copyFileSync(resolve(root, "src/pdf-worker.mjs"), resolve(outdir, "pdf-worker.mjs"));
+
+// TypeScript declarations for the published entries (review fix "发布包无
+// .d.ts"): esbuild bundles the runtime; tsc emits ONLY the declaration files
+// alongside it (rootDir=src keeps dist/index.d.ts next to dist/index.js).
+// Sourced from the local typescript install — no npx resolution surprises.
+execFileSync(
+  process.execPath,
+  [resolve(root, "node_modules/typescript/bin/tsc"), "--emitDeclarationOnly", "--outDir", outdir],
+  { stdio: "inherit", cwd: root },
+);
 
 console.log(`build: bundled 4 entries → dist/ in ${Date.now() - t0}ms`);

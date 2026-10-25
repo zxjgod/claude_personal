@@ -9,7 +9,7 @@
 
 import { z } from "zod";
 import type { Tool, ToolResult } from "../../types.js";
-import { getJob, listJobs, settleJob } from "../job-store.js";
+import { getJob, listJobs } from "../job-store.js";
 import { buildTool } from "../registry.js";
 
 const DEFAULT_WAIT_MS = 30_000;
@@ -137,9 +137,19 @@ export const JobKillTool: Tool = buildTool({
     if (job.status === "running") {
       job.killReason = input.reason;
       job.kill?.();
-      settleJob(job, "killed", null);
+      // Review fix ("kill 在进程真正退出前就 settle"): wait (bounded) for the
+      // process tree to actually stop so waiters and notifications see the
+      // FINAL status/output. settleJob fires from the close handler; if the
+      // kill fails outright, report an error instead of "killed".
+      await Promise.race([job.settled, new Promise((resolve) => setTimeout(resolve, 5000))]);
+      if (job.status === "running") {
+        return {
+          content: "",
+          error: `Job ${job.id} did not stop within 5s after job_kill — the process may be unkillable; investigate manually.`,
+        };
+      }
       const reason = input.reason ? ` (${input.reason})` : "";
-      return { content: `Job ${job.id} killed${reason}.` };
+      return { content: `Job ${job.id} killed${reason} (status: ${job.status}).` };
     }
 
     return { content: `Job ${job.id} is already ${job.status}.` };

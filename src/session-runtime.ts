@@ -68,7 +68,8 @@ export function restoreSessionRuntime(root: string, sessionId: string): void {
           typeof input.jobId === "string" &&
           (input.workspaceRoot === undefined || typeof input.workspaceRoot === "string") &&
           typeof input.label === "string" &&
-          ["cron", "wakeup"].includes(input.source)
+          ["cron", "wakeup"].includes(input.source) &&
+          (input.dueKey === undefined || typeof input.dueKey === "string")
         )
           enqueueScheduledInput(input);
       }

@@ -43,6 +43,7 @@ import nodePath from "node:path";
 import { forgetChanges } from "./change-tracker.js";
 import { refreshRead } from "./read-tracker.js";
 import { renameSyncWithRetry } from "./utils/atomic-rename.js";
+import { withFileLock } from "./utils/file-lock.js";
 
 interface SessionCheckpoints {
   /** 1-based index of the turn currently running (0 = none started). */
@@ -51,12 +52,14 @@ interface SessionCheckpoints {
   originals: Map<string, string | null>;
   /** path → the 1-based turn in which the path was first modified. */
   firstWriteTurn: Map<string, number>;
-  /** turn → { path → on-disk content at that turn's START boundary }. */
-  turnSnapshots: Map<number, Map<string, string | null>>;
+  /** turn → { path → on-disk content at that turn's START boundary }. A path
+   *  mapped to `undefined` had a FAILED read at boundary time — rewind treats
+   *  it as "content unknown", not "file absent". */
+  turnSnapshots: Map<number, Map<string, string | null | undefined>>;
   /** turn → epoch ms when the boundary was taken (menu display). */
   turnTimestamps: Map<number, number>;
-  /** path → {mtime, content} read cache (see snapshotAt). */
-  contentCache: Map<string, { mtimeMs: number | null; content: string | null }>;
+  /** path → {mtime, content} read cache (see snapshotAt; content undefined = read failed). */
+  contentCache: Map<string, { mtimeMs: number | null; content: string | null | undefined }>;
 }
 
 const sessions = new Map<string, SessionCheckpoints>();
@@ -161,35 +164,36 @@ function readBlob(key: string, hash: string | null): string | null | undefined {
  */
 function gcBlobs(key: string): void {
   try {
-    const mirror = loadPersisted(key); // fresh from disk, not the in-memory copy
-    // Fourth-round review: an unreadable/missing/corrupt index must ABORT
-    // the GC — treating it as an empty reachable set deleted EVERY blob on
-    // disk, so a single failed state.json write (AV/backup placeholder
-    // blocking the rewrite of the same filename) later escalated into
-    // destroying all remaining rewind depth the in-memory mirror still
-    // references. Conservative rule: no readable index → no GC. (Known
-    // limitation, accepted: no cross-process lock — a same-session second
-    // terminal that wrote a blob between our index read and the unlinks can
-    // lose that one blob to GC; the reader treats it as missing and skips,
-    // degrading rewind depth without deleting live files.)
-    if (!mirror) return;
-    const dir = nodePath.join(bucketDir(key), "blobs");
-    const reachable = new Set<string>();
-    for (const o of Object.values(mirror.originals)) {
-      if (o.blob) reachable.add(o.blob);
-    }
-    for (const t of Object.values(mirror.turns)) {
-      for (const b of Object.values(t.files)) if (b) reachable.add(b);
-    }
-    for (const name of fs.readdirSync(dir)) {
-      if (!reachable.has(name)) {
-        try {
-          fs.unlinkSync(nodePath.join(dir, name));
-        } catch {
-          /* another process may hold it — skip */
+    // Under the same lock as persistState (review fix "GC 与索引发布无事务"):
+    // a concurrent persist publishing a NEW blob right after our index read
+    // used to have that blob unlinked — the rewind depth silently degraded.
+    withFileLock(nodePath.join(bucketDir(key), "state.json"), () => {
+      const mirror = loadPersisted(key); // fresh from disk, not the in-memory copy
+      // Fourth-round review: an unreadable/missing/corrupt index must ABORT
+      // the GC — treating it as an empty reachable set deleted EVERY blob on
+      // disk, so a single failed state.json write (AV/backup placeholder
+      // blocking the rewrite of the same filename) later escalated into
+      // destroying all remaining rewind depth the in-memory mirror still
+      // references. Conservative rule: no readable index → no GC.
+      if (!mirror) return;
+      const dir = nodePath.join(bucketDir(key), "blobs");
+      const reachable = new Set<string>();
+      for (const o of Object.values(mirror.originals)) {
+        if (o.blob) reachable.add(o.blob);
+      }
+      for (const t of Object.values(mirror.turns)) {
+        for (const b of Object.values(t.files)) if (b) reachable.add(b);
+      }
+      for (const name of fs.readdirSync(dir)) {
+        if (!reachable.has(name)) {
+          try {
+            fs.unlinkSync(nodePath.join(dir, name));
+          } catch {
+            /* another process may hold it — skip */
+          }
         }
       }
-    }
+    });
   } catch {
     /* no blobs dir — nothing to GC */
   }
@@ -201,48 +205,64 @@ const diskMirrors = new Map<string, PersistedBucket>();
 
 function persistState(key: string, s: SessionCheckpoints): void {
   try {
-    let mirror = diskMirrors.get(key);
-    if (!mirror) {
-      mirror = { version: 1, currentTurn: 0, originals: {}, turns: {} };
-      diskMirrors.set(key, mirror);
-    }
-    mirror.currentTurn = s.currentTurn;
-    for (const [path, firstTurn] of s.firstWriteTurn) {
-      if (!mirror.originals[path]) {
-        const content = s.originals.get(path);
-        // Tracked in firstWriteTurn but content UNKNOWN (e.g. hydrated after
-        // its blob was lost — hydration deliberately keeps the bookkeeping
-        // without the originals entry). Writing blob:null here would tell a
-        // later rewind "file did not exist pre-session" and get it DELETED
-        // (#7③). Skip; a re-capture or the next persistState can retry.
-        if (content === undefined) continue;
-        const blob = writeBlob(key, content);
-        // A FAILED blob write (non-null content, null hash) must not persist
-        // as blob:null — hydration would read that as "file did not exist
-        // pre-session" and a rewind would DELETE the file (#7③). Skip the
-        // entry; the next persistState retries.
-        if (content !== null && blob === null) continue;
-        mirror.originals[path] = { blob, firstWriteTurn: firstTurn };
+    // Cross-process safety (review fix "索引全量重写丢另一终端的条目"): the
+    // whole read-merge-write runs under the bucket's state.json lock, and the
+    // fresh DISK index is merged in first — entries another terminal added
+    // since our last write survive instead of being dropped by a full rewrite
+    // from our (older) in-memory mirror.
+    withFileLock(nodePath.join(bucketDir(key), "state.json"), () => {
+      let mirror = diskMirrors.get(key);
+      if (!mirror) {
+        mirror = { version: 1, currentTurn: 0, originals: {}, turns: {} };
+        diskMirrors.set(key, mirror);
       }
-    }
-    // Drop pruned entries from the mirror (rewind/reset hygiene).
-    for (const path of Object.keys(mirror.originals)) {
-      if (!s.firstWriteTurn.has(path)) delete mirror.originals[path];
-    }
-    for (const t of Object.keys(mirror.turns)) {
-      if (!s.turnTimestamps.has(Number(t)) && !s.turnSnapshots.has(Number(t))) {
-        // Keep turns that are only on disk (memory-evicted) — they are still
-        // rewound-able; drop turns the session actually pruned.
-        const pruned = Number(t) > s.currentTurn || !diskTurnLive(key, s, Number(t));
-        if (pruned) delete mirror.turns[t];
+      const onDisk = loadPersisted(key);
+      if (onDisk) {
+        for (const [path, entry] of Object.entries(onDisk.originals ?? {}))
+          if (!mirror.originals[path]) mirror.originals[path] = entry;
+        for (const [turn, entry] of Object.entries(onDisk.turns ?? {}))
+          if (!mirror.turns[turn]) mirror.turns[turn] = entry;
       }
-    }
-    const dir = bucketDir(key);
-    fs.mkdirSync(dir, { recursive: true });
-    const file = nodePath.join(dir, "state.json");
-    const tmp = `${file}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(mirror), "utf-8");
-    renameSyncWithRetry(tmp, file);
+      // The in-memory session's counter is AUTHORITATIVE (a rewind rolls it
+      // back on purpose) — never max-merge the disk value over it.
+      mirror.currentTurn = s.currentTurn;
+      for (const [path, firstTurn] of s.firstWriteTurn) {
+        if (!mirror.originals[path]) {
+          const content = s.originals.get(path);
+          // Tracked in firstWriteTurn but content UNKNOWN (e.g. hydrated after
+          // its blob was lost — hydration deliberately keeps the bookkeeping
+          // without the originals entry). Writing blob:null here would tell a
+          // later rewind "file did not exist pre-session" and get it DELETED
+          // (#7③). Skip; a re-capture or the next persistState can retry.
+          if (content === undefined) continue;
+          const blob = writeBlob(key, content);
+          // A FAILED blob write (non-null content, null hash) must not persist
+          // as blob:null — hydration would read that as "file did not exist
+          // pre-session" and a rewind would DELETE the file (#7③). Skip the
+          // entry; the next persistState retries.
+          if (content !== null && blob === null) continue;
+          mirror.originals[path] = { blob, firstWriteTurn: firstTurn };
+        }
+      }
+      // Drop pruned entries from the mirror (rewind/reset hygiene).
+      for (const path of Object.keys(mirror.originals)) {
+        if (!s.firstWriteTurn.has(path)) delete mirror.originals[path];
+      }
+      for (const t of Object.keys(mirror.turns)) {
+        if (!s.turnTimestamps.has(Number(t)) && !s.turnSnapshots.has(Number(t))) {
+          // Keep turns that are only on disk (memory-evicted) — they are still
+          // rewound-able; drop turns the session actually pruned.
+          const pruned = Number(t) > s.currentTurn || !diskTurnLive(key, s, Number(t));
+          if (pruned) delete mirror.turns[t];
+        }
+      }
+      const dir = bucketDir(key);
+      fs.mkdirSync(dir, { recursive: true });
+      const file = nodePath.join(dir, "state.json");
+      const tmp = `${file}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(mirror), "utf-8");
+      renameSyncWithRetry(tmp, file);
+    });
   } catch {
     // Best-effort mirror; memory checkpoints keep working.
   }
@@ -290,7 +310,7 @@ function boundaryFor(
   key: string,
   s: SessionCheckpoints,
   turn: number,
-): Map<string, string | null> | undefined {
+): Map<string, string | null | undefined> | undefined {
   const inMemory = s.turnSnapshots.get(turn);
   if (inMemory) return inMemory;
   const mirror = diskMirrors.get(key) ?? loadPersisted(key);
@@ -353,11 +373,20 @@ function bucket(sessionId: string): SessionCheckpoints {
   return s;
 }
 
-function readOrNull(path: string): string | null {
+/**
+ * Read a tracked file for a snapshot.
+ *
+ * THREE states (review fix "读错误被当成文件不存在"): `null` means the file
+ * verifiably does not exist (ENOENT) — a rewind may DELETE a session-created
+ * file for that. `undefined` means the read FAILED for another reason
+ * (EACCES/EBUSY/…) — the content is UNKNOWN, and a rewind must report a
+ * failure for the path, never treat it as "did not exist".
+ */
+function readSnapshotContent(path: string): string | null | undefined {
   try {
     return fs.readFileSync(path, "utf-8");
-  } catch {
-    return null;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? null : undefined;
   }
 }
 
@@ -374,7 +403,7 @@ function readOrNull(path: string): string | null {
  * within one mtime tick are exactly what CI tmpdirs produce). Writes from
  * outside the domain (Bash) share the standing checkpoint caveat.
  */
-function snapshotAt(s: SessionCheckpoints, filePath: string): string | null {
+function snapshotAt(s: SessionCheckpoints, filePath: string): string | null | undefined {
   let mtimeMs: number | null = null;
   try {
     mtimeMs = fs.statSync(filePath).mtimeMs;
@@ -383,7 +412,7 @@ function snapshotAt(s: SessionCheckpoints, filePath: string): string | null {
   }
   const cached = s.contentCache.get(filePath);
   if (cached && cached.mtimeMs === mtimeMs) return cached.content;
-  const content = readOrNull(filePath);
+  const content = readSnapshotContent(filePath);
   s.contentCache.set(filePath, { mtimeMs, content });
   return content;
 }
@@ -429,7 +458,7 @@ export function beginUserTurn(sessionId: string, msg?: object): number {
   const key = bucketKey(sessionId);
   const s = bucket(sessionId);
   s.currentTurn += 1;
-  const snapshot = new Map<string, string | null>();
+  const snapshot = new Map<string, string | null | undefined>();
   for (const path of s.originals.keys()) snapshot.set(path, snapshotAt(s, path));
   s.turnSnapshots.set(s.currentTurn, snapshot);
   s.turnTimestamps.set(s.currentTurn, Date.now());
@@ -446,6 +475,10 @@ export function beginUserTurn(sessionId: string, msg?: object): number {
     }
     const files: Record<string, string | null> = {};
     for (const [p, c] of snapshot) {
+      // undefined (failed read): skip the path in this boundary — hydration
+      // then leaves it "not tracked at this boundary" and a rewind reports a
+      // missing-content failure instead of guessing (same rule as blobs).
+      if (c === undefined) continue;
       if (c === null) files[p] = null;
       else {
         const blob = writeBlob(key, c);
@@ -494,7 +527,13 @@ export function shadowBeforeWrite(sessionId: string, filePath: string): void {
   const key = bucketKey(sessionId);
   const s = bucket(sessionId);
   if (!s.originals.has(filePath)) {
-    s.originals.set(filePath, snapshotAt(s, filePath));
+    const snapshot = snapshotAt(s, filePath);
+    // snapshot === undefined → the read FAILED (EACCES/EBUSY…): record the
+    // write-turn bookkeeping but NO originals entry. A later rewind then
+    // reports "original content missing" for the path instead of reading the
+    // gap as "file did not exist" and DELETING it (review fix; mirrors the
+    // lost-blob handling in hydration).
+    if (snapshot !== undefined) s.originals.set(filePath, snapshot);
     s.firstWriteTurn.set(filePath, Math.max(1, s.currentTurn));
     // Persist the new shadow (C8) so a kill before the turn boundary still
     // leaves the pre-session original recoverable.
@@ -604,7 +643,20 @@ export function restoreToTurn(sessionId: string, turn: number): RestoreResult {
   for (const [path, firstTurn] of s.firstWriteTurn) {
     if (firstTurn >= target) undone.push(path);
   }
-  if (undone.length > 0) forgetChanges(bucketKey(sessionId), undone);
+  if (undone.length > 0) {
+    // /diff keys are workspace-relative with "/" separators (change-tracker
+    // convention); checkpoint paths are absolute. Normalize before forgetting
+    // — the old absolute keys never matched and fully-rewound files stayed
+    // listed as session changes (review fix).
+    const workspace = nodePath.resolve(
+      nodePath.dirname(nodePath.dirname(nodePath.dirname(bucketDir(key)))),
+    );
+    const relative = undone.map((file) => {
+      const rel = nodePath.relative(workspace, file);
+      return rel && !rel.startsWith("..") ? rel.split(nodePath.sep).join("/") : file;
+    });
+    forgetChanges(bucketKey(sessionId), relative);
+  }
 
   // Prune future state: turns ≥ target never happened, and files whose first
   // write was ≥ target are back to pristine (drop their shadow so a later

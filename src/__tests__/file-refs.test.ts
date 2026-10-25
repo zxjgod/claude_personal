@@ -46,6 +46,45 @@ describe("expandFileRefs", () => {
     expect(r.notes.some((n) => n.includes("outside the workspace"))).toBe(true);
   });
 
+  it("skips a workspace symlink that points outside (review fix)", () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "fileref-out-"));
+    try {
+      fs.writeFileSync(path.join(outside, "secret.txt"), "outer secret");
+      const link = path.join(workspace, "link.txt");
+      try {
+        fs.symlinkSync(path.join(outside, "secret.txt"), link);
+      } catch {
+        // Windows without symlink privilege — the junction test below covers
+        // this platform; here the vector is not creatable.
+        return;
+      }
+      const r = expandFileRefs("@link.txt", workspace);
+      expect(r.attachments).toHaveLength(0);
+      expect(r.notes.some((n) => n.includes("outside the workspace"))).toBe(true);
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("skips a path through a directory junction that leaves the workspace (review fix)", () => {
+    // Directory junctions need NO privilege on Windows (file symlinks do), so
+    // this is the always-runnable form of the escape test — the first cut of
+    // the boundary fix passed vacuously here because its symlink setup threw
+    // EPERM while the ANDed boundary condition was still bypassable.
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "fileref-junc-out-"));
+    try {
+      fs.writeFileSync(path.join(outside, "secret.txt"), "junction secret");
+      const junction = path.join(workspace, "linkdir");
+      fs.symlinkSync(outside, junction, "junction");
+      const r = expandFileRefs("@linkdir/secret.txt", workspace);
+      expect(r.attachments).toHaveLength(0);
+      expect(r.attachments.some((a) => a.includes("junction secret"))).toBe(false);
+      expect(r.notes.some((n) => n.includes("outside the workspace"))).toBe(true);
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
   it("skips missing files with a note", () => {
     const r = expandFileRefs("@nope.txt", workspace);
     expect(r.attachments).toHaveLength(0);

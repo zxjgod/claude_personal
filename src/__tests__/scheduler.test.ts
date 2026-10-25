@@ -46,15 +46,18 @@ describe("schedulerTick", () => {
       durable: false,
     });
     if (!job) throw new Error("registerScheduledJob returned null");
+    // "+N" elapsed uses the MONOTONIC hrtime sample — age the sample, not the
+    // wall clock (review fix: clock jumps must not move the deadline).
+    job.createdAt -= 2_000_000_000n;
 
-    const prompts = schedulerTick(new Date(Date.now() + 2000));
+    const prompts = schedulerTick(new Date());
     expect(prompts).toHaveLength(1);
     expect(prompts[0]?.jobId).toBe(job.id);
     expect(prompts[0]?.prompt).toContain("[Sleep elapsed");
     expect(prompts[0]?.prompt).toContain("wake up now");
     // One-shot consumed: no longer registered, and a second tick finds nothing.
     expect(getScheduledJob(job.id)).toBeUndefined();
-    expect(schedulerTick(new Date(Date.now() + 3000))).toEqual([]);
+    expect(schedulerTick(new Date())).toEqual([]);
   });
 
   it("fires a due wakeup once and removes it (the /loop reschedules itself)", () => {

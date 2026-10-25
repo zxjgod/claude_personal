@@ -697,7 +697,12 @@ export async function checkPermission(
   // Configured deny rules are the highest user policy layer and apply even to
   // otherwise read-only tools. Allow rules only suppress the ordinary prompt;
   // the safety floor below still applies.
-  const configured = policyDecision(context.permissionPolicy, tool.name, input);
+  const configured = policyDecision(
+    context.permissionPolicy,
+    tool.name,
+    input,
+    context.workspaceRoot,
+  );
   if (configured === "deny") {
     return {
       allowed: false,

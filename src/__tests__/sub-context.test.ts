@@ -131,6 +131,7 @@ describe("deriveSubContext", () => {
         "permissionMode",
         "permissionPolicy",
         "sessionId",
+        "skillScopeId",
         "subagentDepth",
         "workspaceRoot",
       ].sort(),

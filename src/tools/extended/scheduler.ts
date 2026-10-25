@@ -25,6 +25,7 @@ import {
 import { type TaskNotificationInput, takeUnseenForDisplay } from "../notifications.js";
 import {
   collectDueCronJobs,
+  completeDeliveredCronJob,
   ensureDurableJobsLoaded,
   releaseSessionCronJobs,
 } from "./cron-shared.js";
@@ -77,6 +78,9 @@ export interface SchedulerHost {
  */
 export function schedulerTick(now: Date, scope?: ScheduleScope): ScheduledPrompt[] {
   const prompts: ScheduledPrompt[] = [];
+  // Due-slot identity for recurring cron firings: two firings of the SAME job
+  // in different minutes are two deliveries (see PendingScheduledInput.dueKey).
+  const minuteMarker = Math.floor(now.getTime() / 60_000);
   for (const { job, prompt } of collectDueCronJobs(now, scope)) {
     prompts.push({
       source: job.cron.startsWith("+") ? "wakeup" : "cron",
@@ -86,6 +90,7 @@ export function schedulerTick(now: Date, scope?: ScheduleScope): ScheduledPrompt
       jobId: job.id,
       prompt,
       label: `定时任务 ${job.id} 触发`,
+      ...(job.cron.startsWith("+") ? {} : { dueKey: String(minuteMarker) }),
     });
   }
   // Wakeups: due when the hrtime delay elapsed; fire once and remove — the
@@ -159,6 +164,9 @@ export function startScheduler(host: SchedulerHost): () => void {
       });
       if (!next) break;
       host.deliver(next.prompt);
+      // Review fix ("durable 一次性交付前即被删除"): the durable one-shot's
+      // record survives until HERE — the prompt is now in a host's hands.
+      if (next.registry === "cron") completeDeliveredCronJob(next.jobId, next.workspaceRoot);
     }
 
     // 拍板 #16: a finished background SUB-AGENT wakes the idle parent session.

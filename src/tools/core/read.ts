@@ -2,6 +2,7 @@
 // Read Tool
 // ============================================================
 
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import chalk from "chalk";
 import { z } from "zod";
@@ -99,7 +100,25 @@ export const ReadTool: Tool = buildTool({
       // the model as a real Read result.
       const specMeta = context.speculative ? { readPath: filePath, readMtimeMs: stat.mtimeMs } : {};
       const noteRead = (): void => {
-        if (!context.speculative) markRead(context.sessionId, filePath, stat.mtimeMs);
+        if (context.speculative) return;
+        // Size + digest of the head we are about to hand out: the edit gate
+        // compares them later, so a same-mtime external rewrite is caught
+        // (see read-tracker.ts).
+        let digest: string | undefined;
+        try {
+          const handle = fs.openSync(filePath, "r");
+          try {
+            const cap = 1024 * 1024;
+            const buffer = Buffer.alloc(Math.min(cap, stat.size));
+            const bytes = fs.readSync(handle, buffer, 0, buffer.length, 0);
+            digest = createHash("sha256").update(buffer.subarray(0, bytes)).digest("hex");
+          } finally {
+            fs.closeSync(handle);
+          }
+        } catch {
+          /* unreadable right now — mtime-only tracking still applies */
+        }
+        markRead(context.sessionId, filePath, stat.mtimeMs, { size: stat.size, digest });
       };
 
       // Images/PDFs are loaded wholesale into memory below, so the size gate

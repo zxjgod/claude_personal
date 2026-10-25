@@ -250,14 +250,26 @@ export function bashCommandIsReadOnly(command: string | undefined): boolean {
     if (tokens.join(" ") !== trimmed.replace(/\s+/g, " ")) return false;
     const words = tokens.map((t) => t.replace(/^(['"])(.*)\1$/, "$2"));
     const isGit = tokens[0] === "git";
+    const onWindows = process.platform === "win32";
     for (const token of tokens) {
-      // Single quotes are fully literal in bash and inert in cmd.exe.
-      if (token.startsWith("'")) continue;
+      // Single quotes are fully literal in bash. In cmd.exe they are NOT
+      // quotes at all — `echo 'payload > victim.txt'` really redirects
+      // (verified) — so on Windows the quoted CONTENT must still clear the
+      // cmd-active metacharacter scan. `& | ;` are already handled by the
+      // segment split above.
+      if (token.startsWith("'")) {
+        if (onWindows && /[()<>^!%]/.test(token.slice(1, -1))) return false;
+        continue;
+      }
       if (token.startsWith('"')) {
         // Double quotes are literal except for backslash escapes; `$` is
         // already excluded by the tokenizer above. A backslash here would
         // alter the word boundary the join-check relies on.
         if (token.includes("\\")) return false;
+        // cmd.exe still expands %VAR% INSIDE double quotes (`echo "%KEY%"`
+        // prints the secret). A complete %-pair is therefore shell-active on
+        // Windows; a lone `%` (as in "100%") stays literal everywhere.
+        if (onWindows && /%[^%\s]*%/.test(token)) return false;
         continue;
       }
       // Unquoted: shell-active characters can redirect (`>`, `<`), escape

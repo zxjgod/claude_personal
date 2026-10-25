@@ -70,6 +70,19 @@ async function deleteSession(
   }
 
   await ctx.persistence!.deleteSession(match.sessionId);
+  if (match.sessionId === ctx.sessionId && ctx.rotateSessionId) {
+    // Review fix ("强制删除当前会话被自动保存复活"): deleting the CURRENT
+    // session's file is not enough — the live id is still the save target and
+    // the next auto-save recreates it. Rotate to a fresh id so "Deleted"
+    // stays true.
+    const rotated = ctx.rotateSessionId();
+    console.log(
+      chalk.gray(
+        `  Deleted session ${match.sessionId.slice(0, 8)}... (current session rotated to ${rotated.slice(0, 8)}...)`,
+      ),
+    );
+    return;
+  }
   console.log(chalk.gray(`  Deleted session ${match.sessionId.slice(0, 8)}...`));
 }
 

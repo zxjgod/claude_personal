@@ -154,15 +154,23 @@ function splitKeys(data: Buffer): Key[] {
       continue;
     }
     if (ch === "\r" || ch === "\n") {
-      if (burst) {
-        // Pasted/burst newline: flatten (CRLF counts as one break).
-        chars += " ";
-        i += ch === "\r" && seq[i + 1] === "\n" ? 2 : 1;
+      // Review fix ("合并按键块中的 Enter 被吞掉"): a multi-char data event is
+      // not necessarily a paste — the console coalesces fast TYPING too, and
+      // "abc\r" used to flatten its Enter into a space, silently refusing to
+      // submit. A newline at the very END of the event is a real Enter; one
+      // with more content after it is paste-like and still flattens.
+      const isCrlf = ch === "\r" && seq[i + 1] === "\n";
+      const after = isCrlf ? i + 2 : i + 1;
+      const atTail = after >= seq.length;
+      if (!burst || atTail) {
+        flushChars();
+        keys.push({ name: "enter", ctrl: false, sequence: ch });
+        i = after;
         continue;
       }
-      flushChars();
-      keys.push({ name: "enter", ctrl: false, sequence: ch });
-      i += 1;
+      // Pasted/burst newline: flatten (CRLF counts as one break).
+      chars += " ";
+      i = after;
       continue;
     }
     if (ch < " " || ch === "\x7f") {

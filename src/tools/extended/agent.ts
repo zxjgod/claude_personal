@@ -1,4 +1,4 @@
-import { scopedHooks } from "../../scoped-execution.js";
+import { prepareAgentHooks, scopedHooks } from "../../scoped-execution.js";
 // ============================================================
 // Agent Tool ??Enhanced sub-agent spawning with full API compatibility
 // ============================================================
@@ -476,6 +476,14 @@ export const AgentTool: Tool = buildTool({
         };
       }
 
+      // Trust-gate the agent's declared hooks (review fix: project agent hooks
+      // used to register with no gate) BEFORE the prompt is assembled, so the
+      // skip note can ride along in it.
+      const agentHooks =
+        subagentType && !isFork
+          ? await prepareAgentHooks(subagentType, context.askUser, effectiveWorkspaceRoot)
+          : {};
+
       // Get available tools
       const availableTools = await getCoreToolsForSubagents();
 
@@ -493,7 +501,8 @@ export const AgentTool: Tool = buildTool({
           subagentType!,
           [
             input.description || "Sub-agent task",
-            await preloadAgentSkills(subagentType!, effectiveWorkspaceRoot),
+            await preloadAgentSkills(subagentType!, effectiveWorkspaceRoot, context.askUser),
+            ...(agentHooks.note ? ["", agentHooks.note] : []),
           ].join("\n"),
           { workspaceRoot: effectiveWorkspaceRoot },
         );
@@ -544,6 +553,12 @@ export const AgentTool: Tool = buildTool({
           };
         }
         runClaimed = true;
+        // Seed the record with the live conversation BEFORE the first save:
+        // a crash before the terminal finally used to leave an orphan whose
+        // messages were empty, so a resume knew nothing about the original
+        // task (review fix). The array is mutated in place by the loop, and
+        // the terminal finally below persists the same reference again.
+        runRecord.messages = messages;
         saveRun(context.workspaceRoot, runRecord);
       }
 
@@ -566,12 +581,15 @@ export const AgentTool: Tool = buildTool({
           // A fork runs under its own session id so its checkpoint bucket is
           // distinct from the parent's.
           sessionId: `${context.sessionId}-agent-${Date.now()}`,
+          // Own skill-activation scope: a skill activated in this worker must
+          // not reach siblings or the parent (fork inherits the parent's).
+          skillScopeId: isFork ? context.skillScopeId : `agent-${Date.now().toString(36)}`,
           askUser: approver,
           abortSignal: context.abortSignal,
           onSubAgentProgress: context.onSubAgentProgress,
           hooks: scopedHooks(
             context.hooks,
-            isFork ? undefined : subagentType?.hooks,
+            isFork ? undefined : agentHooks.hooksConfig,
             context.sessionId,
             effectiveWorkspaceRoot,
           ),
@@ -728,7 +746,7 @@ export const AgentTool: Tool = buildTool({
         finalText,
         duration,
       );
-      const scan = await scanSubagentOutput(finalText, modelConfig);
+      const scan = await scanSubagentOutput(finalText, modelConfig, context.abortSignal);
       if (scan.blocked) {
         return {
           content: blockedOutputNotice(displayName) + worktreeNotice,

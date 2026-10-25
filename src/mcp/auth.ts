@@ -125,6 +125,9 @@ export class FileTokenOAuthProvider implements OAuthClientProvider {
   private readonly storeDir: string;
   private stored: StoredAuth;
   private readonly binding: string;
+  /** Set by read() when legacy unbound credentials were dropped; the
+   *  constructor persists the cleaned state once `stored` exists. */
+  private issuerCleanPending = false;
   /** Authorization URL captured during the SDK's redirect step. */
   private pendingAuthUrl: URL | null = null;
 
@@ -155,11 +158,17 @@ export class FileTokenOAuthProvider implements OAuthClientProvider {
       `${safeName(serverName).slice(0, 60)}-${this.binding}.json`,
     );
     this.stored = this.read();
+    if (this.issuerCleanPending) {
+      this.issuerCleanPending = false;
+      this.write();
+    }
   }
 
   // --- Persistence helpers ---
 
   private read(): StoredAuth {
+    let loaded: StoredAuth = {};
+    let fromDisk = false;
     try {
       const raw = JSON.parse(fs.readFileSync(this.storePath, "utf-8")) as StoredEnvelope &
         StoredAuth;
@@ -168,22 +177,45 @@ export class FileTokenOAuthProvider implements OAuthClientProvider {
         // Encrypted envelope — a decryption failure (missing/rotated key)
         // drops the store and forces re-authorization, never a silent
         // fallback to treating ciphertext as state.
-        return decryptPayload(loadOrCreateKey(this.storeDir), raw.enc);
+        loaded = decryptPayload(loadOrCreateKey(this.storeDir), raw.enc);
+      } else {
+        // Legacy plaintext store — migrate to the encrypted envelope on read.
+        const legacy: StoredAuth = {
+          clientInformation: raw.clientInformation,
+          tokens: raw.tokens,
+          codeVerifier: raw.codeVerifier,
+        };
+        loaded = legacy;
       }
-      // Legacy plaintext store — migrate to the encrypted envelope on read.
-      const legacy: StoredAuth = {
-        clientInformation: raw.clientInformation,
-        tokens: raw.tokens,
-        codeVerifier: raw.codeVerifier,
-      };
-      if (legacy.clientInformation || legacy.tokens || legacy.codeVerifier) {
-        this.stored = legacy;
-        this.write();
-      }
-      return legacy;
+      fromDisk = true;
     } catch {
       return {};
     }
+    // Review fix ("旧凭证未绑定 issuer" — GHSA-6qxp-vccf-f47h, SDK ≥1.32):
+    // the upgraded SDK stamps and enforces an `issuer` on tokens / registered
+    // clients so a compromised MCP server cannot redirect a refresh token to
+    // an authorization server it controls. Credentials saved by the OLD SDK
+    // carry no issuer and therefore enjoy no such binding — drop them once
+    // and let the user re-authorize (one-time cost, closes the hole for
+    // existing installs; merely upgrading the SDK would keep them usable).
+    let changed = false;
+    if (loaded.tokens && (loaded.tokens as { issuer?: unknown }).issuer == null) {
+      loaded.tokens = undefined;
+      changed = true;
+    }
+    const client = loaded.clientInformation as
+      | { issuer?: unknown; client_secret?: unknown }
+      | undefined;
+    if (client && client.issuer == null && client.client_secret != null) {
+      // Only SECRET-bearing registrations are dangerous to reuse unbound; a
+      // bare public client_id carries nothing worth binding.
+      loaded.clientInformation = undefined;
+      changed = true;
+    }
+    // NOTE: no write here — read() runs from the constructor before
+    // `this.stored` exists; the constructor persists the cleaned state.
+    if (changed && fromDisk) this.issuerCleanPending = true;
+    return loaded;
   }
 
   private write(): void {
@@ -221,10 +253,17 @@ export class FileTokenOAuthProvider implements OAuthClientProvider {
 
   clientInformation(): OAuthClientInformation | undefined {
     // A statically configured client id takes precedence over a registered one.
+    // Stamp it with the issuer the SDK bound on first use (review fix): the
+    // upgraded SDK refuses to present credentials to a different authorization
+    // server, but only when the stored record carries the issuer — a bare
+    // static id/secret pair stayed issuer-less and therefore unbound forever.
     if (this.config.clientId) {
+      const boundIssuer = (this.stored.clientInformation as { issuer?: string } | undefined)
+        ?.issuer;
       return {
         client_id: this.config.clientId,
         client_secret: this.config.clientSecret,
+        ...(boundIssuer ? { issuer: boundIssuer } : {}),
       } as OAuthClientInformation;
     }
     return this.stored.clientInformation;

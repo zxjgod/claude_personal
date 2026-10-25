@@ -99,24 +99,29 @@ export interface MemoryApprovalPersistResult {
   pinnedBy?: string;
 }
 
-/** Write `memory.requireApproval` into one settings file, preserving keys. */
+/** Write `memory.requireApproval` into one settings file, preserving keys.
+ *  The read-modify-write happens INSIDE the file lock (review fix "锁外 RMW
+ *  覆盖他进程设置"): reading before acquiring the lock meant another
+ *  process's concurrent settings write was silently reverted by ours. */
 function writeToggleToFile(file: string, required: boolean): void {
-  const { value: existing, corrupt } = readSettingsFileStrict(file);
-  if (corrupt) {
-    throw new Error(
-      `${file} is not valid JSON — fix or delete it before toggling ` +
-        `(refusing to rewrite it: every other setting in it would be lost).`,
-    );
-  }
-  const memorySection = (
-    existing.memory && typeof existing.memory === "object" ? existing.memory : {}
-  ) as Record<string, unknown>;
-  const next = `${JSON.stringify(
-    { ...existing, memory: { ...memorySection, requireApproval: required } },
-    null,
-    2,
-  )}\n`;
-  withFileLock(file, () => atomicWriteFile(file, next));
+  withFileLock(file, () => {
+    const { value: existing, corrupt } = readSettingsFileStrict(file);
+    if (corrupt) {
+      throw new Error(
+        `${file} is not valid JSON — fix or delete it before toggling ` +
+          `(refusing to rewrite it: every other setting in it would be lost).`,
+      );
+    }
+    const memorySection = (
+      existing.memory && typeof existing.memory === "object" ? existing.memory : {}
+    ) as Record<string, unknown>;
+    const next = `${JSON.stringify(
+      { ...existing, memory: { ...memorySection, requireApproval: required } },
+      null,
+      2,
+    )}\n`;
+    atomicWriteFile(file, next);
+  });
 }
 
 function userLayerLabel(): string {

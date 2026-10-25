@@ -41,15 +41,20 @@ export interface OutputScanResult {
 
 /**
  * Classify a sub-agent's final report for prompt injection. Never throws.
+ * `signal` (review fix "输出扫描不响应取消"): the scan's model call now
+ * observes the parent/sub-agent abort — a cancelled turn no longer keeps a
+ * background classifier request running to completion.
  */
 export async function scanSubagentOutput(
   report: string,
   modelConfig: ModelConfig,
+  signal?: AbortSignal,
 ): Promise<OutputScanResult> {
   if (!isOutputScanEnabled() || !report.trim()) {
     return { blocked: false, status: "clean" };
   }
   try {
+    signal?.throwIfAborted();
     const caller = createModelCaller(modelConfig);
     const excerpt = report.slice(0, SCAN_CHAR_LIMIT);
     let verdict = "";
@@ -63,6 +68,7 @@ export async function scanSubagentOutput(
       [],
       "",
       modelConfig,
+      signal,
     )) {
       if (ev.type === "text_delta") verdict += ev.delta;
       if (ev.type === "error") return { blocked: false, status: "unavailable" };

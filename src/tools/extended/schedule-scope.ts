@@ -28,6 +28,14 @@ export interface PendingScheduledInput extends ScheduleScope {
   jobId: string;
   prompt: string;
   label: string;
+  /**
+   * Review fix ("recurring 忙时按 jobId 去重吞掉后续分钟"): which due-slot
+   * this input belongs to (the epoch-minute for cron firings). The queue
+   * dedupe only collapses inputs with the SAME dueKey, so a recurring job
+   * that came due again while the last prompt was still parked queues a
+   * SECOND delivery instead of being silently dropped.
+   */
+  dueKey?: string;
 }
 
 // Identity survives the busy queue, so cancellation reaches due inputs too.
@@ -46,7 +54,8 @@ export function enqueueScheduledInput(input: PendingScheduledInput): void {
       (entry) =>
         entry.registry === input.registry &&
         entry.jobId === input.jobId &&
-        entry.sessionId === input.sessionId,
+        entry.sessionId === input.sessionId &&
+        entry.dueKey === input.dueKey,
     )
   )
     return;

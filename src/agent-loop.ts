@@ -207,13 +207,17 @@ export async function* agentLoop(
   // Provider SDKs can throw before yielding their first event (HTTP 429/5xx,
   // stream setup failures). Normalize those throws into the same error event
   // path used by adapters that report failures mid-stream.
+  // Skill activation resolves in THIS loop's scope (ToolContext.skillScopeId)
+  // so parallel sub-agent loops cannot cross-contaminate (see scoped-execution).
+  const skillSession = toolContext?.sessionId ?? "default";
+  const skillScope = toolContext?.skillScopeId;
   const safeCallModel: ModelCaller = async function* (...args) {
     try {
       const root = toolContext?.workspaceRoot ?? process.cwd();
       const active = activeWorkspace(toolContext?.sessionId ?? "default", root);
       if (active !== root)
         args[2] += `\n\n[ACTIVE WORKSPACE]\nWorking directory: ${active}\nResolve all file and shell operations inside this worktree. Session storage remains at its original location.`;
-      args[3] = activeSkillModel(toolContext?.sessionId ?? "default", args[3]);
+      args[3] = activeSkillModel(skillSession, args[3], skillScope);
       yield* callModel(...args);
     } catch (error) {
       yield {
@@ -260,7 +264,7 @@ export async function* agentLoop(
     getPermissionMode: toolContext?.getPermissionMode,
     setPermissionMode: toolContext?.setPermissionMode,
     get modelConfig() {
-      return activeSkillModel(toolContext?.sessionId ?? "default", contextModel);
+      return activeSkillModel(skillSession, contextModel, skillScope);
     },
     set modelConfig(value) {
       if (value) contextModel = value;
@@ -275,13 +279,13 @@ export async function* agentLoop(
     get hooks() {
       return scopedHooks(
         hooks,
-        activeSkill(toolContext?.sessionId ?? "default")?.hooks,
-        toolContext?.sessionId ?? "default",
+        activeSkill(skillSession, skillScope)?.hooks,
+        skillSession,
         toolContext?.workspaceRoot ?? process.cwd(),
       );
     },
     get permissionPolicy() {
-      return activeSkillPolicy(toolContext?.sessionId ?? "default", toolContext?.permissionPolicy);
+      return activeSkillPolicy(skillSession, toolContext?.permissionPolicy, skillScope);
     },
     askUser: toolContext?.askUser ?? askUser,
     abortSignal,
@@ -366,7 +370,10 @@ export async function* agentLoop(
       } catch {
         return false;
       }
-      return policyDecision(baseContext.permissionPolicy, toolName, input) !== "ask";
+      return (
+        policyDecision(baseContext.permissionPolicy, toolName, input, baseContext.workspaceRoot) !==
+        "ask"
+      );
     },
   );
 
@@ -628,30 +635,43 @@ export async function* agentLoop(
                 state = { ...state, contextLengthRetries: state.contextLengthRetries + 1 };
                 try {
                   const messagesBefore = messages.length;
-                  replaceMessages(
-                    await (async () => {
-                      await baseContext.hooks
-                        ?.runEvent?.("PreCompact", {
-                          session_id: baseContext.sessionId,
-                          message_count: messages.length,
-                        })
-                        .catch(() => {});
-                      const compacted = await autoCompact(
-                        messages,
-                        safeCallModel,
-                        modelConfig,
-                        abortSignal,
-                        options.fastModel,
-                      );
-                      await baseContext.hooks
-                        ?.runEvent?.("PostCompact", {
-                          session_id: baseContext.sessionId,
-                          message_count: compacted.length,
-                        })
-                        .catch(() => {});
-                      return compacted;
-                    })(),
-                  );
+                  let compacted: Message[] | undefined;
+                  await (async () => {
+                    await baseContext.hooks
+                      ?.runEvent?.("PreCompact", {
+                        session_id: baseContext.sessionId,
+                        message_count: messages.length,
+                      })
+                      .catch(() => {});
+                    compacted = await autoCompact(
+                      messages,
+                      safeCallModel,
+                      modelConfig,
+                      abortSignal,
+                      options.fastModel,
+                    );
+                    await baseContext.hooks
+                      ?.runEvent?.("PostCompact", {
+                        session_id: baseContext.sessionId,
+                        message_count: compacted?.length ?? messages.length,
+                      })
+                      .catch(() => {});
+                  })();
+                  // Review fix ("无法压缩仍重复发送相同 oversized prompt"):
+                  // autoCompact returns the ORIGINAL array untouched when
+                  // there is nothing it can compress (≤ TAIL_SIZE messages,
+                  // or a tail that must be kept whole). Retrying the identical
+                  // request can only fail the same way — abort with the real
+                  // reason instead of burning up to 3 more paid calls.
+                  if (compacted === messages) {
+                    nextAction = "abort";
+                    abortError = new Error(
+                      "prompt_too_long: the conversation exceeds the model's context window and cannot be compacted further. Start a new session or trim the largest messages.",
+                    );
+                    streamEnded = true;
+                    break;
+                  }
+                  replaceMessages(compacted!);
                   yield {
                     type: "compacted",
                     summary: "Context compressed after context_length error",
@@ -884,7 +904,12 @@ export async function* agentLoop(
         // truncating could loop paid calls forever (review follow-up #6).
         // MAX_TRUNCATION_CONTINUATIONS consecutive truncations end the loop
         // as max_turns; any turn that ends differently resets the counter.
-        if (modelFinishReason === "length") {
+        //
+        // Review fix ("pause_turn 被当作正常结束"): Anthropic's long-running
+        // pause (stop_reason "pause_turn") is the same shape — the answer is
+        // NOT finished; the protocol says to send the history back and let
+        // the model continue. It shares this bounded continuation path.
+        if (modelFinishReason === "length" || modelFinishReason === "pause_turn") {
           if (state.truncationContinuations >= MAX_TRUNCATION_CONTINUATIONS) {
             yield {
               type: "done",
@@ -895,10 +920,14 @@ export async function* agentLoop(
             };
             return terminal("max_turns");
           }
+          const nudgeText =
+            modelFinishReason === "pause_turn"
+              ? "The response was paused by the provider (pause_turn). Continue exactly from where you stopped — do not repeat text already written."
+              : buildContinuationNudge(state.budget);
           const nudgeMsg: Message = {
             role: "user",
             synthetic: true,
-            content: [{ type: "text", text: buildContinuationNudge(state.budget) }],
+            content: [{ type: "text", text: nudgeText }],
           };
           messages.push(nudgeMsg);
           state = {
@@ -1165,7 +1194,7 @@ export async function* agentLoop(
     return terminal("max_turns");
   } finally {
     streamExecutor.clear();
-    clearSkillActivation(toolContext?.sessionId ?? "default");
+    clearSkillActivation(skillSession, skillScope);
   }
 }
 

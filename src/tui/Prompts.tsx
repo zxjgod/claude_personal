@@ -297,6 +297,15 @@ export function ElicitationPrompt({
   const [values, setValues] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   useInput((input, key) => {
+    // Review fix ("空 elicitation 表单无法退出"): a schema with NO properties
+    // (legal per protocol) produces zero fields; the generic `!field` guard
+    // below used to swallow EVERY key including Esc/Enter, wedging the
+    // overlay. Handle the empty form first: Esc cancels, Enter accepts {}.
+    if (overlay.fields.length === 0) {
+      if (key.escape) overlay.resolve({ action: "cancel" });
+      else if (key.return) overlay.resolve({ action: "accept", content: {} });
+      return;
+    }
     const field = overlay.fields[index];
     if (!field) return;
     if (key.upArrow) setIndex((i) => Math.max(0, i - 1));

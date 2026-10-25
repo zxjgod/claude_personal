@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { absoluteWindowsBinary } from "./utils/windows-bin.js";
 
 export interface NativeSandboxOptions {
   command: string;
@@ -201,7 +202,7 @@ public static class CcrSandbox {
  [StructLayout(LayoutKind.Sequential)] struct LIMITS { public BASIC basic; public ulong io1,io2,io3,io4,io5,io6; public UIntPtr processMemoryLimit, jobMemoryLimit, peakProcessMemoryUsed, peakJobMemoryUsed; }
  static void Fail(string what){ Console.Error.WriteLine("ccr-sandbox: "+what+" failed (win32 error "+Marshal.GetLastWin32Error()+")"); }
  static void Warn(string what){ Console.Error.WriteLine("ccr-sandbox: WARNING: "+what); }
- public static int Run(string cmd,string cwd,string output,string error){
+ public static int Run(string cmd,string cwd,string output,string error,string shell){
   // '"' by char code — see the TS doc-comment: NO escaped quote or backslash may ever appear in this file's C#.
   string dq=((char)34).ToString();
   IntPtr orig=IntPtr.Zero, restricted=IntPtr.Zero;
@@ -220,7 +221,7 @@ public static class CcrSandbox {
   // cmd builtins emit verbatim, and external programs run their own argv
   // parser over the raw quotes). /s strips exactly the outer pair we add
   // FIRST and LAST, so inner quotes cannot break the wrapping.
-  string line="cmd.exe /d /s /c "+dq+"("+cmd+") > "+dq+output+dq+" 2> "+dq+error+dq;
+  string line=shell+" /d /s /c "+dq+"("+cmd+") > "+dq+output+dq+" 2> "+dq+error+dq;
   var si=new STARTUPINFO(); si.cb=Marshal.SizeOf(si);
   // MUST initialize: CreateProcessAsUser is short-circuited when no restricted
   // token was obtained, so C# definite-assignment sees pi as maybe-unassigned
@@ -260,10 +261,10 @@ public static class CcrSandbox {
   return (int)rc;
  }
 }
-'@; exit [CcrSandbox]::Run('${q(options.command)}','${q(options.cwd)}','${q(outFile)}','${q(errFile)}')`;
+'@; exit [CcrSandbox]::Run('${q(options.command)}','${q(options.cwd)}','${q(outFile)}','${q(errFile)}','${q(absoluteWindowsBinary("cmd"))}')`;
   return new Promise((resolve) => {
     const child = spawn(
-      "powershell.exe",
+      absoluteWindowsBinary("powershell"),
       ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
       { windowsHide: true },
     );

@@ -15,7 +15,7 @@
 import { agentLoop } from "../agent-loop.js";
 import { createModelCaller } from "../llm-adapter.js";
 import { mergePermissionPolicies } from "../permission-policy.js";
-import { scopedHooks } from "../scoped-execution.js";
+import { prepareAgentHooks, scopedHooks } from "../scoped-execution.js";
 import type { SkillDefinition } from "../skills.js";
 import {
   buildSubagentSystemPrompt,
@@ -27,6 +27,7 @@ import {
   type SubagentType,
   subagentModelConfig,
 } from "../subagents.js";
+import { canonicalToolKey } from "../tools/utils/official-names.js";
 import {
   deriveSubContext,
   type Message,
@@ -68,13 +69,18 @@ export async function runForkSkill(
     context.modelConfig,
   );
   const subCaller = caller ?? createModelCaller(config);
+  // Trust-gate the agent type's declared hooks (review fix) — project-scope
+  // agent hooks run shell and must pass the same fingerprint gate as project
+  // settings hooks; unapproved ones are dropped with a note in the prompt.
+  const typeHooks = await prepareAgentHooks(type, context.askUser, context.workspaceRoot);
   const subSystemPrompt = buildSubagentSystemPrompt(
     type,
     [
       type.systemPrompt,
       "",
       `You are running the "${skill.name}" skill.`,
-      await preloadAgentSkills(type, context.workspaceRoot),
+      await preloadAgentSkills(type, context.workspaceRoot, context.askUser),
+      ...(typeHooks.note ? ["", typeHooks.note] : []),
     ].join("\n"),
     { workspaceRoot: context.workspaceRoot },
   );
@@ -88,14 +94,17 @@ export async function runForkSkill(
     const coreTools = await getCoreToolsForSubagents();
     let tools = resolveSubagentTools(type, coreTools);
     // skill.allowedTools further narrows the resolved set (kernel: allowedTools).
+    // Names canonicalize (review fix): official docs write "Read"/"Grep" while
+    // registry tools are lowercase — an exact raw compare filtered out every
+    // declared tool and left the fork sub-agent with nothing to run.
     if (!skill.toolPermissionGrant && skill.allowedTools && skill.allowedTools.length > 0) {
-      const allow = new Set(skill.allowedTools);
-      tools = tools.filter((t) => allow.has(t.name));
+      const allow = new Set(skill.allowedTools.map(canonicalToolKey));
+      tools = tools.filter((t) => allow.has(canonicalToolKey(t.name)));
     }
 
     const approver = createSubAgentApprover(context.askUser);
     const runner = scopedHooks(
-      scopedHooks(context.hooks, type.hooks, context.sessionId, context.workspaceRoot),
+      scopedHooks(context.hooks, typeHooks.hooksConfig, context.sessionId, context.workspaceRoot),
       skill.hooks,
       context.sessionId,
       context.workspaceRoot,
@@ -105,6 +114,8 @@ export async function runForkSkill(
       hooks: runner,
       abortSignal: context.abortSignal,
       subagentDepth: (context.subagentDepth ?? 0) + 1,
+      // Own skill-activation scope (see ToolContext.skillScopeId).
+      skillScopeId: `fork-skill-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
       permissionMode:
         context.permissionMode === "plan"
           ? "plan"

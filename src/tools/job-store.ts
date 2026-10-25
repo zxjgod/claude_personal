@@ -63,6 +63,12 @@ export function restoreJobs(sessionId: string, values: unknown[]): void {
       !["bash", "agent"].includes(String(entry.kind))
     )
       continue;
+    // Review fix ("同进程 /resume 覆盖仍存活的后台 job"): the snapshot was
+    // taken when the session was switched away, but in THIS process the job
+    // may still be live (holding its process tree and kill handle). The
+    // restored "interrupted" copy must not clobber it — keep the live entry.
+    const existing = bucket(sessionId).get(entry.id);
+    if (existing && existing.status === "running") continue;
     const job: Job = {
       id: entry.id,
       sessionId,
@@ -207,4 +213,22 @@ export function clearJobs(sessionId: string): void {
     if (job.status !== "running") b.delete(id);
   }
   if (b.size === 0) jobs.delete(sessionId);
+}
+
+/**
+ * Kill every RUNNING job of a session (review fix "正常退出不清理后台 Bash"):
+ * the user asked to leave — a live process tree and its 2h TTL timer must not
+ * keep the CLI alive or outlive the session UI. Used by exit cleanup paths.
+ */
+export function killRunningJobs(sessionId: string, reason = "session exited"): void {
+  for (const job of listJobs(sessionId)) {
+    if (job.status !== "running") continue;
+    job.killReason = reason;
+    try {
+      job.kill?.();
+    } catch {
+      /* already gone */
+    }
+    settleJob(job, "killed", null);
+  }
 }

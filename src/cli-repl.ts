@@ -21,6 +21,7 @@ import type { MCPManager } from "./mcp/index.js";
 import { normalizeFinishReason } from "./session-memory.js";
 import { formatSpeculationLine } from "./speculation.js";
 import { startScheduler } from "./tools/extended/scheduler.js";
+import { killRunningJobs } from "./tools/job-store.js";
 import { drainNotifications, formatNotificationLine } from "./tools/notifications.js";
 import { expandFileRefs } from "./tools/utils/file-refs.js";
 import {
@@ -59,6 +60,8 @@ export interface ReplDeps {
   };
   permissionClassifier: PermissionClassifier | undefined;
   permissionPolicy?: import("./permission-policy.js").PermissionPolicy;
+  /** Live policy — /cd reloads it for the new workspace mid-session. */
+  getPermissionPolicy?: () => import("./permission-policy.js").PermissionPolicy;
   allowedDirectories?: string[];
   prefetch: (latestUserText: string) => Promise<string | null>;
   summarizeToolBatch: ((prompt: string) => Promise<string | null>) | undefined;
@@ -92,6 +95,7 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
     permissionModeState,
     permissionClassifier,
     permissionPolicy,
+    getPermissionPolicy,
     allowedDirectories,
     prefetch,
     summarizeToolBatch,
@@ -166,8 +170,18 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
     } catch {
       /* telemetry is best-effort */
     }
+    // The user is leaving — running background jobs (their process trees and
+    // TTL timers) must not keep the process alive past the exit (review fix).
     try {
-      await persistence.save(session.id, messages, { taskState: "stopped_by_user" });
+      killRunningJobs(session.id, "session exited");
+    } catch {
+      /* best-effort teardown */
+    }
+    try {
+      await persistence.save(session.id, messages, {
+        taskState: "stopped_by_user",
+        waitForLock: true,
+      });
     } catch (err) {
       console.error("Warning: failed to save session on exit:", formatCliError(err));
     }
@@ -352,7 +366,7 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
             modelConfig,
             permissionMode: permissionModeState.get(),
             getPermissionMode: permissionModeState.get,
-            permissionPolicy,
+            permissionPolicy: getPermissionPolicy?.() ?? permissionPolicy,
             allowedDirectories,
             hooks,
             abortSignal: controller.signal,
@@ -388,7 +402,7 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
               },
               // M15.3: opt-in LLM permission classifier for flagged dangerous calls.
               permissionClassifier,
-              permissionPolicy,
+              permissionPolicy: getPermissionPolicy?.() ?? permissionPolicy,
               allowedDirectories,
               hooks,
             },

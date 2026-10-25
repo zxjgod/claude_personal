@@ -44,8 +44,8 @@ export async function* headlessInputs(
     throw new Error(
       "stream-json input requires a pipe or file; interactive terminal input is unsupported",
     );
-  if (args.prompt) yield args.prompt;
   if (args.inputFormat === "stream-json") {
+    if (args.prompt) yield args.prompt;
     const lines = readline.createInterface({ input, crlfDelay: Infinity });
     try {
       for await (const line of lines) {
@@ -70,22 +70,96 @@ export async function* headlessInputs(
     } finally {
       lines.close();
     }
-  } else if (!args.prompt) {
-    // Chunks are Buffers (stdin has no encoding set): `+= chunk` would decode
-    // each chunk independently and corrupt multi-byte characters split across
-    // a ~64KB pipe boundary. A StringDecoder carries partial sequences across
-    // chunk edges. Bounded so a runaway producer can't exhaust memory.
-    const MAX_STDIN_CHARS = 8 * 1024 * 1024;
-    const decoder = new StringDecoder("utf8");
-    let text = "";
-    for await (const chunk of input) {
-      text += decoder.write(chunk as Buffer);
+    return;
+  }
+  // Text mode. A piped stdin is READ EVEN WHEN -p GAVE A PROMPT (review fix
+  // "带 prompt 时静默丢弃 text stdin"): the documented pattern
+  // `git diff | ccr -p "总结这次改动"` expects the pipe to be the OBJECT and
+  // the flag to be the INSTRUCTION — the old code shipped only the flag and
+  // the model answered about a diff it never saw. Both land in ONE user
+  // message; an interactive TTY is never read here. With a prompt present the
+  // stdin read waits only briefly for the FIRST chunk: many parents spawn us
+  // with a stdin pipe they never write to and never close, and blocking for
+  // that EOF would hang the run. 2s (not shorter — self-review fix: a cold
+  // `git diff` on a large repo can legitimately take >300ms to emit its first
+  // byte, and the timeout ABANDONS the pipe, degrading to a prompt-only run).
+  const stdinText = await readTextStdin(input, args.prompt ? 2000 : undefined);
+  if (args.prompt && stdinText) {
+    yield `${args.prompt}\n\n${stdinText}`;
+    return;
+  }
+  if (args.prompt) {
+    yield args.prompt;
+    return;
+  }
+  if (stdinText) yield stdinText;
+}
+
+/** Drain a NON-TTY stdin fully (bounded), trimmed; empty when TTY/blank.
+ *  `firstChunkTimeoutMs` gives up (returning "") when no data arrives in
+ *  time — used when a -p prompt already exists and stdin may be an idle,
+ *  never-closed pipe. */
+async function readTextStdin(
+  input: NodeJS.ReadableStream,
+  firstChunkTimeoutMs?: number,
+): Promise<string> {
+  if ((input as { isTTY?: boolean }).isTTY) return "";
+  // Chunks are Buffers (stdin has no encoding set): `+= chunk` would decode
+  // each chunk independently and corrupt multi-byte characters split across
+  // a ~64KB pipe boundary. A StringDecoder carries partial sequences across
+  // chunk edges. Bounded so a runaway producer can't exhaust memory.
+  const MAX_STDIN_CHARS = 8 * 1024 * 1024;
+  const decoder = new StringDecoder("utf8");
+  let text = "";
+  const iterator = input[Symbol.asyncIterator]();
+  try {
+    let awaitingFirst = firstChunkTimeoutMs !== undefined;
+    while (true) {
+      let next: IteratorResult<unknown>;
+      if (awaitingFirst) {
+        awaitingFirst = false;
+        let timedOut = false;
+        const timeout = new Promise<IteratorResult<unknown>>((resolve) =>
+          setTimeout(() => {
+            timedOut = true;
+            resolve({ done: true, value: undefined });
+          }, firstChunkTimeoutMs),
+        );
+        next = await Promise.race([iterator.next(), timeout]);
+        if (timedOut) {
+          // Idle pipe: DESTROY it. A pending async-iterator read keeps the
+          // stdin handle referenced, which kept the process alive after the
+          // result frame instead of exiting (observed with parents that pipe
+          // stdin but never write or close it).
+          try {
+            (input as NodeJS.ReadableStream & { destroy?: () => void }).destroy?.();
+          } catch {
+            /* stream already gone */
+          }
+          return "";
+        }
+        if (next.done && text === "") return ""; // closed empty pipe
+      } else {
+        next = await iterator.next();
+      }
+      if (next.done) break;
+      text += decoder.write(next.value as Buffer);
       if (text.length > MAX_STDIN_CHARS)
         throw new Error(`stdin prompt exceeds ${MAX_STDIN_CHARS} characters`);
     }
+  } finally {
+    // Release the iterator WITHOUT awaiting it: on the idle-pipe timeout the
+    // pending next() only settles once the stream is destroyed, and awaiting
+    // return() here re-blocked the exact hang this timeout exists to break.
+    try {
+      const released = iterator.return?.() as Promise<unknown> | undefined;
+      if (released && typeof released.then === "function") released.catch(() => {});
+    } catch {
+      /* stream already gone */
+    }
     text += decoder.end();
-    if (text.trim()) yield text.trim();
   }
+  return text.trim();
 }
 export async function runHeadless(deps: {
   args: ReturnType<typeof parseCliArgs>;

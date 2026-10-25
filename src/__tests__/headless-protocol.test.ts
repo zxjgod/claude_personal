@@ -1,5 +1,5 @@
 import { PassThrough, Readable } from "node:stream";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseCliArgs } from "../cli-args.js";
 import { headlessInputs, runHeadless } from "../headless.js";
 import type { Message, ModelCaller } from "../types.js";
@@ -198,4 +198,31 @@ it("a non-positive --max-budget-usd still terminates the protocol", async () => 
     ),
   ).rejects.toThrow(/max-budget-usd/);
   expect(JSON.parse(emitted.at(-1)!)).toMatchObject({ type: "result", is_error: true });
+});
+
+describe("headlessInputs — text stdin with a -p prompt (review fix)", () => {
+  it("merges piped stdin with the prompt into ONE message", async () => {
+    const args = parseCliArgs(["-p", "summarize this diff"]);
+    const values: string[] = [];
+    for await (const value of headlessInputs(args, Readable.from(["DIFF CONTENT\n"])))
+      values.push(value);
+    expect(values).toEqual([`summarize this diff\n\nDIFF CONTENT`]);
+  });
+
+  it("gives up on an idle, never-closed stdin pipe instead of hanging", async () => {
+    const args = parseCliArgs(["-p", "just the prompt"]);
+    // A pipe that never emits and never ends — the execFile parent pattern.
+    const idle = new PassThrough();
+    const values: string[] = [];
+    for await (const value of headlessInputs(args, idle)) values.push(value);
+    expect(values).toEqual(["just the prompt"]);
+  });
+
+  it("prompt-less text mode still reads stdin to EOF", async () => {
+    const args = parseCliArgs(["-p"]);
+    const values: string[] = [];
+    for await (const value of headlessInputs(args, Readable.from(["full body"])))
+      values.push(value);
+    expect(values).toEqual(["full body"]);
+  });
 });

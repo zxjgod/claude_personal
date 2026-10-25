@@ -1,4 +1,4 @@
-import { scopedHooks } from "./scoped-execution.js";
+import { prepareAgentHooks, scopedHooks } from "./scoped-execution.js";
 // ============================================================
 // Team — stateful multi-agent collaboration (M10)
 // ============================================================
@@ -114,6 +114,13 @@ export function restoreTeam(sessionId: string, values: unknown[]): void {
       !Array.isArray(entry.messages)
     )
       continue;
+    // Review fix ("同进程 /resume 覆盖仍在运行的 team agent"): the snapshot
+    // was serialized when the session was switched away, but in THIS process
+    // the agent's loop may still be running (holding its cancellation scope).
+    // Replacing it with a scope-less "stopped" copy orphans the live loop —
+    // keep the live entry instead.
+    const live = members.get(entry.id);
+    if (live && live.status === "running" && live.scope) continue;
     const interrupted = entry.status === "running";
     members.set(entry.id, {
       id: entry.id,
@@ -315,13 +322,18 @@ export async function runAgentTurn(
   try {
     const config = subagentModelConfig(role, ctx.modelConfig);
     const caller = createModelCaller(config);
+    // Trust-gate the role's declared hooks (review fix: project agent hooks
+    // registered with no gate); untrusted+unapproved hooks are dropped with a
+    // note in the prompt instead of running repo shell silently.
+    const roleHooks = await prepareAgentHooks(role, ctx.askUser, ctx.workspaceRoot);
     const systemPrompt = buildSubagentSystemPrompt(
       role,
       [
         role.systemPrompt,
         "",
         `You are team member "${agent.id}" (role: ${agent.role}).`,
-        await preloadAgentSkills(role, ctx.workspaceRoot),
+        await preloadAgentSkills(role, ctx.workspaceRoot, ctx.askUser),
+        ...(roleHooks.note ? ["", roleHooks.note] : []),
       ].join("\n"),
       { workspaceRoot: ctx.workspaceRoot },
     );
@@ -341,7 +353,10 @@ export async function runAgentTurn(
         modelConfig: config,
         askUser: subApprover,
         abortSignal: scope.signal,
-        hooks: scopedHooks(ctx.hooks, role.hooks, ctx.sessionId, ctx.workspaceRoot),
+        hooks: scopedHooks(ctx.hooks, roleHooks.hooksConfig, ctx.sessionId, ctx.workspaceRoot),
+        // Own skill-activation scope: sibling team members must not see each
+        // other's activated skills (see ToolContext.skillScopeId).
+        skillScopeId: `team-${agent.id}-${Date.now().toString(36)}`,
         permissionMode:
           ctx.permissionMode === "plan"
             ? "plan"

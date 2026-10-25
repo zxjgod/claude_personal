@@ -341,9 +341,11 @@ describe("MCP transport routing + failure handling", () => {
   it("a refused http endpoint degrades to zero servers, no throw", async () => {
     const mgr = new MCPManager();
     // Port 1 on loopback refuses immediately (ECONNREFUSED), no 30s hang.
+    // connectServer reports the failure as `false` instead of throwing
+    // (review fix: agent-scoped callers branch on the return value).
     await expect(
       mgr.connectServer("dead-http", { type: "http", url: "http://127.0.0.1:1/mcp" }),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(false);
     expect(mgr.serverCount).toBe(0);
   }, 35_000);
 
@@ -351,7 +353,7 @@ describe("MCP transport routing + failure handling", () => {
     const mgr = new MCPManager();
     await expect(
       mgr.connectServer("dead-ws", { type: "ws", url: "ws://127.0.0.1:1/mcp" }),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(false);
     expect(mgr.serverCount).toBe(0);
   }, 35_000);
 

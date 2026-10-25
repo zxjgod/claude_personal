@@ -49,6 +49,7 @@ import { hookToolInput } from "./tools/utils/official-params.js";
 import { sanitizeTerminalText } from "./tui/terminal-width.js";
 import { sanitizeChildEnv } from "./utils/env-sanitize.js";
 import { atomicWriteFile, withFileLock } from "./utils/file-lock.js";
+import { absoluteWindowsBinary } from "./utils/windows-bin.js";
 import { ccrPath } from "./workspace-config.js";
 
 export interface HookCommandSpec {
@@ -316,7 +317,7 @@ function runCommandHook(
       if (child.pid === undefined) return;
       try {
         if (process.platform === "win32") {
-          spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+          spawn(absoluteWindowsBinary("taskkill"), ["/PID", String(child.pid), "/T", "/F"], {
             windowsHide: true,
             stdio: "ignore",
           }).unref();
@@ -787,6 +788,15 @@ function trustStorePath(): string {
   );
 }
 
+/** True when the trust store cannot live in a user-owned directory. In that
+ *  degraded environment nothing can be pre-trusted: reads fail and approvals
+ *  are re-asked each session (fail-closed), so a cloned repo's cwd can never
+ *  become the trust store (review fix: the old `"."` fallback let a repo
+ *  preseed its own trust fingerprint). */
+function trustStoreUnavailable(): boolean {
+  return !process.env.CCR_TRUST_STORE && !process.env.HOME && !process.env.USERPROFILE;
+}
+
 /** Stable fingerprint over every (phase, matcher, command) in the config. */
 export function hooksConfigFingerprint(config: HooksConfig): string {
   const flat: string[] = [];
@@ -817,6 +827,7 @@ export function describeHooksConfig(config: HooksConfig): string[] {
 }
 
 export function isHooksConfigTrusted(workspaceRoot: string, fingerprint: string): boolean {
+  if (trustStoreUnavailable()) return false;
   try {
     const store = JSON.parse(fs.readFileSync(trustStorePath(), "utf-8")) as Record<string, string>;
     return store[workspaceRoot] === fingerprint;
@@ -826,6 +837,11 @@ export function isHooksConfigTrusted(workspaceRoot: string, fingerprint: string)
 }
 
 export function trustHooksConfig(workspaceRoot: string, fingerprint: string): void {
+  if (trustStoreUnavailable()) {
+    // No user-owned location to persist trust into — approval would have to be
+    // re-asked every session anyway; skip writing to a throwaway path.
+    return;
+  }
   try {
     const file = trustStorePath();
     fs.mkdirSync(path.dirname(file), { recursive: true });

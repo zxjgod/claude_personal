@@ -259,6 +259,14 @@ export class InputValidator {
       return ipv4 ? InputValidator.isPrivateIPv4(ipv4) : false;
     }
 
+    // 6to4 (RFC 3056 2002::/16): bytes 2..5 (the two 16-bit groups after
+    // "2002") embed a public-or-private IPv4 — "2002:a00:1::" is 10.0.0.1.
+    // Unparseable 2002: addresses stay BLOCKED (fail-closed).
+    if (lower.startsWith("2002:")) {
+      const ipv4 = InputValidator.sixTo4EmbeddedIPv4(lower);
+      return ipv4 ? InputValidator.isPrivateIPv4(ipv4) : true;
+    }
+
     // Link-local fe80::/10 (first byte fe, second byte 80–bf).
     if (
       lower.startsWith("fe8") ||
@@ -307,6 +315,23 @@ export class InputValidator {
     // Normalized form: the last two hextets are the four IPv4 octets
     // ("64:ff9b::7f00:1" → 127.0.0.1).
     const hextets = /([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(addr);
+    if (!hextets) return undefined;
+    const hi = Number.parseInt(hextets[1]!, 16);
+    const lo = Number.parseInt(hextets[2]!, 16);
+    if (Number.isNaN(hi) || Number.isNaN(lo)) return undefined;
+    return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+  }
+
+  /** Extract the embedded IPv4 from a 6to4 address ("2002:a00:1::" →
+   *  10.0.0.1), or undefined when the groups cannot be parsed. The two
+   *  hextets AFTER the 2002 prefix carry the address (RFC 3056); a dotted
+   *  suffix ("2002:0a00:0001::...") is not a legal 6to4 spelling, but Node
+   *  normalizes to hextets anyway. */
+  private static sixTo4EmbeddedIPv4(addr: string): string | undefined {
+    const rest = addr.slice("2002:".length);
+    const dotted = /(\d+\.\d+\.\d+\.\d+)/.exec(rest)?.[1];
+    if (dotted) return net.isIPv4(dotted) ? dotted : undefined;
+    const hextets = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})(?::|$)/.exec(rest);
     if (!hextets) return undefined;
     const hi = Number.parseInt(hextets[1]!, 16);
     const lo = Number.parseInt(hextets[2]!, 16);

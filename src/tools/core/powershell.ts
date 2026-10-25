@@ -22,6 +22,7 @@ import {
 import type { Tool, ToolResult } from "../../types.js";
 import { invalidateToolWritableScopes } from "../../utils/fs-cache.js";
 import { InputValidator } from "../../utils/input-validator.js";
+import { absoluteWindowsBinary } from "../../utils/windows-bin.js";
 import { buildTool } from "../registry.js";
 import { getCwd, rememberCd } from "../session-cwd.js";
 import { powershellCommandIsReadOnly } from "../utils/command.js";
@@ -33,7 +34,11 @@ const PowerShellSchema = z.strictObject({
 });
 
 const shellFor = (): string =>
-  process.platform === "win32" ? "powershell.exe" : process.env.PWSH || "pwsh";
+  process.platform === "win32"
+    ? // Absolute path — a bare "powershell.exe" resolves through the Windows
+      // search order which includes the current (workspace) directory.
+      absoluteWindowsBinary("powershell")
+    : process.env.PWSH || "pwsh";
 const shellArgs = (command: string): string[] => [
   "-NoProfile",
   "-NonInteractive",
@@ -158,7 +163,7 @@ export const PowerShellTool: Tool = buildTool({
       if (child.pid === undefined) return;
       try {
         if (process.platform === "win32") {
-          spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+          spawn(absoluteWindowsBinary("taskkill"), ["/PID", String(child.pid), "/T", "/F"], {
             windowsHide: true,
             stdio: "ignore",
           }).unref();

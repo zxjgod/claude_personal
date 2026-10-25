@@ -68,9 +68,16 @@ export interface CommandContext {
    * holder so a command can read and write the same reference the REPL reads.
    */
   goal?: { value: string };
-  /** Change the workspace root mid-session (for /cd). Returns false if the path
-   *  is not a directory. */
-  setWorkspaceRoot?: (path: string) => boolean;
+  /** Change the workspace root mid-conversation (for /cd). Reloads the
+   *  workspace-scoped permission policy/mode and memory-approval gate for the
+   *  new root. Returns false if the path is not a directory. */
+  setWorkspaceRoot?: (path: string) => Promise<boolean> | boolean;
+  /**
+   * Rotate the LIVE session to a fresh id (for /sessions delete --force of the
+   * current session): the deleted id must stop being the save target or the
+   * next auto-save resurrects it. Returns the new session id.
+   */
+  rotateSessionId?: () => string;
   /** Editor input mode (for /vim). Toggled between "default" and "vim". */
   editorMode?: { value: "default" | "vim" };
   /**

@@ -278,3 +278,80 @@ describe("Convenience functions", () => {
     expect(entries[0].command).toBe("first");
   });
 });
+
+describe("AuditLogger — concurrent persistence boundaries (self-review fix)", () => {
+  let dir: string;
+  let logFile: string;
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-audit-conc-"));
+    logFile = path.join(dir, "audit.log");
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  /**
+   * Hold the FIRST matching write until `open()`, so a second log() can land
+   * while the first persist is still awaiting its write. `hit` resolves when
+   * the gated write has been reached (the gated append is also the write that
+   * CREATES the file, so existence polling cannot detect it).
+   */
+  function gateWrites(trigger: (options: { flag?: string }) => boolean) {
+    const original = fs.promises.writeFile.bind(fs.promises);
+    let release!: () => void;
+    let hitResolve!: () => void;
+    const gated = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const hit = new Promise<void>((resolve) => {
+      hitResolve = resolve;
+    });
+    let gateArmed = true;
+    fs.promises.writeFile = (async (...args: Parameters<typeof fs.promises.writeFile>) => {
+      const options = args[2] as { flag?: string } | undefined;
+      if (gateArmed && trigger(options ?? {})) {
+        gateArmed = false;
+        hitResolve();
+        await gated;
+      }
+      return original(...args);
+    }) as typeof fs.promises.writeFile;
+    return {
+      hit,
+      open: () => release(),
+      restore: () => {
+        fs.promises.writeFile = original;
+      },
+    };
+  }
+
+  const entry = (command: string) => ({
+    operation: "bash" as const,
+    command,
+    workspaceRoot: "/workspace",
+    userConfirmed: false,
+    outcome: "success" as const,
+  });
+
+  it("an entry logged during an APPEND is still persisted afterwards", async () => {
+    const gate = gateWrites((options) => options.flag === "a");
+    const logger = new AuditLogger({ logFilePath: logFile });
+    const first = logger.log(entry("A"));
+    await gate.hit; // A's append write is now held mid-persist
+    const second = logger.log(entry("B")); // lands while A's write is in flight
+    gate.open();
+    await Promise.all([first, second]);
+    gate.restore();
+    // The first cut re-read entries.length after the await: B was counted as
+    // persisted, its own persist computed an empty delta, and only "A" ever
+    // reached the disk (probe-verified against the old code).
+    const onDisk = (await fs.promises.readFile(logFile, "utf-8"))
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => JSON.parse(l).command);
+    expect(onDisk).toEqual(["A", "B"]);
+    expect((await new AuditLogger({ logFilePath: logFile }).query()).map((e) => e.command)).toEqual(
+      ["A", "B"],
+    );
+  });
+});

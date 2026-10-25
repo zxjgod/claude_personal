@@ -76,20 +76,23 @@ export function persistSubagentSettings(
   partial: Partial<SubagentSettings>,
 ): SubagentSettings {
   const target = settingsWriteTarget(workspaceRoot, "subagents");
-  const { value: existing, corrupt } = readSettingsFileStrict(target.file);
-  if (corrupt) {
-    throw new Error(
-      `${target.file} is not valid JSON — fix or delete it before toggling ` +
-        `(refusing to rewrite it: every other setting in it would be lost).`,
-    );
-  }
-  const merged: Settings = {
-    ...existing,
-    subagents: { ...parse(existing.subagents), ...partial },
-  };
-  withFileLock(target.file, () =>
-    atomicWriteFile(target.file, `${JSON.stringify(merged, null, 2)}\n`),
-  );
+  // Read-modify-write INSIDE the lock (review fix "锁外 RMW 覆盖他进程设置"):
+  // a concurrent /memory-approval write between our read and our atomic write
+  // used to be silently reverted.
+  withFileLock(target.file, () => {
+    const { value: existing, corrupt } = readSettingsFileStrict(target.file);
+    if (corrupt) {
+      throw new Error(
+        `${target.file} is not valid JSON — fix or delete it before toggling ` +
+          `(refusing to rewrite it: every other setting in it would be lost).`,
+      );
+    }
+    const merged: Settings = {
+      ...existing,
+      subagents: { ...parse(existing.subagents), ...partial },
+    };
+    atomicWriteFile(target.file, `${JSON.stringify(merged, null, 2)}\n`);
+  });
   runtime = { ...runtime, ...partial };
   return runtime;
 }

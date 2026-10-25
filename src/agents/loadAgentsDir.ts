@@ -127,6 +127,12 @@ export function loadAgentsDir(
   workspaceRoot: string,
   options: { roots?: string[]; namespace?: string } = {},
 ): string[] {
+  // The USER-owned root's agents are trusted to declare hooks; project-root
+  // agents go through prepareAgentHooks' fingerprint gate (see SubagentType.
+  // hooksTrusted). Mirrors the skills loader's user-root trust tier.
+  const userRoot = path.resolve(
+    process.env[USER_AGENTS_ENV] || path.join(userConfigRoot(), "agents"),
+  );
   return loadDiskEntries({
     roots: options.roots ?? agentDirRoots(workspaceRoot),
     recursive: true,
@@ -138,7 +144,12 @@ export function loadAgentsDir(
     fileOf: (root, entry) => path.join(root, entry.name),
     parse: (entry) => {
       const { frontmatter, body } = parseFrontmatter(entry.raw);
-      return body ? agentFromFile(entry.name, body, frontmatter) : undefined;
+      return body
+        ? {
+            ...agentFromFile(entry.name, body, frontmatter),
+            hooksTrusted: path.resolve(entry.root) === userRoot,
+          }
+        : undefined;
     },
     register: (agent) =>
       registerSubagentType(

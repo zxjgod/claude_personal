@@ -449,7 +449,7 @@ export async function executeSingleTool(
         isError: true,
       };
     }
-    const rule = policyDecision(context.permissionPolicy, tool.name, input);
+    const rule = policyDecision(context.permissionPolicy, tool.name, input, context.workspaceRoot);
     if (hooks?.runEvent && (rule === "ask" || (tool.requiresApproval?.() && rule !== "allow"))) {
       const outcome = await hooks.runEvent("PermissionRequest", {
         tool_name: tool.name,

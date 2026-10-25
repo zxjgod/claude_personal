@@ -11,7 +11,7 @@ import type { SlashCommand } from "./types.js";
 export const cdCommand: SlashCommand = {
   name: "cd",
   description: "Change the working directory for this session",
-  run: (args, ctx): undefined => {
+  run: async (args, ctx): Promise<undefined> => {
     if (!args.trim()) {
       console.log(chalk.dim(`  Current workspace: ${ctx.workspaceRoot}`));
       console.log(chalk.dim("  Usage: /cd <path>"));
@@ -38,7 +38,7 @@ export const cdCommand: SlashCommand = {
     }
 
     const prev = ctx.workspaceRoot;
-    const ok = ctx.setWorkspaceRoot(target);
+    const ok = await ctx.setWorkspaceRoot(target);
     if (ok) {
       clearCwd(ctx.sessionId);
       console.log(chalk.green(`  Workspace: ${prev} → ${target}`));

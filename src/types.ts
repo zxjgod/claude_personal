@@ -306,6 +306,16 @@ export interface ToolContext extends ToolInteraction {
    * to re-run the tool. Each agent loop owns its own store; absent in tests.
    */
   collapseStore?: import("./context-pipeline.js").CollapseStore;
+  /**
+   * Skill-activation scope (review fix "并行 Task 共享 session 级 Skill 状态").
+   * Activated skills are keyed by (sessionId, skillScopeId). The main loop
+   * uses `undefined` (the session root scope); every TYPED sub-agent loop
+   * gets its own unique id so a skill activated inside one worker can never
+   * change the model/effort/permission hooks of a sibling or the parent.
+   * Forks intentionally inherit the parent's scope (a fork IS the current
+   * agent sharing its context and prompt cache).
+   */
+  skillScopeId?: string;
 }
 
 /**
@@ -342,6 +352,8 @@ export function deriveSubContext(
     /** Hooks, when the worker must run under the session's hook policy. */
     hooks?: HookRunner;
     modelConfig?: ModelConfig;
+    /** Skill-activation scope override (see ToolContext.skillScopeId). */
+    skillScopeId?: string;
   } = {},
 ): ToolContext {
   return {
@@ -356,6 +368,9 @@ export function deriveSubContext(
     askUser: overrides.askUser,
     onSubAgentProgress: overrides.onSubAgentProgress,
     hooks: overrides.hooks,
+    // Skill scope: a worker gets its own unless the caller pinned one (a
+    // fork passes the parent's undefined = root scope).
+    skillScopeId: overrides.skillScopeId,
     // The worker's own signal (a CancellationScope forked from the parent),
     // and its nesting depth. Both are per-worker facts: inheriting the
     // parent's depth would make a nested worker look shallower than it is

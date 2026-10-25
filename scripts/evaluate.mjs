@@ -37,7 +37,11 @@ for (const entry of suite.cases) {
     });
     results.push({
       name: entry.name,
-      passed: !final?.is_error && assertions.every(Boolean),
+      // Review fix ("无结果帧被记为通过"): `!final?.is_error` is true when NO
+      // result frame ever arrived — a run that died silently used to count
+      // as a pass. Require a final frame AND clean assertions.
+      passed: Boolean(final) && !final.is_error && assertions.every(Boolean),
+      ...(final ? {} : { error: "no result frame — the CLI exited without reporting" }),
       assertions,
       duration_ms: Date.now() - started,
       usage: final?.usage,

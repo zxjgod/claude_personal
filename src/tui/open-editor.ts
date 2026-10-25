@@ -11,6 +11,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { absoluteWindowsBinary } from "../utils/windows-bin.js";
 
 const IS_WIN = process.platform === "win32";
 
@@ -94,9 +95,13 @@ export async function openInEditor(
       const fuse = setTimeout(() => {
         try {
           if (IS_WIN && child?.pid) {
-            const killer = spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
-              stdio: "ignore",
-            });
+            const killer = spawn(
+              absoluteWindowsBinary("taskkill"),
+              ["/pid", String(child.pid), "/T", "/F"],
+              {
+                stdio: "ignore",
+              },
+            );
             killer.on("error", () => {});
             killer.unref();
           } else {

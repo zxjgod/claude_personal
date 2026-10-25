@@ -52,6 +52,14 @@ export interface SubagentType {
   skills?: string[];
   permissionMode?: string;
   hooks?: unknown;
+  /**
+   * True when the definition came from a USER-owned root (~/.claude-code-
+   * replica/agents) — its `hooks` register directly. Project/plugin-scope
+   * agents go through the one-time fingerprint trust gate in
+   * scoped-execution.prepareAgentHooks (review fix: repo-declared agent hooks
+   * used to run shell with no gate at all).
+   */
+  hooksTrusted?: boolean;
   background?: boolean;
   isolation?: "worktree";
   /** System prompt for the sub-agent's loop. */
@@ -390,12 +398,41 @@ export function subagentModelConfig(
     options,
   };
 }
-export async function preloadAgentSkills(type: SubagentType, root: string): Promise<string> {
+/**
+ * Resolve an agent's declared skills into prompt text.
+ *
+ * Review fix ("agent 预加载 skills 绕过项目 shell 指令审批"): a project-scope
+ * skill with `!`cmd`` directives expands shell at RESOLUTION time. The Skill
+ * tool requires explicit approval for that; preloading ran the same expansion
+ * unconditionally. The gate now applies here too — without an approval channel
+ * (headless) the skill's shell is NOT expanded and a skip note is injected.
+ */
+export async function preloadAgentSkills(
+  type: SubagentType,
+  root: string,
+  askUser?: import("./types.js").AskUserFn,
+): Promise<string> {
   const content: string[] = [];
   for (const name of type.skills ?? []) {
     const skill = getSkill(name);
-    if (skill && !skill.disableModelInvocation)
-      content.push(`Skill ${name}:\n${await resolveSkillPrompt(skill, { workspaceRoot: root })}`);
+    if (!skill || skill.disableModelInvocation) continue;
+    if (skill.hasShellDirectives && skill.diskScope === "project") {
+      const approved = askUser
+        ? await askUser(
+            { name: "skill" } as Parameters<import("./types.js").AskUserFn>[0],
+            { skill: name, args: "" },
+            `agent "${type.name}" preloads project-scope skill "${name}" which executes shell (!\`...\`) from the workspace repo`,
+          )
+        : false;
+      if (!approved) {
+        content.push(
+          `Skill ${name}: SKIPPED — it is a project-scope template with shell directives and was ` +
+            `not approved for this agent. Invoke it yourself as /${name} if you want it.`,
+        );
+        continue;
+      }
+    }
+    content.push(`Skill ${name}:\n${await resolveSkillPrompt(skill, { workspaceRoot: root })}`);
   }
   return content.join("\n\n");
 }

@@ -16,9 +16,10 @@ let failOnConnect: string | undefined;
 vi.mock("../mcp/index.js", async (importOriginal) => {
   const orig = await importOriginal<typeof import("../mcp/index.js")>();
   class FakeMCPManager {
-    async connectServer(name: string, cfg: unknown): Promise<void> {
+    async connectServer(name: string, cfg: unknown): Promise<boolean> {
       if (failOnConnect && name === failOnConnect) throw new Error("spawn EACCES");
       connectCalls.push([name, cfg]);
+      return true;
     }
     getAllTools() {
       return connectCalls.map(([name]) => ({

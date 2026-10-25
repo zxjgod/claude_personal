@@ -17,7 +17,6 @@ import { WebSocketClientTransport } from "@modelcontextprotocol/sdk/client/webso
 import {
   type CallToolResult,
   ElicitRequestSchema,
-  type TextContent,
   ToolListChangedNotificationSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { pluginDirs, readManifest } from "../plugins.js";
@@ -412,13 +411,19 @@ export class MCPManager {
   }
 
   /**
-   * Connect to a single MCP server and discover its tools
+   * Connect to a single MCP server and discover its tools.
+   *
+   * Returns true when the server ended up registered, false otherwise
+   * (missing command/url, unknown transport, connection failure). Callers
+   * that treat a missing server as fatal — agent-scoped servers — can branch
+   * on this instead of reading the console log (review fix "agent 作用域 MCP
+   * 连接失败仍返回 ready").
    */
-  async connectServer(name: string, config: MCPServerConfig): Promise<void> {
+  async connectServer(name: string, config: MCPServerConfig): Promise<boolean> {
     // Don't double-connect
     if (this.servers.has(name)) {
       console.warn(`MCP server "${name}" is already connected.`);
-      return;
+      return true;
     }
 
     let client: Client | undefined;
@@ -429,7 +434,7 @@ export class MCPManager {
       if (config.type === "stdio") {
         if (!config.command) {
           console.error(`MCP server "${name}": stdio transport requires a "command"`);
-          return;
+          return false;
         }
         const transport = new StdioClientTransport({
           command: config.command,
@@ -448,7 +453,7 @@ export class MCPManager {
       } else if (config.type === "http" || config.type === "sse" || config.type === "ws") {
         if (!config.url) {
           console.error(`MCP server "${name}": ${config.type} transport requires a "url"`);
-          return;
+          return false;
         }
         const url = new URL(config.url);
         client = new Client(
@@ -494,8 +499,13 @@ export class MCPManager {
             // finishAuth exchanges the code for tokens on the transport.
             // Only http/sse transports reach this branch (authProvider is set
             // for those types only), and both expose finishAuth.
-            await (reTransport as StreamableHTTPClientTransport | SSEClientTransport).finishAuth(
-              code,
+            // finishAuth exchanges the code for tokens on the transport — a
+            // hung token endpoint must not stall the connect flow forever
+            // (review fix: every OTHER network phase here is withTimeout'd).
+            await withTimeout(
+              "finishAuth",
+              (reTransport as StreamableHTTPClientTransport | SSEClientTransport).finishAuth(code),
+              CONNECT_TIMEOUT_MS,
             );
             await withTimeout(
               "connect(network:reauth)",
@@ -508,7 +518,7 @@ export class MCPManager {
         }
       } else {
         console.error(`MCP server "${name}": unknown transport type "${config.type}"`);
-        return;
+        return false;
       }
 
       // --- Discover tools ---
@@ -539,12 +549,14 @@ export class MCPManager {
         /* SDK build without notification handlers — refresh stays manual. */
       }
       console.log(`MCP server "${name}" connected (${config.type}) — ${mcpTools.length} tool(s)`);
+      return true;
     } catch (error) {
       console.error(
         `Failed to connect MCP server "${name}": ${error instanceof Error ? error.message : String(error)}`,
       );
       await closeMcpConnection(`connect(${name})`, client, activeTransport);
       // Don't crash — MCP is optional
+      return false;
     }
   }
 
@@ -649,10 +661,35 @@ export class MCPManager {
               // TypeError that masked the real failure.
               const raw = (result as CallToolResult).content;
               const blocks = Array.isArray(raw) ? raw : [];
-              const content = blocks
-                .filter((c): c is TextContent => c?.type === "text")
-                .map((c) => c.text)
-                .join("\n");
+              // Review fix ("非文本与结构化结果被静默丢弃"): text content joins
+              // as before; non-text blocks (image/audio/resource) become a
+              // descriptive placeholder instead of vanishing into
+              // "(no text output)", and a structuredContent payload rides
+              // along as JSON so the model can actually use it.
+              const parts: string[] = [];
+              for (const block of blocks) {
+                if (block?.type === "text" && typeof block.text === "string") {
+                  parts.push(block.text);
+                  continue;
+                }
+                if (block?.type === "resource") {
+                  const resource = block as { uri?: string; text?: string };
+                  parts.push(resource.text ?? `[resource: ${resource.uri ?? "unknown"}]`);
+                  continue;
+                }
+                if (block && typeof block === "object" && "type" in block) {
+                  const kind = String((block as { type?: unknown }).type);
+                  const mimeType =
+                    typeof (block as { mimeType?: unknown }).mimeType === "string"
+                      ? ` ${(block as { mimeType: string }).mimeType}`
+                      : "";
+                  parts.push(`[non-text content: ${kind}${mimeType}]`);
+                }
+              }
+              const structured = (result as { structuredContent?: unknown }).structuredContent;
+              if (structured !== undefined && structured !== null)
+                parts.push(JSON.stringify(structured, null, 2));
+              const content = parts.join("\n");
               if ((result as CallToolResult).isError)
                 return {
                   content,

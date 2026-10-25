@@ -196,7 +196,12 @@ function appendAgentMemoryLocked(
   let existing = "";
   try {
     existing = fs.readFileSync(agentMemoryFile(scope, agentType, workspaceRoot), "utf-8");
-  } catch {
+  } catch (error) {
+    // Review fix ("读取失败被当成空文件覆盖全部记忆"): only a MISSING file
+    // starts fresh. Any other read failure (EACCES, EBUSY, …) aborts the
+    // append — proceeding with existing="" would replace the whole MEMORY.md
+    // with just the new bullet.
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
     existing = ""; // no file yet
   }
   const bullet = `- ${trimmed.replace(/\s+/g, " ")}`;

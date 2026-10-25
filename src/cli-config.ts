@@ -276,10 +276,14 @@ function trustProjectAllow(workspaceRoot: string, fp: string): void {
  * ignored for the session (fail-closed) with a warning. Editing the rules
  * changes the fingerprint and re-prompts.
  */
-export async function confirmProjectAllowRules(workspaceRoot: string): Promise<void> {
+export async function confirmProjectAllowRules(
+  workspaceRoot: string,
+  opts: { interactive?: boolean } = {},
+): Promise<void> {
   const found = projectAllowFingerprint(workspaceRoot);
   if (!found || isProjectAllowTrusted(workspaceRoot, found.fp)) return;
-  if (process.stdin.isTTY && process.stdout.isTTY) {
+  const interactive = opts.interactive ?? (process.stdin.isTTY && process.stdout.isTTY);
+  if (interactive) {
     console.log(
       "\nThis project's .claude/settings.json defines permission ALLOW rules that skip confirmation prompts:",
     );

@@ -16,6 +16,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { readSettings } from "./settings.js";
 import { renameSyncWithRetry } from "./utils/atomic-rename.js";
+import { withFileLock } from "./utils/file-lock.js";
 import { ccrPath } from "./workspace-config.js";
 
 export interface TelemetryEvent {
@@ -100,27 +101,32 @@ export class Telemetry {
       // accumulated events forever. Rotate past a cap: keep the newest tail
       // and rewrite atomically (tmp + rename). Events are diagnostic, so
       // dropping the oldest half loses nothing the user depends on.
+      // The read-tail → rewrite runs under the sink's file lock (review fix
+      // "轮转覆盖他进程刚写入的事件"): without it, another process's append
+      // between our read and our rename was silently discarded.
       const MAX_BYTES = 5 * 1024 * 1024;
       if (fs.statSync(this.filePath).size > MAX_BYTES) {
-        const KEEP_BYTES = 2 * 1024 * 1024;
-        const fd = fs.openSync(this.filePath, "r");
-        let tail: string;
-        try {
-          const buf = Buffer.alloc(KEEP_BYTES);
-          const size = fs.fstatSync(fd).size;
-          fs.readSync(fd, buf, 0, KEEP_BYTES, size - KEEP_BYTES);
-          tail = buf.toString("utf-8");
-        } finally {
-          // Close BEFORE the rename: replacing a file that is still open for
-          // reading fails with EPERM/EBUSY on Windows, and the swallowed catch
-          // would then leave the sink un-rotated (and a stray .tmp behind).
-          fs.closeSync(fd);
-        }
-        // Drop the first partial line so the tail stays valid JSONL.
-        const firstNl = tail.indexOf("\n");
-        const tmp = `${this.filePath}.${process.pid}.tmp`;
-        fs.writeFileSync(tmp, firstNl >= 0 ? tail.slice(firstNl + 1) : tail);
-        renameSyncWithRetry(tmp, this.filePath);
+        withFileLock(this.filePath, () => {
+          const KEEP_BYTES = 2 * 1024 * 1024;
+          const fd = fs.openSync(this.filePath, "r");
+          let tail: string;
+          try {
+            const buf = Buffer.alloc(KEEP_BYTES);
+            const size = fs.fstatSync(fd).size;
+            fs.readSync(fd, buf, 0, KEEP_BYTES, size - KEEP_BYTES);
+            tail = buf.toString("utf-8");
+          } finally {
+            // Close BEFORE the rename: replacing a file that is still open for
+            // reading fails with EPERM/EBUSY on Windows, and the swallowed catch
+            // would then leave the sink un-rotated (and a stray .tmp behind).
+            fs.closeSync(fd);
+          }
+          // Drop the first partial line so the tail stays valid JSONL.
+          const firstNl = tail.indexOf("\n");
+          const tmp = `${this.filePath}.${process.pid}.tmp`;
+          fs.writeFileSync(tmp, firstNl >= 0 ? tail.slice(firstNl + 1) : tail);
+          renameSyncWithRetry(tmp, this.filePath);
+        });
       }
     } catch {
       // Telemetry must never break the session.

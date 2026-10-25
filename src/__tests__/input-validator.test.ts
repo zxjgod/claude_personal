@@ -168,6 +168,26 @@ describe("InputValidator", () => {
       expect(result.valid).toBe(true);
     });
 
+    it("should reject 6to4 addresses embedding a private IPv4 (SSRF bypass)", () => {
+      // RFC 3056: 2002:<ipv4-hex>:: embeds the IPv4 in the two hextets after
+      // the prefix — 2002:a00:1:: is 10.0.0.1.
+      for (const url of [
+        "http://[2002:a00:1::]",
+        "http://[2002:7f00:1::]", // 127.0.0.1
+        "http://[2002:c0a8:101::]", // 192.168.1.1
+        "http://[2002:a9fe:a9fe::]", // 169.254.169.254 — cloud metadata
+      ]) {
+        const result = InputValidator.validateUrl(url);
+        expect(result.valid, url).toBe(false);
+        expect(result.error).toContain("private networks");
+      }
+    });
+
+    it("should allow 6to4 addresses embedding a public IPv4", () => {
+      const result = InputValidator.validateUrl("http://[2002:808:808::]"); // 8.8.8.8
+      expect(result.valid).toBe(true);
+    });
+
     it("should reject invalid URL format", () => {
       const result = InputValidator.validateUrl("not-a-url");
       expect(result.valid).toBe(false);

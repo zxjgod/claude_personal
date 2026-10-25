@@ -171,14 +171,22 @@ describe("SessionMemory", () => {
     const loaded = await new SessionMemory(tmpDir).load(id);
     expect(loaded).not.toBeNull();
     expect(loaded!.sessionId).toBe(id);
-    expect(loaded!.messageCount).toBe(1);
-    // The final state is ONE intact write from either chain — never a torn or
-    // mixed file. (Which write wins is not deterministic: saves serialize on
-    // the lock, and under exhaustion a save SKIPS with a warning rather than
-    // rejecting — review follow-up H1 — so the winner may be an earlier one.)
-    const finalText = (loaded!.messages[0] as { content: Array<{ text?: string }> }).content[0]
-      ?.text;
-    expect(finalText).toMatch(/^[ab](\d|1\d)$/);
+    // Review fix ("双终端互相覆盖丢消息"): the two writers' single-message
+    // snapshots share no prefix, so every successful save MERGES its message
+    // in instead of replacing the other writer's. The count may be short of
+    // 20 only when a save was legitimately skipped on lock exhaustion (H1)
+    // — never a torn or mixed file.
+    expect(loaded!.messageCount).toBeGreaterThanOrEqual(1);
+    expect(loaded!.messageCount).toBeLessThanOrEqual(20);
+    for (const message of loaded!.messages) {
+      const text = (message as { content: Array<{ text?: string }> }).content[0]?.text ?? "";
+      expect(text).toMatch(/^[ab](\d|1\d)$/);
+    }
+    expect(
+      new Set(
+        loaded!.messages.map((m) => (m as { content: Array<{ text?: string }> }).content[0]?.text),
+      ).size,
+    ).toBe(loaded!.messageCount); // merged history holds each writer's line once
     const dir = sessionsDirOf(tmpDir);
     expect(fs.existsSync(path.join(dir, `${id}.json.lock`))).toBe(false);
     expect(fs.readdirSync(dir).filter((f) => f.endsWith(".tmp"))).toEqual([]);

@@ -64,7 +64,12 @@ export const MemorySaveTool: Tool<z.infer<typeof MemorySaveSchema>> = buildTool(
     // injected into future sessions' system prompts (and project scope is
     // shared via VCS). An unapproved write is a durable prompt-injection
     // channel, so all scopes require explicit approval, not just user.
-    const decision = policyDecision(context.permissionPolicy, "MemorySave", input);
+    const decision = policyDecision(
+      context.permissionPolicy,
+      "MemorySave",
+      input,
+      context.workspaceRoot,
+    );
     if (decision === "deny")
       return { allowed: false, reason: "Memory write denied by permission rule" };
     // /memory-approval off: the user has deliberately relaxed the T2 gate

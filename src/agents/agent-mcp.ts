@@ -100,7 +100,15 @@ export async function prepareAgentMcpServers(
       // Agent-scoped namespace keeps tool names distinct from session servers:
       // mcp__<agent>-<server>__<tool> would be long — instead the manager
       // namespaces per server name already (mcp__<server>__<tool>).
-      await manager.connectServer(name, cfg);
+      // connectServer swallows per-server failures (session pools treat MCP
+      // as optional); for an AGENT's declared servers a missing server means
+      // the run cannot do its job — surface it as an error instead of
+      // returning a "ready" handle with tools missing (review fix).
+      const ok = await manager.connectServer(name, cfg);
+      if (!ok)
+        throw new Error(
+          `MCP server "${name}" (${cfg.type}) failed to connect — see the CLI log above.`,
+        );
     }
   } catch (err) {
     await manager.disconnectAll().catch(() => {});

@@ -132,8 +132,16 @@ describe("autoCompact message safety", () => {
 
 describe("handleModelError recovery behavior", () => {
   it("compacts once on context_length error instead of looping forever", async () => {
-    // First call emits a context_length error; subsequent calls succeed.
+    // A COMPRESSIBLE history: plain text turns in front of the tool-pair
+    // pipeline, so findSafeSplitIndex can cut a real oldMessages range.
+    const history: Message[] = [];
+    for (let i = 0; i < 30; i++) {
+      history.push({ role: "user", content: [{ type: "text", text: `q ${i}` }] });
+      history.push({ role: "assistant", content: `a ${i}` });
+    }
+    history.push(...buildHistoryEndingInToolResult(20).slice(1));
     let calls = 0;
+    const retryLengths: number[] = [];
     const caller: ModelCaller = async function* (messages: Message[]) {
       calls++;
       if (calls === 1) {
@@ -143,12 +151,11 @@ describe("handleModelError recovery behavior", () => {
         return;
       }
       // After the errored call, the loop compacts. The final successful
-      // retry call receives a history far smaller than the original 40
-      // tool-result pairs — proving compression actually ran (not just a
-      // verbatim retry that would loop forever).
-      if (calls >= 3) {
-        expect(messages.length).toBeLessThan(40);
-      }
+      // retry call receives a history far smaller than the original —
+      // proving compression actually ran (not just a verbatim retry).
+      // (Recorded, not asserted inline: an expect() throw inside the mock
+      // generator surfaces as a confusing stream error.)
+      if (calls >= 3) retryLengths.push(messages.length);
       yield { type: "text_delta", delta: "recovered" };
       yield {
         type: "done",
@@ -157,9 +164,8 @@ describe("handleModelError recovery behavior", () => {
       };
     };
 
-    const messages = buildHistoryEndingInToolResult(40);
     const types: string[] = [];
-    for await (const event of agentLoop(messages, [], caller, testConfig, {
+    for await (const event of agentLoop(history, [], caller, testConfig, {
       systemPrompt: "sys",
       maxTurns: 5,
       autoCompactThreshold: Number.POSITIVE_INFINITY, // disable proactive compaction
@@ -171,10 +177,46 @@ describe("handleModelError recovery behavior", () => {
     // infinite loop of identical oversized retries.
     expect(calls).toBeGreaterThan(1);
     expect(calls).toBeLessThan(10);
+    expect(retryLengths.every((length) => length < history.length)).toBe(true);
     // A compaction event was emitted in response to the error path.
     expect(types).toContain("compacted");
     // The loop completed successfully, not via an abort/error terminal.
-    expect(types).toContain("done");
+    expect(types, types.join(",")).toContain("done");
+  });
+
+  it("aborts immediately when compaction cannot shrink the prompt (review fix)", async () => {
+    // A pure tool-pair pipeline cannot be split (every tail boundary would
+    // orphan a tool result), so autoCompact is a no-op. The old code retried
+    // the IDENTICAL oversized request up to 3 more times before failing; the
+    // fix aborts on the first pass with the honest reason.
+    let calls = 0;
+    const caller: ModelCaller = async function* () {
+      calls++;
+      const e = new Error("context_length_exceeded: maximum context length");
+      (e as any).status = 400;
+      yield { type: "error", error: e };
+    };
+    const types: string[] = [];
+    const errors: string[] = [];
+    for await (const event of agentLoop(
+      buildHistoryEndingInToolResult(40),
+      [],
+      caller,
+      testConfig,
+      {
+        systemPrompt: "sys",
+        maxTurns: 5,
+        autoCompactThreshold: Number.POSITIVE_INFINITY,
+      },
+    )) {
+      types.push(event.type);
+      if (event.type === "error")
+        errors.push(String((event as { error?: Error }).error?.message ?? ""));
+    }
+    expect(calls).toBe(1); // no identical oversized retries
+    expect(types).toContain("error");
+    expect(errors.join(" ")).toContain("prompt_too_long");
+    expect(types).not.toContain("done");
   });
 
   it("aborts after the 429 retry budget is exhausted instead of looping forever", async () => {
@@ -407,7 +449,16 @@ describe("context overflow — provider dialect coverage (Top10 #3)", () => {
   };
 
   it("compacts and recovers on Anthropic wording 'prompt is too long'", async () => {
+    // COMPRESSIBLE history (text prefix + tool-pair tail) — see the OpenAI
+    // dialect test above for why the pure tool pipeline cannot be compacted.
+    const history: Message[] = [];
+    for (let i = 0; i < 30; i++) {
+      history.push({ role: "user", content: [{ type: "text", text: `q ${i}` }] });
+      history.push({ role: "assistant", content: `a ${i}` });
+    }
+    history.push(...buildHistoryEndingInToolResult(20).slice(1));
     let calls = 0;
+    const retryLengths: number[] = [];
     const caller: ModelCaller = async function* (messages: Message[]) {
       calls++;
       if (calls === 1) {
@@ -416,9 +467,7 @@ describe("context overflow — provider dialect coverage (Top10 #3)", () => {
         yield { type: "error", error: e };
         return;
       }
-      if (calls >= 3) {
-        expect(messages.length).toBeLessThan(40);
-      }
+      if (calls >= 3) retryLengths.push(messages.length);
       yield { type: "text_delta", delta: "recovered" };
       yield {
         type: "done",
@@ -427,9 +476,8 @@ describe("context overflow — provider dialect coverage (Top10 #3)", () => {
       };
     };
 
-    const messages = buildHistoryEndingInToolResult(40);
     const types: string[] = [];
-    for await (const event of agentLoop(messages, [], caller, anthropicConfig, {
+    for await (const event of agentLoop(history, [], caller, anthropicConfig, {
       systemPrompt: "sys",
       maxTurns: 5,
       autoCompactThreshold: Number.POSITIVE_INFINITY, // disable proactive compaction
@@ -439,8 +487,9 @@ describe("context overflow — provider dialect coverage (Top10 #3)", () => {
 
     expect(calls).toBeGreaterThan(1);
     expect(calls).toBeLessThan(10);
+    expect(retryLengths.every((length) => length < history.length)).toBe(true);
     expect(types).toContain("compacted");
-    expect(types).toContain("done");
+    expect(types, types.join(",")).toContain("done");
   });
 
   it("anthropic high-cache-hit usage feeds the baseline and triggers proactive compaction", async () => {

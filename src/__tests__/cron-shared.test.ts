@@ -366,15 +366,18 @@ describe("Cron Shared Logic", () => {
       expect(collectDueCronJobs(new Date(2026, 8, 2, 10, 31, 5))).toHaveLength(0);
     });
 
-    it("should fire +N relative delays once the delay has elapsed", () => {
+    it("should fire +N relative delays once the delay has elapsed (monotonic clock)", () => {
+      // "+N" elapsed is measured against the MONOTONIC hrtime sample taken at
+      // registration (review fix: a wall-clock jump must not stretch/shrink
+      // the delay). Move the sample back instead of the wall clock forward.
       const job = mustRegister({
         cron: "+60",
         prompt: "wake up",
         recurring: false,
         durable: false,
       });
-      const firedAt = new Date(job.createdAtMs + 61_000);
-      const due = collectDueCronJobs(firedAt);
+      job.createdAt -= 61_000_000_000n;
+      const due = collectDueCronJobs(new Date());
       expect(due).toHaveLength(1);
       expect(due[0]?.prompt).toContain("wake up");
       expect(getScheduledJob(job.id)).toBeUndefined(); // always one-shot
@@ -471,6 +474,38 @@ describe("Cron Shared Logic", () => {
       expect(getScheduledJob("shared-id", { workspaceRoot: second })?.prompt).toBe("B task");
       removeScheduledJob("shared-id", { workspaceRoot: tmpDir });
       expect(getScheduledJob("shared-id", { workspaceRoot: second })?.prompt).toBe("B task");
+    });
+
+    it("honors another process's current-minute marker via the locked merge (self-review fix)", () => {
+      // Simulates terminal B ticking right after terminal A fired the same
+      // durable job this minute: A's marker is on disk. The locked pass must
+      // adopt the marker and stay silent — the first cut set markers outside
+      // the lock, leaving a same-minute double-delivery window.
+      fs.mkdirSync(path.join(tmpDir, ".claude"), { recursive: true });
+      const now = new Date();
+      fs.writeFileSync(
+        path.join(tmpDir, ".claude", "scheduled_tasks.json"),
+        JSON.stringify({
+          version: 1,
+          jobs: [
+            {
+              id: "marked",
+              cron: "* * * * *",
+              prompt: "once per minute",
+              recurring: true,
+              createdAtMs: Date.now(),
+              lastFiredMinute: Math.floor(now.getTime() / 60_000),
+            },
+          ],
+        }),
+      );
+      expect(loadDurableJobs(tmpDir).loaded).toBe(1);
+      expect(collectDueCronJobs(now, { workspaceRoot: tmpDir })).toHaveLength(0);
+      // Next minute fires normally.
+      const nextMinute = new Date(now.getTime() + 60_000);
+      const due = collectDueCronJobs(nextMinute, { workspaceRoot: tmpDir });
+      expect(due).toHaveLength(1);
+      expect(due[0]?.prompt).toContain("once per minute");
     });
   });
 });

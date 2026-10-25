@@ -16,6 +16,7 @@ import {
 import type { Tool, ToolContext, ToolResult } from "../../types.js";
 import { invalidateToolWritableScopes } from "../../utils/fs-cache.js";
 import { InputValidator } from "../../utils/input-validator.js";
+import { absoluteWindowsBinary } from "../../utils/windows-bin.js";
 import { createJob, settleJob } from "../job-store.js";
 import { buildTool } from "../registry.js";
 import { getCwd, rememberCd } from "../session-cwd.js";
@@ -307,9 +308,14 @@ export const BashTool: Tool = buildTool({
 // Shared spawn helpers
 // ============================================================
 
-/** The shell the command runs through (cmd.exe on Windows, bash elsewhere). */
+/** The shell the command runs through (cmd.exe on Windows, bash elsewhere).
+ *  On Windows the shell is ALWAYS resolved absolutely — a bare "cmd.exe" is
+ *  searched with the current directory first, so a repo-planted binary would
+ *  hijack every auto-approved command (see utils/windows-bin.ts). */
 function shellName(): string {
-  return process.env.ComSpec || (process.platform === "win32" ? "cmd.exe" : "/bin/bash");
+  if (process.platform !== "win32") return "/bin/bash";
+  const comSpec = process.env.ComSpec;
+  return comSpec && /[\\/]/.test(comSpec) ? comSpec : absoluteWindowsBinary("cmd");
 }
 
 /**
@@ -355,7 +361,7 @@ function spawnShell(command: string, cwd: string): { child: ChildProcess; killTr
     try {
       if (process.platform === "win32") {
         // /T = kill tree, /F = force
-        spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+        spawn(absoluteWindowsBinary("taskkill"), ["/PID", String(child.pid), "/T", "/F"], {
           windowsHide: true,
           stdio: "ignore",
         }).unref();
@@ -446,7 +452,10 @@ function runInBackground(input: BashInput, context: ToolContext, cwd: string): T
     clearTimer();
     // A spawn error may be followed by close; settleJob is idempotent and
     // preserves the first, more useful error status.
-    settleJob(job, "done", code);
+    // killReason set (job_kill / TTL) → the exit was OUR doing: report the
+    // job as "killed", not "done", so waiters see what happened (review fix
+    // "kill 提前 settle" 的另一半——settle 现在发生在真实退出处).
+    settleJob(job, job.killReason ? "killed" : "done", code);
   });
 
   const preview = input.description || input.command;

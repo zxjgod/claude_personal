@@ -18,6 +18,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { isValidSessionId } from "../session-memory.js";
+import { withFileLock } from "../utils/file-lock.js";
 
 // --- Entry types ---
 
@@ -213,25 +214,45 @@ export class SessionTranscript {
 
   private writeSerialized(sessionId: string, entry: TranscriptInput): void {
     fs.mkdirSync(this.sessionsDir, { recursive: true });
+    const file = this.filePath(sessionId);
 
-    // Continue the numbering from the existing file when this process hasn't
-    // written this session yet (Top10 follow-up C2): the per-process counter
-    // used to restart at 0 on every resume/restart, appending DUPLICATE seq
-    // values and corrupting replay ordering.
-    let seq = this.seqs.get(sessionId);
-    if (seq === undefined) seq = this.lastSeqOnDisk(sessionId) + 1;
-    this.seqs.set(sessionId, seq + 1);
+    // Review fix (跨进程 seq 重复 + 崩溃尾部粘连): the seq computation and the
+    // append run inside the transcript file's cross-process lock, so two
+    // terminals resuming one session can never mint the same seq, and a
+    // crash-truncated tail (no trailing newline) gets one prepended instead
+    // of fusing with our new line into an unreadable JSON blob.
+    withFileLock(file, () => {
+      let seq = this.seqs.get(sessionId);
+      if (seq === undefined) seq = this.lastSeqOnDisk(sessionId) + 1;
+      this.seqs.set(sessionId, seq + 1);
 
-    const full: TranscriptEntry = {
-      seq,
-      ts: new Date().toISOString(),
-      ...entry,
-    } as TranscriptEntry;
+      const full: TranscriptEntry = {
+        seq,
+        ts: new Date().toISOString(),
+        ...entry,
+      } as TranscriptEntry;
 
-    // One compact JSON object per line. appendFile is atomic enough for our
-    // needs: a kill mid-write only ever truncates the final line, which read()
-    // tolerates.
-    fs.appendFileSync(this.filePath(sessionId), `${JSON.stringify(full)}\n`, "utf-8");
+      let prefix = "";
+      try {
+        const size = fs.statSync(file).size;
+        if (size > 0) {
+          const fd = fs.openSync(file, "r");
+          try {
+            const tail = Buffer.alloc(1);
+            fs.readSync(fd, tail, 0, 1, size - 1);
+            if (tail[0] !== 0x0a) prefix = "\n";
+          } finally {
+            fs.closeSync(fd);
+          }
+        }
+      } catch {
+        /* no file yet — nothing to join */
+      }
+      // One compact JSON object per line. appendFile is atomic enough for our
+      // needs: a kill mid-write only ever truncates the final line, which read()
+      // tolerates.
+      fs.appendFileSync(file, `${prefix}${JSON.stringify(full)}\n`, "utf-8");
+    });
   }
 
   /**

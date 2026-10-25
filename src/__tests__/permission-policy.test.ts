@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   loadPersistentAlwaysAllow,
   permissionRuleMatches,
@@ -82,6 +82,129 @@ describe("permission policy", () => {
     expect(loadPersistentAlwaysAllow()).toEqual(new Set(["bash::git status"]));
   });
 
+  describe("persistent always-allow store trust (review fix)", () => {
+    const oldStore = process.env.CCR_PERMISSION_STORE;
+    const oldUser = process.env.CCR_USER_CONFIG_DIR;
+    const oldRoot = process.env.WORKSPACE_ROOT;
+    let home: string;
+    let workspace: string;
+    beforeEach(() => {
+      home = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-perm-home-"));
+      workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-perm-ws-"));
+      delete process.env.CCR_PERMISSION_STORE;
+      process.env.CCR_USER_CONFIG_DIR = home;
+      process.env.WORKSPACE_ROOT = workspace;
+    });
+    afterEach(() => {
+      if (oldStore === undefined) delete process.env.CCR_PERMISSION_STORE;
+      else process.env.CCR_PERMISSION_STORE = oldStore;
+      if (oldUser === undefined) delete process.env.CCR_USER_CONFIG_DIR;
+      else process.env.CCR_USER_CONFIG_DIR = oldUser;
+      if (oldRoot === undefined) delete process.env.WORKSPACE_ROOT;
+      else process.env.WORKSPACE_ROOT = oldRoot;
+      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(workspace, { recursive: true, force: true });
+    });
+
+    it("a repo-preseeded workspace .claude/permissions.json never grants anything", () => {
+      const preseed = path.join(workspace, ".claude");
+      fs.mkdirSync(preseed, { recursive: true });
+      fs.writeFileSync(
+        path.join(preseed, "permissions.json"),
+        JSON.stringify(["bash::npm run build"]),
+      );
+      expect(loadPersistentAlwaysAllow()).toEqual(new Set());
+    });
+
+    it("saves into the user config dir, scoped per workspace", () => {
+      savePersistentAlwaysAllow(new Set(["bash::git status"]));
+      // User-level store exists, the workspace copy does not.
+      expect(fs.existsSync(path.join(home, "permissions.json"))).toBe(true);
+      expect(fs.existsSync(path.join(workspace, ".claude", "permissions.json"))).toBe(false);
+      expect(loadPersistentAlwaysAllow()).toEqual(new Set(["bash::git status"]));
+
+      // Another workspace's grants are NOT visible here.
+      const other = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-perm-other-"));
+      try {
+        process.env.WORKSPACE_ROOT = other;
+        expect(loadPersistentAlwaysAllow()).toEqual(new Set());
+        savePersistentAlwaysAllow(new Set(["edit::other.txt"]));
+        process.env.WORKSPACE_ROOT = workspace;
+        expect(loadPersistentAlwaysAllow()).toEqual(new Set(["bash::git status"]));
+      } finally {
+        fs.rmSync(other, { recursive: true, force: true });
+      }
+    });
+  });
+
+  it("file rules match path aliases of the same file (review fix)", () => {
+    // `deny: Read(secret.txt)` must also catch ./secret.txt and an absolute
+    // path — the rule engine resolves both sides against the workspace root.
+    expect(
+      policyDecision({ allow: [], deny: ["Read(secret.txt)"], ask: [] }, "read", {
+        filePath: "./secret.txt",
+      }),
+    ).toBe("deny");
+    expect(
+      policyDecision({ allow: [], deny: ["Read(secret.txt)"], ask: [] }, "read", {
+        filePath: path.resolve(process.cwd(), "secret.txt"),
+      }),
+    ).toBe("deny");
+    expect(
+      policyDecision({ allow: [], deny: ["Read(secret.txt)"], ask: [] }, "read", {
+        filePath: "not-secret.txt",
+      }),
+    ).toBe(undefined);
+    // Directory-style wildcard rules normalize the same way.
+    expect(
+      policyDecision({ allow: [], deny: ["Edit(docs/*)"], ask: [] }, "edit", {
+        filePath: "./docs/a.ts",
+      }),
+    ).toBe("deny");
+  });
+
+  it("directory wildcard rules keep their component boundary (self-review fix)", () => {
+    // Normalization must preserve the trailing separator: `docs/*` resolved
+    // to `…\docs` prefix-matched `…\docs-secret\x` too — an ALLOW bypass
+    // (probe-verified against the first cut).
+    expect(
+      policyDecision({ allow: ["Edit(docs/*)"], deny: [], ask: [] }, "edit", {
+        filePath: "docs-secret/x.ts",
+      }),
+    ).toBe(undefined);
+    expect(
+      policyDecision({ allow: ["Edit(docs/*)"], deny: [], ask: [] }, "edit", {
+        filePath: "./docs/a.ts",
+      }),
+    ).toBe("allow");
+    // Same boundary in the deny direction: no over-matching.
+    expect(
+      policyDecision({ allow: [], deny: ["Edit(docs/*)"], ask: [] }, "edit", {
+        filePath: "docs-secret/x.ts",
+      }),
+    ).toBe(undefined);
+  });
+
+  it("colon-prefix form works for path rules (self-review fix)", () => {
+    // `Read(docs/:*)` used to demand a space after the prefix and never
+    // matched a path; the boundary for file rules is a separator.
+    expect(
+      policyDecision({ allow: [], deny: ["Read(docs/:*)"], ask: [] }, "read", {
+        filePath: "docs/a.ts",
+      }),
+    ).toBe("deny");
+    expect(
+      policyDecision({ allow: [], deny: ["Read(docs/:*)"], ask: [] }, "read", {
+        filePath: "docs",
+      }),
+    ).toBe("deny");
+    expect(
+      policyDecision({ allow: [], deny: ["Read(docs/:*)"], ask: [] }, "read", {
+        filePath: "docs-other/a.ts",
+      }),
+    ).toBe(undefined);
+  });
+
   describe("policyDecision — command segmentation", () => {
     const policy = { allow: ["Bash(git *)"], deny: ["Bash(rm *)"], ask: [] };
 
@@ -98,6 +221,35 @@ describe("permission policy", () => {
     it("deny fires when ANY segment matches", () => {
       expect(policyDecision(policy, "bash", { command: "echo ok && rm -rf x" })).toBe("deny");
       expect(policyDecision(policy, "bash", { command: "echo a; echo b" })).toBe(undefined);
+    });
+
+    it("bare & and newlines split like every other separator (review fix)", () => {
+      // cmd.exe runs BOTH sides of `&`; a newline chains commands in bash/cmd.
+      expect(policyDecision(policy, "bash", { command: "git status & npm run build" })).toBe(
+        undefined,
+      );
+      expect(policyDecision(policy, "bash", { command: "git status\nnpm run build" })).toBe(
+        undefined,
+      );
+      // Deny sees the hidden second command even under bypass-mode rule eval.
+      expect(
+        policyDecision({ allow: [], deny: ["Bash(npm *)"], ask: [] }, "bash", {
+          command: "git status & npm run build",
+        }),
+      ).toBe("deny");
+      expect(
+        policyDecision({ allow: [], deny: ["Bash(npm *)"], ask: [] }, "bash", {
+          command: "git status\nnpm run build",
+        }),
+      ).toBe("deny");
+    });
+
+    it("fd-dup redirections stay inside their segment (no false re-prompt)", () => {
+      const p = { allow: ["Bash(npm run *)"], deny: [], ask: [] };
+      expect(policyDecision(p, "bash", { command: "npm run build 2>&1" })).toBe("allow");
+      expect(policyDecision(p, "bash", { command: "npm run build 2>&1 | tee log" })).toBe(
+        undefined,
+      );
     });
 
     it("multiple allow rules can each cover a segment", () => {

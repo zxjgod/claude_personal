@@ -522,6 +522,19 @@ describe("bashCommandIsReadOnly (M29)", () => {
     expect(bashCommandIsReadOnly("cat a.txt & del b.txt")).toBe(false);
     expect(bashCommandIsReadOnly("ls & echo done")).toBe(true);
   });
+
+  it("applies cmd.exe quote semantics on Windows (review fix)", () => {
+    if (process.platform !== "win32") return;
+    // cmd expands %VAR% INSIDE double quotes — `echo "%KEY%"` leaks the secret.
+    expect(bashCommandIsReadOnly('echo "%LLM_API_KEY%"')).toBe(false);
+    // A lone % is literal everywhere ("100%" stays auto-approved).
+    expect(bashCommandIsReadOnly('echo "100%"')).toBe(true);
+    // Single quotes do NOT protect metacharacters in cmd.exe: the redirect is
+    // real (`echo 'x > f'` writes a file named `f'`).
+    expect(bashCommandIsReadOnly("echo 'payload > victim.txt'")).toBe(false);
+    // ...but a single-quoted token without cmd-active chars stays read-only.
+    expect(bashCommandIsReadOnly("grep 'foo$' src")).toBe(true);
+  });
 });
 
 describe("powershellCommandIsReadOnly", () => {

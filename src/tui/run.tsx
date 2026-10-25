@@ -107,7 +107,10 @@ export interface TuiAgentDeps {
   /** M36: opt-in tool-batch digest (undefined = disabled). */
   summarizeToolBatch?: (prompt: string) => Promise<string | null>;
   /** Persist the turn's task state + terminal reason. */
-  onSave: (taskState?: TaskState, lastTerminalReason?: string) => void;
+  /** Persist the session. Returns a promise when the save is awaitable (the
+   *  CLI's implementation resolves once the write flushed) — the TUI /exit
+   *  path awaits it instead of racing process.exit (review fix). */
+  onSave: (taskState?: TaskState, lastTerminalReason?: string) => void | Promise<void>;
 }
 
 /** Resolve one complete turn prompt. The live builder owns dynamic sections. */
@@ -155,6 +158,8 @@ export interface TuiUiDeps {
   /** M15.3: optional LLM permission classifier (opt-in via CLI flag). */
   permissionClassifier?: PermissionClassifier;
   permissionPolicy?: import("../permission-policy.js").PermissionPolicy;
+  /** Live policy — /cd reloads it for the new workspace mid-session. */
+  getPermissionPolicy?: () => import("../permission-policy.js").PermissionPolicy;
   /** M25.2: opt-in full-screen alt-screen layout (default off). */
   fullscreen?: boolean;
   setupElicitation?: (store: TuiStore) => void;
@@ -217,7 +222,7 @@ export async function runTurn(
           permissionMode: store.getPermissionMode(),
           getPermissionMode: () => store.getPermissionMode(),
           hooks: deps.hooks,
-          permissionPolicy: deps.permissionPolicy,
+          permissionPolicy: deps.getPermissionPolicy?.() ?? deps.permissionPolicy,
           allowedDirectories: deps.allowedDirectories,
           abortSignal: controller.signal,
         },
@@ -290,7 +295,7 @@ async function runTurnBody(
       // M15.3: thread the LLM permission classifier (when enabled) so flagged
       // dangerous calls get a model-assessed risk hint/block in the TUI too.
       permissionClassifier: deps.permissionClassifier,
-      permissionPolicy: deps.permissionPolicy,
+      permissionPolicy: deps.getPermissionPolicy?.() ?? deps.permissionPolicy,
       allowedDirectories: deps.allowedDirectories,
       hooks: deps.hooks,
       // Stream nested sub-agent (Task) activity into the transcript live, so
@@ -541,6 +546,10 @@ async function runTurnBody(
           // dedicated event, no longer smuggled in as a "compacted" summary.
           store.addNotice(`⇄ Switched to fallback model: ${event.to} (was ${event.from})`);
           deps.modelConfig.model = event.to;
+          // Review fix ("fallback 切模后 TUI 状态仍是旧模型"): keep the status
+          // bar model label and the context gauge in sync with the new model.
+          store.setModel(event.to, `${deps.modelConfig.provider}/${event.to}`);
+          store.setContextLimit(lookupContextWindow(event.to) ?? 0);
           break;
         case "error":
           outcome.error = event.error;
@@ -828,6 +837,7 @@ async function runShellForBashMode(
   deps: TuiDeps,
   sessionId: () => string,
   command: string,
+  abortSignal?: AbortSignal,
 ): Promise<string> {
   const shellName = process.platform === "win32" ? "powershell" : "bash";
   const shell =
@@ -839,12 +849,16 @@ async function runShellForBashMode(
   store.addNotice(`  ${t("ui.bash.running")}`);
   // Minimal tool context: bash mode is user-invoked, so no permission hook
   // is threaded — checkPermission stays absent and the tool runs ungated.
+  // The abort signal IS threaded (review fix "!command 不可取消"): Ctrl+C
+  // during a long shell phase now kills the command instead of waiting it
+  // out.
   const r = await shell.call(
     { command, description: "bash mode" } as never,
     {
       workspaceRoot: deps.getWorkspaceRoot?.() ?? deps.workspaceRoot,
       sessionId: sessionId(),
       permissionMode: store.getPermissionMode(),
+      abortSignal,
     } as never,
   );
   const output = r.error ? `error: ${r.error}` : (r.content ?? "").trim() || "(no output)";
@@ -881,8 +895,19 @@ async function runBashMode(
   store.setBusy(true);
   store.setSpinner("tool");
   store.startTurnClock();
+  // Review fix ("!command 的 shell 阶段不可取消"): the controller used to be
+  // created only AFTER the shell finished, so Ctrl+C/Esc during a long shell
+  // command did nothing. Create it up front and hand it to the shell call.
+  const controller = new AbortController();
+  turnControllerRef.current = controller;
+  const onSigint = () => controller.abort(t("ui.abort.user"));
+  process.on("SIGINT", onSigint);
   try {
-    const output = await runShellForBashMode(store, deps, sessionId, command);
+    const output = await runShellForBashMode(store, deps, sessionId, command, controller.signal);
+    if (controller.signal.aborted) {
+      store.addNotice(`  ⎿ ${t("ui.interrupted.hint")}`);
+      return;
+    }
     // Context injection + Claude auto-response: a normal user turn whose text
     // wraps the shell exchange in the official bash-stdout tags.
     const userMsg: Message = {
@@ -896,10 +921,6 @@ async function runBashMode(
     };
     beginUserTurn(sessionId(), userMsg);
     deps.messages.push(userMsg);
-    const controller = new AbortController();
-    turnControllerRef.current = controller;
-    const onSigint = () => controller.abort(t("ui.abort.user"));
-    process.on("SIGINT", onSigint);
     const prepare = queuedLinePreparer(store, deps, sessionId, buildUserContent);
     try {
       await runTurn(store, deps, controller, askUser, askUserQuestion, queue, prepare);
@@ -915,11 +936,12 @@ async function runBashMode(
       );
     } finally {
       turnControllerRef.current = null;
-      process.removeListener("SIGINT", onSigint);
     }
   } catch (err) {
     store.addNotice(`⎿ ${formatCliError(err)}`);
     store.setBusy(false);
+  } finally {
+    process.removeListener("SIGINT", onSigint);
   }
 }
 
@@ -1207,7 +1229,7 @@ export function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
   );
 
   const onSubmit = useCallback(
-    (raw: string) => {
+    async (raw: string): Promise<void> => {
       const value = raw.trim();
       if (!value) return;
       // Batch C5: persist every submitted line (consecutive dups collapse).
@@ -1216,18 +1238,34 @@ export function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
       if (value.toLowerCase() === "exit" || value.toLowerCase() === "/exit") {
         // Tear down resources before exiting. Previously this was a bare
         // process.exit(0) that skipped onSave (session lost), MCP disconnect,
-        // and LSP dispose. onSave() flushes the session. NOTE: process.exit
+        // and LSP dispose. onSave() returns the save PROMISE now (review fix
+        // "TUI /exit 未等待保存") — await it (bounded) so the final state is
+        // flushed before exit instead of racing a 50ms timer. process.exit
         // does NOT unmount Ink — the runTui-level "exit" hook restores raw
         // mode / bracketed paste / cursor so the shell isn't left broken.
         try {
-          deps.onSave();
+          await Promise.race([
+            Promise.resolve(deps.onSave()),
+            new Promise((resolve) => setTimeout(resolve, 3000)),
+          ]);
         } catch {
           /* best-effort: don't block exit on a save failure */
         }
-        // Give the (synchronous) save a tick to flush, then exit. The CLI's
-        // top-level signal/cleanup handlers cover MCP/LSP teardown for the
-        // process, but a prompt exit here avoids orphaned stdio children.
-        setTimeout(() => process.exit(0), 50);
+        // Fire SessionEnd here too (self-review fix): the hook normally runs
+        // after runTui returns, but process.exit below never returns — an
+        // /exit used to skip the hook entirely.
+        try {
+          await Promise.race([
+            deps.hooks?.runEvent?.("SessionEnd", {
+              session_id: sessionId(),
+              workspace_root: deps.getWorkspaceRoot?.() ?? deps.workspaceRoot,
+            }) ?? Promise.resolve(),
+            new Promise((resolve) => setTimeout(resolve, 2000)),
+          ]);
+        } catch {
+          /* best-effort: exit proceeds regardless */
+        }
+        process.exit(0);
         return;
       }
 
@@ -1370,6 +1408,8 @@ export function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
         // the CommandResult in one dispatch (no double-execution). A command
         // may return `prompt` to inject a user message and run the loop
         // (/review /recap /fork /onboarding); otherwise it's fully local.
+        const sessionBeforeCommand = sessionId();
+        const modelBeforeCommand = deps.modelConfig.model;
         let effectiveText: string | null = null;
         if (value.startsWith("/")) {
           const { lines, result } = await captureConsole(() => {
@@ -1393,6 +1433,25 @@ export function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
             // D1: a replaced conversation (/clear, /resume <id>) restarts the
             // spinner-tip rotation — the pool is per-session, not per-process.
             if (/^\/(clear|resume)\b/i.test(value)) store.resetTipPool();
+            // Review fix ("TUI 的 /resume <id> 不回放历史"): an ARGUMENTED
+            // /resume swaps the live messages via the static handler; replay
+            // them on screen like the picker path does.
+            if (/^\/resume\b/i.test(value) && sessionId() !== sessionBeforeCommand) {
+              store.loadTranscript(messagesToTranscript(deps.messages));
+              store.addNotice(
+                `  ── Resumed ${sessionId().slice(0, 8)} · ${deps.messages.length} messages restored (0 tokens) ──`,
+              );
+            }
+            // Review fix ("/model 后 TUI 状态仍是旧模型"): /model mutates
+            // modelConfig only — reconcile the status-bar label and the
+            // context gauge with whatever the command changed.
+            if (deps.modelConfig.model !== modelBeforeCommand) {
+              store.setModel(
+                deps.modelConfig.model,
+                `${deps.modelConfig.provider}/${deps.modelConfig.model}`,
+              );
+              store.setContextLimit(lookupContextWindow(deps.modelConfig.model) ?? 0);
+            }
             return; // purely local command
           }
           if (result.prompt) effectiveText = result.prompt;
@@ -1661,6 +1720,10 @@ export function runTui(deps: TuiDeps): Promise<void> {
     store.setContextLimit(lookupContextWindow(deps.modelConfig.model) ?? 0);
     // Batch C5: seed ↑-history from this project's persisted log.
     store.setInputHistory(loadHistory(deps.workspaceRoot));
+    // Review fix ("--resume 启动不回放历史"): a startup-resumed session arrives
+    // with preloaded messages; replay them so the user SEES the conversation
+    // they resumed (the model already has it).
+    if (deps.messages.length > 0) store.loadTranscript(messagesToTranscript(deps.messages));
     store.loadTranscript(
       renderBannerLines({
         version: APP_VERSION,
@@ -1707,6 +1770,8 @@ export function runTui(deps: TuiDeps): Promise<void> {
   store.setContextLimit(lookupContextWindow(deps.modelConfig.model) ?? 0);
   // Batch C5: seed ↑-history from this project's persisted log.
   store.setInputHistory(loadHistory(deps.workspaceRoot));
+  // Review fix ("--resume 启动不回放历史"): see the fullscreen branch above.
+  if (deps.messages.length > 0) store.loadTranscript(messagesToTranscript(deps.messages));
   const { waitUntilExit } = render(<Root store={store} deps={deps} />, {
     // See the fullscreen render above: Ctrl+C belongs to InterruptHotkey.
     exitOnCtrlC: false,

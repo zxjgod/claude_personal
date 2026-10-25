@@ -29,7 +29,7 @@ import {
   resolveJobIdArg,
 } from "./bg-startup.js";
 import { listChanges } from "./change-tracker.js";
-import { setCheckpointWorkspaceRootResolver } from "./checkpoint.js";
+import { bindCheckpointSession, setCheckpointWorkspaceRootResolver } from "./checkpoint.js";
 import {
   DEFAULT_CLASSIFIER_RULES,
   mergeClassifierRules,
@@ -74,7 +74,7 @@ import {
   parsePullRequestRef,
 } from "./from-pr.js";
 import { formatGitContext, gatherGitContext } from "./git-context.js";
-import { sessionGoal } from "./goal-runtime.js";
+import { releaseSessionGoal, sessionGoal } from "./goal-runtime.js";
 import { installHookEventStream, runHeadless } from "./headless.js";
 import { clearHookLifecycleSink } from "./hook-events.js";
 import { HookRegistry } from "./hooks.js";
@@ -90,6 +90,7 @@ import {
 import { confirmProjectLspConfig } from "./language-servers.js";
 import { createModelCaller } from "./llm-adapter.js";
 import { disposeAllLspClients } from "./lsp.js";
+import { initMemoryApproval } from "./memory-approval.js";
 import { autoExtractMemoriesOnExit, MemoryStore } from "./memory-extract.js";
 import { savePersistentAlwaysAllow } from "./permission-policy.js";
 import { PersistenceManager } from "./persistence.js";
@@ -110,7 +111,9 @@ import { getSubagentType, listSubagentNames } from "./subagents.js";
 import { buildSystemPrompt, renderSystemPrompt } from "./system-prompt.js";
 import { resolveTmuxStartup } from "./tmux.js";
 import { loadDurableJobs } from "./tools/extended/cron-shared.js";
-import { registerNotificationHook } from "./tools/notifications.js";
+import { releaseSessionSchedules } from "./tools/extended/scheduler.js";
+import { killRunningJobs } from "./tools/job-store.js";
+import { registerNotificationHook, resetNotifications } from "./tools/notifications.js";
 import { createRawInputReader } from "./tui/cli-interactive.js";
 import { detectLanguage } from "./tui/i18n.js";
 import type {
@@ -310,7 +313,7 @@ async function main() {
           }
         : undefined,
     );
-  const permissionPolicy = getPermissionPolicy(workspaceRoot);
+  let permissionPolicy = getPermissionPolicy(workspaceRoot);
   warnUnknownSettings(readSettings(workspaceRoot));
   const permissionModeState = {
     get: () => permissionMode,
@@ -523,7 +526,11 @@ async function main() {
   // /cd support: move the session to a new directory mid-conversation. Updates
   // the workspace root + CLAUDE.md + git snapshot; the system-prompt env section
   // recomputes each turn, so it picks up the new root on the next turn.
-  const setWorkspaceRoot = (next: string): boolean => {
+  // Set once the TUI takes stdin — inside it, askYesNo's cooked readline cannot
+  // run, so /cd into a workspace with untrusted allow rules strips them
+  // (getPermissionPolicy) instead of prompting.
+  let tuiActive = false;
+  const setWorkspaceRoot = async (next: string): Promise<boolean> => {
     try {
       if (!fs.statSync(next).isDirectory()) return false;
     } catch {
@@ -531,6 +538,15 @@ async function main() {
     }
     workspaceRoot = next;
     claudeMdContent = loadClaudeMd(next);
+    // Review fix ("/cd 后沿用旧工作区权限策略"): every security-relevant
+    // derivation must be recomputed for the NEW workspace — otherwise the new
+    // workspace's deny/ask rules never apply and the OLD workspace's trusted
+    // allow rules keep skipping prompts there. The memory-approval gate is
+    // equally workspace-scoped (its strict mode can be set per project).
+    permissionMode = getPermissionMode(next);
+    permissionPolicy = getPermissionPolicy(next);
+    initMemoryApproval(next);
+    await confirmProjectAllowRules(next, { interactive: !tuiActive });
     // Re-gather git context in the background (best-effort; may lag a turn).
     gatherGitContext(next)
       .then((ctx) => {
@@ -1000,6 +1016,21 @@ async function main() {
     fastModelFactory: getFastModel,
     workspaceRoot,
     setWorkspaceRoot,
+    rotateSessionId: () => {
+      // /sessions delete --force of the CURRENT session: the deleted id must
+      // stop being the save target, or the next auto-save resurrects the file
+      // the user just deleted (review fix). Everything bound to the old id is
+      // released the same way /resume does — schedules, the goal cell, and
+      // (self-review fix) the old session's queued notifications, which would
+      // otherwise strand or ride into the fresh session's first prompt.
+      releaseSessionSchedules(session.id);
+      releaseSessionGoal(session.id);
+      resetNotifications(session.id);
+      session.id = persistence.generateId();
+      goalHolder.value = "";
+      bindCheckpointSession(session.id, workspaceRoot);
+      return session.id;
+    },
     sessionId: session.id,
     persistence,
     ui: uiState,
@@ -1077,6 +1108,7 @@ async function main() {
     const { runTui } = await import("./tui/run.js");
     const { COMMANDS } = await import("./commands.js");
     const { permissionKey } = await import("./cli-prompts.js");
+    tuiActive = true;
     await runTui({
       messages,
       tools,
@@ -1105,6 +1137,8 @@ async function main() {
       // agent loop the same way as the line-based REPL path.
       permissionClassifier,
       permissionPolicy,
+      // Live policy — /cd reloads it for the new workspace mid-session.
+      getPermissionPolicy: () => permissionPolicy,
       allowedDirectories,
       setupElicitation: (store) => {
         mcpManager.setElicitationHandler(async (request) => {
@@ -1141,19 +1175,30 @@ async function main() {
       prefetch: prefetchMemories,
       summarizeToolBatch,
       fastModelFactory: getFastModel,
-      onSave: (taskState, lastTerminalReason) => {
+      // Returns the save PROMISE (review fix "TUI /exit 未等待保存"): the TUI's
+      // exit path awaits it before process.exit instead of racing a 50ms timer.
+      onSave: (taskState, lastTerminalReason) =>
         persistence
           .save(session.id, messages, {
             taskState,
             lastTerminalReason: normalizeFinishReason(lastTerminalReason),
+            waitForLock: true,
           })
           .catch((err) => {
             console.error("Warning: TUI save failed:", formatCliError(err));
-          });
-      },
+          }),
     });
+    // Review fix ("正常 TUI 退出不触发 SessionEnd"): every other surface
+    // (headless, line REPL) fires the SessionEnd hook — the TUI path skipped
+    // it, silently breaking exit-time hook workflows.
+    await hooks
+      .runEvent("SessionEnd", { session_id: session.id, workspace_root: workspaceRoot })
+      .catch(() => {});
     await mcpManager.disconnectAll();
     await disposeAllLspClients();
+    // The TUI ended (exit/EOF): running background jobs must not keep the
+    // process or their TTL timers alive past the user's exit (review fix).
+    killRunningJobs(session.id, "session exited");
 
     // F1: session-exit auto-extraction. Heuristic pass is offline/cheap and on
     // by default; the model-assisted pass costs one call and is opt-in via
@@ -1189,6 +1234,8 @@ async function main() {
     permissionModeState,
     permissionClassifier,
     permissionPolicy,
+    // Live policy — /cd reloads it for the new workspace mid-session.
+    getPermissionPolicy: () => permissionPolicy,
     allowedDirectories,
     prefetch: prefetchMemories,
     summarizeToolBatch,

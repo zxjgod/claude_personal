@@ -164,22 +164,35 @@ export class AuditLogger {
       return;
     }
     try {
-      // mode 0600: the audit log quotes commands and paths — owner-only on
-      // POSIX (a no-op on Windows, which has no unix mode bits; documented).
       if (this.needsFullRewrite || this.persistedCount > this.entries.length) {
         // A trim shifted the in-memory window; the on-disk file no longer
         // corresponds to any suffix of it, so rewrite wholesale (bounded by
         // maxEntries, so this stays cheap) instead of appending.
-        const lines = this.entries.map((e) => JSON.stringify(e)).join("\n") + "\n";
+        // Snapshot + boundary BEFORE the await (self-review fix — same bug
+        // the append branch had): entries pushed by a concurrent log()
+        // DURING the rewrite must stay beyond the boundary, or they get
+        // marked persisted without being in the written snapshot.
+        const snapshot = this.entries.slice();
+        const boundary = snapshot.length;
+        const lines = snapshot.map((e) => JSON.stringify(e)).join("\n") + "\n";
         await fs.promises.writeFile(this.options.logFilePath, lines, { mode: 0o600 });
+        this.persistedCount = boundary;
       } else {
         // Normal path: append only the entries written since the last persist.
+        // Snapshot BOTH the delta and the resulting boundary BEFORE awaiting
+        // the write (review fix "并发写期间新条目被误标为已持久化"): the old
+        // code re-read this.entries.length after the await, so an entry pushed
+        // by a concurrent log() DURING the write was counted as persisted and
+        // its own persist later computed an empty delta — it never reached
+        // disk. With the pre-captured boundary, that entry stays beyond
+        // persistedCount and the next persist appends it.
         const fresh = this.entries.slice(this.persistedCount);
         if (fresh.length === 0) return;
+        const newCount = this.persistedCount + fresh.length;
         const lines = fresh.map((e) => JSON.stringify(e)).join("\n") + "\n";
         await fs.promises.writeFile(this.options.logFilePath, lines, { flag: "a", mode: 0o600 });
+        this.persistedCount = newCount;
       }
-      this.persistedCount = this.entries.length;
       this.needsFullRewrite = false;
     } catch (error) {
       console.error("Failed to persist audit log:", error);

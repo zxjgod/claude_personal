@@ -27,7 +27,13 @@ const url = new URL("https://mcp.example.com/sse");
 describe("FileTokenOAuthProvider", () => {
   it("isolates credentials by resource, client identity, and unsanitized name", () => {
     const original = new FileTokenOAuthProvider("same/name", url, { clientId: "client-a" }, dir);
-    original.saveTokens({ access_token: "fake-token", token_type: "Bearer" });
+    // issuer: the upgraded SDK stamps the authorization server on every
+    // saveTokens — a record without one is treated as legacy and dropped.
+    original.saveTokens({
+      access_token: "fake-token",
+      token_type: "Bearer",
+      issuer: "https://auth.example.com",
+    } as any);
     for (const provider of [
       new FileTokenOAuthProvider(
         "same/name",
@@ -69,7 +75,11 @@ describe("FileTokenOAuthProvider", () => {
 
   it("never persists tokens in plaintext (encrypted envelope + separate key)", () => {
     const provider = new FileTokenOAuthProvider("srv", url, {}, dir);
-    provider.saveTokens({ access_token: "super-secret-token", token_type: "Bearer" });
+    provider.saveTokens({
+      access_token: "super-secret-token",
+      token_type: "Bearer",
+      issuer: "https://auth.example.com",
+    } as any);
     provider.saveCodeVerifier("pkce-verifier-secret");
     const boundFile = fs.readdirSync(dir).find((name) => name.endsWith(".json"));
     if (!boundFile) throw new Error("Missing bound credential file");
@@ -136,7 +146,11 @@ describe("FileTokenOAuthProvider", () => {
 
   it("persists tokens and the PKCE verifier", () => {
     const p1 = new FileTokenOAuthProvider("srv", url, {}, dir);
-    p1.saveTokens({ access_token: "tok", token_type: "bearer" } as any);
+    p1.saveTokens({
+      access_token: "tok",
+      token_type: "bearer",
+      issuer: "https://auth.example.com",
+    } as any);
     p1.saveCodeVerifier("verifier-123");
     const p2 = new FileTokenOAuthProvider("srv", url, {}, dir);
     expect(p2.tokens()?.access_token).toBe("tok");

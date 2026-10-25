@@ -124,7 +124,22 @@ export async function* query(input: {
     }
     const code = await finished;
     await feeder;
-    if (code && !resultSeen) throw new Error(`CLI exited ${code}: ${stderr}`);
+    // Review fix ("异常终止被当作正常结束"): signal kills surface as
+    // code === null and were silently treated as success; and once ANY result
+    // frame had been seen, later non-zero exits were ignored too. Both paths
+    // now report: no result yet → throw; result seen but the CLI still died
+    // non-zero (or was signalled, unless WE aborted it) → emit an error frame
+    // so consumers can distinguish complete from truncated runs.
+    const abortedByUs = code === null && options.signal?.aborted === true;
+    if (code !== 0 && !abortedByUs) {
+      if (!resultSeen) throw new Error(`CLI exited ${code ?? "on a signal"}: ${stderr}`);
+      yield {
+        type: "system",
+        subtype: "abnormal_exit",
+        is_error: true,
+        message: `CLI exited ${code ?? "on a signal"} after the result frame: ${stderr.slice(-500)}`,
+      };
+    }
   } finally {
     // Release the stdout pipe even when the consumer abandons the generator
     // early (otherwise the readline handle and the child both stay alive).

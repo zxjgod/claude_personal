@@ -286,6 +286,14 @@ export function withMessageCacheBreakpoint(messages: AnthropicMessage[]): Anthro
 
   // Mid-history breakpoint, 15 blocks back from the end (only when the tail
   // breakpoint's 20-block lookback could not reach the previous turn).
+  // Review fix ("缓存断点写到 thinking 块"): thinking / redacted_thinking
+  // blocks carry a signature and REJECT cache_control (API 400). Walk from
+  // the computed ordinal BACKWARD to the nearest cacheable block; none found
+  // → skip the mid breakpoint entirely (cache depth degrades, the request
+  // still succeeds).
+  const CACHE_CONTROL_INELIGIBLE = new Set(["thinking", "redacted_thinking"]);
+  const isCacheEligible = (block: Record<string, unknown> | undefined): boolean =>
+    !!block && !CACHE_CONTROL_INELIGIBLE.has(String(block.type));
   const sizes = out.map((m) =>
     typeof m.content === "string" ? 1 : toContentBlocks(m.content).length,
   );
@@ -312,9 +320,11 @@ export function withMessageCacheBreakpoint(messages: AnthropicMessage[]): Anthro
         // "never mutates the input"; the main path only escaped the bug
         // because convertMessagesToAnthropic builds fresh arrays).
         const mBlocks = toContentBlocks(msg.content).slice();
-        const bi = target - 1;
+        let bi = target - 1;
+        while (bi >= 0 && !isCacheEligible(mBlocks[bi] as Record<string, unknown> | undefined))
+          bi--;
         const isTailBlock = mi === out.length - 1 && bi === mBlocks.length - 1;
-        if (!isTailBlock && mBlocks[bi]) {
+        if (bi >= 0 && !isTailBlock) {
           mBlocks[bi] = { ...mBlocks[bi], cache_control: ephemeralCacheControl() };
           out[mi] = { ...msg, content: mBlocks };
         }
@@ -407,7 +417,11 @@ export const anthropicCaller: ModelCaller = async function* (
   const model = config.model || DEFAULT_ANTHROPIC_MODEL;
 
   // Phase 1 of cache-break detection: hash the cacheable prefix + tools so the
-  // post-call check can attribute a cache miss to the exact cause.
+  // post-call check can attribute a cache miss to the exact cause. Record and
+  // check use the SAME `messages` array (review fix "scope 不一致致检测失效"):
+  // prepareMultimodalMessages returns a fresh array per call, so recording on
+  // `preparedMessages` and checking on `messages` meant the WeakMap lookup on
+  // the check side never found the record — cacheBreak was always empty.
   recordPromptState(
     {
       systemPrompt,
@@ -415,7 +429,7 @@ export const anthropicCaller: ModelCaller = async function* (
       model,
       effort: getEffort(config.options),
     },
-    preparedMessages,
+    messages,
   );
   // Adaptive thinking is an Opus 4.6+ / Sonnet 4.6+ / Sonnet 5 / Fable 5
   // feature; sending `thinking: {type:"adaptive"}` to a model without it
