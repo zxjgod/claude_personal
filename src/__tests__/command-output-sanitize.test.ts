@@ -8,37 +8,64 @@
 //
 // Each case here poisons one field with an OSC window-title sequence and
 // asserts the emitted frame no longer carries it.
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { listChanges } from "../change-tracker.js";
+import { addDirCommand } from "../commands/add-dir.js";
+import { cdCommand } from "../commands/cd.js";
 import { commitCommand } from "../commands/commit.js";
 import { configCommand } from "../commands/config.js";
 import { contextCommand } from "../commands/context.js";
+import { costCommand } from "../commands/cost.js";
 import { diffCommand } from "../commands/diff.js";
+import { doctorCommand } from "../commands/doctor.js";
+import { exportCommand } from "../commands/export.js";
+import { goalCommand } from "../commands/goal.js";
 import { bindCommandList, helpCommand } from "../commands/help.js";
 import { hooksCommand } from "../commands/hooks.js";
 import { keybindingsCommand } from "../commands/keybindings.js";
 import { loopCommand } from "../commands/loop.js";
 import { mcpCommand } from "../commands/mcp.js";
 import { memoryCommand } from "../commands/memory.js";
+import { modelCommand } from "../commands/model.js";
 import { outputStyleCommand } from "../commands/output-style.js";
 import { permissionsCommand } from "../commands/permissions.js";
+import { pluginCommand } from "../commands/plugin.js";
 import { prCommand } from "../commands/pr.js";
 import { providerCommand } from "../commands/provider.js";
 import { releaseNotesCommand } from "../commands/release-notes.js";
+import { resumeCommand } from "../commands/resume.js";
+import { sessionsCommand } from "../commands/sessions.js";
+import { shareCommand } from "../commands/share.js";
 import { skillsCommand } from "../commands/skills.js";
 import { statusCommand } from "../commands/status.js";
+import { todosCommand } from "../commands/todos.js";
 import { toolsCommand } from "../commands/tools.js";
 import type { CommandContext, SlashCommand } from "../commands/types.js";
 import { workflowsCommand } from "../commands/workflows.js";
 import { gatherDiffSummary } from "../git-context.js";
+import { releaseSessionGoal, restoreGoal, sessionGoal } from "../goal-runtime.js";
 import { listOutputStyles } from "../output-style.js";
-import { loadProviderProfiles } from "../provider-profiles.js";
+import {
+  checkPluginDependencies,
+  installPlugin,
+  listPlugins,
+  readMarketplace,
+  removePlugin,
+} from "../plugins.js";
+import {
+  applyProfile,
+  findProfile,
+  loadProviderProfiles,
+  providersFilePath,
+} from "../provider-profiles.js";
 import { listSkills, registerSkill, resetSkills } from "../skills.js";
 import { listWakeupJobs } from "../tools/extended/schedule-wakeup.js";
+import { clearTodos, getTodos, TodoTool } from "../tools/extended/todo.js";
 import { loadUserBindings, parseBindings } from "../tui/keybindings/index.js";
+import { SessionStats } from "../tui/session-stats.js";
 import type { Tool } from "../types.js";
 import { APP_VERSION } from "../version.js";
 import { listWorkflows } from "../workflow.js";
@@ -61,9 +88,22 @@ function assertNoControlSequences(out: string): void {
 // ---------------------------------------------------------------------------
 vi.mock("../git-context.js", () => ({
   gatherDiffSummary: vi.fn(),
+  resolveGitExecutable: vi.fn(() => "git"),
   suggestCommitSubject: vi.fn(() => "feat: add thing"),
 }));
 vi.mock("../change-tracker.js", () => ({ listChanges: vi.fn(() => []) }));
+vi.mock("../plugins.js", () => ({
+  addMarketplaceFromUrl: vi.fn(),
+  checkPluginDependencies: vi.fn(),
+  findMarketplacePlugin: vi.fn(),
+  installPlugin: vi.fn(),
+  installRemotePlugin: vi.fn(),
+  listPlugins: vi.fn(),
+  readMarketplace: vi.fn(),
+  removePlugin: vi.fn(),
+  setPluginDisabled: vi.fn(),
+  writeMarketplace: vi.fn(),
+}));
 vi.mock("../provider-profiles.js", () => ({
   applyProfile: vi.fn(),
   findProfile: vi.fn(),
@@ -128,6 +168,7 @@ function makeContext(overrides: Partial<CommandContext> = {}): CommandContext {
 }
 
 let captured: string[] = [];
+let capturedWarnings: string[] = [];
 
 async function run(cmd: SlashCommand, args: string, ctx: CommandContext): Promise<string> {
   await cmd.run(args, ctx);
@@ -136,16 +177,31 @@ async function run(cmd: SlashCommand, args: string, ctx: CommandContext): Promis
 
 beforeEach(() => {
   captured = [];
+  capturedWarnings = [];
   memoryMocks.listed.length = 0;
   memoryMocks.extracted.length = 0;
   memoryMocks.changelog = "";
+  vi.mocked(applyProfile).mockImplementation(() => {});
+  vi.mocked(findProfile).mockReturnValue(undefined);
+  vi.mocked(loadProviderProfiles).mockReturnValue([]);
+  vi.mocked(providersFilePath).mockReturnValue("C:/ws/.claude/providers.json");
+  vi.mocked(checkPluginDependencies).mockReturnValue([]);
+  vi.mocked(installPlugin).mockReset();
+  vi.mocked(listPlugins).mockReturnValue([]);
+  vi.mocked(readMarketplace).mockReturnValue({ plugins: [] });
+  vi.mocked(removePlugin).mockReset();
   vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
     captured.push(args.map((a) => String(a)).join(" "));
+  });
+  vi.spyOn(console, "warn").mockImplementation((...args: unknown[]) => {
+    capturedWarnings.push(args.map((a) => String(a)).join(" "));
   });
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
+  clearTodos("sess-1");
+  releaseSessionGoal("sess-1");
   resetSkills();
 });
 
@@ -237,6 +293,7 @@ describe("slash command output sanitization", () => {
     } as unknown as Tool;
     const mcpManager = {
       refresh: vi.fn(),
+      getServerSummaries: () => [{ name: `srv${POISON}`, tools: [tool] }],
       getAllTools: () => [tool],
       serverCount: 1,
     } as unknown as NonNullable<CommandContext["mcpManager"]>;
@@ -338,6 +395,11 @@ describe("slash command output sanitization", () => {
     const out = await run(keybindingsCommand, "", makeContext());
     assertNoControlSequences(out);
     expect(out).toContain("chat");
+    expect(out).toContain("Ctrl+R");
+    expect(out).toContain("Search prompt history");
+    expect(out).toContain("Ctrl+O");
+    expect(out).toContain("Toggle the verbose transcript");
+    expect(out).not.toContain("Toggle expansion of the last long tool card");
   });
 
   it("/status — model config fields are sanitized", async () => {
@@ -404,6 +466,272 @@ describe("slash command output sanitization", () => {
     const out = await run(releaseNotesCommand, "", makeContext());
     assertNoControlSequences(out);
     expect(out).toContain("line with");
+  });
+
+  it("/todos — model-authored todo text is sanitized without mutating the stored todo", async () => {
+    const content = `implement 中文 ${POISON}${POISON_ALT}`;
+    await TodoTool.call(
+      { todos: [{ content, status: "in_progress", activeForm: "implementing" }] },
+      { sessionId: "sess-1" } as never,
+    );
+    const out = await run(todosCommand, "", makeContext());
+    assertNoControlSequences(out);
+    expect(out).toContain("implement 中文");
+    expect(getTodos("sess-1")[0]?.content).toBe(content);
+  });
+
+  it("/resume — line-mode persisted previews and task states are sanitized", async () => {
+    const entry = {
+      sessionId: "saved-session",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      messageCount: 2,
+      completed: false,
+      pinned: true,
+      preview: `saved preview ${POISON}`,
+      taskState: `paused${POISON_ALT}`,
+    };
+    const persistence = { searchSessions: vi.fn(async () => [entry]) };
+    const out = await run(resumeCommand, "", makeContext({ persistence: persistence as never }));
+    assertNoControlSequences(out);
+    expect(out).toContain("saved preview");
+    expect(entry.preview).toContain(POISON);
+  });
+
+  it("/sessions — persisted task state is sanitized alongside the name and preview", async () => {
+    const entry = {
+      sessionId: "saved-session",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      messageCount: 2,
+      completed: false,
+      pinned: true,
+      name: `named ${POISON}`,
+      preview: `saved preview ${POISON_ALT}`,
+      taskState: `paused${POISON}`,
+    };
+    const persistence = { searchSessions: vi.fn(async () => [entry]) };
+    const out = await run(sessionsCommand, "", makeContext({ persistence: persistence as never }));
+    assertNoControlSequences(out);
+    expect(out).toContain("named");
+    expect(out).toContain("saved preview");
+  });
+
+  it("/sessions search — the echo is sanitized but the raw query reaches persistence", async () => {
+    const query = `needle${POISON}`;
+    const searchSessions = vi.fn(async () => []);
+    const out = await run(
+      sessionsCommand,
+      `search ${query}`,
+      makeContext({ persistence: { searchSessions } as never }),
+    );
+    assertNoControlSequences(out);
+    expect(out).toContain("needle");
+    expect(searchSessions).toHaveBeenCalledWith(query);
+  });
+
+  it("/doctor — model and workspace config fields are sanitized", async () => {
+    const out = await run(
+      doctorCommand,
+      "",
+      makeContext({
+        modelConfig: {
+          provider: `openai${POISON}` as "openai",
+          model: `gpt${POISON_ALT}`,
+          apiKey: "k",
+        },
+        workspaceRoot: `/workspace${POISON}`,
+      }),
+    );
+    assertNoControlSequences(out);
+    expect(out).toContain("Provider:");
+    expect(out).toContain("Workspace:");
+  });
+
+  it("/cost — an unknown-pricing model id is sanitized", async () => {
+    const stats = new SessionStats();
+    stats.addUsage(100, 50);
+    const out = await run(
+      costCommand,
+      "",
+      makeContext({
+        modelConfig: { provider: "openai", model: `mystery${POISON}`, apiKey: "k" },
+        stats,
+      }),
+    );
+    assertNoControlSequences(out);
+    expect(out).toContain("no pricing for mystery");
+  });
+
+  it("/goal — a persisted objective and suspension reason are sanitized", async () => {
+    const objective = `persisted goal ${POISON}`;
+    const reason = `evaluation failed ${POISON_ALT}`;
+    restoreGoal("sess-1", { objective, complete: false, checks: 1, suspended: true, reason });
+    const out = await run(goalCommand, "", makeContext({ goal: { value: objective } }));
+    assertNoControlSequences(out);
+    expect(out).toContain("persisted goal");
+    expect(sessionGoal("sess-1")?.reason).toBe(reason);
+  });
+
+  it("/goal — set output and async persistence errors are sanitized without rewriting the goal", async () => {
+    const objective = `new goal ${POISON}`;
+    const save = vi.fn(async () => {
+      throw new Error(`disk full ${POISON_ALT}`);
+    });
+    const ctx = makeContext({ goal: { value: "" }, persistence: { save } as never });
+    const out = await run(goalCommand, objective, ctx);
+    await vi.waitFor(() => expect(capturedWarnings).toHaveLength(1));
+    assertNoControlSequences(`${out}\n${capturedWarnings.join("\n")}`);
+    expect(ctx.goal?.value).toBe(objective);
+  });
+
+  it("/provider — missing config paths and unmatched profile echoes are sanitized", async () => {
+    vi.mocked(providersFilePath).mockReturnValue(`C:/ws/${POISON}/providers.json`);
+    await run(providerCommand, "", makeContext());
+
+    const profiles = [{ name: "safe", provider: "openai", model: "gpt-4o" }];
+    vi.mocked(loadProviderProfiles).mockReturnValue(profiles as never);
+    const query = `missing${POISON_ALT}`;
+    await run(providerCommand, query, makeContext());
+
+    const out = captured.join("\n");
+    assertNoControlSequences(out);
+    expect(findProfile).toHaveBeenCalledWith(profiles, query);
+  });
+
+  it("/provider — profile application errors are sanitized without changing live config", async () => {
+    const profile = { name: `relay${POISON}`, provider: "openai", model: "gpt-4o" };
+    vi.mocked(loadProviderProfiles).mockReturnValue([profile] as never);
+    vi.mocked(findProfile).mockReturnValue(profile as never);
+    vi.mocked(applyProfile).mockImplementation(() => {
+      throw new Error(`invalid endpoint ${POISON_ALT}`);
+    });
+    const ctx = makeContext();
+    const out = await run(providerCommand, "relay", ctx);
+    assertNoControlSequences(out);
+    expect(out).toContain("invalid endpoint");
+    expect(ctx.modelConfig.model).toBe("gpt-4o");
+  });
+
+  it("/model — current and newly selected config values are only sanitized for display", async () => {
+    const ctx = makeContext({
+      modelConfig: {
+        provider: `openai${POISON}` as "openai",
+        model: `before${POISON_ALT}`,
+        apiKey: "k",
+      },
+    });
+    await run(modelCommand, "", ctx);
+    const next = `after${POISON}`;
+    await run(modelCommand, next, ctx);
+    const out = captured.join("\n");
+    assertNoControlSequences(out);
+    expect(out).toContain("before");
+    expect(out).toContain("after");
+    expect(ctx.modelConfig.model).toBe(next);
+  });
+
+  it("/add-dir — the configured workspace path is sanitized", async () => {
+    const out = await run(addDirCommand, "", makeContext({ workspaceRoot: `/ws${POISON}` }));
+    assertNoControlSequences(out);
+    expect(out).toContain("Workspace:");
+  });
+
+  it("/cd — the current workspace path is sanitized", async () => {
+    const out = await run(cdCommand, "", makeContext({ workspaceRoot: `/ws${POISON_ALT}` }));
+    assertNoControlSequences(out);
+    expect(out).toContain("Current workspace:");
+  });
+
+  it("/plugin list — manifest fields and dependency warnings are sanitized", async () => {
+    vi.mocked(listPlugins).mockReturnValue([
+      {
+        name: `plugin${POISON}`,
+        version: `1.0.0${POISON_ALT}`,
+        description: `description ${POISON}`,
+      },
+    ] as never);
+    vi.mocked(checkPluginDependencies).mockReturnValue([`dependency ${POISON_ALT}`]);
+    const out = await run(pluginCommand, "list", makeContext());
+    assertNoControlSequences(out);
+    expect(out).toContain("description");
+    expect(out).toContain("Dependency warning:");
+  });
+
+  it("/plugin marketplace — index names, versions and sources are sanitized", async () => {
+    vi.mocked(readMarketplace).mockReturnValue({
+      plugins: [
+        {
+          name: `market${POISON}`,
+          version: `2.0.0${POISON_ALT}`,
+          source: `https://example.test/plugin${POISON}`,
+        },
+      ],
+    } as never);
+    const out = await run(pluginCommand, "marketplace", makeContext());
+    assertNoControlSequences(out);
+    expect(out).toContain("https://example.test/plugin");
+  });
+
+  it("/plugin install — installed manifest fields are sanitized", async () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "plugin-install-sanitize-"));
+    try {
+      vi.mocked(installPlugin).mockReturnValue({
+        name: `installed${POISON}`,
+        version: `1.2.3${POISON_ALT}`,
+      });
+      const out = await run(pluginCommand, "install .", makeContext({ workspaceRoot }));
+      assertNoControlSequences(out);
+      expect(out).toContain("Installed plugin installed@1.2.3");
+      expect(installPlugin).toHaveBeenCalledWith(workspaceRoot, workspaceRoot);
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("/plugin remove — the operation keeps the raw name but sanitizes its confirmation", async () => {
+    const name = `remove-me${POISON}`;
+    const out = await run(pluginCommand, `remove ${name}`, makeContext());
+    assertNoControlSequences(out);
+    expect(out).toContain("Removed plugin remove-me");
+    expect(removePlugin).toHaveBeenCalledWith("/workspace", name);
+  });
+
+  it("/plugin — caught operational errors are sanitized", async () => {
+    vi.mocked(removePlugin).mockImplementation(() => {
+      throw new Error(`cannot remove ${POISON_ALT}`);
+    });
+    const out = await run(pluginCommand, "remove demo", makeContext());
+    assertNoControlSequences(out);
+    expect(out).toContain("cannot remove");
+  });
+
+  it.each([
+    exportCommand,
+    shareCommand,
+  ])("$name — terminal path errors are sanitized while the exported file stays raw", async (command) => {
+    const tmp = mkdtempSync(join(tmpdir(), "export-sanitize-"));
+    try {
+      const ctx = makeContext({
+        workspaceRoot: tmp,
+        modelConfig: {
+          provider: `openai${POISON_ALT}` as "openai",
+          model: `model${POISON}`,
+          apiKey: "k",
+        },
+        messages: [{ role: "user", content: [{ type: "text", text: `body ${POISON}` }] }],
+      });
+      await run(command, "transcript.md", ctx);
+      const exported = readFileSync(join(tmp, "transcript.md"), "utf8");
+      expect(exported).toContain(`model${POISON}`);
+      expect(exported).toContain(`body ${POISON}`);
+      expect(exported).toContain(POISON_ALT);
+
+      await run(command, `../outside${POISON_ALT}.md`, ctx);
+      assertNoControlSequences(captured.join("\n"));
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   it("listSkills() callers still receive the raw value (display-only fix)", () => {

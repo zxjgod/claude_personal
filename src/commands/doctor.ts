@@ -11,6 +11,7 @@ import * as fs from "node:fs";
 import { promisify } from "node:util";
 import chalk from "chalk";
 import { resolveGitExecutable } from "../git-context.js";
+import { sanitizeTerminalText } from "../tui/terminal-width.js";
 import type { SlashCommand } from "./types.js";
 
 const execFileAsync = promisify(execFile);
@@ -41,12 +42,12 @@ export const doctorCommand: SlashCommand = {
     console.log("");
     console.log(chalk.bold("  Doctor:"));
     console.log(`    Node:        ${chalk.cyan(process.version)}`);
-    console.log(`    Provider:    ${chalk.cyan(ctx.modelConfig.provider)}`);
-    console.log(`    Model:       ${chalk.cyan(ctx.modelConfig.model)}`);
+    console.log(`    Provider:    ${chalk.cyan(sanitizeTerminalText(ctx.modelConfig.provider))}`);
+    console.log(`    Model:       ${chalk.cyan(sanitizeTerminalText(ctx.modelConfig.model))}`);
     console.log(`    API key:     ${hasKey ? chalk.green("set") : chalk.red("missing")}`);
     console.log(`    .env:        ${envExists ? chalk.green("present") : chalk.yellow("missing")}`);
     console.log(
-      `    Workspace:   ${workspaceExists ? chalk.green(ctx.workspaceRoot) : chalk.red(ctx.workspaceRoot)}`,
+      `    Workspace:   ${workspaceExists ? chalk.green(sanitizeTerminalText(ctx.workspaceRoot)) : chalk.red(sanitizeTerminalText(ctx.workspaceRoot))}`,
     );
     console.log(
       `    package.json:${packageJson ? chalk.green(" present") : chalk.red(" missing")}`,

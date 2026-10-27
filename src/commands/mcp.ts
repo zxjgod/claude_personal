@@ -20,9 +20,15 @@ export const mcpCommand: SlashCommand = {
       const refresh = async (): Promise<void> => {
         try {
           const count = await ctx.mcpManager!.refreshServerTools(server);
-          console.log(chalk.gray(`  Refreshed "${server}" — ${count} tool(s).`));
+          console.log(
+            chalk.gray(`  Refreshed "${sanitizeTerminalText(server)}" — ${count} tool(s).`),
+          );
         } catch (e) {
-          console.log(chalk.red(`  Refresh failed: ${e instanceof Error ? e.message : String(e)}`));
+          console.log(
+            chalk.red(
+              `  Refresh failed: ${sanitizeTerminalText(e instanceof Error ? e.message : String(e))}`,
+            ),
+          );
         }
       };
       if (!server) {
@@ -31,34 +37,28 @@ export const mcpCommand: SlashCommand = {
       }
       return refresh().then(() => undefined);
     }
-    const tools = ctx.mcpManager.getAllTools();
-    const count = ctx.mcpManager.serverCount;
+    const servers = ctx.mcpManager.getServerSummaries();
+    const count = servers.length;
     console.log("");
     console.log(chalk.bold(`  MCP (${count} server${count === 1 ? "" : "s"}):`));
     if (count === 0) {
       console.log(chalk.gray("  No MCP servers connected."));
       return;
     }
-    const mcpTools = tools.filter((t) => t.name.startsWith("mcp__"));
-    console.log(`    Servers: ${chalk.cyan(count)}   Tools: ${chalk.cyan(mcpTools.length)}`);
-    // Group tools by server: mcp__<server>__<tool>
-    const byServer = new Map<string, string[]>();
-    for (const t of mcpTools) {
-      const parts = t.name.split("__");
-      const server = parts[1] ?? "unknown";
-      const tool = parts.slice(2).join("__") || t.name;
-      if (!byServer.has(server)) byServer.set(server, []);
-      byServer.get(server)!.push(tool);
-    }
-    for (const [server, toolNames] of byServer) {
-      // Both the server segment and the tool segment are declared by the MCP
-      // server — sanitize before printing.
-      console.log(`    ${chalk.cyan(sanitizeTerminalText(server))} — ${toolNames.length} tool(s)`);
-      for (const tn of toolNames.slice(0, 12)) {
-        console.log(chalk.gray(`        - ${sanitizeTerminalText(tn)}`));
+    const exposedTools = new Set(ctx.mcpManager.getAllTools());
+    const toolCount = exposedTools.size;
+    console.log(`    Servers: ${chalk.cyan(count)}   Tools: ${chalk.cyan(toolCount)}`);
+    // Iterate actual manager entries: wrapped names are not reversible because
+    // both server and remote tool names may themselves contain "__". Hide
+    // duplicate objects that getAllTools() does not expose after a collision.
+    for (const { name, tools } of servers) {
+      const visibleTools = tools.filter((tool) => exposedTools.has(tool));
+      console.log(`    ${chalk.cyan(sanitizeTerminalText(name))} — ${visibleTools.length} tool(s)`);
+      for (const tool of visibleTools.slice(0, 12)) {
+        console.log(chalk.gray(`        - ${sanitizeTerminalText(tool.name)}`));
       }
-      if (toolNames.length > 12)
-        console.log(chalk.gray(`        … +${toolNames.length - 12} more`));
+      if (visibleTools.length > 12)
+        console.log(chalk.gray(`        … +${visibleTools.length - 12} more`));
     }
     console.log(chalk.gray("  Auth: tokens are persisted per-server via the OAuth provider."));
     return;

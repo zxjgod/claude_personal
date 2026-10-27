@@ -338,9 +338,17 @@ export function createRawInputReader(opts: {
       if (closed) return resolve(null);
       const region = new Region(output);
       const state: WidgetState = { buffer: "", cursor: 0, suggestions: [], selected: 0 };
+      let suggestionsDismissed = false;
+      let suggestionBuffer = state.buffer;
 
       const repaint = () => {
-        state.suggestions = filterCommands(state.buffer, opts.commands);
+        // Escape dismisses the dropdown until the text itself changes. Cursor
+        // movement and no-op edits repaint without reopening it.
+        if (state.buffer !== suggestionBuffer) {
+          suggestionBuffer = state.buffer;
+          suggestionsDismissed = false;
+        }
+        state.suggestions = suggestionsDismissed ? [] : filterCommands(state.buffer, opts.commands);
         if (state.selected >= state.suggestions.length) state.selected = 0;
         const { lines, cursorRow, cursorCol } = renderWidget(state);
         region.paint(lines);
@@ -435,8 +443,7 @@ export function createRawInputReader(opts: {
             return;
           case "escape":
             if (state.suggestions.length > 0) {
-              // Close the dropdown by clearing the slash (keep typed text).
-              state.suggestions = [];
+              suggestionsDismissed = true;
               state.selected = 0;
               repaint();
             }
@@ -673,13 +680,16 @@ export function promptPermissionMenu(opts: {
 // --- Structured question menu (single / multi select) ---
 
 export interface SelectMenuOption {
+  /** Returned unchanged on selection; defaults to the original label. */
+  value?: string;
   label: string;
   description?: string;
 }
 
 /**
  * Render a bordered single- or multi-select menu and block for the choice.
- * Returns the selected labels, or null if cancelled (Esc / Ctrl+C).
+ * Returns each selected option's value (or original label when no value is
+ * supplied), or null if cancelled (Esc / Ctrl+C).
  * In multiSelect, Space toggles and Enter confirms; in single-select, Enter
  * (or a number key) picks immediately.
  */
@@ -704,6 +714,10 @@ export function promptSelectMenu(opts: {
     label: sanitizeTerminalText(opt.label),
     ...(opt.description ? { description: sanitizeTerminalText(opt.description) } : {}),
   }));
+  const valueAt = (index: number): string => {
+    const option = opts.options[index]!;
+    return option.value ?? option.label;
+  };
 
   return new Promise((resolve) => {
     const region = new Region(output);
@@ -778,15 +792,15 @@ export function promptSelectMenu(opts: {
             cursor = idx;
             render();
           } else {
-            finish([opts.options[idx]!.label]);
+            finish([valueAt(idx)]);
           }
         }
       } else if (key.name === "enter") {
         if (multi) {
-          const picked = [...checked].sort((a, b) => a - b).map((i) => opts.options[i]!.label);
+          const picked = [...checked].sort((a, b) => a - b).map((i) => valueAt(i));
           finish(picked); // may be empty → caller treats as "no selection"
         } else {
-          finish([opts.options[cursor]!.label]);
+          finish([valueAt(cursor)]);
         }
       } else if (key.name === "escape" || (key.ctrl && key.name === "c")) {
         finish(null);

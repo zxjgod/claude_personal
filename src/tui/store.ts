@@ -234,7 +234,7 @@ export type Overlay =
       title: string;
       hint?: string;
       rows: TogglePickerRow[];
-      onChange: (rowId: string, value: string) => void;
+      onChange: (rowId: string, value: string) => boolean;
       resolve: () => void;
     }
   | {
@@ -671,7 +671,7 @@ export class TuiStore {
     title: string,
     hint: string | undefined,
     rows: TogglePickerRow[],
-    onChange: (rowId: string, value: string) => void,
+    onChange: (rowId: string, value: string) => boolean,
   ): Promise<void> {
     return new Promise((resolve) => {
       this.openOverlay({

@@ -1,5 +1,6 @@
 // /resume — resume a saved session
 import chalk from "chalk";
+import { sanitizeTerminalText } from "../tui/terminal-width.js";
 import type { SlashCommand } from "./types.js";
 
 export const resumeCommand: SlashCommand = {
@@ -26,9 +27,9 @@ export const resumeCommand: SlashCommand = {
       for (const s of sessions.slice(0, 10)) {
         const marker = s.sessionId === ctx.sessionId ? chalk.green("*") : " ";
         const pin = s.pinned ? chalk.yellow("📌 ") : "   ";
-        const preview = s.preview ? chalk.gray(` — ${s.preview}`) : "";
+        const preview = s.preview ? chalk.gray(` — ${sanitizeTerminalText(s.preview)}`) : "";
         console.log(
-          `  ${marker} ${pin}${s.sessionId.slice(0, 8)} — ${s.messageCount} msgs — ${new Date(s.updatedAt).toLocaleString()} — ${s.taskState}${preview}`,
+          `  ${marker} ${pin}${sanitizeTerminalText(s.sessionId.slice(0, 8))} — ${s.messageCount} msgs — ${new Date(s.updatedAt).toLocaleString()} — ${sanitizeTerminalText(s.taskState)}${preview}`,
         );
       }
       console.log(chalk.gray("  Use /resume <prefix> to restore one (no tokens used)."));

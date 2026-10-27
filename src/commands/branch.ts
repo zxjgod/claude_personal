@@ -9,6 +9,7 @@
 // "resumed immediately" — it never was.)
 // ============================================================
 import chalk from "chalk";
+import { forkCheckpoints, resetCheckpoints, turnOfMessage } from "../checkpoint.js";
 import type { SlashCommand } from "./types.js";
 
 export const branchCommand: SlashCommand = {
@@ -24,9 +25,29 @@ export const branchCommand: SlashCommand = {
       return;
     }
 
-    // Snapshot the current messages into a brand-new session file.
+    // Rebind checkpoint tags to the new session; retaining the source id would
+    // make /resume <branch> → /rewind silently skip file restoration.
     const newId = ctx.persistence.generateId();
-    await ctx.persistence.save(newId, [...ctx.messages]);
+    const branchMessages = ctx.messages.map((message) => {
+      const turn = turnOfMessage(message, ctx.sessionId);
+      return message.role === "user" && turn !== null
+        ? { ...message, checkpoint: { sessionId: newId, turn } }
+        : message;
+    });
+    try {
+      await ctx.persistence.save(newId, branchMessages);
+      forkCheckpoints(ctx.sessionId, newId);
+    } catch (error) {
+      // A failed fork must not disturb the current conversation. Clean only
+      // artifacts belonging to the newly allocated branch id.
+      resetCheckpoints(newId);
+      await ctx.persistence.deleteSession(newId).catch(() => {});
+      console.error(
+        chalk.red("  Failed to create the branch:"),
+        error instanceof Error ? error.message : String(error),
+      );
+      return;
+    }
 
     console.log(chalk.gray(`  Branched ${ctx.messages.length} messages into a new session.`));
     console.log(chalk.gray(`  New session: ${chalk.cyan(newId.slice(0, 8) + "...")}`));

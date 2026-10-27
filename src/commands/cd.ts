@@ -6,6 +6,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import chalk from "chalk";
 import { clearCwd } from "../tools/session-cwd.js";
+import { sanitizeTerminalText } from "../tui/terminal-width.js";
 import type { SlashCommand } from "./types.js";
 
 export const cdCommand: SlashCommand = {
@@ -13,7 +14,7 @@ export const cdCommand: SlashCommand = {
   description: "Change the working directory for this session",
   run: async (args, ctx): Promise<undefined> => {
     if (!args.trim()) {
-      console.log(chalk.dim(`  Current workspace: ${ctx.workspaceRoot}`));
+      console.log(chalk.dim(`  Current workspace: ${sanitizeTerminalText(ctx.workspaceRoot)}`));
       console.log(chalk.dim("  Usage: /cd <path>"));
       return;
     }
@@ -33,7 +34,7 @@ export const cdCommand: SlashCommand = {
       isDir = false;
     }
     if (!isDir) {
-      console.log(chalk.red(`  Not a directory: ${args.trim()}`));
+      console.log(chalk.red(`  Not a directory: ${sanitizeTerminalText(args.trim())}`));
       return;
     }
 
@@ -41,9 +42,11 @@ export const cdCommand: SlashCommand = {
     const ok = await ctx.setWorkspaceRoot(target);
     if (ok) {
       clearCwd(ctx.sessionId);
-      console.log(chalk.green(`  Workspace: ${prev} → ${target}`));
+      console.log(
+        chalk.green(`  Workspace: ${sanitizeTerminalText(prev)} → ${sanitizeTerminalText(target)}`),
+      );
     } else {
-      console.log(chalk.red(`  Could not change workspace to: ${target}`));
+      console.log(chalk.red(`  Could not change workspace to: ${sanitizeTerminalText(target)}`));
     }
   },
 };

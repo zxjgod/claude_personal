@@ -216,6 +216,13 @@ export function registerSubagentType(type: SubagentType): void {
   SUBAGENT_TYPES.set(type.name, type);
 }
 
+/** Remove disk/plugin registrations while retaining compiled-in agent types. */
+export function removeCustomSubagentTypes(): void {
+  for (const [name, type] of SUBAGENT_TYPES) {
+    if (type.source !== "built-in") SUBAGENT_TYPES.delete(name);
+  }
+}
+
 export function getSubagentType(name: string): SubagentType | undefined {
   return SUBAGENT_TYPES.get(name);
 }

@@ -8,7 +8,7 @@
 // ============================================================
 
 import chalk from "chalk";
-import { getCustomCommands } from "./commands/loadCommandsDir.js";
+import { getCustomCommand } from "./commands/loadCommandsDir.js";
 import { COMMANDS } from "./commands/registry.js";
 import type { CommandContext, CommandResult } from "./commands/types.js";
 import { activateSkill } from "./scoped-execution.js";
@@ -18,20 +18,22 @@ import { sanitizeTerminalText } from "./tui/terminal-width.js";
 import type { PermissionMode } from "./types.js";
 
 export {
+  getCustomCommand,
   getCustomCommands,
   loadCommandsDir,
   registerCustomCommand,
   resetCustomCommands,
 } from "./commands/loadCommandsDir.js";
-export { COMMANDS } from "./commands/registry.js";
+export { COMMANDS, getAvailableCommands } from "./commands/registry.js";
 export type {
+  CommandCatalogEntry,
   CommandContext,
   CommandResult,
   SlashCommand,
   ToolSource,
 } from "./commands/types.js";
 
-const COMMAND_MAP = new Map(COMMANDS.map((c) => [c.name, c]));
+const COMMAND_MAP = new Map(COMMANDS.map((c) => [c.name.toLowerCase(), c]));
 
 /**
  * Handle a line of input if it is a slash command.
@@ -52,7 +54,7 @@ export async function handleSlashCommand(
   const args = input.slice(1 + rawName.length).trim();
   // Built-in commands take precedence; disk-defined commands are consulted
   // after them (a custom command may not shadow a built-in).
-  const cmd = COMMAND_MAP.get(name) ?? getCustomCommands().get(name);
+  const cmd = COMMAND_MAP.get(name) ?? getCustomCommand(name);
 
   if (!cmd) {
     // Slash sugar (kernel §Skill point 3): `/<name>` that isn't a built-in
@@ -79,6 +81,7 @@ export async function handleSlashCommand(
                 "default") as PermissionMode,
               permissionPolicy: ctx.permissionPolicy,
               modelConfig: ctx.modelConfig,
+              abortSignal: ctx.abortSignal,
               hooks: ctx.hooks,
               askUser: async (tool, input) =>
                 ctx.input

@@ -8,7 +8,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { render } from "ink-testing-library";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { isMemoryApprovalRequired, setMemoryApproval } from "../memory-approval.js";
 import {
   DEFAULT_SUBAGENT_SETTINGS,
@@ -29,10 +29,11 @@ function tmp(): string {
   return d;
 }
 afterEach(() => {
+  vi.restoreAllMocks();
   while (tmpDirs.length) fs.rmSync(tmpDirs.pop()!, { recursive: true, force: true });
 });
 
-function makeOverlay(rows: TogglePickerRow[]) {
+function makeOverlay(rows: TogglePickerRow[], shouldCommit: () => boolean = () => true) {
   const changes: Array<[string, string]> = [];
   let resolve: () => void = () => {};
   const done = new Promise<void>((r) => (resolve = r));
@@ -44,7 +45,10 @@ function makeOverlay(rows: TogglePickerRow[]) {
       title: "T",
       hint: "h",
       rows,
-      onChange: (rowId: string, value: string) => changes.push([rowId, value]),
+      onChange: (rowId: string, value: string) => {
+        changes.push([rowId, value]);
+        return shouldCommit();
+      },
       resolve,
     },
   };
@@ -60,10 +64,11 @@ describe("TogglePicker component", () => {
     const { overlay, changes, done } = makeOverlay(rows);
     const { lastFrame, stdin, unmount } = render(<TogglePicker overlay={overlay} />);
     await flush();
-    expect(lastFrame()!).toContain("rowA");
+    expect(lastFrame()).toContain("rowA");
     stdin.write("\x1b[C"); // → flips rowA off→on (即刻生效)
     await flush();
     expect(changes).toEqual([["a", "on"]]);
+    expect(lastFrame()).toContain("‹on›");
     stdin.write("\x1b[C"); // → wraps on→off
     await flush();
     expect(changes).toEqual([
@@ -76,6 +81,19 @@ describe("TogglePicker component", () => {
     expect(changes[2]).toEqual(["b", "report"]);
     stdin.write("\r"); // Enter closes
     await expect(done).resolves.toBeUndefined();
+    unmount();
+  });
+
+  it("keeps the current value visible when the persist callback rejects a flip", async () => {
+    const { overlay, changes } = makeOverlay(rows, () => false);
+    const { lastFrame, stdin, unmount } = render(<TogglePicker overlay={overlay} />);
+    await flush();
+    expect(lastFrame()).toContain("‹off›");
+    stdin.write("\x1b[C");
+    await flush();
+    expect(changes).toEqual([["a", "on"]]);
+    expect(lastFrame()).toContain("‹off›");
+    expect(lastFrame()).not.toContain("‹on›");
     unmount();
   });
 
@@ -93,7 +111,7 @@ describe("TogglePicker component", () => {
 describe("store.openTogglePicker pipeline", () => {
   it("opens the togglePicker overlay and closes through resolve", async () => {
     const store = new TuiStore("p/m");
-    const p = store.openTogglePicker("T", undefined, rows(), () => {});
+    const p = store.openTogglePicker("T", undefined, rows(), () => true);
     expect(store.getSnapshot().overlay?.kind).toBe("togglePicker");
     const overlay = store.getSnapshot().overlay as Extract<
       NonNullable<ReturnType<TuiStore["getSnapshot"]>["overlay"]>,
@@ -128,14 +146,14 @@ describe("menu flows persist on every flip", () => {
     process.env.CCR_USER_CONFIG_DIR = userDir;
     let captured: {
       rows: TogglePickerRow[];
-      onChange: (rowId: string, value: string) => void;
+      onChange: (rowId: string, value: string) => boolean;
     } | null = null;
     const fakeStore = {
       openTogglePicker: async (
         _t: string,
         _h: string | undefined,
         rows: TogglePickerRow[],
-        onChange: (rowId: string, value: string) => void,
+        onChange: (rowId: string, value: string) => boolean,
       ) => {
         captured = { rows, onChange };
       },
@@ -160,26 +178,80 @@ describe("menu flows persist on every flip", () => {
     expect(disk.subagents.sidechainMode).toBe("report");
   });
 
+  it("runAgentsMenu: a refused settings write returns false without changing runtime", async () => {
+    const root = tmp();
+    const userDir = tmp();
+    process.env.CCR_USER_CONFIG_DIR = userDir;
+    fs.writeFileSync(path.join(userDir, "settings.json"), "{not json");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const onChanges: Array<(rowId: string, value: string) => boolean> = [];
+    const fakeStore = {
+      openTogglePicker: async (
+        _t: string,
+        _h: string | undefined,
+        _rows: TogglePickerRow[],
+        oc: (rowId: string, value: string) => boolean,
+      ) => {
+        onChanges.push(oc);
+      },
+    } as unknown as TuiStore;
+
+    await runAgentsMenu(fakeStore, root);
+    expect(onChanges[0]?.("thinking", "on")).toBe(false);
+    expect(getSubagentSettings().thinking).toBe(false);
+  });
+
   it("runMemoryApprovalMenu: flipping the gate persists immediately", async () => {
     const root = tmp();
     process.env.CCR_USER_CONFIG_DIR = tmp();
-    let onChange: ((rowId: string, value: string) => void) | null = null;
+    const onChanges: Array<(rowId: string, value: string) => boolean> = [];
     const fakeStore = {
       openTogglePicker: async (
         _t: string,
         _h: string | undefined,
         rows: TogglePickerRow[],
-        oc: (rowId: string, value: string) => void,
+        oc: (rowId: string, value: string) => boolean,
       ) => {
         expect(rows).toHaveLength(1);
-        expect(rows[0]!.current).toBe("off"); // default OFF
-        expect(rows[0]!.values).toEqual(["off", "on"]); // 默认档位在左
-        onChange = oc;
+        expect(rows[0]?.current).toBe("off"); // default OFF
+        expect(rows[0]?.values).toEqual(["off", "on"]); // 默认档位在左
+        onChanges.push(oc);
       },
     } as unknown as TuiStore;
 
     await runMemoryApprovalMenu(fakeStore, root);
-    onChange!("gate", "on");
+    expect(onChanges[0]?.("gate", "on")).toBe(true);
     expect(isMemoryApprovalRequired()).toBe(true);
+  });
+
+  it("runMemoryApprovalMenu: a higher-precedence pin rejects the visible flip", async () => {
+    const root = tmp();
+    process.env.CCR_USER_CONFIG_DIR = tmp();
+    fs.mkdirSync(path.join(root, ".claude"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, ".claude", "settings.json"),
+      JSON.stringify({ memory: { requireApproval: true } }),
+    );
+    // The local layer owns the write; the project layer still forces ON.
+    fs.writeFileSync(path.join(root, ".claude", "settings.local.json"), '{"memory":{}}');
+    setMemoryApproval(true);
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const onChanges: Array<(rowId: string, value: string) => boolean> = [];
+    const fakeStore = {
+      openTogglePicker: async (
+        _t: string,
+        _h: string | undefined,
+        rows: TogglePickerRow[],
+        oc: (rowId: string, value: string) => boolean,
+      ) => {
+        expect(rows[0]?.current).toBe("on");
+        onChanges.push(oc);
+      },
+    } as unknown as TuiStore;
+
+    await runMemoryApprovalMenu(fakeStore, root);
+    expect(onChanges[0]?.("gate", "off")).toBe(false);
+    expect(isMemoryApprovalRequired()).toBe(true);
+    expect(error).toHaveBeenCalledWith(expect.stringContaining("强制开启"));
   });
 });

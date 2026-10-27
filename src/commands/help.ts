@@ -1,14 +1,14 @@
 // /help — list all commands grouped by category
 import chalk from "chalk";
 import { sanitizeTerminalText } from "../tui/terminal-width.js";
-import type { SlashCommand } from "./types.js";
+import type { CommandCatalogEntry, SlashCommand } from "./types.js";
 
 // COMMANDS is injected at registry build time to avoid a static import cycle
 // (registry.ts imports this file, so this file cannot import registry.ts).
 // The getter is evaluated lazily at run time (not at bind time) so disk-defined
 // custom commands loaded later in startup still appear in /help.
-let COMMANDS_GETTER: () => SlashCommand[] = () => [];
-export function bindCommandList(list: () => SlashCommand[]): void {
+let COMMANDS_GETTER: () => CommandCatalogEntry[] = () => [];
+export function bindCommandList(list: () => CommandCatalogEntry[]): void {
   COMMANDS_GETTER = list;
 }
 
@@ -16,7 +16,7 @@ export function bindCommandList(list: () => SlashCommand[]): void {
 interface CommandCategory {
   emoji: string;
   title: string;
-  commands: SlashCommand[];
+  commands: CommandCatalogEntry[];
 }
 
 const CATEGORY_MAP: Record<string, { emoji: string; title: string }> = {
@@ -78,7 +78,7 @@ export const helpCommand: SlashCommand = {
   run: (): undefined => {
     // Group commands by category
     const categories: CommandCategory[] = [];
-    const categoryMap = new Map<string, SlashCommand[]>();
+    const categoryMap = new Map<string, CommandCatalogEntry[]>();
 
     for (const cmd of COMMANDS_GETTER()) {
       const catInfo = CATEGORY_MAP[cmd.name];

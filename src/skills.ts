@@ -166,7 +166,7 @@ const BUILTIN_SKILLS: Skill[] = [
 let seeded = false;
 function ensureSeeded(): void {
   if (seeded) return;
-  for (const s of BUILTIN_SKILLS) SKILLS.set(s.name, fromLegacy(s));
+  for (const s of BUILTIN_SKILLS) SKILLS.set(s.name.toLowerCase(), fromLegacy(s));
   seeded = true;
 }
 
@@ -180,13 +180,13 @@ export function registerSkill(skill: SkillDefinition | Skill): void {
     "prompt" in skill && typeof (skill as Skill).prompt === "string"
       ? fromLegacy(skill as Skill)
       : { source: "builtin", ...(skill as SkillDefinition) };
-  SKILLS.set(def.name, def);
+  SKILLS.set(def.name.toLowerCase(), def);
 }
 
 /** Look up a skill by name. */
 export function getSkill(name: string): SkillDefinition | undefined {
   ensureSeeded();
-  return SKILLS.get(name);
+  return SKILLS.get(name.toLowerCase());
 }
 
 /** List registered skills as catalog entries (discovery fields only). */

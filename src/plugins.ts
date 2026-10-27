@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { inflateRawSync } from "node:zlib";
 import { userConfigRoot } from "./settings.js";
+import { withFileLock } from "./utils/file-lock.js";
 import { ccrPath } from "./workspace-config.js";
 
 export interface PluginManifest {
@@ -102,7 +103,7 @@ export function listPlugins(workspaceRoot: string): PluginManifest[] {
   try {
     return fs
       .readdirSync(pluginRoot(workspaceRoot), { withFileTypes: true })
-      .filter((e) => e.isDirectory())
+      .filter((e) => e.isDirectory() && validName(e.name))
       .map((e) => readManifest(path.join(pluginRoot(workspaceRoot), e.name)))
       .filter((x): x is PluginManifest => x !== null);
   } catch {
@@ -141,14 +142,70 @@ export function pluginComponentRoots(
   return [...new Set(values)].filter((file) => fs.existsSync(file));
 }
 export function installPlugin(workspaceRoot: string, sourceDir: string): PluginManifest {
-  const manifest = readManifest(sourceDir);
+  const source = path.resolve(sourceDir);
+  const manifest = readManifest(source);
   if (!manifest) throw new Error("Invalid or missing plugin.json");
-  fs.mkdirSync(pluginRoot(workspaceRoot), { recursive: true });
-  fs.cpSync(sourceDir, path.join(pluginRoot(workspaceRoot), manifest.name), {
-    recursive: true,
-    force: true,
+  const root = pluginRoot(workspaceRoot);
+  const target = path.join(root, manifest.name);
+  const sourceToRoot = path.relative(source, root);
+  if (
+    sourceToRoot === "" ||
+    (sourceToRoot !== ".." &&
+      !sourceToRoot.startsWith(`..${path.sep}`) &&
+      !path.isAbsolute(sourceToRoot))
+  )
+    throw new Error("Plugin source contains the installation root; choose a separate source");
+  fs.mkdirSync(root, { recursive: true });
+  // All cooperating installers serialize activation and rollback per plugin.
+  // Without this lock, one process could roll back over another's new version.
+  return withFileLock(path.join(root, `.${manifest.name}.install`), () => {
+    // Build the complete replacement beside the target so activation is a rename
+    // on the same filesystem, never a recursive merge into the old installation.
+    const staging = fs.mkdtempSync(path.join(root, `.${manifest.name}.staging-`));
+    const backup = `${staging}.backup`;
+    let backupCreated = false;
+    let activated = false;
+    try {
+      fs.cpSync(source, staging, { recursive: true, force: true });
+      if (fs.existsSync(target)) {
+        fs.renameSync(target, backup);
+        backupCreated = true;
+      }
+      fs.renameSync(staging, target);
+      activated = true;
+      return manifest;
+    } catch (error) {
+      if (backupCreated) {
+        try {
+          // Normally activation failed before creating target. Remove a partial
+          // target as well so rollback also covers errors reported after a rename.
+          if (fs.existsSync(target)) fs.rmSync(target, { recursive: true, force: true });
+          fs.renameSync(backup, target);
+          backupCreated = false;
+        } catch (rollbackError) {
+          throw new AggregateError(
+            [error, rollbackError],
+            `Plugin installation and rollback failed; the previous version remains at ${backup}`,
+          );
+        }
+      }
+      throw error;
+    } finally {
+      // Cleanup failure must not turn a successful activation into a failure or
+      // hide the original copy/rollback error. Dot-prefixed artifacts are not
+      // listed as installed plugins and can be removed on a later maintenance pass.
+      try {
+        fs.rmSync(staging, { recursive: true, force: true });
+      } catch {}
+      // A rollback failure deliberately retains the backup: it is the only
+      // remaining copy of the old installation and its path is reported above.
+      if (activated && backupCreated) {
+        try {
+          fs.rmSync(backup, { recursive: true, force: true });
+        } catch {}
+      }
+    }
   });
-  return manifest;
 }
 /**
  * Minimal ZIP extractor: central directory scan + stored/deflate entries —

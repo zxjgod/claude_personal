@@ -140,7 +140,7 @@ export async function autoCompact(
   const oldMessages = messages.slice(0, splitIndex);
   const tailMessages = messages.slice(splitIndex);
 
-  if (oldMessages.length === 0) return messages;
+  if (oldMessages.length === 0) return messages.slice();
 
   // Summarize old messages
   const summaryPrompt = `Summarize the conversation so far. Include:

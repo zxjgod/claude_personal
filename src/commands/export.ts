@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import chalk from "chalk";
 import { resolveAllowedWorkspaceFile } from "../tools/utils/path.js";
+import { sanitizeTerminalText } from "../tui/terminal-width.js";
 import type { CommandContext, SlashCommand } from "./types.js";
 
 /**
@@ -55,25 +56,42 @@ export function renderSessionMarkdown(ctx: CommandContext): string {
   return lines.join("\n");
 }
 
+function parseOutputArgs(args: string): { path: string; force: boolean } {
+  const force = /(?:^|\s)--force(?=\s|$)/i.test(args);
+  const requested = args.replace(/(?:^|\s*)--force(?=\s|$)/gi, "").trim();
+  return { path: requested, force };
+}
+
 export const exportCommand: SlashCommand = {
   name: "export",
-  description: "Export the current session to a markdown file (/export [path])",
+  description: "Export the current session to a markdown file (/export [--force] [path])",
   run: (args, ctx): undefined => {
-    const requested = args.trim() || `session-${ctx.sessionId.slice(0, 8)}.md`;
+    const options = parseOutputArgs(args);
+    const requested = options.path || `session-${ctx.sessionId.slice(0, 8)}.md`;
     const resolution = resolveAllowedWorkspaceFile(requested, ctx.workspaceRoot);
     if (!resolution.ok) {
-      console.log(chalk.red(`  Could not export: ${resolution.error}`));
+      console.log(chalk.red(`  Could not export: ${sanitizeTerminalText(resolution.error)}`));
       return;
     }
     const target = resolution.path;
     const md = renderSessionMarkdown(ctx);
     try {
       fs.mkdirSync(path.dirname(target) || ".", { recursive: true });
-      fs.writeFileSync(target, md, "utf-8");
-      console.log(chalk.gray(`  Exported ${ctx.messages.length} messages → ${target}`));
+      fs.writeFileSync(target, md, { encoding: "utf8", flag: options.force ? "w" : "wx" });
+      console.log(
+        chalk.gray(`  Exported ${ctx.messages.length} messages → ${sanitizeTerminalText(target)}`),
+      );
     } catch (e) {
-      const detail = e instanceof Error ? e.message : String(e);
-      console.log(chalk.red(`  Could not write ${target}: ${detail}`));
+      const detail = sanitizeTerminalText(e instanceof Error ? e.message : String(e));
+      if ((e as NodeJS.ErrnoException).code === "EEXIST") {
+        console.log(
+          chalk.yellow(
+            `  Could not export: ${sanitizeTerminalText(target)} already exists. Use --force to overwrite.`,
+          ),
+        );
+        return;
+      }
+      console.log(chalk.red(`  Could not write ${sanitizeTerminalText(target)}: ${detail}`));
     }
   },
 };

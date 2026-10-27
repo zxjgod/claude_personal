@@ -396,7 +396,7 @@ describe("Session lifecycle", () => {
       expect(compacted.length).toBeLessThan(allMessages.length);
     });
 
-    it("autoCompact returns original messages when nothing to compact", async () => {
+    it("autoCompact returns a detached array when nothing to compact", async () => {
       const caller = makeMockCaller([
         [
           { type: "text_delta", delta: "Summary." },
@@ -412,8 +412,9 @@ describe("Session lifecycle", () => {
 
       const compacted = await autoCompact(messages, caller, testConfig);
 
-      // When no old messages (all fit in tail), returns original
-      expect(compacted).toBe(messages);
+      // A detached result lets /compact replace the live history without clearing itself.
+      expect(compacted).not.toBe(messages);
+      expect(compacted).toEqual(messages);
     });
 
     it("handles context_length error by triggering compaction", async () => {

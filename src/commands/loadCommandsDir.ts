@@ -100,10 +100,15 @@ const CUSTOM_COMMANDS = new Map<string, SlashCommand>();
 
 /** Register or override a custom command (used by loadCommandsDir and tests). */
 export function registerCustomCommand(cmd: SlashCommand): void {
-  CUSTOM_COMMANDS.set(cmd.name, cmd);
+  CUSTOM_COMMANDS.set(cmd.name.toLowerCase(), cmd);
 }
 
-/** The custom commands registered so far, keyed by name. */
+/** Resolve a custom command through the same case folding as slash dispatch. */
+export function getCustomCommand(name: string): SlashCommand | undefined {
+  return CUSTOM_COMMANDS.get(name.toLowerCase());
+}
+
+/** The custom commands registered so far, keyed by lowercase name. */
 export function getCustomCommands(): Map<string, SlashCommand> {
   return CUSTOM_COMMANDS;
 }

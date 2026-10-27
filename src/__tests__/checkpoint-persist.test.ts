@@ -21,6 +21,8 @@ import {
   shadowBeforeWrite,
 } from "../checkpoint.js";
 import { createResumeSession } from "../cli-session.js";
+import { branchCommand } from "../commands/branch.js";
+import { clearCommand } from "../commands/clear.js";
 import { rewindCommand } from "../commands/rewind.js";
 import { PersistenceManager } from "../persistence.js";
 import type { Message } from "../types.js";
@@ -120,12 +122,71 @@ describe("checkpoint persistence (C8)", () => {
     beginUserTurn(sid, msg);
     shadowBeforeWrite(sid, file);
     fs.writeFileSync(file, "edited");
-    const persistence = new PersistenceManager(root);
-    await persistence.save(sid, [msg]);
+    const writer = new PersistenceManager(root);
+    await writer.save(sid, [msg]);
     __clearCheckpointMemoryForTests();
+    const persistence = new PersistenceManager(root);
     const messages: Message[] = [];
     const session = { id: "other" };
     expect(await createResumeSession({ persistence, messages, session })(sid)).toBe(true);
+    await rewindCommand.run("", {
+      workspaceRoot: root,
+      sessionId: session.id,
+      messages,
+      persistence,
+      modelConfig: { provider: "custom", model: "test", apiKey: "unused" },
+      callModel: async function* () {},
+    });
+    expect(fs.readFileSync(file, "utf8")).toBe("original");
+    expect(messages).toEqual([]);
+    expect((await new PersistenceManager(root).load(sid))?.messages).toEqual([]);
+  });
+
+  it("persists /clear after a fresh-manager resume without reviving old messages", async () => {
+    const sid = "sess-resume-clear";
+    const original: Message[] = [{ role: "user", content: [{ type: "text", text: "old" }] }];
+    await new PersistenceManager(root).save(sid, original);
+    const persistence = new PersistenceManager(root);
+    const messages: Message[] = [];
+    const session = { id: "other" };
+    expect(await createResumeSession({ persistence, messages, session })(sid)).toBe(true);
+    await clearCommand.run("", {
+      workspaceRoot: root,
+      sessionId: session.id,
+      messages,
+      persistence,
+      modelConfig: { provider: "custom", model: "test", apiKey: "unused" },
+      callModel: async function* () {},
+    });
+    expect((await new PersistenceManager(root).load(sid))?.messages).toEqual([]);
+  });
+
+  it("forks message checkpoint tags and restores files after branch resume", async () => {
+    const sourceId = "sess-branch-source";
+    const file = path.join(root, "branch.txt");
+    fs.writeFileSync(file, "original");
+    const msg: Message = { role: "user", content: [{ type: "text", text: "edit" }] };
+    beginUserTurn(sourceId, msg);
+    shadowBeforeWrite(sourceId, file);
+    fs.writeFileSync(file, "edited");
+    const persistence = new PersistenceManager(root);
+    await persistence.save(sourceId, [msg]);
+    await branchCommand.run("", {
+      workspaceRoot: root,
+      sessionId: sourceId,
+      messages: [msg],
+      persistence,
+      modelConfig: { provider: "custom", model: "test", apiKey: "unused" },
+      callModel: async function* () {},
+    });
+    const branchId = (await persistence.listSessions()).find(
+      (entry) => entry.sessionId !== sourceId,
+    )?.sessionId;
+    expect(branchId).toBeDefined();
+    __clearCheckpointMemoryForTests();
+    const messages: Message[] = [];
+    const session = { id: "other" };
+    expect(await createResumeSession({ persistence, messages, session })(branchId!)).toBe(true);
     await rewindCommand.run("", {
       workspaceRoot: root,
       sessionId: session.id,

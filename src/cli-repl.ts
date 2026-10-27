@@ -81,7 +81,8 @@ export interface ReplDeps {
   makeCommandContext: () => CommandContext;
   isInteractive: boolean;
   quiet: boolean;
-  showTokens: boolean;
+  /** Live reader: /config may change token display while a response is active. */
+  getShowTokens: () => boolean;
 }
 
 export async function runRepl(deps: ReplDeps): Promise<void> {
@@ -111,7 +112,7 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
     makeCommandContext,
     isInteractive,
     quiet,
-    showTokens,
+    getShowTokens,
   } = deps;
   const { persistence, session, recordTranscript, stats: sessionStats, telemetry } = deps.state;
 
@@ -273,428 +274,446 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
       if (!userInput.trim()) continue;
       if (userInput.toLowerCase() === "exit") break;
 
-      // Local slash commands run before anything is sent to the model.
-      if (userInput.startsWith("/")) {
-        const result = await handleSlashCommand(userInput, makeCommandContext());
-        if (result.exit) break;
-        // M18: a command may return a prompt to inject as a user message and
-        // run through the agent loop (e.g. /review, /recap, /fork). Fall through
-        // to the normal turn machinery with that prompt replacing the input.
-        if (result.handled) {
-          if (result.prompt) {
-            userInput = result.prompt;
-          } else {
-            continue;
-          }
-        }
-      }
-
-      // Expand @file references into context attachments.
-      const { attachments, notes } = expandFileRefs(userInput, getWorkspaceRoot());
-      for (const note of notes) console.log(chalk.gray(note));
-
-      // M41: background completions that arrived while the REPL was idle ride
-      // along with the new user message — the model sees them without having
-      // polled, and they don't start a turn on their own.
-      const pendingNotes = drainNotifications(session.id);
-      const contentText = [pendingNotes.join("\n\n"), userInput, ...attachments]
-        .filter(Boolean)
-        .join("\n\n");
-
-      // Add user message. P0-3: tagged checkpoint turn boundary so the
-      // line-based path's /rewind restores files exactly like the TUI's.
-      const userMsg: Message = {
-        role: "user",
-        content: [{ type: "text", text: contentText }],
-      };
-      beginUserTurn(session.id, userMsg);
-      messages.push(userMsg);
-      recordTranscript({ type: "user_prompt", text: contentText });
-
-      // Per-turn abort handling: first Ctrl+C aborts the current turn and
-      // returns to the prompt; a second (at the idle prompt) exits.
+      // Own cancellation from slash preprocessing through the model turn. A
+      // local command can therefore be interrupted before a controller would
+      // previously have existed, and `continue` still cleans up the listener.
       const controller = new AbortController();
-      const onSigint = () => {
-        controller.abort("User interrupted");
-      };
+      const onSigint = () => controller.abort("User interrupted");
       activeTurnSigint = onSigint;
-      process.on("SIGINT", onSigint);
-      // Pre-turn save of the just-pushed user message. Best-effort like every
-      // other mid-loop save (saveChain keeps ordering; a failure must not kill
-      // the turn or the REPL — review follow-up H1).
-      floatingSave({ taskState: "waiting_for_model" });
-
-      const renderer = new StreamingRenderer();
       turnInProgress = true;
-      const spinner = new Spinner();
-
-      // The permission callback must pause the spinner while a menu is shown.
-      const askUserGuarded: AskUserFn = async (tool, input, riskHint) => {
-        const wasSpinning = spinner.isActive;
-        spinner.stop();
-        try {
-          return await askUser(tool, input, riskHint);
-        } finally {
-          if (wasSpinning) spinner.start();
-        }
-      };
-
-      // Same spinner-pausing guard for structured questions.
-      const askUserQuestionGuarded = async (q: UserQuestion): Promise<string[] | null> => {
-        const wasSpinning = spinner.isActive;
-        spinner.stop();
-        renderer.flush();
-        try {
-          return await askUserQuestion(q);
-        } finally {
-          if (wasSpinning) spinner.start();
-        }
-      };
-
-      // Run agent loop. Rebuild the turn system prompt so a /goal or /output-style
-      // change made earlier this session takes effect next turn.
-      await runLoopTurn({ workspaceRoot: getWorkspaceRoot(), sessionId: session.id }, controller, {
-        messages,
-        callModel,
-        modelConfig,
-        notice: (message) => console.log(chalk.gray(sanitizeTerminalText(message))),
-        ...loopVerificationTools(
-          tools,
-          {
-            workspaceRoot: getWorkspaceRoot(),
-            sessionId: session.id,
-            modelConfig,
-            permissionMode: permissionModeState.get(),
-            getPermissionMode: permissionModeState.get,
-            permissionPolicy: getPermissionPolicy?.() ?? permissionPolicy,
-            allowedDirectories,
-            hooks,
-            abortSignal: controller.signal,
-          },
-          askUserGuarded,
-          hooks,
-          renderToolResult,
-        ),
-        execute: async (ticket, instruction) => {
-          let outcome: LoopTurnOutcome = {};
-          const turnSystemPrompt = buildTurnSystemPrompt() + instruction;
-          const roundConfig = ticket
-            ? { ...modelConfig, options: { ...modelConfig.options, ccrLoopExecution: ticket } }
-            : modelConfig;
-          const loop = agentLoop(messages, tools, withLoopBudget(callModel), roundConfig, {
-            systemPrompt: turnSystemPrompt,
-            maxTurns: resolveMaxTurns(),
-            toolContext: {
-              workspaceRoot: getWorkspaceRoot(),
-              sessionId: session.id,
-              permissionMode: permissionModeState.get(),
-              getPermissionMode: permissionModeState.get,
-              setPermissionMode: permissionModeState.set,
-              modelConfig: roundConfig,
-              askUserQuestion: askUserQuestionGuarded,
-              // Thread the approver into sub-agent (Task/Team) loops so their
-              // destructive tools prompt the user instead of auto-approving.
-              askUser: askUserGuarded,
-              onSubAgentProgress: (event) => {
-                spinner.stop();
-                renderer.flush();
-                renderSubAgentActivity(event);
-              },
-              // M15.3: opt-in LLM permission classifier for flagged dangerous calls.
-              permissionClassifier,
-              permissionPolicy: getPermissionPolicy?.() ?? permissionPolicy,
-              allowedDirectories,
-              hooks,
-            },
-            askUser: askUserGuarded,
-            abortSignal: controller.signal,
-            hooks,
-            // 12.2: opt-in speculative prefetch of likely follow-up Reads.
-            // M15.2: ON by default; --no-speculation / CCR_SPECULATION=0 disable.
-            speculation:
-              !process.argv.includes("--no-speculation") && process.env.CCR_SPECULATION !== "0",
-            // M36: background memory/skill prefetch + (opt-in) tool-batch digest.
-            prefetch,
-            summarizeToolBatch,
-            fastModel: fastModelFactory?.() ?? undefined,
-            // M41: mid-turn background completions are injected at the
-            // tool_results boundary (budget-free) and gate end_turn continuations.
-            drainNotifications: () => drainNotifications(session.id),
-          });
-
-          let turnInputTokens = 0;
-          let turnOutputTokens = 0;
-          let streamedChars = 0;
-          let thinkingStart = 0;
-          let thoughtReported = false;
-          let thinkingStreamed = false;
-          // P2-1: Track idle time for long response warning
-          let lastActivityTime = Date.now();
-          let idleWarningShown = false;
-
-          // Helper to reset idle tracking
-          const resetIdleTimer = () => {
-            lastActivityTime = Date.now();
-            idleWarningShown = false;
-          };
-
-          // One-line "⏱ 推理耗时 Ns" report, fired at the first sign of reasoning
-          // (thinking delta) or answer text — whichever arrives first.
-          const reportThought = () => {
-            if (thoughtReported || thinkingStart <= 0) return;
-            const secs = Math.max(1, Math.round((Date.now() - thinkingStart) / 1000));
-            spinner.stop();
-            // P1-3: Enhanced thinking report with context
-            const contextTip =
-              secs > 30
-                ? chalk.gray(" (模型正在推理复杂任务)")
-                : secs > 10
-                  ? chalk.gray(" (等待模型响应)")
-                  : "";
-            console.log(chalk.dim(`  ⏱ 推理耗时 ${secs}s${contextTip}`));
-            thoughtReported = true;
-          };
-
-          for await (const event of loop) {
-            switch (event.type) {
-              case "thinking":
-                floatingSave({ taskState: "waiting_for_model" });
-                thinkingStart = Date.now();
-                thoughtReported = false;
-                thinkingStreamed = false;
-                resetIdleTimer();
-                spinner.start();
-                break;
-
-              case "thinking_delta": {
-                // Live reasoning content (Anthropic extended thinking). Raw prose —
-                // bypass the markdown renderer and stream inline, dimmed. The
-                // "⏱ 推理耗时 Ns" report is deferred to the END of the thinking
-                // segment (first text/tool/done) so the seconds reflect the full
-                // reasoning duration, not the time to the first delta.
-                resetIdleTimer();
-                spinner.stop();
-                if (!thinkingStreamed) {
-                  thinkingStreamed = true;
-                  process.stdout.write(chalk.dim("  💭 "));
-                }
-                // Model-produced prose — sanitize before it touches the terminal
-                // (thinking bypasses the markdown renderer, which is where text
-                // deltas get their sanitizeTerminalText).
-                process.stdout.write(chalk.dim(sanitizeTerminalText(event.delta)));
-                break;
-              }
-
-              case "text_delta": {
-                // Terminate the dimmed thinking line BEFORE printing the "Thought
-                // for Ns" report — otherwise the report glues onto the thinking
-                // text tail mid-line.
-                if (thinkingStreamed) {
-                  process.stdout.write("\n");
-                  thinkingStreamed = false;
-                }
-                // First visible text ends the "thinking" phase: print the
-                // "Thought for Ns" line, then switch the spinner to responding.
-                reportThought();
-                spinner.stop();
-                renderer.write(event.delta);
-                streamedChars += event.delta.length;
-                spinner.update({ tokens: Math.round(streamedChars / 4) });
-                // P2-1: Check for long idle (model streaming slowly)
-                const idleMs = Date.now() - lastActivityTime;
-                if (idleMs > 45000 && !idleWarningShown) {
-                  idleWarningShown = true;
-                  console.log(chalk.cyan("\n  💡 模型响应时间较长，请稍候..."));
-                }
-                break;
-              }
-
-              case "tool_use": {
-                floatingSave({ taskState: "waiting_for_tool" });
-                resetIdleTimer();
-                spinner.stop();
-                if (thinkingStreamed) {
-                  // Thinking → tool call with no intervening text: terminate the
-                  // dimmed line before the tool card renders.
-                  process.stdout.write("\n");
-                  thinkingStreamed = false;
-                }
-                // A thinking-only prefix (no text before this tool call) still
-                // gets its duration report, now that thinking has ended.
-                reportThought();
-                renderer.flush();
-                // Official Claude Code style: orange ● + Name(detail).
-                renderToolStart(event.name, event.input);
-                recordTranscript({
-                  type: "tool_use",
-                  id: event.id,
-                  name: event.name,
-                  input: event.input,
-                });
-                spinner.start();
-                break;
-              }
-
-              case "tool_results": {
-                resetIdleTimer();
-                spinner.stop();
-                renderer.flush();
-                // Each tool renders its own "⎿ result" line (a compact summary for
-                // Read/Grep/Glob). No redundant batch line — matches official output.
-                for (const result of event.results) {
-                  renderToolResult(result);
-                  recordTranscript({
-                    type: "tool_result",
-                    name: result.toolName,
-                    durationMs: result.durationMs,
-                    error: result.error,
-                    preview: SessionTranscript.preview(result.formatted),
-                  });
-                }
-                sessionStats.addToolCalls(event.results.length);
-                telemetry.record("tool_results", { count: event.results.length });
-                // Auto-save after tool execution. Best-effort: a save failure is
-                // logged (not silently swallowed) but never blocks the turn.
-                persistence.save(session.id, messages).catch((err) => {
-                  console.error("Warning: auto-save after tool calls failed:", formatCliError(err));
-                });
-                spinner.start();
-                break;
-              }
-
-              case "compacting":
-                floatingSave({ taskState: "recovering" });
-                spinner.stop();
-                renderer.flush();
-                console.log("\n  " + chalk.cyan("⏳") + " " + chalk.gray("正在压缩上下文…"));
-                break;
-
-              case "compacted":
-                // P1-1: Enhanced compaction summary with detailed statistics
-                spinner.stop();
-                renderer.flush();
-                console.log("\n  " + chalk.green("✓") + " " + chalk.bold("上下文已压缩"));
-                if (event.summary) {
-                  console.log("  " + chalk.gray("  ") + event.summary);
-                }
-                console.log(chalk.gray("  ──────────────────────────────────────"));
-                console.log(chalk.gray("  提示: /context 可查看当前上下文状态"));
-                break;
-
-              case "model_switched":
-                // Top10 follow-up E5: dedicated event (no longer disguised as a
-                // "compacted" summary) — the fallback chain changed models.
-                spinner.stop();
-                renderer.flush();
-                console.log(
-                  "\n  " +
-                    chalk.yellow("⇄") +
-                    " " +
-                    chalk.bold("已切换备用模型") +
-                    chalk.gray(`: ${event.from} → ${event.to}`),
-                );
-                break;
-
-              case "usage":
-                turnInputTokens += event.usage.input_tokens;
-                turnOutputTokens += event.usage.output_tokens;
-                sessionStats.addUsage(event.usage.input_tokens, event.usage.output_tokens, {
-                  read: event.usage.cache_read_input_tokens,
-                  creation: event.usage.cache_creation_input_tokens,
-                });
-                recordTranscript({
-                  type: "usage",
-                  input: event.usage.input_tokens,
-                  output: event.usage.output_tokens,
-                  cacheRead: event.usage.cache_read_input_tokens,
-                  cacheCreation: event.usage.cache_creation_input_tokens,
-                });
-                spinner.update({ tokens: turnOutputTokens || Math.round(streamedChars / 4) });
-                break;
-
-              case "error":
-                outcome.error = event.error;
-                floatingSave({ taskState: "failed" });
-                spinner.stop();
-                renderer.flush();
-                recordTranscript({ type: "error", message: formatCliError(event.error) });
-                console.error(`\n  ${chalk.red("⎿")} ${formatCliError(event.error)}`);
-                break;
-
-              case "done":
-                outcome = { completed: event.finishReason === "end_turn" };
-                spinner.stop();
-                if (thinkingStreamed) {
-                  // Thinking-only turn (no text, no tool call): terminate the
-                  // dimmed line and emit the deferred duration report.
-                  process.stdout.write("\n");
-                  thinkingStreamed = false;
-                  reportThought();
-                }
-                renderer.flush();
-                if (showTokens && (turnInputTokens || turnOutputTokens)) {
-                  console.log(
-                    chalk.gray(`\n  [tokens: ${turnInputTokens} in / ${turnOutputTokens} out]`),
-                  );
-                }
-                // M15.2: surface speculation cost/benefit (only if anything was
-                // prefetched — empty line otherwise).
-                if (event.speculation) {
-                  const line = formatSpeculationLine(event.speculation);
-                  if (line) console.log(chalk.gray(`  ${line}`));
-                }
-                // Final assistant text was added to messages in the loop
-                persistence
-                  .save(session.id, messages, {
-                    taskState: "paused",
-                    lastTerminalReason: normalizeFinishReason(event.finishReason),
-                  })
-                  .catch((err) => {
-                    console.error("Warning: end-of-turn save failed:", formatCliError(err));
-                  });
-                recordTranscript({
-                  type: "done",
-                  finishReason: event.finishReason,
-                  turns: event.turns,
-                });
-                telemetry.record("turn", {
-                  inputTokens: turnInputTokens,
-                  outputTokens: turnOutputTokens,
-                });
-                break;
-
-              case "aborted":
-                outcome.aborted = true;
-                floatingSave({
-                  taskState: "stopped_by_user",
-                  lastTerminalReason: "aborted_by_user",
-                });
-                spinner.stop();
-                renderer.flush();
-                recordTranscript({ type: "aborted", reason: event.reason });
-                console.log(`\n  ${chalk.dim("⎿")} Aborted: ${event.reason}`);
-                break;
+      process.on("SIGINT", onSigint);
+      let expandUserFileRefs = true;
+      try {
+        // Local slash commands run before anything is sent to the model.
+        if (userInput.startsWith("/")) {
+          const commandContext = makeCommandContext();
+          commandContext.abortSignal = controller.signal;
+          const result = await handleSlashCommand(userInput, commandContext);
+          if (result.exit) break;
+          // M18: a command may return a prompt to inject as a user message and
+          // run through the agent loop (e.g. /review, /recap, /fork). Fall through
+          // to the normal turn machinery with that prompt replacing the input.
+          if (result.handled) {
+            if (result.prompt) {
+              userInput = result.prompt;
+              expandUserFileRefs = false;
+            } else {
+              continue;
             }
           }
-          return outcome;
-        },
-      });
-      spinner.stop();
+        }
 
-      // Detach this turn's SIGINT handler so handlers don't stack up.
-      process.removeListener("SIGINT", onSigint);
-      activeTurnSigint = undefined;
+        // Expand explicit @file references from literal user input. Generated
+        // command prompts must not re-interpret memory/template text as refs.
+        const { attachments, notes } = expandUserFileRefs
+          ? expandFileRefs(userInput, getWorkspaceRoot())
+          : { attachments: [], notes: [] };
+        for (const note of notes) console.log(chalk.gray(note));
 
-      console.log(""); // New line after response
-      turnInProgress = false;
-      // Ensure Windows terminals paint the final buffered line before readline
-      // waits for the next prompt; otherwise the user may need to press Enter.
-      await new Promise<void>((resolve) => process.stdout.write("", () => resolve()));
+        // M41: background completions that arrived while the REPL was idle ride
+        // along with the new user message — the model sees them without having
+        // polled, and they don't start a turn on their own.
+        const pendingNotes = drainNotifications(session.id);
+        const contentText = [pendingNotes.join("\n\n"), userInput, ...attachments]
+          .filter(Boolean)
+          .join("\n\n");
+
+        // Add user message. P0-3: tagged checkpoint turn boundary so the
+        // line-based path's /rewind restores files exactly like the TUI's.
+        const userMsg: Message = {
+          role: "user",
+          content: [{ type: "text", text: contentText }],
+        };
+        beginUserTurn(session.id, userMsg);
+        messages.push(userMsg);
+        recordTranscript({ type: "user_prompt", text: contentText });
+
+        // Per-turn abort handling was installed before slash preprocessing.
+        floatingSave({ taskState: "waiting_for_model" });
+
+        const renderer = new StreamingRenderer();
+        const spinner = new Spinner();
+
+        // The permission callback must pause the spinner while a menu is shown.
+        const askUserGuarded: AskUserFn = async (tool, input, riskHint) => {
+          const wasSpinning = spinner.isActive;
+          spinner.stop();
+          try {
+            return await askUser(tool, input, riskHint);
+          } finally {
+            if (wasSpinning) spinner.start();
+          }
+        };
+
+        // Same spinner-pausing guard for structured questions.
+        const askUserQuestionGuarded = async (q: UserQuestion): Promise<string[] | null> => {
+          const wasSpinning = spinner.isActive;
+          spinner.stop();
+          renderer.flush();
+          try {
+            return await askUserQuestion(q);
+          } finally {
+            if (wasSpinning) spinner.start();
+          }
+        };
+
+        // Run agent loop. Rebuild the turn system prompt so a /goal or /output-style
+        // change made earlier this session takes effect next turn.
+        await runLoopTurn(
+          { workspaceRoot: getWorkspaceRoot(), sessionId: session.id },
+          controller,
+          {
+            messages,
+            callModel,
+            modelConfig,
+            notice: (message) => console.log(chalk.gray(sanitizeTerminalText(message))),
+            ...loopVerificationTools(
+              tools,
+              {
+                workspaceRoot: getWorkspaceRoot(),
+                sessionId: session.id,
+                modelConfig,
+                permissionMode: permissionModeState.get(),
+                getPermissionMode: permissionModeState.get,
+                permissionPolicy: getPermissionPolicy?.() ?? permissionPolicy,
+                allowedDirectories,
+                hooks,
+                abortSignal: controller.signal,
+              },
+              askUserGuarded,
+              hooks,
+              renderToolResult,
+            ),
+            execute: async (ticket, instruction) => {
+              let outcome: LoopTurnOutcome = {};
+              const turnSystemPrompt = buildTurnSystemPrompt() + instruction;
+              const roundConfig = ticket
+                ? { ...modelConfig, options: { ...modelConfig.options, ccrLoopExecution: ticket } }
+                : modelConfig;
+              const loop = agentLoop(messages, tools, withLoopBudget(callModel), roundConfig, {
+                systemPrompt: turnSystemPrompt,
+                maxTurns: resolveMaxTurns(),
+                toolContext: {
+                  workspaceRoot: getWorkspaceRoot(),
+                  sessionId: session.id,
+                  permissionMode: permissionModeState.get(),
+                  getPermissionMode: permissionModeState.get,
+                  setPermissionMode: permissionModeState.set,
+                  modelConfig: roundConfig,
+                  askUserQuestion: askUserQuestionGuarded,
+                  // Thread the approver into sub-agent (Task/Team) loops so their
+                  // destructive tools prompt the user instead of auto-approving.
+                  askUser: askUserGuarded,
+                  onSubAgentProgress: (event) => {
+                    spinner.stop();
+                    renderer.flush();
+                    renderSubAgentActivity(event);
+                  },
+                  // M15.3: opt-in LLM permission classifier for flagged dangerous calls.
+                  permissionClassifier,
+                  permissionPolicy: getPermissionPolicy?.() ?? permissionPolicy,
+                  allowedDirectories,
+                  hooks,
+                },
+                askUser: askUserGuarded,
+                abortSignal: controller.signal,
+                hooks,
+                // 12.2: opt-in speculative prefetch of likely follow-up Reads.
+                // M15.2: ON by default; --no-speculation / CCR_SPECULATION=0 disable.
+                speculation:
+                  !process.argv.includes("--no-speculation") && process.env.CCR_SPECULATION !== "0",
+                // M36: background memory/skill prefetch + (opt-in) tool-batch digest.
+                prefetch,
+                summarizeToolBatch,
+                fastModel: fastModelFactory?.() ?? undefined,
+                // M41: mid-turn background completions are injected at the
+                // tool_results boundary (budget-free) and gate end_turn continuations.
+                drainNotifications: () => drainNotifications(session.id),
+              });
+
+              let turnInputTokens = 0;
+              let turnOutputTokens = 0;
+              let usageModel = roundConfig.model;
+              let streamedChars = 0;
+              let thinkingStart = 0;
+              let thoughtReported = false;
+              let thinkingStreamed = false;
+              // P2-1: Track idle time for long response warning
+              let lastActivityTime = Date.now();
+              let idleWarningShown = false;
+
+              // Helper to reset idle tracking
+              const resetIdleTimer = () => {
+                lastActivityTime = Date.now();
+                idleWarningShown = false;
+              };
+
+              // One-line "⏱ 推理耗时 Ns" report, fired at the first sign of reasoning
+              // (thinking delta) or answer text — whichever arrives first.
+              const reportThought = () => {
+                if (thoughtReported || thinkingStart <= 0) return;
+                const secs = Math.max(1, Math.round((Date.now() - thinkingStart) / 1000));
+                spinner.stop();
+                // P1-3: Enhanced thinking report with context
+                const contextTip =
+                  secs > 30
+                    ? chalk.gray(" (模型正在推理复杂任务)")
+                    : secs > 10
+                      ? chalk.gray(" (等待模型响应)")
+                      : "";
+                console.log(chalk.dim(`  ⏱ 推理耗时 ${secs}s${contextTip}`));
+                thoughtReported = true;
+              };
+
+              for await (const event of loop) {
+                switch (event.type) {
+                  case "thinking":
+                    floatingSave({ taskState: "waiting_for_model" });
+                    thinkingStart = Date.now();
+                    thoughtReported = false;
+                    thinkingStreamed = false;
+                    resetIdleTimer();
+                    spinner.start();
+                    break;
+
+                  case "thinking_delta": {
+                    // Live reasoning content (Anthropic extended thinking). Raw prose —
+                    // bypass the markdown renderer and stream inline, dimmed. The
+                    // "⏱ 推理耗时 Ns" report is deferred to the END of the thinking
+                    // segment (first text/tool/done) so the seconds reflect the full
+                    // reasoning duration, not the time to the first delta.
+                    resetIdleTimer();
+                    spinner.stop();
+                    if (!thinkingStreamed) {
+                      thinkingStreamed = true;
+                      process.stdout.write(chalk.dim("  💭 "));
+                    }
+                    // Model-produced prose — sanitize before it touches the terminal
+                    // (thinking bypasses the markdown renderer, which is where text
+                    // deltas get their sanitizeTerminalText).
+                    process.stdout.write(chalk.dim(sanitizeTerminalText(event.delta)));
+                    break;
+                  }
+
+                  case "text_delta": {
+                    // Terminate the dimmed thinking line BEFORE printing the "Thought
+                    // for Ns" report — otherwise the report glues onto the thinking
+                    // text tail mid-line.
+                    if (thinkingStreamed) {
+                      process.stdout.write("\n");
+                      thinkingStreamed = false;
+                    }
+                    // First visible text ends the "thinking" phase: print the
+                    // "Thought for Ns" line, then switch the spinner to responding.
+                    reportThought();
+                    spinner.stop();
+                    renderer.write(event.delta);
+                    streamedChars += event.delta.length;
+                    spinner.update({ tokens: Math.round(streamedChars / 4) });
+                    // P2-1: Check for long idle (model streaming slowly)
+                    const idleMs = Date.now() - lastActivityTime;
+                    if (idleMs > 45000 && !idleWarningShown) {
+                      idleWarningShown = true;
+                      console.log(chalk.cyan("\n  💡 模型响应时间较长，请稍候..."));
+                    }
+                    break;
+                  }
+
+                  case "tool_use": {
+                    floatingSave({ taskState: "waiting_for_tool" });
+                    resetIdleTimer();
+                    spinner.stop();
+                    if (thinkingStreamed) {
+                      // Thinking → tool call with no intervening text: terminate the
+                      // dimmed line before the tool card renders.
+                      process.stdout.write("\n");
+                      thinkingStreamed = false;
+                    }
+                    // A thinking-only prefix (no text before this tool call) still
+                    // gets its duration report, now that thinking has ended.
+                    reportThought();
+                    renderer.flush();
+                    // Official Claude Code style: orange ● + Name(detail).
+                    renderToolStart(event.name, event.input);
+                    recordTranscript({
+                      type: "tool_use",
+                      id: event.id,
+                      name: event.name,
+                      input: event.input,
+                    });
+                    spinner.start();
+                    break;
+                  }
+
+                  case "tool_results": {
+                    resetIdleTimer();
+                    spinner.stop();
+                    renderer.flush();
+                    // Each tool renders its own "⎿ result" line (a compact summary for
+                    // Read/Grep/Glob). No redundant batch line — matches official output.
+                    for (const result of event.results) {
+                      renderToolResult(result);
+                      recordTranscript({
+                        type: "tool_result",
+                        name: result.toolName,
+                        durationMs: result.durationMs,
+                        error: result.error,
+                        preview: SessionTranscript.preview(result.formatted),
+                      });
+                    }
+                    sessionStats.addToolCalls(event.results.length);
+                    telemetry.record("tool_results", { count: event.results.length });
+                    // Auto-save after tool execution. Best-effort: a save failure is
+                    // logged (not silently swallowed) but never blocks the turn.
+                    persistence.save(session.id, messages).catch((err) => {
+                      console.error(
+                        "Warning: auto-save after tool calls failed:",
+                        formatCliError(err),
+                      );
+                    });
+                    spinner.start();
+                    break;
+                  }
+
+                  case "compacting":
+                    floatingSave({ taskState: "recovering" });
+                    spinner.stop();
+                    renderer.flush();
+                    console.log("\n  " + chalk.cyan("⏳") + " " + chalk.gray("正在压缩上下文…"));
+                    break;
+
+                  case "compacted":
+                    // P1-1: Enhanced compaction summary with detailed statistics
+                    spinner.stop();
+                    renderer.flush();
+                    console.log("\n  " + chalk.green("✓") + " " + chalk.bold("上下文已压缩"));
+                    if (event.summary) {
+                      console.log("  " + chalk.gray("  ") + event.summary);
+                    }
+                    console.log(chalk.gray("  ──────────────────────────────────────"));
+                    console.log(chalk.gray("  提示: /context 可查看当前上下文状态"));
+                    break;
+
+                  case "model_switched":
+                    // Top10 follow-up E5: dedicated event (no longer disguised as a
+                    // "compacted" summary) — the fallback chain changed models.
+                    usageModel = event.to;
+                    spinner.stop();
+                    renderer.flush();
+                    console.log(
+                      "\n  " +
+                        chalk.yellow("⇄") +
+                        " " +
+                        chalk.bold("已切换备用模型") +
+                        chalk.gray(`: ${event.from} → ${event.to}`),
+                    );
+                    break;
+
+                  case "usage":
+                    turnInputTokens += event.usage.input_tokens;
+                    turnOutputTokens += event.usage.output_tokens;
+                    sessionStats.addUsage(
+                      event.usage.input_tokens,
+                      event.usage.output_tokens,
+                      {
+                        read: event.usage.cache_read_input_tokens,
+                        creation: event.usage.cache_creation_input_tokens,
+                      },
+                      usageModel,
+                      roundConfig.provider,
+                    );
+                    recordTranscript({
+                      type: "usage",
+                      input: event.usage.input_tokens,
+                      output: event.usage.output_tokens,
+                      cacheRead: event.usage.cache_read_input_tokens,
+                      cacheCreation: event.usage.cache_creation_input_tokens,
+                    });
+                    spinner.update({ tokens: turnOutputTokens || Math.round(streamedChars / 4) });
+                    break;
+
+                  case "error":
+                    outcome.error = event.error;
+                    floatingSave({ taskState: "failed" });
+                    spinner.stop();
+                    renderer.flush();
+                    recordTranscript({ type: "error", message: formatCliError(event.error) });
+                    console.error(`\n  ${chalk.red("⎿")} ${formatCliError(event.error)}`);
+                    break;
+
+                  case "done":
+                    outcome = { completed: event.finishReason === "end_turn" };
+                    spinner.stop();
+                    if (thinkingStreamed) {
+                      // Thinking-only turn (no text, no tool call): terminate the
+                      // dimmed line and emit the deferred duration report.
+                      process.stdout.write("\n");
+                      thinkingStreamed = false;
+                      reportThought();
+                    }
+                    renderer.flush();
+                    if (getShowTokens() && (turnInputTokens || turnOutputTokens)) {
+                      console.log(
+                        chalk.gray(`\n  [tokens: ${turnInputTokens} in / ${turnOutputTokens} out]`),
+                      );
+                    }
+                    // M15.2: surface speculation cost/benefit (only if anything was
+                    // prefetched — empty line otherwise).
+                    if (event.speculation) {
+                      const line = formatSpeculationLine(event.speculation);
+                      if (line) console.log(chalk.gray(`  ${line}`));
+                    }
+                    // Final assistant text was added to messages in the loop
+                    persistence
+                      .save(session.id, messages, {
+                        taskState: "paused",
+                        lastTerminalReason: normalizeFinishReason(event.finishReason),
+                      })
+                      .catch((err) => {
+                        console.error("Warning: end-of-turn save failed:", formatCliError(err));
+                      });
+                    recordTranscript({
+                      type: "done",
+                      finishReason: event.finishReason,
+                      turns: event.turns,
+                    });
+                    telemetry.record("turn", {
+                      inputTokens: turnInputTokens,
+                      outputTokens: turnOutputTokens,
+                    });
+                    break;
+
+                  case "aborted":
+                    outcome.aborted = true;
+                    floatingSave({
+                      taskState: "stopped_by_user",
+                      lastTerminalReason: "aborted_by_user",
+                    });
+                    spinner.stop();
+                    renderer.flush();
+                    recordTranscript({ type: "aborted", reason: event.reason });
+                    console.log(`\n  ${chalk.dim("⎿")} Aborted: ${event.reason}`);
+                    break;
+                }
+              }
+              return outcome;
+            },
+          },
+        );
+        spinner.stop();
+
+        console.log(""); // New line after response
+        // Ensure Windows terminals paint the final buffered line before readline
+        // waits for the next prompt; otherwise the user may need to press Enter.
+        await new Promise<void>((resolve) => process.stdout.write("", () => resolve()));
+      } finally {
+        process.removeListener("SIGINT", onSigint);
+        if (activeTurnSigint === onSigint) activeTurnSigint = undefined;
+        turnInProgress = false;
+      }
     }
   } finally {
-    // Belt to the per-turn detach above: if the turn body THREW, its
-    // removeListener was skipped — drop the stale handler and reset the flag
-    // so a surviving REPL (caller-caught error) doesn't leave Ctrl+C dead.
+    // Also clean up if setup or teardown outside the per-turn guard throws.
     if (activeTurnSigint) {
       process.removeListener("SIGINT", activeTurnSigint);
       activeTurnSigint = undefined;

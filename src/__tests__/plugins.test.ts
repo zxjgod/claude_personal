@@ -3,7 +3,7 @@ import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as zlib from "node:zlib";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   addMarketplaceFromUrl,
   checkPluginDependencies,
@@ -12,10 +12,55 @@ import {
   installPlugin,
   installRemotePlugin,
   listPlugins,
+  pluginRoot,
   readMarketplace,
   setPluginDisabled,
   validatePluginManifest,
 } from "../plugins.js";
+
+// Namespace exports cannot be spied on in ESM. Wrap only the two filesystem
+// operations that need deterministic fault injection; every other fs API stays
+// real, and the original implementations are restored after each test.
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...actual,
+    default: actual,
+    cpSync: vi.fn(actual.cpSync),
+    renameSync: vi.fn(actual.renameSync),
+    rmSync: vi.fn(actual.rmSync),
+  };
+});
+const originalFs = await vi.importActual<typeof import("node:fs")>("node:fs");
+const temporaryDirs: string[] = [];
+
+function temporaryDir(prefix: string): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  temporaryDirs.push(dir);
+  return dir;
+}
+
+function writePlugin(
+  dir: string,
+  name: string,
+  version: string,
+  files: Record<string, string> = {},
+): void {
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "plugin.json"), JSON.stringify({ name, version }));
+  for (const [relative, content] of Object.entries(files)) {
+    const file = path.join(dir, relative);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content);
+  }
+}
+
+afterEach(() => {
+  vi.mocked(fs.cpSync).mockReset().mockImplementation(originalFs.cpSync);
+  vi.mocked(fs.renameSync).mockReset().mockImplementation(originalFs.renameSync);
+  vi.mocked(fs.rmSync).mockReset().mockImplementation(originalFs.rmSync);
+  for (const dir of temporaryDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+});
 
 describe("workspace plugins", () => {
   it("validates manifests", () => {
@@ -47,6 +92,141 @@ describe("workspace plugins", () => {
     // validName floor "../x" would write plugin.json outside the root.
     expect(() => setPluginDisabled(root, "../escape", true)).toThrow(/Invalid plugin name/);
     expect(() => setPluginDisabled(root, "a/b", true)).toThrow(/Invalid plugin name/);
+  });
+});
+
+describe("transactional plugin installation", () => {
+  it("stages a complete upgrade beside the target and removes stale components", () => {
+    const root = temporaryDir("ccr-plugin-upgrade-ws-");
+    const oldSource = temporaryDir("ccr-plugin-upgrade-old-");
+    const newSource = temporaryDir("ccr-plugin-upgrade-new-");
+    writePlugin(oldSource, "demo", "1.0.0", {
+      "skills/old.md": "old skill",
+      "obsolete/root.txt": "remove me",
+    });
+    writePlugin(newSource, "demo", "2.0.0", { "skills/new.md": "new skill" });
+    installPlugin(root, oldSource);
+    const copyMock = vi.mocked(fs.cpSync);
+    copyMock.mockClear();
+
+    installPlugin(root, newSource);
+
+    const target = path.join(pluginRoot(root), "demo");
+    expect(listPlugins(root)[0]?.version).toBe("2.0.0");
+    expect(fs.readFileSync(path.join(target, "skills", "new.md"), "utf8")).toBe("new skill");
+    expect(fs.existsSync(path.join(target, "skills", "old.md"))).toBe(false);
+    expect(fs.existsSync(path.join(target, "obsolete"))).toBe(false);
+    expect(fs.readdirSync(pluginRoot(root))).toEqual(["demo"]);
+    expect(copyMock).toHaveBeenCalledTimes(1);
+    const staging = String(copyMock.mock.calls[0]?.[1]);
+    expect(path.dirname(staging)).toBe(pluginRoot(root));
+    expect(path.basename(staging)).toMatch(/^\.demo\.staging-/);
+    expect(staging).not.toBe(target);
+  });
+
+  it("preserves the old installation and cleans staging when copying fails", () => {
+    const root = temporaryDir("ccr-plugin-copy-ws-");
+    const oldSource = temporaryDir("ccr-plugin-copy-old-");
+    const newSource = temporaryDir("ccr-plugin-copy-new-");
+    writePlugin(oldSource, "demo", "1.0.0", { "skills/old.md": "old skill" });
+    writePlugin(newSource, "demo", "2.0.0", { "skills/new.md": "new skill" });
+    installPlugin(root, oldSource);
+    vi.mocked(fs.cpSync).mockImplementationOnce(() => {
+      throw new Error("injected copy failure");
+    });
+
+    expect(() => installPlugin(root, newSource)).toThrow("injected copy failure");
+
+    const target = path.join(pluginRoot(root), "demo");
+    expect(listPlugins(root)[0]?.version).toBe("1.0.0");
+    expect(fs.readFileSync(path.join(target, "skills", "old.md"), "utf8")).toBe("old skill");
+    expect(fs.existsSync(path.join(target, "skills", "new.md"))).toBe(false);
+    expect(fs.readdirSync(pluginRoot(root))).toEqual(["demo"]);
+  });
+
+  it("keeps the old installation in place when moving it to backup fails", () => {
+    const root = temporaryDir("ccr-plugin-backup-ws-");
+    const oldSource = temporaryDir("ccr-plugin-backup-old-");
+    const newSource = temporaryDir("ccr-plugin-backup-new-");
+    writePlugin(oldSource, "demo", "1.0.0", { "skills/old.md": "old skill" });
+    writePlugin(newSource, "demo", "2.0.0", { "skills/new.md": "new skill" });
+    installPlugin(root, oldSource);
+    const renameMock = vi.mocked(fs.renameSync);
+    renameMock.mockClear();
+    renameMock.mockImplementationOnce(() => {
+      throw new Error("injected backup failure");
+    });
+
+    expect(() => installPlugin(root, newSource)).toThrow("injected backup failure");
+
+    const target = path.join(pluginRoot(root), "demo");
+    expect(listPlugins(root)[0]?.version).toBe("1.0.0");
+    expect(fs.readFileSync(path.join(target, "skills", "old.md"), "utf8")).toBe("old skill");
+    expect(fs.existsSync(path.join(target, "skills", "new.md"))).toBe(false);
+    expect(fs.readdirSync(pluginRoot(root))).toEqual(["demo"]);
+    expect(renameMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("restores the old installation when activating the staged replacement fails", () => {
+    const root = temporaryDir("ccr-plugin-activate-ws-");
+    const oldSource = temporaryDir("ccr-plugin-activate-old-");
+    const newSource = temporaryDir("ccr-plugin-activate-new-");
+    writePlugin(oldSource, "demo", "1.0.0", { "skills/old.md": "old skill" });
+    writePlugin(newSource, "demo", "2.0.0", { "skills/new.md": "new skill" });
+    installPlugin(root, oldSource);
+    const renameMock = vi.mocked(fs.renameSync);
+    renameMock.mockClear();
+    renameMock.mockImplementationOnce(originalFs.renameSync).mockImplementationOnce(() => {
+      throw new Error("injected activation failure");
+    });
+
+    expect(() => installPlugin(root, newSource)).toThrow("injected activation failure");
+
+    const target = path.join(pluginRoot(root), "demo");
+    expect(listPlugins(root)[0]?.version).toBe("1.0.0");
+    expect(fs.readFileSync(path.join(target, "skills", "old.md"), "utf8")).toBe("old skill");
+    expect(fs.existsSync(path.join(target, "skills", "new.md"))).toBe(false);
+    expect(fs.readdirSync(pluginRoot(root))).toEqual(["demo"]);
+    // target -> unique backup, failed staging -> target, then backup -> target.
+    expect(renameMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps cleanup failures from replacing installation outcomes", () => {
+    const root = temporaryDir("ccr-plugin-cleanup-ws-");
+    const oldSource = temporaryDir("ccr-plugin-cleanup-old-");
+    const newSource = temporaryDir("ccr-plugin-cleanup-new-");
+    writePlugin(oldSource, "demo", "1.0.0");
+    writePlugin(newSource, "demo", "2.0.0");
+    installPlugin(root, oldSource);
+
+    vi.mocked(fs.cpSync).mockImplementationOnce(() => {
+      throw new Error("injected copy failure");
+    });
+    vi.mocked(fs.rmSync).mockImplementationOnce(() => {
+      throw new Error("injected cleanup failure");
+    });
+    expect(() => installPlugin(root, newSource)).toThrow("injected copy failure");
+    expect(listPlugins(root)[0]?.version).toBe("1.0.0");
+
+    vi.mocked(fs.rmSync).mockImplementationOnce(() => {
+      throw new Error("injected cleanup failure");
+    });
+    expect(() => installPlugin(root, newSource)).not.toThrow();
+    expect(listPlugins(root)).toHaveLength(1);
+    expect(listPlugins(root)[0]?.version).toBe("2.0.0");
+  });
+
+  it("hides transaction artifacts and refuses recursively copying the install root", () => {
+    const root = temporaryDir("ccr-plugin-artifacts-ws-");
+    const plugins = pluginRoot(root);
+    writePlugin(path.join(plugins, "demo"), "demo", "1.0.0");
+    writePlugin(path.join(plugins, ".demo.staging-crashed"), "demo", "9.0.0");
+    writePlugin(path.join(plugins, ".demo.staging-crashed.backup"), "demo", "0.9.0");
+
+    expect(listPlugins(root).map((plugin) => plugin.name)).toEqual(["demo"]);
+    writePlugin(root, "demo", "1.0.0");
+    expect(() => installPlugin(root, root)).toThrow(/source contains the installation root/);
+    expect(listPlugins(root)[0]?.version).toBe("1.0.0");
   });
 });
 

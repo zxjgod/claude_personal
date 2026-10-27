@@ -79,11 +79,12 @@ export function loadDiskEntries<T>(options: DiskLoaderOptions<T>): string[] {
       }
       if (value === undefined) continue;
       const registeredName = options.loadedName?.(value, entry) ?? name;
-      if (names.has(registeredName))
+      const registryKey = registeredName.toLowerCase();
+      if (names.has(registryKey))
         console.warn(
           `Duplicate extension name ${sanitizeTerminalText(registeredName)} at ${sanitizeTerminalText(file)}; overriding with deterministic directory precedence`,
         );
-      names.add(registeredName);
+      names.add(registryKey);
       options.register(value);
       loaded.push(options.loadedName?.(value, entry) ?? name);
     }

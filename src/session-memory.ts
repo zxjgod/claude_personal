@@ -1019,6 +1019,33 @@ export class SessionMemory {
   }
 
   /**
+   * Load a session that this manager is about to resume and record the exact
+   * disk baseline. Later saves are same-writer unless the file changes after
+   * this point; without the baseline an intentional rewind/clear looks like a
+   * foreign append and the old history is merged back in.
+   */
+  async loadForResume(sessionId: string): Promise<SessionData | null> {
+    const filePath = this.sessionPath(sessionId);
+    const before = await fsPromises.stat(filePath).then(
+      (s) => s.mtimeMs,
+      () => undefined,
+    );
+    const data = await this.load(sessionId);
+    if (!data) return null;
+    const after = await fsPromises.stat(filePath).then(
+      (s) => s.mtimeMs,
+      () => undefined,
+    );
+    // If a writer raced the read, stay conservative: save() will treat the
+    // disk as foreign and merge rather than adopting an uncertain baseline.
+    if (before !== undefined && before === after) {
+      this.lastSaved.delete(sessionId);
+      this.lastSaved.set(sessionId, { data, mtimeMs: after });
+    }
+    return data;
+  }
+
+  /**
    * List all available sessions with metadata
    */
   async listSessions(): Promise<SessionMeta[]> {

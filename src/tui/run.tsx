@@ -8,6 +8,7 @@
 // so it doesn't corrupt the Ink frame.
 // ============================================================
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import * as fs from "node:fs";
 import * as nodePath from "node:path";
 import { render, useApp, useInput } from "ink";
@@ -272,7 +273,9 @@ async function runTurnBody(
   // B1: rebuild the complete prompt per turn when a live builder is wired —
   // MCP tool changes, /memory edits and git refreshes reach the model instead
   // of being frozen at startup. Memoized sections keep this cheap.
-  const goal = deps.makeCommandContext().goal?.value;
+  const commandContext = deps.makeCommandContext();
+  const goal = commandContext.goal?.value;
+  const sessionStats = commandContext.stats;
   const turnSystemPrompt = resolveTurnSystemPrompt(deps, goal) + instruction;
   // Live session id (see TuiDeps.getSessionId): reads session.id at turn
   // start so /resume's in-place rewrite can't leave checkpoint buckets split.
@@ -412,6 +415,10 @@ async function runTurnBody(
   // live and then snaps to the exact value when usage lands.
   let committedOutputTokens = 0;
   let streamedCharsThisCall = 0;
+  let turnInputTokens = 0;
+  let turnOutputTokens = 0;
+  let usageModel = roundConfig.model;
+  const usageProvider = roundConfig.provider;
   const liveTokens = () => committedOutputTokens + Math.round(streamedCharsThisCall / 4);
   // Coalesce high-frequency text deltas: buffer them and flush text + token
   // estimate together at ~30fps (one store emit per frame, not per token).
@@ -509,6 +516,7 @@ async function runTurnBody(
           break;
         }
         case "tool_results":
+          sessionStats?.addToolCalls(event.results.length);
           store.clearActiveTools();
           store.setActivityLabel(null);
           store.setSpinner("thinking");
@@ -516,6 +524,18 @@ async function runTurnBody(
           deps.onSave("waiting_for_model");
           break;
         case "usage":
+          turnInputTokens += event.usage.input_tokens;
+          turnOutputTokens += event.usage.output_tokens;
+          sessionStats?.addUsage(
+            event.usage.input_tokens,
+            event.usage.output_tokens,
+            {
+              read: event.usage.cache_read_input_tokens,
+              creation: event.usage.cache_creation_input_tokens,
+            },
+            usageModel,
+            usageProvider,
+          );
           store.addUsage(
             event.usage.input_tokens,
             event.usage.output_tokens,
@@ -544,6 +564,7 @@ async function runTurnBody(
         case "model_switched":
           // Top10 follow-up E5: the fallback chain changed models — a
           // dedicated event, no longer smuggled in as a "compacted" summary.
+          usageModel = event.to;
           store.addNotice(`⇄ Switched to fallback model: ${event.to} (was ${event.from})`);
           deps.modelConfig.model = event.to;
           // Review fix ("fallback 切模后 TUI 状态仍是旧模型"): keep the status
@@ -586,6 +607,9 @@ async function runTurnBody(
             if (line) store.addNotice(line);
           }
           deps.onSave("paused", normalizeFinishReason(event.finishReason));
+          if (commandContext.ui?.showTokens && (turnInputTokens || turnOutputTokens)) {
+            store.addNotice(`  [tokens: ${turnInputTokens} in / ${turnOutputTokens} out]`);
+          }
           break;
       }
     }
@@ -641,21 +665,28 @@ function truncate(value: string, max: number): string {
   return truncateVisual(value, max);
 }
 
-/** Capture console.log output produced while `fn` runs, returning the lines. */
-async function captureConsole<T>(
+const consoleCaptureContext = new AsyncLocalStorage<string[]>();
+let installedConsoleDispatcher: typeof console.log | undefined;
+
+/** Capture only logs belonging to this async execution, including overlapping calls. */
+export async function captureConsole<T>(
   fn: () => Promise<T> | T,
 ): Promise<{ lines: string[]; result: T }> {
   const lines: string[] = [];
-  const orig = console.log;
-  console.log = (...args: unknown[]) => {
-    lines.push(args.map((a) => (typeof a === "string" ? a : String(a))).join(" "));
-  };
-  let result: T;
-  try {
-    result = await fn();
-  } finally {
-    console.log = orig;
+  if (console.log !== installedConsoleDispatcher) {
+    const original = console.log;
+    const dispatcher = (...args: unknown[]): void => {
+      const target = consoleCaptureContext.getStore();
+      if (target) {
+        target.push(args.map((a) => (typeof a === "string" ? a : String(a))).join(" "));
+      } else {
+        original(...args);
+      }
+    };
+    console.log = dispatcher;
+    installedConsoleDispatcher = dispatcher;
   }
+  const result = await consoleCaptureContext.run(lines, fn);
   return { lines, result };
 }
 
@@ -1026,6 +1057,11 @@ export function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
   // typed while the agent is busy survives until the loop drains it.
   const queueRef = useRef<InputQueue>(new InputQueue());
   const idleFeedbackRef = useRef<string[]>([]);
+  // Local slash handling owns a submission just like a model turn. Once a
+  // slash is deferred, later input stays behind it in submission order instead
+  // of jumping ahead through the model-text queue.
+  const submissionActiveRef = useRef(false);
+  const deferredSubmissionRef = useRef<string[]>([]);
   const askingState = useStoreSelector(store, (state) => ({
     busy: state.busy,
     overlay: state.overlay !== null,
@@ -1295,11 +1331,15 @@ export function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
           .catch((error) => store.addNotice(formatCliError(error)));
         return;
       }
-      if (store.getSnapshot().busy) {
+      if (submissionActiveRef.current || store.getSnapshot().busy) {
         store.addNotice(`  ${t("ui.queue.queued")}`);
-        queueRef.current.push(value);
-        store.setQueuedInputs(queueRef.current.size);
-        store.setQueuedMessages(queueRef.current.snapshot());
+        if (value.startsWith("/") || deferredSubmissionRef.current.length > 0) {
+          deferredSubmissionRef.current.push(value);
+        } else {
+          queueRef.current.push(value);
+          store.setQueuedInputs(queueRef.current.size);
+          store.setQueuedMessages(queueRef.current.snapshot());
+        }
         return;
       }
       if (value.startsWith("[Managed loop ")) {
@@ -1316,6 +1356,7 @@ export function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
       // transcript, injects the output into context, and lets Claude respond
       // to it in a normal turn (official `respondToBashCommands` behavior).
       if (value.startsWith("!") && value.length > 1) {
+        submissionActiveRef.current = true;
         void runBashMode(
           store,
           deps,
@@ -1326,7 +1367,12 @@ export function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
           askUser,
           askUserQuestion,
           buildUserContent,
-        );
+        ).finally(() => {
+          submissionActiveRef.current = false;
+          store.setBusy(false);
+          const next = deferredSubmissionRef.current.shift();
+          if (next) void onSubmit(next);
+        });
         return;
       }
 
@@ -1342,6 +1388,15 @@ export function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
       // the echoed line is the command itself (e.g. "/review"); the injected
       // prompt is pushed only into `deps.messages`, not re-echoed.
       store.addUserMessage(displayLoopInput(value));
+      submissionActiveRef.current = true;
+      store.setBusy(true);
+      // Cancellation begins with local slash preprocessing, not only once the
+      // model turn starts. The same controller is reused if a command yields a
+      // prompt, and the outer finally owns all listener/controller cleanup.
+      const controller = new AbortController();
+      turnControllerRef.current = controller;
+      const onSigint = () => controller.abort(t("ui.abort.user"));
+      process.on("SIGINT", onSigint);
 
       void (async () => {
         if (/^\/rewind\s*$/i.test(value)) {
@@ -1410,6 +1465,7 @@ export function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
         // (/review /recap /fork /onboarding); otherwise it's fully local.
         const sessionBeforeCommand = sessionId();
         const modelBeforeCommand = deps.modelConfig.model;
+        const providerBeforeCommand = deps.modelConfig.provider;
         let effectiveText: string | null = null;
         if (value.startsWith("/")) {
           const { lines, result } = await captureConsole(() => {
@@ -1419,6 +1475,7 @@ export function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
             commandContext.setPermissionMode = (mode: string) => {
               store.setPermissionMode(mode as PermissionMode);
             };
+            commandContext.abortSignal = controller.signal;
             commandContext.input = {
               askConfirmation: (question: string) => store.askConfirmation(question),
             };
@@ -1445,7 +1502,10 @@ export function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
             // Review fix ("/model 后 TUI 状态仍是旧模型"): /model mutates
             // modelConfig only — reconcile the status-bar label and the
             // context gauge with whatever the command changed.
-            if (deps.modelConfig.model !== modelBeforeCommand) {
+            if (
+              deps.modelConfig.model !== modelBeforeCommand ||
+              deps.modelConfig.provider !== providerBeforeCommand
+            ) {
               store.setModel(
                 deps.modelConfig.model,
                 `${deps.modelConfig.provider}/${deps.modelConfig.model}`,
@@ -1461,11 +1521,13 @@ export function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
         // slash command, or the raw input.
         const inputText = effectiveText ?? value;
 
-        // Expand @file refs, then push the user message + run the loop.
-        const { attachments, notes } = expandFileRefs(
-          inputText,
-          deps.getWorkspaceRoot?.() ?? deps.workspaceRoot,
-        );
+        // Explicit @file expansion belongs to the user's literal input only.
+        // Generated command prompts are data assembled by the command; memory
+        // text such as "@.env" must not silently attach a sensitive file.
+        const { attachments, notes } =
+          effectiveText === null
+            ? expandFileRefs(value, deps.getWorkspaceRoot?.() ?? deps.workspaceRoot)
+            : { attachments: [], notes: [] };
         for (const note of notes) store.addNotice(note);
         // M41: completions that arrived while idle ride along with the next
         // user prompt. They are drained exactly once and become model-visible
@@ -1484,12 +1546,8 @@ export function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
         beginUserTurn(sessionId(), userMsg);
         deps.messages.push(userMsg);
 
-        const controller = new AbortController();
-        turnControllerRef.current = controller;
-        const onSigint = () => controller.abort(t("ui.abort.user"));
-        process.on("SIGINT", onSigint);
+        const prepare = queuedLinePreparer(store, deps, sessionId, buildUserContent);
         try {
-          const prepare = queuedLinePreparer(store, deps, sessionId, buildUserContent);
           await runTurn(
             store,
             deps,
@@ -1515,23 +1573,37 @@ export function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
         } catch (err) {
           store.addNotice(`⎿ ${formatCliError(err)}`);
           store.setBusy(false);
-        } finally {
-          turnControllerRef.current = null;
-          process.removeListener("SIGINT", onSigint);
         }
-      })().catch((err) => {
-        // Floating async IIFE — without this, an internal throw becomes an
-        // unhandled rejection that crashes the process with no UI feedback.
-        store.addNotice(`⎿ ${formatCliError(err)}`);
-        store.setBusy(false);
-      });
+      })()
+        .catch((err) => {
+          // Floating async IIFE — without this, an internal throw becomes an
+          // unhandled rejection that crashes the process with no UI feedback.
+          store.addNotice(`⎿ ${formatCliError(err)}`);
+          store.setBusy(false);
+        })
+        .finally(() => {
+          if (turnControllerRef.current === controller) turnControllerRef.current = null;
+          process.removeListener("SIGINT", onSigint);
+          submissionActiveRef.current = false;
+          store.setBusy(false);
+          // A local command can finish without runTurn/drainFollowUpTurns.
+          // Release its ownership first, then run ONE deferred slash through
+          // the normal dispatcher; its completion releases the next in order.
+          const next = deferredSubmissionRef.current.shift();
+          if (next) void onSubmit(next);
+        });
     },
     [store, deps, askUser, askUserQuestion, buildUserContent, sessionId, openRewindMenu],
   );
 
   // Feedback on a background request starts only after all overlays close.
   useEffect(() => {
-    if (askingState.busy || askingState.overlay) return;
+    if (askingState.busy || askingState.overlay || submissionActiveRef.current) return;
+    const deferred = deferredSubmissionRef.current.shift();
+    if (deferred) {
+      void onSubmit(deferred);
+      return;
+    }
     for (const feedback of idleFeedbackRef.current.splice(0)) onSubmit(feedback);
   }, [askingState.busy, askingState.overlay, onSubmit]);
 

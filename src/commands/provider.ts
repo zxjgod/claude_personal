@@ -54,7 +54,7 @@ function switchTo(ctx: CommandContext, profile: ProviderProfile): void {
     applyProfile(ctx.modelConfig, profile);
   } catch (error) {
     console.log(
-      `${chalk.red("  ✗")} 无法切换: ${error instanceof Error ? error.message : String(error)}`,
+      `${chalk.red("  ✗")} 无法切换: ${sanitizeTerminalText(error instanceof Error ? error.message : String(error))}`,
     );
     return;
   }
@@ -105,7 +105,9 @@ export const providerCommand: SlashCommand = {
     if (profiles.length === 0) {
       console.log("");
       console.log(chalk.yellow("  ⚠️  未找到 provider 配置文件"));
-      console.log(chalk.gray(`  请创建 ${providersFilePath(ctx.workspaceRoot)}:`));
+      console.log(
+        chalk.gray(`  请创建 ${sanitizeTerminalText(providersFilePath(ctx.workspaceRoot))}:`),
+      );
       console.log(EXAMPLE);
       console.log("");
       console.log(chalk.cyan("  📋 当前支持的 Provider:"));
@@ -127,7 +129,7 @@ export const providerCommand: SlashCommand = {
     if (name) {
       const match = findProfile(profiles, name);
       if (!match) {
-        console.log(chalk.yellow(`  未找到匹配的 profile: "${name}"`));
+        console.log(chalk.yellow(`  未找到匹配的 profile: "${sanitizeTerminalText(name)}"`));
         console.log(
           chalk.gray(`  可用选项: ${profiles.map((p) => sanitizeTerminalText(p.name)).join(", ")}`),
         );
@@ -144,6 +146,8 @@ export const providerCommand: SlashCommand = {
         header: "切换 Provider",
         question: "选择一个 API 端点配置:",
         options: profiles.map((p) => ({
+          // The value is the profile identity; only display text is sanitized.
+          value: p.name,
           // .claude/providers.json lives in the workspace — profile fields are
           // project-supplied, so sanitize the label/description shown here.
           label: sanitizeTerminalText(p.name),

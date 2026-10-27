@@ -222,6 +222,7 @@ describe("handleSlashCommand", () => {
 
   it("/sessions delete removes a uniquely matched session", async () => {
     const ctx = makeCtx([]);
+    ctx.input = { askConfirmation: async () => true };
     const deleteSession = vi.fn(async () => {});
     ctx.persistence = {
       listSessions: async () => [
@@ -383,8 +384,9 @@ describe("handleSlashCommand", () => {
     const ctx = makeCtx(messages);
     const r = await handleSlashCommand("/compact", ctx);
     expect(r.handled).toBe(true);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({ role: "user" });
     const out = (console.log as any).mock.calls.flat().join("\n");
-    expect(out).toContain("Scanning");
     expect(out).toContain("Running compaction summary");
     expect(out).toContain("Compaction complete");
   });
@@ -494,6 +496,17 @@ describe("handleSlashCommand", () => {
       expect(messages).toHaveLength(2);
       const first = messages[0] as { content: Array<{ text?: string }> };
       expect(first.content[0]?.text).toBe("a");
+    });
+
+    it("rejects invalid counts without changing history", async () => {
+      for (const arg of ["typo", "0", "-2", "2junk", "1.5"]) {
+        const messages: Message[] = [
+          { role: "user", content: [{ type: "text", text: "keep" }] },
+          { role: "assistant", content: "reply", tool_calls: [] },
+        ];
+        await handleSlashCommand(`/rewind ${arg}`, ctxWith(messages));
+        expect(messages, arg).toHaveLength(2);
+      }
     });
 
     it("rewinds everything when N >= turn count", async () => {
@@ -769,6 +782,18 @@ describe("handleSlashCommand", () => {
       expect(ctx.editorMode.value).toBe("vim");
       await handleSlashCommand("/vim off", ctx);
       expect(ctx.editorMode.value).toBe("default");
+    });
+
+    it("shows only usage and preserves the mode for an invalid argument", async () => {
+      const ctx = makeCtx([]);
+      ctx.editorMode = { value: "vim" };
+      const r = await handleSlashCommand("/vim sideways", ctx);
+      expect(r.handled).toBe(true);
+      expect(ctx.editorMode.value).toBe("vim");
+      expect(console.log).toHaveBeenCalledTimes(1);
+      const out = (console.log as any).mock.calls.flat().join("\n");
+      expect(out).toContain("用法: /vim [on|off]");
+      expect(out).not.toContain("Vim mode:");
     });
 
     it("notes when vim mode is unavailable (non-TUI)", async () => {

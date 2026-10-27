@@ -8,6 +8,7 @@
 // ============================================================
 import chalk from "chalk";
 import { sessionGoal, setSessionGoal } from "../goal-runtime.js";
+import { sanitizeTerminalText } from "../tui/terminal-width.js";
 import type { SlashCommand } from "./types.js";
 
 export const goalCommand: SlashCommand = {
@@ -25,20 +26,24 @@ export const goalCommand: SlashCommand = {
       setSessionGoal(ctx.sessionId, "");
       void ctx.persistence
         ?.save(ctx.sessionId, ctx.messages)
-        .catch((error) => console.warn(`Goal persistence failed: ${String(error)}`));
+        .catch((error) =>
+          console.warn(
+            `Goal persistence failed: ${sanitizeTerminalText(error instanceof Error ? error.message : String(error))}`,
+          ),
+        );
       console.log(chalk.gray("  Session goal cleared."));
       return;
     }
 
     if (!arg) {
       if (ctx.goal.value) {
-        console.log(`  ${chalk.bold("Goal:")} ${ctx.goal.value}`);
+        console.log(`  ${chalk.bold("Goal:")} ${sanitizeTerminalText(ctx.goal.value)}`);
         const state = sessionGoal(ctx.sessionId);
         if (state?.complete) console.log(chalk.gray("  Goal completed."));
         else if (state?.suspended)
           console.log(
             chalk.yellow(
-              `  Automatic goal work paused: ${state.reason ?? "evaluation unavailable"}`,
+              `  Automatic goal work paused: ${sanitizeTerminalText(state.reason ?? "evaluation unavailable")}`,
             ),
           );
         console.log(chalk.gray("  Change it with /goal <text>, or /goal clear."));
@@ -52,8 +57,12 @@ export const goalCommand: SlashCommand = {
     setSessionGoal(ctx.sessionId, arg);
     void ctx.persistence
       ?.save(ctx.sessionId, ctx.messages)
-      .catch((error) => console.warn(`Goal persistence failed: ${String(error)}`));
-    console.log(chalk.gray(`  Goal set: ${chalk.cyan(arg)}`));
+      .catch((error) =>
+        console.warn(
+          `Goal persistence failed: ${sanitizeTerminalText(error instanceof Error ? error.message : String(error))}`,
+        ),
+      );
+    console.log(chalk.gray(`  Goal set: ${chalk.cyan(sanitizeTerminalText(arg))}`));
     console.log(chalk.gray("  It will be injected into the system prompt on the next turn."));
   },
 };

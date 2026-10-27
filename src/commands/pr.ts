@@ -13,6 +13,12 @@ export const prCommand: SlashCommand = {
       console.log(chalk.yellow("  Not a git repository (or git unavailable)."));
       return;
     }
+    if (summary.errors?.length) {
+      console.log(
+        chalk.red(`  Git read failed (${summary.errors.join(", ")}); no draft generated.`),
+      );
+      return;
+    }
     if (summary.upstreamFiles.length === 0 && summary.branchCommits.length === 0) {
       console.log(chalk.gray("  No upstream tracking branch or no commits ahead of it."));
       console.log(chalk.gray("  Push your branch first, then /pr."));
@@ -30,6 +36,8 @@ export const prCommand: SlashCommand = {
     if (summary.branchCommits.length > 0) {
       console.log(chalk.bold("  Commits on this branch:"));
       for (const c of summary.branchCommits) console.log(`    - ${sanitizeTerminalText(c)}`);
+      if (summary.branchCommitsTruncated)
+        console.log(chalk.gray("    … (branch commit list truncated)"));
       console.log("");
     }
     console.log(chalk.bold("  Files changed vs upstream:"));
@@ -38,6 +46,8 @@ export const prCommand: SlashCommand = {
         `    ${sanitizeTerminalText(f.status).padEnd(2)} ${chalk.cyan(sanitizeTerminalText(f.path))}`,
       );
     }
+    if (summary.upstreamFilesTruncated)
+      console.log(chalk.gray("    … (upstream file list truncated)"));
     console.log("");
     console.log(chalk.gray("  Body suggestion: summarize what changed and why, then"));
     console.log(chalk.gray("  create with:  gh pr create --body-file <(echo ...)"));

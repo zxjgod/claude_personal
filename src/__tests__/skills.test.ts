@@ -32,6 +32,12 @@ describe("skill registry — back-compat", () => {
     expect(out).toContain("Arguments: foo bar");
   });
 
+  it("registers and resolves names case-insensitively without losing display casing", () => {
+    registerSkill({ name: "MiXeD", description: "d", prompt: "Body." });
+    expect(getSkill("mixed")?.name).toBe("MiXeD");
+    expect(getSkill("MIXED")?.name).toBe("MiXeD");
+  });
+
   it("seeds built-in skills with whenToUse for matching", () => {
     const all = listSkills();
     const research = all.find((s) => s.name === "deep-research");

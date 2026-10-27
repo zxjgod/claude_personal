@@ -71,17 +71,24 @@ interface GatherOptions {
   timeoutMs?: number;
 }
 
-async function git(args: string[], cwd: string, timeoutMs: number): Promise<string | null> {
+type GitResult = { ok: true; stdout: string } | { ok: false };
+
+async function gitResult(args: string[], cwd: string, timeoutMs: number): Promise<GitResult> {
   try {
     const { stdout } = await execFileAsync(resolveGitExecutable(), args, {
       cwd,
       timeout: timeoutMs,
       windowsHide: true,
     });
-    return stdout;
+    return { ok: true, stdout };
   } catch {
-    return null;
+    return { ok: false };
   }
+}
+
+async function git(args: string[], cwd: string, timeoutMs: number): Promise<string | null> {
+  const result = await gitResult(args, cwd, timeoutMs);
+  return result.ok ? result.stdout : null;
 }
 
 /**
@@ -159,6 +166,14 @@ export interface GitChangedFile {
   deletions?: number;
 }
 
+export type GitDiffReadError =
+  | "branch"
+  | "head-status"
+  | "head-diff"
+  | "upstream-query"
+  | "upstream-diff"
+  | "upstream-log";
+
 export interface GitDiffSummary {
   branch: string;
   /** Files changed relative to HEAD (staged + unstaged, porcelain). */
@@ -167,8 +182,16 @@ export interface GitDiffSummary {
   upstreamFiles: GitChangedFile[];
   /** Commits on this branch not on the upstream (for /pr). */
   branchCommits: string[];
-  /** Whether any of the lists was truncated. */
+  /** Backward-compatible alias for headTruncated. */
   truncated: boolean;
+  /** Whether the HEAD file list was truncated. */
+  headTruncated?: boolean;
+  /** Whether the upstream file list was truncated. */
+  upstreamFilesTruncated?: boolean;
+  /** Whether the branch commit list was truncated. */
+  branchCommitsTruncated?: boolean;
+  /** Git reads that failed; an empty list means the summary is complete. */
+  errors?: GitDiffReadError[];
 }
 
 interface DiffOptions {
@@ -179,8 +202,9 @@ interface DiffOptions {
 
 /**
  * Collect the change set used by /commit (vs HEAD) and /pr (vs upstream).
- * Best-effort: a non-git dir or missing upstream yields empty upstream lists.
- * Never throws.
+ * A non-git dir returns null; a missing upstream yields empty upstream lists.
+ * Individual git read failures are reported in errors rather than hidden as
+ * legitimate empty results. Never throws.
  */
 export async function gatherDiffSummary(
   workspaceRoot: string,
@@ -189,11 +213,21 @@ export async function gatherDiffSummary(
   const maxFiles = options.maxFiles ?? 60;
   const maxCommits = options.maxCommits ?? 30;
   const timeoutMs = options.timeoutMs ?? 5000;
+  const errors: GitDiffReadError[] = [];
+  const read = async (args: string[], failure: GitDiffReadError): Promise<string | null> => {
+    const result = await gitResult(args, workspaceRoot, timeoutMs);
+    if (!result.ok) {
+      errors.push(failure);
+      return null;
+    }
+    return result.stdout;
+  };
 
+  // Confirm this is a work tree first; bail fast otherwise.
   const inside = await git(["rev-parse", "--is-inside-work-tree"], workspaceRoot, timeoutMs);
   if (inside?.trim() !== "true") return null;
 
-  const branchRaw = await git(["rev-parse", "--abbrev-ref", "HEAD"], workspaceRoot, timeoutMs);
+  const branchRaw = await read(["rev-parse", "--abbrev-ref", "HEAD"], "branch");
   const branch = branchRaw?.trim() || "(detached)";
 
   const parsePorcelain = (raw: string | null): GitChangedFile[] =>
@@ -210,12 +244,12 @@ export async function gatherDiffSummary(
       });
 
   // Files changed vs HEAD (staged + unstaged combined).
-  const headStatus = await git(["status", "--porcelain"], workspaceRoot, timeoutMs);
+  const headStatus = await read(["status", "--porcelain"], "head-status");
   const headTruncated = (headStatus ?? "").split("\n").filter(Boolean).length > maxFiles;
   const files = parsePorcelain(headStatus);
 
   // numstat for insertions/deletions (only works for tracked, non-binary).
-  const numstatRaw = await git(["diff", "--numstat", "HEAD"], workspaceRoot, timeoutMs);
+  const numstatRaw = await read(["diff", "--numstat", "HEAD"], "head-diff");
   const numstat = new Map<string, { ins: number | undefined; del: number | undefined }>();
   for (const line of (numstatRaw ?? "").split("\n").filter(Boolean)) {
     const parts = line.split("\t");
@@ -233,40 +267,41 @@ export async function gatherDiffSummary(
     }
   }
 
-  // Upstream tracking branch for /pr.
-  const upstreamRaw = await git(
-    ["rev-parse", "--abbrev-ref", "@{upstream}"],
-    workspaceRoot,
-    timeoutMs,
-  );
+  // Upstream tracking branch for /pr. for-each-ref succeeds with empty output
+  // when no upstream is configured, unlike rev-parse @{upstream}, whose non-zero
+  // exit would otherwise be indistinguishable from a real git read failure.
   let upstreamFiles: GitChangedFile[] = [];
   let branchCommits: string[] = [];
-  if (upstreamRaw) {
-    const upstream = upstreamRaw.trim();
-    const prStatus = await git(
-      ["diff", "--name-status", upstream + "...HEAD"],
-      workspaceRoot,
-      timeoutMs,
+  let upstreamFilesTruncated = false;
+  let branchCommitsTruncated = false;
+  if (branchRaw && branch !== "HEAD") {
+    const upstreamRaw = await read(
+      ["for-each-ref", "--format=%(upstream:short)", `refs/heads/${branch}`],
+      "upstream-query",
     );
-    upstreamFiles = (prStatus ?? "")
-      .split("\n")
-      .map((l) => l.trim())
-      .filter(Boolean)
-      .slice(0, maxFiles)
-      .map((line) => {
+    const upstream = upstreamRaw?.trim();
+    if (upstream) {
+      const prStatus = await read(["diff", "--name-status", upstream + "...HEAD"], "upstream-diff");
+      const upstreamLines = (prStatus ?? "")
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean);
+      upstreamFilesTruncated = upstreamLines.length > maxFiles;
+      upstreamFiles = upstreamLines.slice(0, maxFiles).map((line) => {
         const [status, ...rest] = line.split("\t");
         return { status: status ?? "M", path: rest.join(" -> ") };
       });
-    const commitsRaw = await git(
-      ["log", upstream + "..HEAD", "--pretty=format:%s"],
-      workspaceRoot,
-      timeoutMs,
-    );
-    branchCommits = (commitsRaw ?? "")
-      .split("\n")
-      .map((l) => l.trim())
-      .filter(Boolean)
-      .slice(0, maxCommits);
+      const commitsRaw = await read(
+        ["log", upstream + "..HEAD", "--pretty=format:%s"],
+        "upstream-log",
+      );
+      const commitLines = (commitsRaw ?? "")
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean);
+      branchCommitsTruncated = commitLines.length > maxCommits;
+      branchCommits = commitLines.slice(0, maxCommits);
+    }
   }
 
   return {
@@ -275,6 +310,10 @@ export async function gatherDiffSummary(
     upstreamFiles,
     branchCommits,
     truncated: headTruncated,
+    headTruncated,
+    upstreamFilesTruncated,
+    branchCommitsTruncated,
+    errors,
   };
 }
 

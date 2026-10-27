@@ -28,7 +28,16 @@ export const rewindCommand: SlashCommand = {
   name: "rewind",
   description: "Rewind the conversation by N turns and restore files (/rewind [n], default 1)",
   run: async (args, ctx): Promise<undefined> => {
-    const n = Math.max(1, parseInt(args.trim(), 10) || 1);
+    const raw = args.trim();
+    if (raw && !/^[1-9]\d*$/.test(raw)) {
+      console.log(chalk.yellow("  Usage: /rewind [positive integer]"));
+      return;
+    }
+    const n = raw ? Number(raw) : 1;
+    if (!Number.isSafeInteger(n)) {
+      console.log(chalk.yellow("  Rewind count is too large."));
+      return;
+    }
     const messages = ctx.messages;
     const userIdx = findUserTurnBoundaries(messages);
 

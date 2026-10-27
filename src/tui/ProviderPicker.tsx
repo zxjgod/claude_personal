@@ -16,6 +16,7 @@ import { useRef, useState } from "react";
 import { t } from "./i18n.js";
 import { nextOffset } from "./SessionPicker.js";
 import type { Overlay } from "./store.js";
+import { sanitizeTerminalText } from "./terminal-width.js";
 import { palette } from "./theme.js";
 
 // Read the live palette so theme switches update the picker immediately.
@@ -94,7 +95,7 @@ export function ProviderPicker({
               <Text color={selected ? accentColor() : undefined}>
                 {selected ? "❯ " : "  "}
                 <Text color={p.current ? currentColor() : undefined}>{p.current ? "● " : ""}</Text>
-                {p.name}
+                {sanitizeTerminalText(p.name)}
                 <Text dimColor>{`  (${p.label})`}</Text>
               </Text>
               {p.detail ? <Text dimColor>{"      " + p.detail}</Text> : null}

@@ -146,6 +146,14 @@ export interface MCPConfig {
   mcpServers: Record<string, MCPServerConfig>;
 }
 
+/** Apply transport inference before either trust rendering or connection. */
+function normalizeServerConfig(server: MCPServerConfig): MCPServerConfig {
+  return {
+    ...server,
+    type: server.type ?? (server.command ? "stdio" : "http"),
+  };
+}
+
 export interface MCPLoadOptions {
   namespace?: string;
   /** Require explicit approval before connecting servers from a project file. */
@@ -266,6 +274,8 @@ interface ServerEntry {
   client: Client;
   transport?: McpTransport;
   tools: Tool[];
+  /** Latest refresh started on this exact connection instance. */
+  refreshGeneration: number;
 }
 
 // --- MCP Manager ---
@@ -343,6 +353,8 @@ export class MCPManager {
         if (!server || typeof server !== "object" || Array.isArray(server)) {
           console.warn(`Invalid MCP server ${name}; skipping`);
           delete config.mcpServers[name];
+        } else {
+          config.mcpServers[name] = normalizeServerConfig(server);
         }
       }
     } catch (error) {
@@ -362,9 +374,12 @@ export class MCPManager {
       // changes the fingerprint and re-prompts.
       if (enabled.length > 0 && !isMcpConfigTrusted(configPath, raw)) {
         const descriptions = enabled.map(([name, server]) => {
+          const args = Array.isArray(server.args) ? server.args : [];
+          const invalidArgs =
+            server.args !== undefined && !Array.isArray(server.args) ? " <invalid args>" : "";
           const target =
             server.type === "stdio"
-              ? [server.command, ...(server.args ?? [])].join(" ")
+              ? `${[server.command, ...args].join(" ")}${invalidArgs}`
               : server.url;
           // The trust prompt must disclose every channel through which this
           // server can receive the user's environment: `env` (stdio child
@@ -377,9 +392,13 @@ export class MCPManager {
             ["headers", server.headers],
           ] as const) {
             if (!record) continue;
-            const entries = Object.entries(record).map(
-              ([k, v]) => `${k}=${v.includes("${") ? v : "<set>"}`,
-            );
+            const entries = Object.entries(record).map(([k, v]) => {
+              // JSON is only shallow-validated here. A malformed non-string
+              // value must not throw before the user can approve or deny the
+              // config; redact it just like any other non-template value.
+              const displayed = typeof v === "string" && v.includes("${") ? v : "<set>";
+              return `${k}=${displayed}`;
+            });
             channels.push(`${label}: ${entries.join(", ")}`);
           }
           const suffix = channels.length > 0 ? ` [${channels.join(" | ")}]` : "";
@@ -403,10 +422,10 @@ export class MCPManager {
 
     for (const [name, serverConfig] of Object.entries(config.mcpServers)) {
       if (serverConfig.disabled || options.disabledServers?.has(name)) continue;
-      await this.connectServer(options.namespace ? `${options.namespace}__${name}` : name, {
-        ...serverConfig,
-        type: serverConfig.type ?? (serverConfig.command ? "stdio" : "http"),
-      });
+      await this.connectServer(
+        options.namespace ? `${options.namespace}__${name}` : name,
+        serverConfig,
+      );
     }
   }
 
@@ -420,6 +439,9 @@ export class MCPManager {
    * 连接失败仍返回 ready").
    */
   async connectServer(name: string, config: MCPServerConfig): Promise<boolean> {
+    // Inline/agent-scoped callers do not pass through loadConfig(); apply the
+    // same transport inference here before validation and trust diagnostics.
+    config = normalizeServerConfig(config);
     // Don't double-connect
     if (this.servers.has(name)) {
       console.warn(`MCP server "${name}" is already connected.`);
@@ -434,6 +456,13 @@ export class MCPManager {
       if (config.type === "stdio") {
         if (!config.command) {
           console.error(`MCP server "${name}": stdio transport requires a "command"`);
+          return false;
+        }
+        if (
+          config.args !== undefined &&
+          (!Array.isArray(config.args) || config.args.some((arg) => typeof arg !== "string"))
+        ) {
+          console.error(`MCP server "${name}": stdio "args" must be an array of strings`);
           return false;
         }
         const transport = new StdioClientTransport({
@@ -532,6 +561,7 @@ export class MCPManager {
         client: connectedClient,
         transport: activeTransport,
         tools: mcpTools,
+        refreshGeneration: 0,
       });
       // S2: subscribe to the server's toolsListChanged notification so a
       // server that adds/removes tools mid-session is reflected without a
@@ -768,16 +798,36 @@ export class MCPManager {
    * S2: re-list a connected server's tools and swap them in, then fire the
    * change listeners. Used by the toolsListChanged notification and a manual
    * /mcp refresh. Throws on listTools failure (callers report); a server that
-   * went away stays untouched for disconnectServer to handle.
+   * went away stays untouched for disconnectServer to handle. Only the latest
+   * refresh on the current connection instance may commit or notify.
    */
   async refreshServerTools(name: string): Promise<number> {
     const entry = this.servers.get(name);
     if (!entry) throw new Error(`MCP server "${name}" is not connected`);
-    const toolsResult = await withTimeout(
-      "listTools(refresh)",
-      entry.client.listTools(),
-      LIST_TOOLS_TIMEOUT_MS,
-    );
+    const generation = (entry.refreshGeneration ?? 0) + 1;
+    entry.refreshGeneration = generation;
+    let toolsResult: Awaited<ReturnType<Client["listTools"]>>;
+    try {
+      toolsResult = await withTimeout(
+        "listTools(refresh)",
+        entry.client.listTools(),
+        LIST_TOOLS_TIMEOUT_MS,
+      );
+    } catch (error) {
+      const current = this.servers.get(name);
+      if (current !== entry || entry.refreshGeneration !== generation) {
+        // A superseded request has no caller-visible failure: the newer
+        // refresh or replacement connection owns the server's current state.
+        return current?.tools.length ?? 0;
+      }
+      throw error;
+    }
+    const current = this.servers.get(name);
+    if (current !== entry || entry.refreshGeneration !== generation) {
+      // A newer refresh won, or this name was disconnected and reconnected
+      // while listTools was in flight. The old response owns no live state.
+      return current?.tools.length ?? 0;
+    }
     const refreshed = new Set(toolsResult.tools.map((tool) => `mcp__${name}__${tool.name}`));
     const definitions = this.toolDefinitions.get(name);
     if (definitions)
@@ -876,6 +926,15 @@ export class MCPManager {
    * the OTHER server's same-named tool.
    */
   private warnedCollisions = new Set<string>();
+
+  /** Snapshot the real per-server entries for user-facing status displays. */
+  getServerSummaries(): Array<{ name: string; tools: Tool[] }> {
+    return [...this.servers.entries()].map(([name, server]) => ({
+      name,
+      tools: [...server.tools],
+    }));
+  }
+
   getAllTools(): Tool[] {
     const allTools: Tool[] = [];
     const seen = new Map<string, string>(); // wrapped name → owning server
@@ -1037,11 +1096,15 @@ export class MCPManager {
     try {
       await closeMcpConnection(`disconnect(${name})`, server.client, server.transport);
     } finally {
-      this.servers.delete(name);
-      // S2 covers list CHANGES; a server vanishing is one too — without this
-      // the dead server's wrapped tools linger in the live tools array and
-      // registry (and keep being advertised to the model) until restart.
-      this.notifyToolsChanged(name);
+      // Closing the old transport may outlive a same-name reconnect. Only the
+      // connection captured above may remove itself; never delete its successor.
+      if (this.servers.get(name) === server) {
+        this.servers.delete(name);
+        // S2 covers list CHANGES; a server vanishing is one too — without this
+        // the dead server's wrapped tools linger in the live tools array and
+        // registry (and keep being advertised to the model) until restart.
+        this.notifyToolsChanged(name);
+      }
     }
   }
 

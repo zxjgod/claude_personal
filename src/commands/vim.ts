@@ -21,7 +21,10 @@ export const vimCommand: SlashCommand = {
     let next: "default" | "vim";
     if (arg === "on" || arg === "vim") next = "vim";
     else if (arg === "off" || arg === "default") next = "default";
-    else next = ctx.editorMode.value === "vim" ? "default" : "vim";
+    else if (arg) {
+      console.log(chalk.gray("  用法: /vim [on|off]"));
+      return;
+    } else next = ctx.editorMode.value === "vim" ? "default" : "vim";
 
     ctx.editorMode.value = next;
     if (next === "vim") {

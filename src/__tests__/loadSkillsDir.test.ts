@@ -42,6 +42,23 @@ describe("parseFrontmatter", () => {
     expect(body).toBe("The body here.");
   });
 
+  it("accepts an empty frontmatter block without changing body trimming", () => {
+    expect(parseFrontmatter("---\n---\n  body  \n")).toEqual({
+      frontmatter: {},
+      body: "body",
+    });
+    expect(parseFrontmatter("---\r\n---\r\nbody")).toEqual({
+      frontmatter: {},
+      body: "body",
+    });
+  });
+
+  it("still rejects malformed YAML in a frontmatter block", () => {
+    expect(() => parseFrontmatter("---\nname: [unterminated\n---\nbody")).toThrow(
+      "Invalid frontmatter:",
+    );
+  });
+
   it("treats a file with no frontmatter as a pure body", () => {
     const { frontmatter, body } = parseFrontmatter("just a body, no fences");
     expect(Object.keys(frontmatter)).toHaveLength(0);

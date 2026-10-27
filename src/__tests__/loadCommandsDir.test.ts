@@ -8,6 +8,7 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   expandCommandBody,
+  getCustomCommand,
   getCustomCommands,
   loadCommandsDir,
   registerCustomCommand,
@@ -87,6 +88,12 @@ describe("loadCommandsDir", () => {
     fs.writeFileSync(path.join(dir, "notes.txt"), "not a command");
     fs.writeFileSync(path.join(dir, "bad name.md"), "---\n---\nbody");
     expect(loadCommandsDir(repo)).toEqual([]);
+  });
+
+  it("registers and looks up names case-insensitively without losing display casing", () => {
+    registerCustomCommand({ name: "MiXeD", description: "d", run: () => undefined });
+    expect(getCustomCommands().get("mixed")?.name).toBe("MiXeD");
+    expect(getCustomCommand("MIXED")?.name).toBe("MiXeD");
   });
 
   it("registerCustomCommand / resetCustomCommands are idempotent", () => {

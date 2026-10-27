@@ -7,7 +7,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { formatGitContext, gatherGitContext } from "../git-context.js";
+import { formatGitContext, gatherDiffSummary, gatherGitContext } from "../git-context.js";
 
 let repo: string;
 let hasGit = true;
@@ -63,6 +63,21 @@ describe("gatherGitContext", () => {
     git(["commit", "-m", "init"], repo);
     const ctx = await gatherGitContext(repo);
     expect(ctx!.dirtyFiles).toHaveLength(0);
+  });
+});
+
+describe("gatherDiffSummary", () => {
+  it("treats a missing upstream as a legitimate empty result", async () => {
+    if (!hasGit) return;
+    fs.writeFileSync(path.join(repo, "a.txt"), "hello");
+    git(["add", "a.txt"], repo);
+    git(["commit", "-m", "init"], repo);
+
+    const summary = await gatherDiffSummary(repo);
+    expect(summary).not.toBeNull();
+    expect(summary?.errors).toEqual([]);
+    expect(summary?.upstreamFiles).toEqual([]);
+    expect(summary?.branchCommits).toEqual([]);
   });
 });
 

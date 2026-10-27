@@ -20,6 +20,8 @@ interface OnboardingCheck {
 function diagnose(ctx: CommandContext): OnboardingCheck[] {
   const checks: OnboardingCheck[] = [];
   const claudeMd = path.join(ctx.workspaceRoot, "CLAUDE.md");
+  const envFile = path.join(ctx.workspaceRoot, ".env");
+  const buildOutput = path.join(ctx.workspaceRoot, "dist", "cli.js");
   checks.push({
     ok: fs.existsSync(claudeMd),
     label: "CLAUDE.md project memory",
@@ -31,14 +33,14 @@ function diagnose(ctx: CommandContext): OnboardingCheck[] {
     hint: ctx.modelConfig.apiKey ? undefined : "missing — set in .env",
   });
   checks.push({
-    ok: fs.existsSync(".env"),
+    ok: fs.existsSync(envFile),
     label: ".env file",
-    hint: fs.existsSync(".env") ? undefined : "missing — copy .env.example",
+    hint: fs.existsSync(envFile) ? undefined : "missing — copy .env.example",
   });
   checks.push({
-    ok: fs.existsSync("dist/cli.js"),
+    ok: fs.existsSync(buildOutput),
     label: "build (dist/cli.js)",
-    hint: fs.existsSync("dist/cli.js") ? undefined : "not built — run npm run build",
+    hint: fs.existsSync(buildOutput) ? undefined : "not built — run npm run build",
   });
   checks.push({
     ok: ctx.messages.length > 0,

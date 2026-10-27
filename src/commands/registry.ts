@@ -6,6 +6,7 @@
 // keep working unchanged.
 // ============================================================
 
+import { listSkills } from "../skills.js";
 import { addDirCommand } from "./add-dir.js";
 import { agentsCommand } from "./agents.js";
 // M18 new commands
@@ -55,7 +56,7 @@ import { themeCommand } from "./theme.js";
 import { todosCommand } from "./todos.js";
 import { tokensCommand } from "./tokens.js";
 import { toolsCommand } from "./tools.js";
-import type { SlashCommand } from "./types.js";
+import type { CommandCatalogEntry, SlashCommand } from "./types.js";
 import { usageCommand } from "./usage.js";
 import { vimCommand } from "./vim.js";
 import { workflowsCommand } from "./workflows.js";
@@ -115,7 +116,26 @@ export const COMMANDS: SlashCommand[] = [
   releaseNotesCommand,
 ];
 
-// /help iterates COMMANDS at run time; bind it now that the array exists.
-// The getter also folds in disk-defined custom commands (loaded later, at CLI
-// startup) so they show up in the help panel without a second binding pass.
-bindCommandList(() => [...COMMANDS, ...getCustomCommands().values()]);
+/**
+ * Live slash catalog shared by help, completion, and pickers. Dispatch order is
+ * mirrored here: built-ins win, then disk commands, then user-invocable skills.
+ */
+export function getAvailableCommands(): CommandCatalogEntry[] {
+  const catalog: CommandCatalogEntry[] = [];
+  const seen = new Set<string>();
+  const append = (entry: CommandCatalogEntry): void => {
+    const key = entry.name.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    catalog.push({ name: entry.name, description: entry.description });
+  };
+  for (const command of COMMANDS) append(command);
+  for (const command of getCustomCommands().values()) append(command);
+  for (const skill of listSkills()) {
+    if (skill.userInvocable !== false) append(skill);
+  }
+  return catalog;
+}
+
+// /help resolves the same live catalog used by raw/Ink completion and pickers.
+bindCommandList(getAvailableCommands);

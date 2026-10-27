@@ -47,33 +47,44 @@ export function renderShareableTranscript(ctx: CommandContext): string {
   return lines.join("\n");
 }
 
+function parseOutputArgs(args: string): { path: string; force: boolean } {
+  const force = /(?:^|\s)--force(?=\s|$)/i.test(args);
+  const requested = args.replace(/(?:^|\s*)--force(?=\s|$)/gi, "").trim();
+  return { path: requested, force };
+}
+
 export const shareCommand: SlashCommand = {
   name: "share",
-  description: "Export the session as shareable markdown (/share [path])",
+  description: "Export the session as shareable markdown (/share [--force] [path])",
   run: (args, ctx): CommandResult | undefined => {
     const md = renderShareableTranscript(ctx);
-    const target = args.trim();
+    const options = parseOutputArgs(args);
+    const target = options.path;
 
     if (!target) {
       // No path → print to stdout so it can be piped (`/share | pbcopy`).
       // The transcript embeds assistant text (model-produced) — sanitize the
       // terminal print. The file-write path below stays raw on purpose: it is
       // an export document, not terminal output.
-      process.stdout.write(sanitizeTerminalText(md) + "\n");
+      process.stdout.write(`${sanitizeTerminalText(md)}\n`);
       return;
     }
     try {
       const resolution = resolveAllowedWorkspaceFile(target, ctx.workspaceRoot);
       if (!resolution.ok) {
-        console.log(chalk.red(`  Could not write: ${resolution.error}`));
+        console.log(chalk.red(`  Could not write: ${sanitizeTerminalText(resolution.error)}`));
         return;
       }
       const abs = resolution.path;
       fs.mkdirSync(path.dirname(abs) || ".", { recursive: true });
-      fs.writeFileSync(abs, md, "utf-8");
-      console.log(chalk.gray(`  Shared transcript written → ${abs}`));
+      fs.writeFileSync(abs, md, { encoding: "utf8", flag: options.force ? "w" : "wx" });
+      console.log(chalk.gray(`  Shared transcript written → ${sanitizeTerminalText(abs)}`));
     } catch (e) {
-      const detail = e instanceof Error ? e.message : String(e);
+      const detail = sanitizeTerminalText(e instanceof Error ? e.message : String(e));
+      if ((e as NodeJS.ErrnoException).code === "EEXIST") {
+        console.log(chalk.yellow(`  Could not write: ${detail}. Use --force to overwrite.`));
+        return undefined;
+      }
       console.log(chalk.red(`  Could not write: ${detail}`));
     }
     return undefined;

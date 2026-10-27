@@ -18,15 +18,19 @@ import {
   type ToolsSelection,
   toolAllowed,
 } from "./cli-session-flags.js";
-import { loadCommandsDir } from "./commands/loadCommandsDir.js";
+import { loadCommandsDir, resetCustomCommands } from "./commands/loadCommandsDir.js";
 import { readSettings } from "./hooks-config.js";
 import { discoverMCPConfigs, MCPManager } from "./mcp/index.js";
 import { pluginComponentRoots, pluginDirs, readManifest } from "./plugins.js";
 import { loadSkillsDir } from "./skills/loadSkillsDir.js";
+import { resetSkills } from "./skills.js";
 import {
   AGENT_DESCRIPTION_TOKEN_LIMIT,
   agentDescriptionTokens,
   applyDisableExplorePlanEnv,
+  registerSubagentType,
+  removeCustomSubagentTypes,
+  type SubagentType,
   setCoreToolsForSubagents,
 } from "./subagents.js";
 import { createMcpResourceTools, createToolSearchTool } from "./tools/breadth/index.js";
@@ -69,6 +73,142 @@ function allowedTools(tools: Tool[], selection: ToolsSelection | undefined): Too
   return selection ? tools.filter((tool) => toolAllowed(selection, tool.name)) : tools;
 }
 
+export interface WorkspaceExtensionLoadOptions {
+  customizations?: boolean;
+  skillsDisabled?: boolean;
+  /** Reapply session-scoped inline agents after disk/plugin registration. */
+  preserveAgents?: SubagentType[];
+  /** Print the same discovery summaries used during startup. */
+  announce?: boolean;
+}
+
+/** Load user, workspace, and explicitly selected plugin extensions. */
+export function loadWorkspaceExtensions(
+  workspaceRoot: string,
+  options: WorkspaceExtensionLoadOptions = {},
+): { skills: string[]; commands: string[]; agents: string[] } {
+  const customizations =
+    options.customizations ??
+    (!process.argv.includes("--safe-mode") && !process.argv.includes("--bare"));
+  const skillsDisabled = options.skillsDisabled ?? parseDisableSlashCommands(process.argv);
+  const announce = options.announce ?? true;
+  const loadedSkills: string[] = [];
+  const loadedCommands: string[] = [];
+  const loadedAgents: string[] = [];
+
+  try {
+    const loaded = customizations && !skillsDisabled ? loadSkillsDir(workspaceRoot) : [];
+    loadedSkills.push(...loaded);
+    if (announce && loaded.length > 0) {
+      console.log(
+        chalk.gray(
+          `Loaded ${loaded.length} disk skill(s): ${loaded.map(sanitizeTerminalText).join(", ")}`,
+        ),
+      );
+    }
+  } catch {
+    // Disk skills are optional; a malformed skills dir never blocks startup.
+  }
+
+  for (const dir of customizations ? pluginDirs(workspaceRoot) : []) {
+    const namespace = readManifest(dir)?.name;
+    try {
+      if (!skillsDisabled)
+        loadedSkills.push(
+          ...loadSkillsDir(dir, { roots: pluginComponentRoots(dir, "skills"), namespace }),
+        );
+    } catch {
+      /* malformed plugin is isolated */
+    }
+    try {
+      loadedCommands.push(
+        ...loadCommandsDir(dir, { roots: pluginComponentRoots(dir, "commands"), namespace }),
+      );
+    } catch {
+      /* optional */
+    }
+    try {
+      loadedAgents.push(
+        ...loadAgentsDir(dir, { roots: pluginComponentRoots(dir, "agents"), namespace }),
+      );
+    } catch {
+      /* optional */
+    }
+  }
+
+  try {
+    const loaded = customizations ? loadCommandsDir(workspaceRoot) : [];
+    loadedCommands.push(...loaded);
+    if (announce && loaded.length > 0) {
+      console.log(chalk.gray(`Loaded ${loaded.length} custom command(s): ${loaded.join(", ")}`));
+    }
+  } catch {
+    // Custom commands are optional; a malformed commands dir never blocks startup.
+  }
+
+  try {
+    const loaded = customizations ? loadAgentsDir(workspaceRoot) : [];
+    loadedAgents.push(...loaded);
+    if (announce && loaded.length > 0) {
+      console.log(chalk.gray(`Loaded ${loaded.length} custom agent(s): ${loaded.join(", ")}`));
+    }
+  } catch {
+    // Custom agents are optional; a malformed agents dir never blocks startup.
+  }
+
+  // CLI inline agents are session-scoped and more explicit than disk agents.
+  for (const agent of options.preserveAgents ?? []) registerSubagentType(agent);
+
+  try {
+    const removed = applyDisableExplorePlanEnv();
+    if (announce && removed.length > 0) {
+      console.log(
+        chalk.gray(
+          `Disabled built-in agent(s) per CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS: ${removed.join(", ")}`,
+        ),
+      );
+    }
+  } catch {
+    // Advisory only.
+  }
+
+  try {
+    const descTokens = agentDescriptionTokens();
+    if (announce && descTokens > AGENT_DESCRIPTION_TOKEN_LIMIT) {
+      console.log(
+        chalk.yellow(
+          `Large agent descriptions (~${descTokens.toLocaleString()} tokens > ` +
+            `${AGENT_DESCRIPTION_TOKEN_LIMIT.toLocaleString()}) — trim agent descriptions ` +
+            `in .claude/agents/`,
+        ),
+      );
+    }
+  } catch {
+    // Advisory only.
+  }
+
+  try {
+    const lean = agentDescriptionTokens() > AGENT_DESCRIPTION_TOKEN_LIMIT;
+    TaskTool.promptDescription = buildTaskPromptDescription(lean);
+    AgentTool.promptDescription = buildAgentPromptDescription(lean);
+  } catch {
+    // Descriptions are cosmetic; never block startup.
+  }
+
+  return { skills: loadedSkills, commands: loadedCommands, agents: loadedAgents };
+}
+
+/** Rebuild all disk-backed registries when the active workspace changes. */
+export function reloadWorkspaceExtensions(
+  workspaceRoot: string,
+  options: WorkspaceExtensionLoadOptions = {},
+): { skills: string[]; commands: string[]; agents: string[] } {
+  resetCustomCommands();
+  resetSkills();
+  removeCustomSubagentTypes();
+  return loadWorkspaceExtensions(workspaceRoot, options);
+}
+
 export async function setupTools(deps: {
   workspaceRoot: string;
   verbose: boolean;
@@ -93,118 +233,7 @@ export async function setupTools(deps: {
   // tools.ts (which would re-enter the tools.ts → TaskTool → tools.ts cycle).
   setCoreToolsForSubagents(CORE_TOOLS);
 
-  // M37: discover disk skills (<root>/.claude/skills/<name>/SKILL.md and the
-  // user-level equivalent). Cheap — only frontmatter is read here; each skill's
-  // body stays lazy until the Skill tool or /<name> sugar invokes it.
-  try {
-    const loaded = customizations && !skillsDisabled ? loadSkillsDir(workspaceRoot) : [];
-    if (loaded.length > 0) {
-      // Skill names are directory names on disk (project-untrusted) — sanitize.
-      console.log(
-        chalk.gray(
-          `Loaded ${loaded.length} disk skill(s): ${loaded.map(sanitizeTerminalText).join(", ")}`,
-        ),
-      );
-    }
-  } catch {
-    // Disk skills are optional; a malformed skills dir never blocks startup.
-  }
-  // Plugin manifests are workspace-local. Their declared component folders
-  // are copied into the same loaders, preserving one source of truth.
-  for (const dir of customizations ? pluginDirs(workspaceRoot) : []) {
-    const namespace = readManifest(dir)?.name;
-    try {
-      if (!skillsDisabled)
-        loadSkillsDir(dir, { roots: pluginComponentRoots(dir, "skills"), namespace });
-    } catch {
-      /* malformed plugin is isolated */
-    }
-    try {
-      loadCommandsDir(dir, { roots: pluginComponentRoots(dir, "commands"), namespace });
-    } catch {
-      /* optional */
-    }
-    try {
-      loadAgentsDir(dir, { roots: pluginComponentRoots(dir, "agents"), namespace });
-    } catch {
-      /* optional */
-    }
-  }
-
-  // Custom slash commands (<root>/.claude/commands/<name>.md and the user-level
-  // equivalent). Each file's body is a prompt template injected via /<name>.
-  try {
-    const loadedCommands = customizations ? loadCommandsDir(workspaceRoot) : [];
-    if (loadedCommands.length > 0) {
-      console.log(
-        chalk.gray(
-          `Loaded ${loadedCommands.length} custom command(s): ${loadedCommands.join(", ")}`,
-        ),
-      );
-    }
-  } catch {
-    // Custom commands are optional; a malformed commands dir never blocks startup.
-  }
-
-  // Custom sub-agents (<root>/.claude/agents/<name>.md and the user-level
-  // equivalent). Registered into the sub-agent type registry so the Task tool's
-  // `subagent_name` enum and /agents pick them up.
-  try {
-    const loadedAgents = customizations ? loadAgentsDir(workspaceRoot) : [];
-    if (loadedAgents.length > 0) {
-      console.log(
-        chalk.gray(`Loaded ${loadedAgents.length} custom agent(s): ${loadedAgents.join(", ")}`),
-      );
-    }
-  } catch {
-    // Custom agents are optional; a malformed agents dir never blocks startup.
-  }
-
-  // Official CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS (2.1.202 wjr gate):
-  // removes the built-in Explore/Plan agents. Runs AFTER disk agents load so a
-  // same-named custom agent survives (only source==="built-in" is removed).
-  try {
-    const removed = applyDisableExplorePlanEnv();
-    if (removed.length > 0) {
-      console.log(
-        chalk.gray(
-          `Disabled built-in agent(s) per CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS: ${removed.join(", ")}`,
-        ),
-      );
-    }
-  } catch {
-    // Advisory only.
-  }
-
-  // Official parity (2.1.202): every custom agent's "name: whenToUse" hint
-  // rides along in the Task/Agent tool prompt, so oversized descriptions tax
-  // every session. Warn when the non-built-in total passes the 15k budget.
-  try {
-    const descTokens = agentDescriptionTokens();
-    if (descTokens > AGENT_DESCRIPTION_TOKEN_LIMIT) {
-      console.log(
-        chalk.yellow(
-          `Large agent descriptions (~${descTokens.toLocaleString()} tokens > ` +
-            `${AGENT_DESCRIPTION_TOKEN_LIMIT.toLocaleString()}) — trim agent descriptions ` +
-            `in .claude/agents/`,
-        ),
-      );
-    }
-  } catch {
-    // Advisory only.
-  }
-
-  // Rebuild the Task/Agent tool descriptions now that disk agents are
-  // registered — and in lean form (whenToUseLean) when the description budget
-  // is blown (official Y$l). The adapter reads promptDescription per request,
-  // so the new text takes effect immediately.
-  try {
-    const lean = agentDescriptionTokens() > AGENT_DESCRIPTION_TOKEN_LIMIT;
-    TaskTool.promptDescription = buildTaskPromptDescription(lean);
-    AgentTool.promptDescription = buildAgentPromptDescription(lean);
-  } catch {
-    // Descriptions are cosmetic; never block startup.
-  }
+  loadWorkspaceExtensions(workspaceRoot, { customizations, skillsDisabled });
 
   // MCP Setup
   const mcpManager = new MCPManager();

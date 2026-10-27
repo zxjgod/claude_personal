@@ -13,7 +13,7 @@ function isCatalogEntry(s: SessionRow): s is SessionCatalogEntry {
 function formatSession(s: SessionRow, currentId: string): string {
   const marker = s.sessionId === currentId ? chalk.green("*") : " ";
   const pin = isCatalogEntry(s) && s.pinned ? chalk.yellow("📌 ") : "   ";
-  const state = s.taskState;
+  const state = sanitizeTerminalText(s.taskState);
   // A `-n, --name` label replaces the truncated id; unnamed sessions keep
   // the id, which is what /resume takes. Both the label and the preview are
   // read back from the session file on disk, so they are sanitized like any
@@ -35,11 +35,11 @@ async function resolveSession(
   const sessions = await ctx.persistence!.listSessions();
   const matches = findSessionByPrefix(sessions, idOrPrefix);
   if (matches.length === 0) {
-    console.log(chalk.yellow(`  Session not found: ${idOrPrefix}`));
+    console.log(chalk.yellow(`  Session not found: ${sanitizeTerminalText(idOrPrefix)}`));
     return null;
   }
   if (matches.length > 1) {
-    console.log(chalk.yellow(`  Ambiguous session prefix: ${idOrPrefix}`));
+    console.log(chalk.yellow(`  Ambiguous session prefix: ${sanitizeTerminalText(idOrPrefix)}`));
     for (const s of matches.slice(0, 10)) console.log(formatSession(s, ctx.sessionId));
     return null;
   }
@@ -67,6 +67,24 @@ async function deleteSession(
       ),
     );
     return;
+  }
+
+  if (!force) {
+    if (!ctx.input) {
+      console.log(
+        chalk.yellow(
+          "  Refusing to delete a session without interactive confirmation. Re-run with --force to delete it.",
+        ),
+      );
+      return;
+    }
+    const confirmed = await ctx.input.askConfirmation(
+      `Delete session ${match.sessionId}? This cannot be undone.`,
+    );
+    if (!confirmed) {
+      console.log(chalk.gray("  Session deletion cancelled; nothing was deleted."));
+      return;
+    }
   }
 
   await ctx.persistence!.deleteSession(match.sessionId);
@@ -116,11 +134,11 @@ async function searchSessions(
   }
   const matches = await ctx.persistence!.searchSessions(query);
   if (matches.length === 0) {
-    console.log(chalk.gray(`  No sessions matched: ${query}`));
+    console.log(chalk.gray(`  No sessions matched: ${sanitizeTerminalText(query)}`));
     return;
   }
   console.log("");
-  console.log(chalk.bold(`  Sessions matching "${query}":`));
+  console.log(chalk.bold(`  Sessions matching "${sanitizeTerminalText(query)}":`));
   for (const s of matches.slice(0, 20)) console.log(formatSession(s, ctx.sessionId));
   if (matches.length > 20) console.log(chalk.gray(`  … ${matches.length - 20} more`));
 }
@@ -138,8 +156,8 @@ export const sessionsCommand: SlashCommand = {
     const deleteMatch = trimmed.match(/^(delete|rm|remove)\s+(.+)$/i);
     if (deleteMatch) {
       const rawArgs = deleteMatch[2]!;
-      const force = /\s+--force$/i.test(rawArgs);
-      const sessionIdArg = rawArgs.replace(/\s+--force$/i, "");
+      const force = /(?:^|\s)--force(?=\s|$)/i.test(rawArgs);
+      const sessionIdArg = rawArgs.replace(/(?:^|\s*)--force(?=\s|$)/gi, "").trim();
       await deleteSession(sessionIdArg, force, ctx);
       return;
     }

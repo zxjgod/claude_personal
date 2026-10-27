@@ -110,7 +110,7 @@ export async function initSession(deps: {
 
   // Generate or resume session
   if (sessionId) {
-    const existing = await persistence.load(sessionId);
+    const existing = await persistence.loadForResume(sessionId);
     if (existing) {
       // F5: a session resumed after a long idle starts cheaper — old
       // compactable tool results are cleared (config-gated, idempotent).
@@ -179,7 +179,7 @@ export function createResumeSession(deps: {
     const sessions = await persistence.searchSessions(idOrPrefix);
     const matches = sessions.filter((s) => s.sessionId.startsWith(idOrPrefix));
     if (matches.length !== 1) return false;
-    const existing = await persistence.load(matches[0]!.sessionId);
+    const existing = await persistence.loadForResume(matches[0]!.sessionId);
     if (!existing) return false;
     if (session.id !== existing.sessionId) {
       saveSessionRuntime(persistence.workspaceRoot, session.id);

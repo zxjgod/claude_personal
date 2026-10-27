@@ -1,6 +1,7 @@
 // /cost — show token usage and estimated cost this session
 import chalk from "chalk";
 import { formatUsd } from "../tui/session-stats.js";
+import { sanitizeTerminalText } from "../tui/terminal-width.js";
 import type { SlashCommand } from "./types.js";
 
 export const costCommand: SlashCommand = {
@@ -32,7 +33,9 @@ export const costCommand: SlashCommand = {
     }
     if (cost === null) {
       console.log(
-        chalk.gray(`    Est. cost:    unknown (no pricing for ${ctx.modelConfig.model})`),
+        chalk.gray(
+          `    Est. cost:    unknown (no pricing for ${sanitizeTerminalText(ctx.modelConfig.model)})`,
+        ),
       );
     } else {
       console.log(

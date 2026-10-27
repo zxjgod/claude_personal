@@ -9,6 +9,7 @@ import {
   type CommandInfo,
   createRawInputReader,
   promptPermissionMenu,
+  promptSelectMenu,
 } from "../tui/cli-interactive.js";
 import { palette } from "../tui/theme.js";
 
@@ -113,6 +114,35 @@ describe("createRawInputReader (TTY)", () => {
     await expect(promise).resolves.toBe("/clear ");
   });
 
+  it("Escape keeps suggestions closed until the input content changes", async () => {
+    const input = new FakeStdin();
+    const { out, chunks } = fakeStdout();
+    const reader = createRawInputReader({ commands: COMMANDS, input: input as any, output: out });
+    const promise = reader.readInput();
+    const frame = () =>
+      [...chunks].reverse().find((chunk) => chunk.includes("> /") && chunk.includes("─")) ?? "";
+
+    input.key("/h");
+    expect(frame()).toContain("/help");
+    input.key("\x1b");
+    expect(frame()).toContain("> /h");
+    expect(frame()).not.toContain("/help");
+
+    // Cursor-only repaints do not constitute an input change.
+    input.key("\x1b[D");
+    input.key("\x1b[C");
+    expect(frame()).not.toContain("/help");
+
+    input.key("e"); // /h + e = /he: a real edit recomputes suggestions
+    expect(frame()).toContain("/help");
+    input.key("\x1b");
+    input.key("\x7f"); // backspace to /h also recomputes after a real change
+    expect(frame()).toContain("/help");
+
+    input.key("\r");
+    await expect(promise).resolves.toBe("/h");
+  });
+
   it("filters the dropdown to matching commands", async () => {
     const input = new FakeStdin();
     const { out, chunks } = fakeStdout();
@@ -127,6 +157,74 @@ describe("createRawInputReader (TTY)", () => {
     expect(paintFrame).not.toContain("compact");
     input.key("\r"); // submit "/h" verbatim
     await expect(promise).resolves.toBe("/h");
+  });
+});
+
+describe("promptSelectMenu", () => {
+  const options = [
+    { label: "same\x1b[31m", value: "profile-one" },
+    { label: "same\x1b[32m", value: "profile-two" },
+  ];
+
+  it("returns the raw value on Enter while sanitizing only the display label", async () => {
+    const input = new FakeStdin();
+    const { out, chunks } = fakeStdout();
+    const promise = promptSelectMenu({
+      header: "Provider",
+      question: "Choose",
+      options,
+      input: input as any,
+      output: out,
+    });
+    expect(chunks.join("")).not.toContain("\x1b[31m");
+    input.key("\r");
+    await expect(promise).resolves.toEqual(["profile-one"]);
+  });
+
+  it("returns the selected raw value for number shortcuts", async () => {
+    const input = new FakeStdin();
+    const { out } = fakeStdout();
+    const promise = promptSelectMenu({
+      header: "Provider",
+      question: "Choose",
+      options,
+      input: input as any,
+      output: out,
+    });
+    input.key("2");
+    await expect(promise).resolves.toEqual(["profile-two"]);
+  });
+
+  it("returns raw values in multi-select mode", async () => {
+    const input = new FakeStdin();
+    const { out } = fakeStdout();
+    const promise = promptSelectMenu({
+      header: "Provider",
+      question: "Choose",
+      options,
+      multiSelect: true,
+      input: input as any,
+      output: out,
+    });
+    input.key(" ");
+    input.key("2");
+    input.key("\r");
+    await expect(promise).resolves.toEqual(["profile-one", "profile-two"]);
+  });
+
+  it("keeps returning the original label when no value is supplied", async () => {
+    const input = new FakeStdin();
+    const { out } = fakeStdout();
+    const originalLabel = "raw\x1b[31m";
+    const promise = promptSelectMenu({
+      header: "Question",
+      question: "Choose",
+      options: [{ label: originalLabel }],
+      input: input as any,
+      output: out,
+    });
+    input.key("\r");
+    await expect(promise).resolves.toEqual([originalLabel]);
   });
 });
 

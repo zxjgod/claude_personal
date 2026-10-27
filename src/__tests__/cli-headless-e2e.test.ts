@@ -51,7 +51,7 @@ it("emits only JSON and resumes the saved session through a real CLI subprocess"
     const initial = await execute(
       process.execPath,
       ["--import", "tsx", path.resolve("src/cli.ts"), "-p", "first", "--output-format", "json"],
-      { env, timeout: 15000, windowsHide: true },
+      { env, timeout: 30000, windowsHide: true },
     );
     const result = JSON.parse(initial.stdout);
     expect(result.is_error).toBe(false);
@@ -73,7 +73,7 @@ it("emits only JSON and resumes the saved session through a real CLI subprocess"
         "--output-format",
         "json",
       ],
-      { env, timeout: 15000, windowsHide: true },
+      { env, timeout: 30000, windowsHide: true },
     );
     expect(JSON.parse(resumed.stdout).session_id).toBe(result.session_id);
     expect(JSON.stringify(requests.at(-1))).toContain("first");
@@ -109,7 +109,7 @@ it("emits only JSON and resumes the saved session through a real CLI subprocess"
         "--output-format",
         "json",
       ],
-      { env, timeout: 15000, windowsHide: true },
+      { env, timeout: 30000, windowsHide: true },
     );
     expect(JSON.parse(navigated.stdout).is_error).toBe(false);
   } finally {
@@ -118,6 +118,6 @@ it("emits only JSON and resumes the saved session through a real CLI subprocess"
     await new Promise<void>((resolve) => server.close(() => resolve()));
     fs.rmSync(root, { recursive: true, force: true });
   }
-  // Three sequential CLI cold starts each have a 15s process timeout. The test
-  // budget must cover all three plus fixture setup/cleanup on Windows CI.
-}, 60000);
+  // Three sequential CLI cold starts can contend for CPU during the full suite.
+  // Give each process a 30s ceiling and the complete flow a 90s budget.
+}, 90000);

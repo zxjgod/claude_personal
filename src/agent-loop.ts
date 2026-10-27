@@ -657,13 +657,14 @@ export async function* agentLoop(
                       })
                       .catch(() => {});
                   })();
-                  // Review fix ("无法压缩仍重复发送相同 oversized prompt"):
-                  // autoCompact returns the ORIGINAL array untouched when
-                  // there is nothing it can compress (≤ TAIL_SIZE messages,
-                  // or a tail that must be kept whole). Retrying the identical
-                  // request can only fail the same way — abort with the real
-                  // reason instead of burning up to 3 more paid calls.
-                  if (compacted === messages) {
+                  // autoCompact may return a new array even when there is no
+                  // safe split point. Detect an unchanged request by its message
+                  // identities, not by the outer array identity, before retrying.
+                  const nextMessages = compacted ?? messages;
+                  if (
+                    nextMessages.length === messages.length &&
+                    nextMessages.every((message, index) => message === messages[index])
+                  ) {
                     nextAction = "abort";
                     abortError = new Error(
                       "prompt_too_long: the conversation exceeds the model's context window and cannot be compacted further. Start a new session or trim the largest messages.",
@@ -671,7 +672,7 @@ export async function* agentLoop(
                     streamEnded = true;
                     break;
                   }
-                  replaceMessages(compacted!);
+                  replaceMessages(nextMessages);
                   yield {
                     type: "compacted",
                     summary: "Context compressed after context_length error",

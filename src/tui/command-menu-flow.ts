@@ -46,8 +46,10 @@ export async function runAgentsMenu(store: TuiStore, workspaceRoot: string): Pro
         if (rowId === "thinking")
           persistSubagentSettings(workspaceRoot, { thinking: value === "on" });
         else persistSubagentSettings(workspaceRoot, { sidechainMode: value as SidechainMode });
+        return true;
       } catch (error) {
         console.error(`设置未保存: ${error instanceof Error ? error.message : String(error)}`);
+        return false;
       }
     },
   );
@@ -70,13 +72,15 @@ export async function runMemoryApprovalMenu(store: TuiStore, workspaceRoot: stri
     ],
     (_rowId, value) => {
       try {
-        const { pinnedBy } = persistMemoryApproval(value === "on", workspaceRoot);
+        const { effective, pinnedBy } = persistMemoryApproval(value === "on", workspaceRoot);
         // An off-toggle can still lose to a higher-precedence true (project/
-        // local/managed layer). The picker's local state flipped — say why the
-        // gate itself did not.
+        // local/managed layer). Returning false keeps the picker's previous
+        // value visible; explain why the gate itself did not change.
         if (pinnedBy) console.error(`审批门仍被 ${pinnedBy} 强制开启（off 已写入但未生效）`);
+        return effective === (value === "on");
       } catch (error) {
         console.error(`设置未保存: ${error instanceof Error ? error.message : String(error)}`);
+        return false;
       }
     },
   );

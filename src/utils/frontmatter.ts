@@ -23,9 +23,9 @@ export interface ParsedFrontmatter {
  */
 export function parseFrontmatter(raw: string): ParsedFrontmatter {
   const text = raw.replace(/^﻿/, "");
-  const m = text.match(/^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*\r?\n?([\s\S]*)$/);
+  const m = text.match(/^---[ \t]*\r?\n(?:([\s\S]*?)\r?\n)?---[ \t]*\r?\n?([\s\S]*)$/);
   if (!m) return { frontmatter: {}, body: text.trim() };
-  const document = parseDocument(m[1]!, { uniqueKeys: true });
+  const document = parseDocument(m[1] ?? "", { uniqueKeys: true });
   if (document.errors.length)
     throw new Error(`Invalid frontmatter: ${document.errors[0]!.message}`);
   const value: unknown = document.toJS({ maxAliasCount: 0 });

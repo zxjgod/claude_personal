@@ -313,7 +313,7 @@ it("resume refreshes the caller goal holder", async () => {
   const persistence = {
     workspaceRoot: root,
     searchSessions: async () => [{ sessionId: "review-goal" }],
-    load: async () => ({
+    loadForResume: async () => ({
       sessionId: "review-goal",
       messages: [],
       updatedAt: new Date().toISOString(),

@@ -13,6 +13,12 @@ export const commitCommand: SlashCommand = {
       console.log(chalk.yellow("  Not a git repository (or git unavailable)."));
       return;
     }
+    if (summary.errors?.length) {
+      console.log(
+        chalk.red(`  Git read failed (${summary.errors.join(", ")}); no draft generated.`),
+      );
+      return;
+    }
     if (summary.files.length === 0) {
       console.log(chalk.gray("  No changes to commit (working tree clean vs HEAD)."));
       return;
@@ -38,7 +44,8 @@ export const commitCommand: SlashCommand = {
           : "";
       console.log(`    ${tag} ${chalk.cyan(sanitizeTerminalText(f.path))}${stat}`);
     }
-    if (summary.truncated) console.log(chalk.gray("    … (list truncated)"));
+    if (summary.headTruncated ?? summary.truncated)
+      console.log(chalk.gray("    … (HEAD file list truncated)"));
     console.log("");
     console.log(chalk.gray("  Review, then run:  git add -A && git commit -e"));
     console.log(chalk.gray("  (This is a draft — edit before committing.)"));

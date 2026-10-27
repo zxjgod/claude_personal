@@ -45,9 +45,12 @@ export const compactCommand: SlashCommand = {
       return;
     }
     printCompactProgress(3, total, "Replacing history with summary + tail");
+    // Copy before clearing: the no-summary path may legitimately return the
+    // caller's array, and clearing first would erase the compaction result.
+    const nextMessages = [...compacted];
     // Replace contents in place so the caller keeps the same array reference.
     ctx.messages.length = 0;
-    ctx.messages.push(...compacted);
+    ctx.messages.push(...nextMessages);
     // Compaction resets the context window; invalidate the memoized sections so
     // they are recomputed against the fresh window (kernel §4).
     resetSystemPromptCache();

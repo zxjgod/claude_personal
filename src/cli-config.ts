@@ -96,6 +96,13 @@ export function loadConfig(): ModelConfig {
       : undefined,
   });
 
+  // Keep the saved UI preference in the same modelConfig channel that runTui
+  // applies before its first frame. The value comes from the merged settings
+  // source used by /theme persistence, not a separate theme-only file.
+  if (settings.theme === "dark" || settings.theme === "light") {
+    config.options = { ...config.options, theme: settings.theme };
+  }
+
   const imageInputOverride = process.env.LLM_SUPPORTS_IMAGES ?? "";
   if (/^(true|false|1|0)$/i.test(imageInputOverride)) {
     config.options = {

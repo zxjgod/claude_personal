@@ -29,6 +29,31 @@ describe("session-stats", () => {
     expect(s.toolCalls).toBe(4);
   });
 
+  it("reset clears token, cache, and historical cost buckets", () => {
+    const s = new SessionStats();
+    s.addUsage(1_000_000, 50, { read: 100, creation: 200 }, "claude-sonnet-4-6", "anthropic");
+    s.addUsage(2_000_000, 60, { read: 300 }, "gpt-4o-mini", "openai");
+    s.addToolCalls(4);
+
+    s.reset();
+
+    expect(s).toMatchObject({
+      inputTokens: 0,
+      outputTokens: 0,
+      apiCalls: 0,
+      toolCalls: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+    });
+    expect(s.totalTokens).toBe(0);
+    expect(s.cacheHitRate).toBeNull();
+    expect(s.cost("claude-opus-4-8")).toBe(0);
+
+    s.addUsage(1_000_000, 0, undefined, "gpt-4o-mini", "openai");
+    expect(s.cost("claude-opus-4-8")).toBeCloseTo(0.15);
+    expect(s.totalTokens).toBe(1_000_000);
+  });
+
   it("looks up known model pricing by substring", () => {
     // Opus 4.8 pricing per the WS3 model-metadata table (verified against the
     // claude-api skill's model list: $5 in / $25 out per 1M).
@@ -56,11 +81,28 @@ describe("session-stats", () => {
     expect(estimateCost("mystery-model", 1000, 1000)).toBeNull();
   });
 
-  it("SessionStats.cost delegates to estimateCost", () => {
+  it("SessionStats.cost prices legacy usage with the supplied model", () => {
     const s = new SessionStats();
     s.addUsage(1_000_000, 0);
     expect(s.cost("claude-sonnet-4-6")).toBeCloseTo(3);
     expect(s.cost("unknown")).toBeNull();
+  });
+
+  it("keeps historical costs in the model bucket that produced each usage", () => {
+    const s = new SessionStats();
+    s.addUsage(1_000_000, 0, undefined, "claude-sonnet-4-6", "anthropic");
+    s.addUsage(1_000_000, 0, undefined, "gpt-4o-mini", "openai");
+
+    // The argument is only a fallback for legacy, model-less usage. It must
+    // not reprice either recorded bucket after a switch to a more expensive model.
+    expect(s.cost("claude-opus-4-8")).toBeCloseTo(3.15);
+    expect(s.cost("gpt-4o")).toBeCloseTo(3.15);
+  });
+
+  it("does not reprice an unknown historical model under a known current model", () => {
+    const s = new SessionStats();
+    s.addUsage(1_000, 0, undefined, "mystery-model", "custom");
+    expect(s.cost("gpt-4o")).toBeNull();
   });
 
   it("formats USD with adaptive precision", () => {
@@ -74,15 +116,13 @@ describe("session-stats", () => {
     expect(formatDuration(83_000)).toBe("1m 23s");
   });
 
-  // 16.5: cache hit rate uses input + cacheRead as the denominator so the
-  // same accounting works for both providers (Anthropic input excludes cache
-  // tokens; OpenAI prompt_tokens includes them but we surface cached_tokens
-  // separately and do not double-count).
-  it("cacheHitRate = cacheRead / (input + cacheRead)", () => {
+  // Cache metrics use each call's provider-normalized prompt size. Legacy
+  // calls without a provider retain the Anthropic split-cache interpretation.
+  it("cacheHitRate = cacheRead / prompt input for legacy Anthropic usage", () => {
     const s = new SessionStats();
-    // Anthropic-style: non-cached input 100, cache read 400.
     s.addUsage(100, 0, { read: 400 });
     expect(s.cacheHitRate).toBeCloseTo(400 / 500);
+    expect(s.totalTokens).toBe(500);
   });
 
   it("cacheHitRate is null when nothing billed", () => {
@@ -90,12 +130,42 @@ describe("session-stats", () => {
     expect(s.cacheHitRate).toBeNull();
   });
 
-  it("does not double-count cache creation into the hit-rate denominator", () => {
+  it("includes Anthropic cache creation in the denominator but not as a hit", () => {
     const s = new SessionStats();
-    // 100 fresh input + 300 cache creation + 200 cache read on a later call.
     s.addUsage(100, 0, { creation: 300 });
     s.addUsage(50, 0, { read: 200 });
-    // denominator = input(150) + cacheRead(200) = 350; creation is not added.
-    expect(s.cacheHitRate).toBeCloseTo(200 / 350);
+    expect(s.cacheHitRate).toBeCloseTo(200 / 650);
+    expect(s.totalTokens).toBe(650);
+  });
+
+  it("does not add OpenAI cached tokens to input or total tokens again", () => {
+    const s = new SessionStats();
+    s.addUsage(1_000, 200, { read: 600 }, "gpt-4o", "openai");
+
+    expect(s.inputTokens).toBe(1_000);
+    expect(s.totalTokens).toBe(1_200);
+    expect(s.cacheHitRate).toBeCloseTo(0.6);
+  });
+
+  it("adds Anthropic cache read and creation to total prompt tokens", () => {
+    const s = new SessionStats();
+    s.addUsage(100, 20, { read: 400, creation: 300 }, "claude-sonnet-4-6", "anthropic");
+
+    expect(s.inputTokens).toBe(100);
+    expect(s.totalTokens).toBe(820);
+    expect(s.cacheHitRate).toBeCloseTo(0.5);
+  });
+
+  it("combines mixed-provider prompt totals and cache hits without double counting", () => {
+    const s = new SessionStats();
+    s.addUsage(1_000, 200, { read: 600 }, "gpt-4o", "openai");
+    s.addUsage(100, 20, { read: 400, creation: 300 }, "claude-sonnet-4-6", "anthropic");
+
+    expect(s.inputTokens).toBe(1_100);
+    expect(s.outputTokens).toBe(220);
+    expect(s.cacheReadTokens).toBe(1_000);
+    expect(s.cacheCreationTokens).toBe(300);
+    expect(s.totalTokens).toBe(2_020);
+    expect(s.cacheHitRate).toBeCloseTo(1_000 / 1_800);
   });
 });

@@ -22,8 +22,8 @@ function clamp(n: number, lo: number, hi: number): number {
 export function TogglePicker({ overlay }: { overlay: Extract<Overlay, { kind: "togglePicker" }> }) {
   const { title, hint, rows, onChange } = overlay;
   const [cursor, setCursor] = useState(0);
-  // Local copy of each row's current value — flips re-render instantly while
-  // onChange persists in the background.
+  // Local copy of each row's current value — committed only after onChange
+  // confirms that the requested value was persisted and actually took effect.
   const [values, setValues] = useState<string[]>(rows.map((r) => r.current));
   const cursorRef = useRef(cursor);
   const valuesRef = useRef(values);
@@ -43,10 +43,10 @@ export function TogglePicker({ overlay }: { overlay: Extract<Overlay, { kind: "t
     const at = row.values.indexOf(cur);
     // Wrap around: ← from the first档位 lands on the last (and vice versa).
     const next = row.values[(at + delta + row.values.length) % row.values.length]!;
+    if (!onChange(row.id, next)) return;
     const nextValues = valuesRef.current.map((v, i) => (i === rowIdx ? next : v));
     valuesRef.current = nextValues;
     setValues(nextValues);
-    onChange(row.id, next); // 即刻生效 — the flow persists right away
   };
 
   useInput((_input, key) => {

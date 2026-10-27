@@ -60,7 +60,11 @@ it("resume releases old scheduling state after saving it, and can restore its qu
   const persistence = {
     workspaceRoot: root,
     searchSessions: async () => [{ sessionId: "new" }],
-    load: async () => ({ sessionId: "new", messages: [], updatedAt: new Date().toISOString() }),
+    loadForResume: async () => ({
+      sessionId: "new",
+      messages: [],
+      updatedAt: new Date().toISOString(),
+    }),
   };
   await createResumeSession({
     persistence: persistence as never,
@@ -103,7 +107,11 @@ it("resume drops the old session's stranded notification queue", async () => {
   const persistence = {
     workspaceRoot: root,
     searchSessions: async () => [{ sessionId: "new" }],
-    load: async () => ({ sessionId: "new", messages: [], updatedAt: new Date().toISOString() }),
+    loadForResume: async () => ({
+      sessionId: "new",
+      messages: [],
+      updatedAt: new Date().toISOString(),
+    }),
   };
   await createResumeSession({
     persistence: persistence as never,

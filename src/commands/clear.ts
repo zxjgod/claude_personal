@@ -15,7 +15,7 @@ import type { SlashCommand } from "./types.js";
 export const clearCommand: SlashCommand = {
   name: "clear",
   description: "Clear the conversation history",
-  run: (_args, ctx): undefined => {
+  run: async (_args, ctx): Promise<undefined> => {
     stopLoop(
       { workspaceRoot: ctx.workspaceRoot, sessionId: ctx.sessionId },
       "Conversation cleared.",
@@ -46,6 +46,17 @@ export const clearCommand: SlashCommand = {
     // The memoized system-prompt sections are scoped to a conversation; a fresh
     // conversation may have different memory/env, so drop the cache (kernel §4).
     resetSystemPromptCache();
+    if (ctx.persistence) {
+      try {
+        await ctx.persistence.save(ctx.sessionId, ctx.messages, { taskState: "paused" });
+      } catch (error) {
+        console.warn(
+          chalk.yellow("  Conversation cleared locally, but saving the empty session failed:"),
+          error instanceof Error ? error.message : String(error),
+        );
+        return;
+      }
+    }
     console.log(chalk.gray("  Conversation cleared."));
   },
 };

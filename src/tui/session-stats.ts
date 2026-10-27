@@ -13,6 +13,7 @@
 // ============================================================
 
 import { type ModelPricing, modelContextWindow, modelPricing } from "../model-metadata.js";
+import { providerPromptTokens } from "../token-estimator.js";
 
 // Re-exported for existing importers of the old local interface.
 export type { ModelPricing };
@@ -42,6 +43,11 @@ export function estimateCost(
 }
 
 export class SessionStats {
+  /** Provider-normalized prompt tokens: OpenAI input as-is, Anthropic plus cache. */
+  private promptTokens = 0;
+  /** Token counts pinned to the model that actually served each API call. */
+  private costBuckets = new Map<string | null, { inputTokens: number; outputTokens: number }>();
+
   inputTokens = 0;
   outputTokens = 0;
   /** Number of LLM round-trips (API calls that reported usage). */
@@ -67,36 +73,60 @@ export class SessionStats {
     this.toolCalls = 0;
     this.cacheReadTokens = 0;
     this.cacheCreationTokens = 0;
+    this.promptTokens = 0;
+    this.costBuckets.clear();
     this.startedAt = Date.now();
   }
 
-  /** Record one API call's token usage. */
+  /**
+   * Record one API call's token usage.
+   *
+   * `model` must be the model that actually served this call, so later model
+   * switches cannot reprice its history. Legacy calls that omit it are priced
+   * under the model passed to cost(). `provider` defaults to Anthropic's split
+   * cache reporting for compatibility with existing cache-aware callers;
+   * OpenAI-compatible callers should pass their provider explicitly.
+   */
   addUsage(
     inputTokens: number,
     outputTokens: number,
     cache?: { read?: number; creation?: number },
+    model?: string,
+    provider = "anthropic",
   ): void {
+    const cacheRead = cache?.read ?? 0;
+    const cacheCreation = cache?.creation ?? 0;
     this.inputTokens += inputTokens;
     this.outputTokens += outputTokens;
+    this.promptTokens += providerPromptTokens(
+      {
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
+        cache_read_input_tokens: cacheRead,
+        cache_creation_input_tokens: cacheCreation,
+      },
+      provider,
+    );
     this.apiCalls += 1;
-    if (cache) {
-      this.cacheReadTokens += cache.read ?? 0;
-      this.cacheCreationTokens += cache.creation ?? 0;
-    }
+    this.cacheReadTokens += cacheRead;
+    this.cacheCreationTokens += cacheCreation;
+
+    const bucketKey = model ?? null;
+    const bucket = this.costBuckets.get(bucketKey) ?? { inputTokens: 0, outputTokens: 0 };
+    bucket.inputTokens += inputTokens;
+    bucket.outputTokens += outputTokens;
+    this.costBuckets.set(bucketKey, bucket);
   }
 
   /**
-   * Prompt-cache hit rate: cached input tokens / total input tokens (12.3).
-   * Returns null when there were no input tokens yet. With the unified usage
-   * accounting (16.5), `inputTokens` is the non-cached input from Anthropic
-   * (which excludes cache tokens) OR prompt_tokens from OpenAI (which
-   * includes cached). To get a faithful denominator across both providers we
-   * add cache_read back in, so the rate = cacheRead / (input + cacheRead).
+   * Prompt-cache hit rate: cache reads / provider-normalized prompt tokens.
+   * Anthropic cache reads and writes are outside input_tokens and both belong
+   * in the denominator; OpenAI cached tokens are already inside input_tokens.
+   * Returns null when there were no prompt tokens yet.
    */
   get cacheHitRate(): number | null {
-    const denom = this.inputTokens + this.cacheReadTokens;
-    if (denom === 0) return null;
-    return this.cacheReadTokens / denom;
+    if (this.promptTokens === 0) return null;
+    return this.cacheReadTokens / this.promptTokens;
   }
 
   /** Record that `n` tools executed (default 1). */
@@ -105,12 +135,24 @@ export class SessionStats {
   }
 
   get totalTokens(): number {
-    return this.inputTokens + this.outputTokens;
+    return this.promptTokens + this.outputTokens;
   }
 
-  /** Best-effort cost for this session under `model`, or null if unknown. */
+  /**
+   * Best-effort total session cost. Recorded model buckets always use their
+   * own historical pricing; `model` prices only legacy calls made without one.
+   * Returns null if any bucket has unknown pricing.
+   */
   cost(model: string): number | null {
-    return estimateCost(model, this.inputTokens, this.outputTokens);
+    if (this.costBuckets.size === 0) return estimateCost(model, 0, 0);
+
+    let total = 0;
+    for (const [bucketModel, bucket] of this.costBuckets) {
+      const cost = estimateCost(bucketModel ?? model, bucket.inputTokens, bucket.outputTokens);
+      if (cost === null) return null;
+      total += cost;
+    }
+    return total;
   }
 
   /** Elapsed wall-clock since the session started, in ms. */

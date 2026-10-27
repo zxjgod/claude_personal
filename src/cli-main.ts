@@ -58,7 +58,8 @@ import {
   parseSessionAgent,
   parseWorktreeFlag,
 } from "./cli-session-flags.js";
-import { setupTools } from "./cli-tools.js";
+import { reloadWorkspaceExtensions, setupTools } from "./cli-tools.js";
+import type { CommandCatalogEntry } from "./commands/types.js";
 // commands.js (full slash-command graph) and cli-prompts.js (TUI render
 // chain -> markdown -> highlight.js, ~200 files) are deliberately NOT static
 // imports: headless `-p` runs return before either is needed, so both are
@@ -107,7 +108,7 @@ import {
   type FileResourceResult,
   parseFileSpecs,
 } from "./startup-files.js";
-import { getSubagentType, listSubagentNames } from "./subagents.js";
+import { getSubagentType, listSubagentNames, type SubagentType } from "./subagents.js";
 import { buildSystemPrompt, renderSystemPrompt } from "./system-prompt.js";
 import { resolveTmuxStartup } from "./tmux.js";
 import { loadDurableJobs } from "./tools/extended/cron-shared.js";
@@ -460,6 +461,9 @@ async function main() {
     workspaceRoot,
     verbose,
   });
+  // Stable array identity: raw input and Ink keep this catalog while /cd
+  // replaces its contents from the same live registry used by /help.
+  const commandCatalog: CommandCatalogEntry[] = [];
 
   // --- Session agent (official `--agents` / `--agent`) ---
   //
@@ -467,6 +471,7 @@ async function main() {
   // disk or plugin agent: a definition typed on the command line is the most
   // explicit statement of intent available.
   const inlineAgentsJson = parseInlineAgentsJson(process.argv);
+  const sessionInlineAgents: SubagentType[] = [];
   if (inlineAgentsJson !== undefined) {
     const inline = registerInlineAgents(inlineAgentsJson);
     for (const warning of inline.warnings) console.warn(chalk.yellow(`Warning: ${warning}`));
@@ -476,6 +481,7 @@ async function main() {
       return;
     }
     console.log(chalk.gray(`Session agents: ${inline.agents.map((a) => a.name).join(", ")}`));
+    sessionInlineAgents.push(...inline.agents);
   }
 
   const sessionAgentName = parseSessionAgent(process.argv);
@@ -538,6 +544,9 @@ async function main() {
     }
     workspaceRoot = next;
     claudeMdContent = loadClaudeMd(next);
+    reloadWorkspaceExtensions(next, { preserveAgents: sessionInlineAgents });
+    const { getAvailableCommands } = await import("./commands.js");
+    commandCatalog.splice(0, commandCatalog.length, ...getAvailableCommands());
     // Review fix ("/cd 后沿用旧工作区权限策略"): every security-relevant
     // derivation must be recomputed for the NEW workspace — otherwise the new
     // workspace's deny/ask rules never apply and the OLD workspace's trusted
@@ -904,10 +913,12 @@ async function main() {
   /** Scheduler delivery: inject a synthetic user line (idle REPL only). */
   let injectInput: (line: string) => void;
 
+  const { getAvailableCommands } = await import("./commands.js");
+  commandCatalog.splice(0, commandCatalog.length, ...getAvailableCommands());
+
   if (isInteractive) {
-    const { COMMANDS } = await import("./commands.js");
     const reader = createRawInputReader({
-      commands: COMMANDS.map((c) => ({ name: c.name, description: c.description })),
+      commands: commandCatalog,
     });
     askQuestion = reader.askQuestion;
     readInput = reader.readInput;
@@ -1058,12 +1069,14 @@ async function main() {
     editorMode: editorModeHolder,
     outputStyle: outputStyleHolder,
     permissionPolicy,
-    input: {
-      askConfirmation: async (question: string): Promise<boolean> => {
-        const answer = await askQuestion(question);
-        return /^y(es)?$/i.test(answer ?? "");
-      },
-    },
+    input: isInteractive
+      ? {
+          askConfirmation: async (question: string): Promise<boolean> => {
+            const answer = await askQuestion(question);
+            return /^y(es)?$/i.test(answer ?? "");
+          },
+        }
+      : undefined,
   });
 
   // --- TUI path (9.1, 9.7) ---
@@ -1106,7 +1119,6 @@ async function main() {
       );
     }
     const { runTui } = await import("./tui/run.js");
-    const { COMMANDS } = await import("./commands.js");
     const { permissionKey } = await import("./cli-prompts.js");
     tuiActive = true;
     await runTui({
@@ -1127,7 +1139,7 @@ async function main() {
       // away from /rewind's (live) ctx.sessionId.
       getSessionId: () => session.id,
       permissionMode,
-      commands: COMMANDS.map((c) => ({ name: c.name, description: c.description })),
+      commands: commandCatalog,
       hooks,
       makeCommandContext,
       alwaysAllow,
@@ -1252,7 +1264,7 @@ async function main() {
     makeCommandContext,
     isInteractive,
     quiet,
-    showTokens: uiState.showTokens,
+    getShowTokens: () => uiState.showTokens,
   });
 
   // F1: same session-exit auto-extraction for the line-based REPL path.

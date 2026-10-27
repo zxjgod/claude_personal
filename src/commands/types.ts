@@ -38,6 +38,8 @@ export interface CommandContext {
   resumeSession?: (sessionId: string) => Promise<boolean>;
   /** Cumulative token/cost/tool stats for this session. */
   stats?: SessionStats;
+  /** Cancellation for asynchronous command/template/fork-skill work. */
+  abortSignal?: AbortSignal;
   /** Tools loaded this session, with their source for /tools. */
   tools?: Array<{ tool: Tool; source: ToolSource }>;
   /** The active permission mode (for /status, /config). */
@@ -103,6 +105,12 @@ export interface CommandResult {
    * and the caller is responsible for pushing + running the prompt.
    */
   prompt?: string;
+}
+
+/** Lightweight command metadata shared by help, completion, and pickers. */
+export interface CommandCatalogEntry {
+  name: string;
+  description: string;
 }
 
 export interface SlashCommand {
