@@ -6,6 +6,7 @@ import { agentLoop } from "./agent-loop.js";
 import { beginUserTurn } from "./checkpoint.js";
 import type { parseCliArgs } from "./cli-args.js";
 import { sessionGoal } from "./goal-runtime.js";
+import { HeadlessControlChannel } from "./headless-control.js";
 import {
   clearHookLifecycleSink,
   hookLifecycleMessage,
@@ -14,8 +15,17 @@ import {
 } from "./hook-events.js";
 import { configBudget, withModelBudget } from "./model-budget.js";
 import { type ModelPricing, modelPricing } from "./model-metadata.js";
+import { checkPermission } from "./permissions.js";
 import { generatePromptSuggestion } from "./prompt-suggestions.js";
-import type { HookRunner, Message, ModelCaller, ModelConfig, Tool, ToolContext } from "./types.js";
+import type {
+  AskUserFn,
+  HookRunner,
+  Message,
+  ModelCaller,
+  ModelConfig,
+  Tool,
+  ToolContext,
+} from "./types.js";
 
 /**
  * Route hook lifecycle events into the stream-json output.
@@ -161,6 +171,93 @@ async function readTextStdin(
   }
   return text.trim();
 }
+/**
+ * Continuous stream-json input pump. Unlike a plain generator pulled by the
+ * turn loop, the reader runs independently: control frames (interrupt,
+ * set_model, permission responses) are handled WHILE a turn is executing,
+ * and user messages queue for sequential turns. EOF closes the queue and
+ * fails closed every parked permission ask.
+ */
+async function* streamJsonPrompts(
+  args: ReturnType<typeof parseCliArgs>,
+  input: NodeJS.ReadableStream,
+  control: HeadlessControlChannel,
+): AsyncGenerator<string> {
+  if ((input as { isTTY?: boolean }).isTTY)
+    throw new Error(
+      "stream-json input requires a pipe or file; interactive terminal input is unsupported",
+    );
+  const queue: string[] = [];
+  if (args.prompt) queue.push(args.prompt);
+  let closed = false;
+  let failure: unknown;
+  let wake: (() => void) | undefined;
+  const notify = () => {
+    wake?.();
+    wake = undefined;
+  };
+  const lines = readline.createInterface({ input, crlfDelay: Infinity });
+  const reader = (async () => {
+    try {
+      for await (const line of lines) {
+        if (!line.trim()) continue;
+        const value = JSON.parse(line) as {
+          type?: string;
+          request_id?: unknown;
+          request?: unknown;
+          response?: unknown;
+          prompt?: unknown;
+          content?: unknown;
+          message?: { role?: string; content?: unknown };
+        };
+        if (value?.type === "control_request") {
+          control.handleRequest(value.request_id, value.request);
+          continue;
+        }
+        if (value?.type === "control_response") {
+          control.handleResponse(value.response);
+          continue;
+        }
+        if (value?.type && value.type !== "user")
+          throw new Error(`Unsupported input message: ${value.type}`);
+        const content = value?.message?.content ?? value?.prompt ?? value?.content;
+        if (typeof content === "string") queue.push(content);
+        else if (Array.isArray(content))
+          queue.push(
+            content
+              .filter((block) => block?.type === "text")
+              .map((block) => block.text)
+              .join("\n"),
+          );
+        else throw new Error("Expected a user message with text content");
+        notify();
+      }
+    } catch (error) {
+      failure = error;
+    } finally {
+      closed = true;
+      control.denyAllPending("permission prompt input stream closed");
+      notify();
+    }
+  })();
+  // The reader never rejects: input failures are stored and rethrown by the
+  // consumer below so the outer handler still emits a terminal result frame.
+  void reader;
+  try {
+    while (true) {
+      while (queue.length > 0) yield queue.shift()!;
+      if (failure) throw failure;
+      if (closed) return;
+      await new Promise<void>((resolve) => {
+        wake = resolve;
+      });
+    }
+  } finally {
+    lines.close();
+    control.denyAllPending("headless session ended");
+  }
+}
+
 export async function runHeadless(deps: {
   args: ReturnType<typeof parseCliArgs>;
   input: NodeJS.ReadableStream;
@@ -205,6 +302,17 @@ export async function runHeadless(deps: {
       (!Number.isFinite(args.maxBudgetUsd) || args.maxBudgetUsd <= 0)
     )
       throw new Error("--max-budget-usd must be positive");
+    if (args.permissionPromptTool !== undefined && args.permissionPromptTool !== "stdio")
+      throw new Error(
+        '--permission-prompt-tool: only "stdio" is supported; MCP permission tools are not implemented',
+      );
+    if (
+      args.permissionPromptTool === "stdio" &&
+      (args.inputFormat !== "stream-json" || args.outputFormat !== "stream-json")
+    )
+      throw new Error(
+        "--permission-prompt-tool stdio requires --input-format stream-json and --output-format stream-json",
+      );
     price = modelPricing(deps.config.model);
     if (args.maxBudgetUsd && !price)
       throw new Error(
@@ -239,6 +347,73 @@ export async function runHeadless(deps: {
       uuid: randomUUID(),
     });
   const budgetCaller = withModelBudget(deps.callModel);
+  // Control channel exists for every bidirectional stream-json session (interrupt,
+  // set_model, set_permission_mode, initialize). can_use_tool approval frames
+  // only flow when the peer opted in via --permission-prompt-tool stdio —
+  // without it, asks stay auto-denied exactly as before.
+  let turnAbort: AbortController | undefined;
+  const control =
+    args.inputFormat === "stream-json" && streamJson
+      ? new HeadlessControlChannel(json, {
+          interrupt: () => turnAbort?.abort("interrupted via control request"),
+          setModel: (model) => {
+            // The channel guarantees a non-empty model name (resets and
+            // blanks are answered with an error frame before we get here).
+            deps.config.model = model;
+            const nextPrice = modelPricing(model);
+            if (nextPrice) price = nextPrice;
+          },
+          setPermissionMode: (mode) => {
+            context.permissionMode = mode;
+          },
+          currentModel: () => deps.config.model,
+        })
+      : undefined;
+  const askUser: AskUserFn =
+    control && args.permissionPromptTool === "stdio"
+      ? async (tool, input, riskHint, requestContext) => {
+          const decision = await control.requestPermission(tool.name, input, riskHint);
+          if (decision.behavior !== "allow") {
+            if (decision.interrupt) turnAbort?.abort("permission denied with interrupt");
+            return false;
+          }
+          if (decision.updatedInput) {
+            // Tool-specific checks (for example MCP and MemorySave) call
+            // context.askUser internally and may pass a display-only copy.
+            // A rewrite there cannot safely be applied to the executor input.
+            if (requestContext?.source !== "permission") return false;
+            try {
+              const validated = (
+                tool.validateInput
+                  ? tool.validateInput(decision.updatedInput)
+                  : decision.updatedInput
+              ) as Record<string, unknown>;
+              const permissionRecheck = await checkPermission(tool, validated, context, {
+                askUser: async () => true,
+                classifier: context.permissionClassifier,
+              });
+              if (!permissionRecheck.allowed) return false;
+              // A few tool-level checks contain their own approval prompt.
+              // The current can_use_tool response already approved this exact
+              // rewritten input, so recheck their policy without opening a
+              // second prompt. Preserve any approval state they record.
+              const recheckContext: ToolContext = { ...context, askUser: async () => true };
+              const toolRecheck = await tool.checkPermissions(validated, recheckContext);
+              if (!toolRecheck.allowed) return false;
+              if (recheckContext.approvedUserMemoryWrite !== undefined)
+                context.approvedUserMemoryWrite = recheckContext.approvedUserMemoryWrite;
+              // checkPermission hands us the executor's input object by
+              // reference and the executor runs that same object — rewrite
+              // in place so the approved input is what actually executes.
+              for (const key of Object.keys(input)) delete input[key];
+              Object.assign(input, validated);
+            } catch {
+              return false;
+            }
+          }
+          return true;
+        }
+      : async () => false;
   // Review fix ("json 模式多对象"): `--output-format json` used to emit one
   // JSON object PER PROMPT — with both -p and stdin (or any multi-prompt
   // input) stdout held several concatenated objects, which is not a valid
@@ -246,8 +421,13 @@ export async function runHeadless(deps: {
   // per-prompt results and flush them as ONE document at the end (a single
   // result stays a bare object; multiple become an array).
   try {
-    for await (const prompt of headlessInputs(args, deps.input)) {
+    const prompts = control
+      ? streamJsonPrompts(args, deps.input, control)
+      : headlessInputs(args, deps.input);
+    for await (const prompt of prompts) {
       const started = Date.now();
+      turnAbort = new AbortController();
+      context.abortSignal = turnAbort.signal;
       const message: Message = { role: "user", content: [{ type: "text", text: prompt }] };
       beginUserTurn(context.sessionId, message);
       deps.messages.push(message);
@@ -268,7 +448,8 @@ export async function runHeadless(deps: {
         const loop = agentLoop(deps.messages, deps.tools, budgetCaller, deps.config, {
           systemPrompt,
           maxTurns: args.maxTurns,
-          askUser: async () => false,
+          abortSignal: turnAbort.signal,
+          askUser,
           hooks: deps.hooks,
           toolContext: context,
         });

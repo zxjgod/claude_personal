@@ -270,6 +270,17 @@ async function main() {
     return;
   }
 
+  // --permission-prompt-tool only exists for headless stream-json sessions;
+  // runHeadless validates its value. In the interactive TUI it would be
+  // silently dead config — reject instead so the caller knows it did nothing.
+  if (cliArgs.permissionPromptTool !== undefined && !cliArgs.print) {
+    console.error(
+      "--permission-prompt-tool only applies to headless runs (-p/--print with stream-json input and output).",
+    );
+    process.exitCode = 1;
+    return;
+  }
+
   const worktreeFlag = parseWorktreeFlag(process.argv);
   let worktreeEntry: WorktreeInfo | undefined;
   if (worktreeFlag) {

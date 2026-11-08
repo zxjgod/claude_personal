@@ -25,6 +25,7 @@ export interface CliArgs {
   includeHookEvents: boolean;
   promptSuggestions: boolean;
   brief: boolean;
+  permissionPromptTool?: string;
 }
 
 function values(argv: string[], names: string[]): string[] {
@@ -99,5 +100,6 @@ export function parseCliArgs(argv: string[]): CliArgs {
     includeHookEvents: parseIncludeHookEvents(argv),
     promptSuggestions: parsePromptSuggestions(argv),
     brief: parseBriefFlag(argv),
+    permissionPromptTool: values(argv, ["--permission-prompt-tool"])[0],
   };
 }

@@ -6,6 +6,7 @@
 
 ### 使用影响
 
+- **SDK 控制协议与权限审批通道（2026-11-07 本地增量）**：headless 新增官方同名 `--permission-prompt-tool stdio`，stream-json 会话的权限询问改走 `can_use_tool` 控制帧，由对端应答 allow/deny（可附 `updatedInput` 改写参数，经工具校验与权限复查后执行）；stream-json 输入改为独立泵，turn 运行中可处理 `interrupt`/`set_model`/`set_permission_mode`/`initialize`，EOF 把挂起审批全部拒绝。TS SDK 新增 `canUseTool` 回调与 `query()` 上的 `interrupt()`/`setPermissionMode()`/`setModel()` 方法；Python SDK 新增 `can_use_tool` 回调，并修复了先于本轮存在、导致文件根本无法运行的 try 块缩进语法错误。不设回调时 headless 审批自动拒绝的旧行为不变。
 - **受控循环进度锚定（2026-10-25 本地增量）**：`/loop` 默认启用进度文件 `.claude/loops/<session>.progress.md`，对抗长循环中聊天历史自动压缩导致的质量衰减——启动时写入模板（Objective/Done/Key findings/Next plan/Blockers），每轮系统指令要求模型把累计状态更新进该文件，每轮注入消息重新携带其当前内容（约 12,000 字符截断，回放不显示重注入段），最终 wrap-up 轮要求写入 `## Final Report`（结果对照、验证证据、交付物、遗留问题），停止/完成时运行时追加带时间戳的备注。settings.json 的 `loop.profiles.<profile>.progressFile` 可关闭。另：启动任务若未配置任何完成检查（命令/文件），命令行与菜单都会提示补配，避免循环只能依赖模型自评结束。
 - **全面代码审查修复（2026-10-24 本地增量）**：六域审查（权限安全 / 子代理 / 持久化调度 / 模型 MCP / CLI·TUI·SDK / 构建发布）后集中修复。安全：always-allow 存储迁移到用户目录并按工作区分键（仓库不再能预置免审批）；项目 agent 的 hooks 与预加载 skill 的 shell 指令进入一次性指纹信任门；权限命令分段补齐裸 `&` 与换行；Windows 引号语义（`%VAR%` 展开、单引号重定向）纳入只读判定；shell/沙箱改用 System32 绝对路径杜绝 CWD 劫持；文件权限规则按解析路径匹配；`@file` 拒绝指向工作区外的符号链接；hooks 信任库不再回退到仓库目录；`/cd` 重载新工作区的权限策略与记忆审批；SSRF 私网识别覆盖 6to4。数据：checkpoint 读错误不再被当作"文件不存在"导致误删（ENOENT 与 EACCES 三态区分，索引写入/GC 加跨进程锁）；审计日志并发写不再丢条目；durable 一次性任务改为"投递后才删除"，跨进程注册/触发/删除加文件锁并双向合并，`+N` 延时改用单调时钟，recurring 忙时按到期分钟入队不再吞次；同进程 `/resume` 不再覆盖存活的后台任务与 team 成员；双终端保存改为公共前缀合并、退出保存等待锁。模型/MCP：`@modelcontextprotocol/sdk` 升级至 1.32.1（修复 GHSA-6qxp-vccf-f47h / GHSA-6prh-2h8m-c8cw），旧未绑定 issuer 的令牌一次性作废重授权；Anthropic 缓存断点避开 thinking 块、`pause_turn` 进入有界续写、缓存断裂检测修复 scope、无法压缩的超长上下文直接报错不再重试；MCP 非文本与结构化结果可见；`finishAuth` 有超时；agent 作用域 MCP 连接失败如实报错。CLI/TUI/SDK：`ccr -p "指令"` 现在会读管道正文并合并（空闲管道带超时防挂）；TS/Python SDK 对异常退出显式报错；TUI `/exit` 等待最终保存并触发 SessionEnd；`!command` 可取消；空 MCP 表单可退出；合并按键块末尾 Enter 正常提交；TUI resume 回放历史；删除当前会话后轮换新 id 防复活。构建发布：`prepack` 自动构建，`exports` 提供 `./sdk` 等入口，随包发布 `.d.ts` 与 LICENSE；发布包校验改为进程内 Node 解包，不再依赖系统 tar（Windows runner 的 bsdtar 3.8 在英文 locale 下把 npm 写入 ustar 头的 UTF-8 文件名判为不可读并退出非零）；评估脚本无结果帧按失败计；冒烟检查改为驱动真实会话保存。
 
@@ -37,6 +38,7 @@
 - 2026-10-06 本地增量：消息布局、输入与文件补全、帮助页、选择器配色、会话回退和版本说明。
 - 2026-10-07 本地增量：发布白名单、无调用代码清理、文档与旧计划归档。
 - [2026-10-08 PDF 故障修复与多模态检查](./更新日志/20261008-multimodal-pdf.md)。
+- [2026-11-07 SDK 控制协议与权限审批通道](./更新日志/20261107-sdk-control-protocol.md)。
 
 ---
 

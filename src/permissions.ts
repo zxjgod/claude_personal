@@ -665,7 +665,12 @@ function formatActionForClassifier(toolName: string, input: Record<string, unkno
 
 export interface PermissionCheckOptions {
   /** Callback to prompt the user for permission */
-  askUser: (tool: Tool, input: Record<string, unknown>, riskHint?: string) => Promise<boolean>;
+  askUser: (
+    tool: Tool,
+    input: Record<string, unknown>,
+    riskHint?: string,
+    requestContext?: { source: "permission" | "tool" },
+  ) => Promise<boolean>;
   /**
    * Optional LLM-assisted risk classifier (M15.3). When present, invoked only
    * for tool calls the regex dangerous-pattern detector already flagged — it
@@ -868,7 +873,11 @@ export async function checkPermission(
       { allowed: true },
       { stage: "awaiting-user-confirm", riskHint },
     );
-    const allowed = await options.askUser(tool, input, riskHint);
+    // source "permission" (same as the Step-6 ask below): this is a central
+    // ask on the executor's real input, so an updatedInput rewrite from the
+    // approval channel is safe to honor — the headless recheck re-runs this
+    // whole floor against the rewritten input before it ever executes.
+    const allowed = await options.askUser(tool, input, riskHint, { source: "permission" });
     const result = allowed
       ? {
           allowed: true as const,
@@ -951,6 +960,7 @@ export async function checkPermission(
     tool,
     input,
     configured === "ask" ? "Approval required by the configured permission rule." : undefined,
+    { source: "permission" },
   );
   const result = allowed
     ? { allowed: true, userConfirmed: true as const }

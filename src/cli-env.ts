@@ -186,6 +186,11 @@ Options:
   -p, --print [prompt]       Run one headless prompt and exit
   --output-format <format>   text, json, or stream-json
   --input-format <format>    text or stream-json
+  --permission-prompt-tool <tool>
+                             Route headless permission asks over the
+                             stream-json control protocol (can_use_tool).
+                             Only "stdio" is supported; requires stream-json
+                             input AND output. Without it asks auto-deny
   --include-hook-events      Put hook lifecycle frames on the stream-json output
                              (hook_started / hook_progress / hook_response).
                              SessionStart and Setup are always reported; every

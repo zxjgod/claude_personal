@@ -69,3 +69,161 @@ for await (const line of readline.createInterface({input:process.stdin})) {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// Fixture CLI: asks can_use_tool for every user turn and embeds the peer's
+// decision in the result frame, so the test observes the full round-trip.
+const PERMISSION_FIXTURE = `import readline from 'node:readline';
+for await (const line of readline.createInterface({input:process.stdin})) {
+  const msg = JSON.parse(line);
+  if (msg.type === 'user') {
+    console.log(JSON.stringify({type:'control_request',request_id:'perm-1',request:{subtype:'can_use_tool',tool_name:'Bash',input:{command:'ls'},permission_suggestions:[]}}));
+  } else if (msg.type === 'control_response') {
+    console.log(JSON.stringify({type:'result',session_id:'fixture',result:JSON.stringify(msg.response.response ?? msg.response)}));
+  }
+}`;
+
+function writeFixture(prefix: string, source: string): { root: string; file: string } {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const file = path.join(root, "fixture.mjs");
+  fs.writeFileSync(file, source);
+  return { root, file };
+}
+
+it("round-trips can_use_tool through the canUseTool callback", async () => {
+  const { root, file } = writeFixture("ccr-sdk-perm-", PERMISSION_FIXTURE);
+  try {
+    const seen: Array<{ name: string; input: Record<string, unknown> }> = [];
+    const output = [];
+    for await (const message of query({
+      prompt: "go",
+      options: {
+        cwd: root,
+        cliModule: file,
+        canUseTool: async (name, input, context) => {
+          seen.push({ name, input });
+          expect(context.suggestions).toEqual([]);
+          expect(context.signal.aborted).toBe(false);
+          return { behavior: "allow", updatedInput: { command: "pwd" } };
+        },
+      },
+    }))
+      output.push(message);
+    expect(seen).toEqual([{ name: "Bash", input: { command: "ls" } }]);
+    // Control frames are SDK plumbing and must not surface as messages.
+    expect(output.some((m) => m.type === "control_request" || m.type === "control_response")).toBe(
+      false,
+    );
+    const result = output.find((m) => m.type === "result");
+    expect(JSON.parse(result!.result!)).toEqual({
+      behavior: "allow",
+      updatedInput: { command: "pwd" },
+    });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("delivers a deny decision and fails closed when the callback throws", async () => {
+  const { root, file } = writeFixture("ccr-sdk-deny-", PERMISSION_FIXTURE);
+  try {
+    const output = [];
+    for await (const message of query({
+      prompt: "go",
+      options: {
+        cwd: root,
+        cliModule: file,
+        canUseTool: async () => ({ behavior: "deny", message: "not allowed" }),
+      },
+    }))
+      output.push(message);
+    expect(JSON.parse(output.find((m) => m.type === "result")!.result!)).toEqual({
+      behavior: "deny",
+      message: "not allowed",
+    });
+
+    const errored = [];
+    for await (const message of query({
+      prompt: "go",
+      options: {
+        cwd: root,
+        cliModule: file,
+        canUseTool: async () => {
+          throw new Error("callback exploded");
+        },
+      },
+    }))
+      errored.push(message);
+    const errorFrame = JSON.parse(errored.find((m) => m.type === "result")!.result!);
+    expect(errorFrame.subtype).toBe("error");
+    expect(errorFrame.error).toContain("callback exploded");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("interrupts a running turn through the control protocol", async () => {
+  const { root, file } = writeFixture(
+    "ccr-sdk-int-",
+    `import readline from 'node:readline';
+for await (const line of readline.createInterface({input:process.stdin})) {
+  const msg = JSON.parse(line);
+  if (msg.type === 'user') {
+    console.log(JSON.stringify({type:'assistant',message:{role:'assistant',content:[{type:'text',text:'working'}]}}));
+  } else if (msg.type === 'control_request' && msg.request.subtype === 'interrupt') {
+    console.log(JSON.stringify({type:'control_response',response:{subtype:'success',request_id:msg.request_id,response:{}}}));
+    console.log(JSON.stringify({type:'result',session_id:'fixture',result:'interrupted'}));
+  }
+}`,
+  );
+  try {
+    const output = [];
+    const q = query({ prompt: "go", options: { cwd: root, cliModule: file } });
+    for await (const message of q) {
+      output.push(message);
+      if (message.type === "assistant") await q.interrupt();
+    }
+    expect(output.find((m) => m.type === "result")?.result).toBe("interrupted");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("round-trips setModel and setPermissionMode control requests", async () => {
+  const { root, file } = writeFixture(
+    "ccr-sdk-ctl-",
+    `import readline from 'node:readline';
+console.log(JSON.stringify({type:'system',subtype:'init',session_id:'fixture'}));
+for await (const line of readline.createInterface({input:process.stdin})) {
+  const msg = JSON.parse(line);
+  if (msg.type === 'control_request') {
+    console.log(JSON.stringify({type:'control_response',response:{subtype:'success',request_id:msg.request_id,response:{echo:msg.request}}}));
+  } else if (msg.type === 'user') {
+    console.log(JSON.stringify({type:'result',session_id:'fixture',result:'done'}));
+  }
+}`,
+  );
+  try {
+    const pending: Promise<void>[] = [];
+    const q = query({ prompt: "go", options: { cwd: root, cliModule: file } });
+    for await (const message of q) {
+      if (message.type === "system" && message.subtype === "init") {
+        // Do not await here: the response arrives on the stream being read.
+        pending.push(q.setModel("new-model"), q.setPermissionMode("acceptEdits"));
+      }
+    }
+    await Promise.all(pending);
+    expect(pending).toHaveLength(2);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("rejects control methods called before iteration starts", async () => {
+  const { root, file } = writeFixture("ccr-sdk-early-", PERMISSION_FIXTURE);
+  try {
+    const q = query({ prompt: "go", options: { cwd: root, cliModule: file } });
+    await expect(q.interrupt()).rejects.toThrow(/require the generator to be iterating/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

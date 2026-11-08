@@ -872,6 +872,7 @@ export type AskUserFn = (
   tool: Tool,
   input: Record<string, unknown>,
   riskHint?: string,
+  requestContext?: { source: "permission" | "tool" },
 ) => Promise<boolean>;
 
 // --- Model Caller ---
