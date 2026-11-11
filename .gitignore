@@ -52,6 +52,7 @@ __pycache__/
 
 # Loop iteration scratch space (.review-tmp/ holds throwaway parity probes)
 .review-tmp/
+.claude/evaluations/
 
 # Agent scratch trees. `upgrade-baseline/` is a full frozen copy of the
 # project — including its own node_modules — so it must never be committed.

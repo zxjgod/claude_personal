@@ -246,6 +246,102 @@ it("fails parked approvals closed when stdin reaches EOF unanswered", async () =
   expect(h.frames().find((frame) => frame.type === "result")).toBeDefined();
 });
 
+it.each([
+  undefined,
+  "unexpected",
+])("rejects an approval envelope with subtype %s even when its payload says allow", async (subtype) => {
+  const calls: Record<string, unknown>[] = [];
+  const h = harness({
+    argv: STDIO_FLAGS,
+    caller: toolCaller({ value: "unapproved" }),
+    tools: [probeTool(calls)],
+  });
+  h.userLine("go");
+  await vi.waitFor(() => expect(permissionRequest(h.frames())).toBeDefined());
+  h.send({
+    type: "control_response",
+    response: {
+      subtype,
+      request_id: permissionRequest(h.frames())?.request_id,
+      response: { behavior: "allow" },
+    },
+  });
+  h.input.end();
+  await h.run;
+  expect(calls).toEqual([]);
+  const result = h
+    .frames()
+    .find((frame) => frame.type === "user" && frame.message?.content?.[0]?.type === "tool_result");
+  expect(result?.message.content[0].is_error).toBe(true);
+});
+
+it("interrupts a parked approval, ignores its late allow, and approves the next turn", async () => {
+  const calls: Record<string, unknown>[] = [];
+  let call = 0;
+  const caller: ModelCaller = async function* () {
+    call++;
+    if (call <= 2) {
+      yield {
+        type: "tool_use",
+        id: `call-${call}`,
+        name: "probe",
+        input: { value: `turn-${call}` },
+        rawArguments: JSON.stringify({ value: `turn-${call}` }),
+      };
+      yield {
+        type: "done",
+        usage: { input_tokens: 1, output_tokens: 1 },
+        finish_reason: "tool_calls",
+      };
+    } else {
+      yield { type: "text_delta", delta: "ok" };
+      yield { type: "done", usage: { input_tokens: 1, output_tokens: 1 }, finish_reason: "stop" };
+    }
+  };
+  const h = harness({ argv: STDIO_FLAGS, caller, tools: [probeTool(calls)] });
+  try {
+    h.userLine("first");
+    await vi.waitFor(() => expect(permissionRequest(h.frames())).toBeDefined());
+    const first = permissionRequest(h.frames());
+    h.send({ type: "control_request", request_id: "cancel", request: { subtype: "interrupt" } });
+    await vi.waitFor(() =>
+      expect(h.frames().filter((frame) => frame.type === "result")).toHaveLength(1),
+    );
+    expect(h.frames().find((frame) => frame.type === "result")?.is_error).toBe(true);
+    expect(calls).toEqual([]);
+    h.userLine("second");
+    await vi.waitFor(() =>
+      expect(h.frames().filter((frame) => frame.type === "control_request")).toHaveLength(2),
+    );
+    const second = h.frames().filter((frame) => frame.type === "control_request")[1];
+    const approve = (requestId: string) =>
+      h.send({
+        type: "control_response",
+        response: { subtype: "success", request_id: requestId, response: { behavior: "allow" } },
+      });
+    approve(first.request_id);
+    h.send({ type: "control_request", request_id: "barrier", request: { subtype: "initialize" } });
+    await vi.waitFor(() =>
+      expect(h.frames().some((frame) => frame.response?.request_id === "barrier")).toBe(true),
+    );
+    expect(calls).toEqual([]);
+    approve(second.request_id);
+    h.input.end();
+    await h.run;
+    expect(calls).toEqual([{ value: "turn-2" }]);
+    expect(
+      h
+        .frames()
+        .filter((frame) => frame.type === "result")
+        .map((frame) => frame.is_error),
+    ).toEqual([true, false]);
+    expect(process.exitCode).toBe(0);
+  } finally {
+    h.input.end();
+    await h.run;
+  }
+});
+
 it("auto-denies without --permission-prompt-tool and emits no approval frames", async () => {
   const calls: Record<string, unknown>[] = [];
   const h = harness({

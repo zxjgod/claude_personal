@@ -61,6 +61,8 @@ docs/更新日志/
 
 | 日期 | 类型 | 模块 | 主题 | commit | 关联 |
 |---|---|---|---|---|---|
+| 2026-11-11 | feature / fix / test | 核心测量 / SDK / 发布 | [固定编码任务测量与打包 SDK 入口修复](20261111-core-evaluation.md) | 工作区改动 | [测量说明](../core-evaluation.md) |
+| 2026-11-11 | fix / test | 核心引擎 / 控制协议 | [核心验收入口与审批信封校验](20261111-core-control-validation.md) | 工作区改动 | [推进计划](../20261111-core-engine-plan.md) |
 | 2026-10-25 | feature | 受控循环 | [/loop 进度锚定与交付物落盘](20261025-loop-progress-anchor.md) | 工作区改动 | [Loop management](../loop-management.md) |
 | 2026-10-24 | fix / build / security | 全仓 | [全面代码审查修复](20261024-comprehensive-review-fixes.md) | 工作区改动 | [CHANGELOG v1.6.1](../CHANGELOG.md) |
 | 2026-10-07 | refactor / chore | 内部接口 / 开发材料 | [第二轮冗余清理](20261007-project-cleanup-round-2.md) | 工作区改动 | [当前总览](../项目总览.md) |
@@ -114,6 +116,10 @@ docs/更新日志/
 > 新条目加在表格**最上方**。
 
 ## 索引 ②：按模块（出 bug 时从这里查某子功能的历次改动）
+
+- **编码任务测量 / 打包 SDK**：[20261111-core-evaluation](20261111-core-evaluation.md)（隔离任务与可执行验收；SDK chunk 默认 CLI 定位；实际发布包执行检查）。
+
+- **核心引擎验收 / SDK 控制审批**：[20261111-core-control-validation](20261111-core-control-validation.md)（固定核心测试集；畸形审批拒绝；中断后迟到批准与下一回合隔离）。
 
 - **启动横幅 / 主题文字颜色**：[20261002-banner-text-colors](./20261002-banner-text-colors.md)（橙色品牌、亮灰正文、中灰信息及灰色斜体链接）。
 - **全面升级 / 配置 / Hooks / 自动化 / 运行状态 / 代码理解**：[20261002-comprehensive-upgrade](./20261002-comprehensive-upgrade.md)（v1.6.0 行为、迁移、验证与外部服务边界）。

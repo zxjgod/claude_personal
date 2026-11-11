@@ -216,6 +216,18 @@ try {
       "-e",
       "const sdk = await import('./dist/index.js'); if (typeof sdk.query !== 'function' || typeof sdk.createModelCaller !== 'function') process.exit(1);",
     ]);
+    phase = "sdk-default-cli";
+    run([
+      "--input-type=module",
+      "-e",
+      `const { query } = await import('./dist/sdk.js');
+let rejectedBudget = false;
+for await (const message of query({prompt:'offline entry check',options:{maxBudgetUsd:0}})) {
+  if (message.type === 'result' && message.is_error &&
+      JSON.stringify(message.errors).includes('--max-budget-usd must be positive')) rejectedBudget = true;
+}
+if (!rejectedBudget) throw new Error('SDK default CLI did not reach local budget validation');`,
+    ]);
     phase = "adapter-import";
     run([
       "--input-type=module",

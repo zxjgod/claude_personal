@@ -47,6 +47,7 @@
     "start": "node dist/cli.js",
     "dev": "tsx src/cli.ts",
     "test": "vitest run --config vitest.config.ts",
+    "test:core": "vitest run --config vitest.config.ts src/__tests__/agent-loop.test.ts src/__tests__/integration-permissions.test.ts src/__tests__/delegated-policy.test.ts src/__tests__/compaction.test.ts src/__tests__/streaming-tool-executor.test.ts src/__tests__/checkpoint-persist.test.ts src/__tests__/session-lifecycle.test.ts src/__tests__/cli-headless-e2e.test.ts src/__tests__/headless-control.test.ts src/__tests__/model-budget.test.ts",
     "test:coverage": "vitest run --config vitest.config.ts --coverage",
     "test:watch": "vitest --config vitest.config.ts",
     "lint": "biome lint src",

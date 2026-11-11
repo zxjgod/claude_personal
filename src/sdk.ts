@@ -1,5 +1,6 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import * as fs from "node:fs";
+import { basename, dirname, resolve } from "node:path";
 import * as readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import type { PermissionMode } from "./types.js";
@@ -57,11 +58,14 @@ export function query(input: {
   options?: QueryOptions;
 }): Query {
   const options = input.options ?? {};
-  // The default CLI entry sits next to THIS module — which only exists after a
-  // build (dist/sdk.js ↔ dist/cli.js). From source (src/sdk.ts) there is no
-  // cli.js, and without an early error the failure surfaces later as a
-  // downstream "CLI exited 1: Cannot find module …" from a doomed child.
-  const defaultModule = fileURLToPath(new URL("./cli.js", import.meta.url));
+  // Shared code moves into dist/chunks during the split build; the CLI stays
+  // at dist/cli.js. A per-file build still uses the adjacent entry. From source
+  // there is no src/cli.js, so preserve the early, descriptive error below.
+  const moduleDirectory = dirname(fileURLToPath(import.meta.url));
+  const defaultModule = resolve(
+    moduleDirectory,
+    basename(moduleDirectory) === "chunks" ? "../cli.js" : "cli.js",
+  );
   if (!options.cliExecutable && !options.cliModule && !fs.existsSync(defaultModule)) {
     throw new Error(
       `SDK query() found no CLI entry at ${defaultModule}. ` +

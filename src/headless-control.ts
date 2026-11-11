@@ -112,6 +112,12 @@ export class HeadlessControlChannel {
       resolve({ behavior: "deny", message: String(res.error ?? "control request failed") });
       return;
     }
+    // Only a successful envelope can carry approval. Missing/unknown
+    // subtypes must fail closed even if their nested payload says allow.
+    if (res.subtype !== "success") {
+      resolve({ behavior: "deny", message: "invalid control response subtype" });
+      return;
+    }
     const decision = res.response as CanUseToolDecision | null;
     if (decision?.behavior === "allow") {
       if (decision.updatedInput !== undefined) {

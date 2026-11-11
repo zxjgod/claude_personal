@@ -1,0 +1,10 @@
+import assert from "node:assert/strict";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+const { stableUnique } = await import(pathToFileURL(join(process.argv[2], "src/unique.mjs")));
+const input = Object.freeze([3, 1, 3, 2, 1]);
+assert.deepEqual(stableUnique(input), [3, 1, 2]);
+assert.deepEqual(stableUnique([]), []);
+const object = {};
+assert.deepEqual(stableUnique([object, "a", object, "b", "a"]), [object, "a", "b"]);
+assert.deepEqual(stableUnique([NaN, 2, NaN, 0, -0]), [NaN, 2, 0]);
