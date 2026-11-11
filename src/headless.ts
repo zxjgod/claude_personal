@@ -360,8 +360,10 @@ export async function runHeadless(deps: {
             // The channel guarantees a non-empty model name (resets and
             // blanks are answered with an error frame before we get here).
             deps.config.model = model;
-            const nextPrice = modelPricing(model);
-            if (nextPrice) price = nextPrice;
+            // Adopt the new model's pricing even when unknown (null): keeping
+            // the previous price would report later turns' cost at stale rates
+            // instead of unknown.
+            price = modelPricing(model);
           },
           setPermissionMode: (mode) => {
             context.permissionMode = mode;
@@ -441,6 +443,12 @@ export async function runHeadless(deps: {
         });
       let text = "";
       let error: string | undefined;
+      // A cancelled turn (control interrupt / abort) is a clean stop, not a
+      // process failure: it still reports an is_error result frame, but must
+      // not poison process.exitCode — otherwise the SDK sees a non-zero exit
+      // after the result frame and emits a spurious abnormal_exit, and the
+      // sticky code 1 misreports every later successful turn too.
+      let interrupted = false;
       let turns = 0;
       const usage = { input_tokens: 0, output_tokens: 0 };
       const systemPrompt = `${args.systemPrompt ?? deps.systemPrompt}${args.appendSystemPrompt ? `\n\n${args.appendSystemPrompt}` : ""}${args.jsonSchema ? `\n\nReturn the final answer as JSON satisfying this schema: ${args.jsonSchema}` : ""}`;
@@ -457,6 +465,7 @@ export async function runHeadless(deps: {
           const step = await loop.next();
           if (step.done) {
             turns = step.value.turns;
+            interrupted = step.value.reason.startsWith("aborted");
             error =
               step.value.reason === "completed" || step.value.reason === "stop_hook_prevented"
                 ? undefined
@@ -595,7 +604,7 @@ export async function runHeadless(deps: {
             uuid: randomUUID(),
           });
       }
-      if (error) process.exitCode = 1;
+      if (error && !interrupted) process.exitCode = 1;
     }
   } catch (failure) {
     // Review fix ("畸形行崩溃丢 result 帧"): a malformed stream-json input

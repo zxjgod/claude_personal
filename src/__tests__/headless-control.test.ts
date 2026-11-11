@@ -288,6 +288,9 @@ it("interrupts a running turn and still emits the result frame", async () => {
   expect(ack?.response.subtype).toBe("success");
   const result = h.frames().find((frame) => frame.type === "result");
   expect(result?.is_error).toBe(true);
+  // A clean interrupt must not poison the process exit code: a non-zero exit
+  // after the result frame makes the SDK emit a spurious abnormal_exit frame.
+  expect(process.exitCode).toBe(0);
 });
 
 it("answers initialize/set_model/set_permission_mode and rejects unknown subtypes", async () => {
@@ -339,6 +342,27 @@ it("answers initialize/set_model/set_permission_mode and rejects unknown subtype
   expect(responses.blank.subtype).toBe("error");
   expect(h.config.model).toBe("other");
   expect(h.context.permissionMode).toBe("acceptEdits");
+});
+
+it("reports unknown cost after set_model switches to an unpriced model", async () => {
+  const h = harness({ argv: STREAM_FLAGS, caller: okCaller, tools: [] });
+  // Priced model first, then an unpriced one: the cost estimate must drop to
+  // unknown (null), not keep accruing at the previous model's rates.
+  h.send({
+    type: "control_request",
+    request_id: "priced",
+    request: { subtype: "set_model", model: "claude-opus-4-8" },
+  });
+  h.send({
+    type: "control_request",
+    request_id: "unpriced",
+    request: { subtype: "set_model", model: "fixture" },
+  });
+  h.userLine("go");
+  h.input.end();
+  await h.run;
+  const result = h.frames().find((frame) => frame.type === "result");
+  expect(result?.total_cost_usd).toBeNull();
 });
 
 it("rejects non-stdio permission prompt tools with a terminal error frame", async () => {
