@@ -1147,8 +1147,8 @@ export interface DiscoveredMcpConfig {
 }
 
 /**
- * Find all MCP configuration files from CCR-specific locations. Never reads
- * official Claude Code locations (`.mcp.json`, `~/.claude.json`).
+ * Find CCR configuration files. The project `.mcp.json` is only read under
+ * explicit CCR_COMPAT_CLAUDE opt-in; `~/.claude.json` is never discovered.
  *
  * Returns structured {path, scope} entries — callers gate on `scope`, NOT on
  * string-comparing paths (the old string comparison mismatched the discovery

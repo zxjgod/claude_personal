@@ -33,6 +33,9 @@ vi.mock("../llm-adapter.js", () => ({
       inflight.peak = Math.max(inflight.peak, inflight.current);
       if (inflight.hold) await new Promise((r) => setTimeout(r, 25));
       inflight.current--;
+      // A completed delegated turn includes a report; an empty completion is
+      // deliberately classified as incomplete by the handoff contract.
+      yield { type: "text_delta", delta: "Completed fixture report" };
       yield { type: "done", usage: { input_tokens: 1, output_tokens: 1 }, finish_reason: "stop" };
     },
 }));

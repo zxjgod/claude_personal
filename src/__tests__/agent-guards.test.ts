@@ -5,6 +5,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { setCoreToolsForSubagents } from "../subagents.js";
 import { getJob } from "../tools/job-store.js";
+import { drainNotifications } from "../tools/notifications.js";
 import type { Message, ModelCaller, ToolContext } from "../types.js";
 
 const fake = vi.hoisted(() => ({ caller: vi.fn() }));
@@ -93,6 +94,63 @@ describe("AgentTool background mode (F3)", () => {
     job?.kill?.();
     await job?.settled;
     expect(job?.status).toBe("killed");
+  });
+
+  it.each([
+    "kill",
+    "parent",
+  ])("waits for background agent cleanup before settlement, source=%s", async (source) => {
+    const controller = new AbortController();
+    let entered!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let release!: () => void;
+    const cleanupGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let cleaned!: () => void;
+    const cleanupDone = new Promise<void>((resolve) => {
+      cleaned = resolve;
+    });
+    const delayed: ModelCaller = async function* (_messages, _tools, _system, _config, signal) {
+      if (!signal) throw new Error("missing background cancellation signal");
+      try {
+        yield { type: "text_delta", delta: "partial work" };
+        entered();
+        await new Promise<void>((resolve) =>
+          signal.addEventListener("abort", () => resolve(), { once: true }),
+        );
+      } finally {
+        await cleanupGate;
+        cleaned();
+      }
+    };
+    fake.caller.mockImplementation(delayed);
+    const sessionId = `bg-cleanup-${source}`;
+    const result = await AgentTool.call(
+      { prompt: "wait for cleanup", subagent_type: "general", run_in_background: true },
+      forkContext({ sessionId, abortSignal: controller.signal }),
+    );
+    const job = getJob(sessionId, String(result.metadata?.jobId));
+    if (!job) throw new Error("missing background agent job");
+    try {
+      await ready;
+      if (source === "kill") job.kill?.();
+      else controller.abort();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(job.status).toBe("running");
+      expect(drainNotifications(sessionId)).toEqual([]);
+      release();
+      await job.settled;
+      await cleanupDone;
+      expect(job.status).toBe("killed");
+      expect(drainNotifications(sessionId)).toHaveLength(1);
+    } finally {
+      release();
+      await cleanupDone;
+      await job.settled;
+    }
   });
 });
 

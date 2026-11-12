@@ -2,14 +2,16 @@
 // Background Job Store — session-keyed job table (M38)
 // ============================================================
 // Unified in-memory registry for background work (currently background Bash).
-// Keyed by sessionId — the same bucket pattern as change-tracker.ts — so
-// concurrent sessions and sub-agents never see each other's jobs. Tools read
-// and write it through the `context.sessionId` threaded into every tool call.
-// Deliberately in-memory only: a background job is a live process tree, so
-// there is nothing meaningful to persist across a process restart.
+// Keyed by the owning conversation, independently of checkpoint session IDs.
+// The owner can manage every delegated job; workers can see only their own
+// delegation path and descendants, never parent or sibling work.
+// Live handles are in-memory only. Session snapshots retain diagnostics and
+// terminal status; restoring a running snapshot marks interruption, never
+// reconnects to a PID or restarts a command.
 // ============================================================
 
 import { loopExecution } from "../loop-execution-context.js";
+import type { ToolContext } from "../types.js";
 import { pushTaskNotification } from "./notifications.js";
 
 export type JobStatus = "running" | "done" | "killed" | "error";
@@ -21,6 +23,8 @@ export interface Job {
   id: string;
   /** Owning session — jobs are session-scoped and notifications route by it. */
   sessionId: string;
+  /** Creator's delegation path; the owning conversation can see all paths. */
+  scope?: readonly string[];
   kind: "bash" | "agent";
   loopId?: string;
   command: string;
@@ -74,6 +78,10 @@ export function restoreJobs(sessionId: string, values: unknown[]): void {
       sessionId,
       command: entry.command,
       kind: entry.kind!,
+      scope:
+        Array.isArray(entry.scope) && entry.scope.every((part) => typeof part === "string")
+          ? entry.scope
+          : undefined,
       description: entry.description,
       status:
         entry.status === "running"
@@ -84,7 +92,13 @@ export function restoreJobs(sessionId: string, values: unknown[]): void {
       stdout: String(entry.stdout ?? "").slice(-1000000),
       stderr:
         entry.status === "running"
-          ? "Process ended; this background job was interrupted and was not restarted."
+          ? [
+              String(entry.stderr ?? ""),
+              "Process ended; this background job was interrupted and was not restarted.",
+            ]
+              .filter(Boolean)
+              .join("\n")
+              .slice(-1000000)
           : String(entry.stderr ?? "").slice(-1000000),
       exitCode: entry.status === "running" ? null : (entry.exitCode ?? null),
       startedAt: entry.startedAt ?? Date.now(),
@@ -173,6 +187,29 @@ export function listJobs(sessionId: string): Job[] {
   return Array.from(bucket(sessionId).values());
 }
 
+type JobContext = Pick<ToolContext, "sessionId" | "jobOwnerSessionId" | "jobScope">;
+function visibleTo(job: Job, context: JobContext): boolean {
+  return (
+    !context.jobScope?.length ||
+    context.jobScope.every((part, index) => job.scope?.[index] === part)
+  );
+}
+/** Producers use conversation ownership while retaining worker visibility. */
+export function createContextJob(context: JobContext, entry: NewJob): Job {
+  const job = createJob(context.jobOwnerSessionId ?? context.sessionId, entry);
+  job.scope = context.jobScope ? [...context.jobScope] : undefined;
+  return job;
+}
+export function contextJob(context: JobContext, id: string): Job | undefined {
+  const job = getJob(context.jobOwnerSessionId ?? context.sessionId, id);
+  return job && visibleTo(job, context) ? job : undefined;
+}
+export function contextJobs(context: JobContext): Job[] {
+  return listJobs(context.jobOwnerSessionId ?? context.sessionId).filter((job) =>
+    visibleTo(job, context),
+  );
+}
+
 /** Mark a job terminal (exited or killed) and wake any `wait`-ing readers. */
 export function settleJob(job: Job, status: JobStatus, exitCode: number | null): void {
   // Idempotent: `child.on('error')` and `child.on('close')` can both fire for
@@ -199,6 +236,24 @@ export function settleJob(job: Job, status: JobStatus, exitCode: number | null):
   });
 }
 
+/** Wait for actual producer settlement, with a bounded/cancellable read wait.
+ * Cancelling this wait does not cancel the background work itself. */
+export function waitForJob(job: Job, timeoutMs: number, signal?: AbortSignal): Promise<boolean> {
+  if (job.status !== "running") return Promise.resolve(true);
+  if (signal?.aborted) return Promise.resolve(false);
+  return new Promise<boolean>((resolve) => {
+    const finish = (settled: boolean) => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      resolve(settled);
+    };
+    const onAbort = () => finish(false);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    job.settled.then(() => finish(true));
+  });
+}
+
 /**
  * Drop a session's SETTLED jobs (called on /clear). Running jobs are kept —
  * they still hold live process trees and must remain reachable so job_kill can
@@ -220,15 +275,37 @@ export function clearJobs(sessionId: string): void {
  * the user asked to leave — a live process tree and its 2h TTL timer must not
  * keep the CLI alive or outlive the session UI. Used by exit cleanup paths.
  */
-export function killRunningJobs(sessionId: string, reason = "session exited"): void {
-  for (const job of listJobs(sessionId)) {
-    if (job.status !== "running") continue;
-    job.killReason = reason;
+export async function killRunningJobs(
+  sessionId: string,
+  reason = "session exited",
+  timeoutMs = 5000,
+): Promise<string[]> {
+  const running = listJobs(sessionId).filter((job) => job.status === "running");
+  for (const job of running) {
+    job.killReason ||= reason;
     try {
       job.kill?.();
     } catch {
       /* already gone */
     }
-    settleJob(job, "killed", null);
   }
+  // Only the producer knows when its process/agent cleanup has really ended.
+  // A failed kill stays running and is reported to the caller, never fabricated
+  // into a terminal notification or a "killed" persistence record.
+  await Promise.all(running.map((job) => waitForJob(job, timeoutMs)));
+  return running.filter((job) => job.status === "running").map((job) => job.id);
+}
+
+/** CLI teardown includes previously visited conversations, not unrelated roots. */
+export async function killOwnedSessionJobs(
+  sessionIds: Iterable<string>,
+  reason = "session exited",
+  timeoutMs = 5000,
+): Promise<string[]> {
+  const pending = await Promise.all(
+    [...new Set(sessionIds)].map(async (sessionId) =>
+      (await killRunningJobs(sessionId, reason, timeoutMs)).map((id) => `${sessionId}/${id}`),
+    ),
+  );
+  return pending.flat();
 }

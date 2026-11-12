@@ -185,8 +185,8 @@ describe("handleModelError recovery behavior", () => {
   });
 
   it("aborts immediately when compaction cannot shrink the prompt (review fix)", async () => {
-    // A pure tool-pair pipeline cannot be split (every tail boundary would
-    // orphan a tool result), so autoCompact is a no-op. The old code retried
+    // One parallel batch is indivisible: every candidate tail boundary is
+    // inside its results, so autoCompact is a no-op. The old code retried
     // the IDENTICAL oversized request up to 3 more times before failing; the
     // fix aborts on the first pass with the honest reason.
     let calls = 0;
@@ -198,17 +198,31 @@ describe("handleModelError recovery behavior", () => {
     };
     const types: string[] = [];
     const errors: string[] = [];
-    for await (const event of agentLoop(
-      buildHistoryEndingInToolResult(40),
-      [],
-      caller,
-      testConfig,
+    const ids = Array.from({ length: 40 }, (_, index) => `parallel-${index}`);
+    const indivisible: Message[] = [
       {
-        systemPrompt: "sys",
-        maxTurns: 5,
-        autoCompactThreshold: Number.POSITIVE_INFINITY,
+        role: "assistant",
+        content: null,
+        tool_calls: ids.map((id) => ({
+          id,
+          type: "function",
+          function: { name: "read", arguments: "{}" },
+        })),
       },
-    )) {
+      ...ids.map(
+        (id): Message => ({
+          role: "tool",
+          tool_call_id: id,
+          name: "read",
+          content: "large result".repeat(50),
+        }),
+      ),
+    ];
+    for await (const event of agentLoop(indivisible, [], caller, testConfig, {
+      systemPrompt: "sys",
+      maxTurns: 5,
+      autoCompactThreshold: Number.POSITIVE_INFINITY,
+    })) {
       types.push(event.type);
       if (event.type === "error")
         errors.push(String((event as { error?: Error }).error?.message ?? ""));

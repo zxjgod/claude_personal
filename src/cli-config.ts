@@ -15,11 +15,9 @@ import { initMemoryApproval } from "./memory-approval.js";
 import { mergePermissionPolicies, type PermissionPolicy } from "./permission-policy.js";
 import { loadProjectInstructions, renderInstructions } from "./project-instructions.js";
 import {
-  mergeSettings,
   readManagedSettings,
   readProjectSettings,
-  readUserSettings,
-  type Settings,
+  readSettingsEnvironment,
   settingSources,
 } from "./settings.js";
 import { initSubagentSettings } from "./subagent-settings.js";
@@ -41,10 +39,7 @@ export function loadConfig(): ModelConfig {
   // trusted sources may set it: user settings, managed settings, and the
   // explicit --settings CLI arg. Project/local settings come from a
   // checked-out repository and must never inject process.env.
-  const env = mergeSettings(
-    (readUserSettings().env as Settings | undefined) ?? {},
-    (readManagedSettings().env as Settings | undefined) ?? {},
-  );
+  const env = readSettingsEnvironment(workspace);
   if (env && typeof env === "object" && !Array.isArray(env)) {
     for (const [key, value] of Object.entries(env as Record<string, unknown>)) {
       if (typeof value === "string" && process.env[key] === undefined) process.env[key] = value;

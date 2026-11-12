@@ -19,6 +19,8 @@ export type CanUseToolDecision =
 
 export interface ControlHandlers {
   interrupt: () => void;
+  /** Local client teardown: stop the active turn and discard queued inputs. */
+  shutdown?: () => void;
   /** Always a non-empty model name: the channel rejects resets and blanks. */
   setModel: (model: string) => void;
   setPermissionMode: (mode: PermissionMode) => void;
@@ -56,6 +58,11 @@ export class HeadlessControlChannel {
         case "interrupt":
           this.denyPending("permission prompt interrupted");
           this.handlers.interrupt();
+          break;
+        case "shutdown":
+          if (!this.handlers.shutdown) throw new Error("Shutdown is not supported by this host");
+          this.denyAllPending("headless session shutting down");
+          this.handlers.shutdown();
           break;
         case "set_permission_mode": {
           const mode = (req as { mode?: unknown }).mode;

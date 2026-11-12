@@ -2,8 +2,10 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { render } from "ink-testing-library";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerCustomCommand, resetCustomCommands } from "../commands.js";
+import { clearJobs, createJob, settleJob } from "../tools/job-store.js";
+import { resetNotifications } from "../tools/notifications.js";
 import { Root, type TuiDeps } from "../tui/run.js";
 import { SessionStats } from "../tui/session-stats.js";
 import { TuiStore } from "../tui/store.js";
@@ -96,6 +98,47 @@ async function submit(view: ReturnType<typeof render>, value: string): Promise<v
 }
 
 describe("Root submission ownership", () => {
+  it("waits for background cleanup before saving and exiting the TUI", async () => {
+    const events: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const job = createJob("tui-submit", { kind: "agent", command: "cleanup gate" });
+    job.kill = () => {
+      events.push("cancel");
+      void gate.then(() => {
+        events.push("clean");
+        settleJob(job, "killed", null);
+      });
+    };
+    const { deps } = makeDeps(() => {
+      throw new Error("exit must not query a model");
+    });
+    deps.onSave = () => {
+      events.push(`save:${job.status}`);
+    };
+    const exited = vi.spyOn(process, "exit").mockReturnValue(undefined as never);
+    const store = new TuiStore("openai/test-model");
+    const view = render(<Root store={store} deps={deps} />);
+    try {
+      await submit(view, "/exit");
+      await waitFor(() => expect(events).toContain("cancel"));
+      expect(exited).not.toHaveBeenCalled();
+      expect(events.some((event) => event.startsWith("save:"))).toBe(false);
+      release();
+      await waitFor(() => expect(exited).toHaveBeenCalled());
+      expect(events).toEqual(["cancel", "clean", "save:killed"]);
+    } finally {
+      release();
+      settleJob(job, "killed", null);
+      view.unmount();
+      store.cancelOverlays();
+      exited.mockRestore();
+      clearJobs("tui-submit");
+      resetNotifications("tui-submit");
+    }
+  });
   it("runs a busy slash locally instead of injecting it into model history", async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => (release = resolve));

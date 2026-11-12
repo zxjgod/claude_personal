@@ -15,6 +15,7 @@
 // shared base types to avoid circular dependencies.
 // ============================================================
 
+import { randomUUID } from "node:crypto";
 import type { ClassifierRules } from "./classifier-rules.js";
 
 // ============================================================================
@@ -155,6 +156,9 @@ export interface ToolResultMetadata {
   timedOut?: boolean;
   /** Background job id (M38) — set when a tool (Bash) returns a job handle. */
   jobId?: string;
+  /** Observed background lifecycle state, after actual producer settlement. */
+  jobStatus?: "running" | "done" | "killed" | "error";
+  killReason?: string;
   /**
    * One-line human summary for the terminal UI (e.g. "Read 200 lines",
    * "12 matches", "8 files"). Display-only — the model sees `content`, never
@@ -237,6 +241,10 @@ export interface ToolContext extends ToolInteraction {
   workspaceRoot: string;
   allowedDirectories?: string[];
   sessionId: string;
+  /** Conversation that owns background jobs, independent of worker checkpoints. */
+  jobOwnerSessionId?: string;
+  /** Delegation path: a worker may manage its own subtree, never siblings/parents. */
+  jobScope?: readonly string[];
   permissionMode: PermissionMode;
   /** Optional live permission-mode hooks; TUI uses these for mid-turn Shift+Tab changes. */
   getPermissionMode?: () => PermissionMode;
@@ -354,11 +362,15 @@ export function deriveSubContext(
     modelConfig?: ModelConfig;
     /** Skill-activation scope override (see ToolContext.skillScopeId). */
     skillScopeId?: string;
+    /** Stable delegation key for resumable agents; otherwise a fresh scope. */
+    jobScopeKey?: string;
   } = {},
 ): ToolContext {
   return {
     workspaceRoot: overrides.workspaceRoot ?? parent.workspaceRoot,
     sessionId: overrides.sessionId ?? parent.sessionId,
+    jobOwnerSessionId: parent.jobOwnerSessionId ?? parent.sessionId,
+    jobScope: [...(parent.jobScope ?? []), overrides.jobScopeKey ?? randomUUID()],
     permissionMode: overrides.permissionMode ?? parent.permissionMode,
     // Restrictions survive delegation even though human-facing capabilities
     // and additional writable directories are deliberately not inherited.
@@ -872,7 +884,11 @@ export type AskUserFn = (
   tool: Tool,
   input: Record<string, unknown>,
   riskHint?: string,
-  requestContext?: { source: "permission" | "tool" },
+  requestContext?: {
+    source: "permission" | "tool";
+    /** Local execution scope for approval rewrites; never serialized to SDK peers. */
+    toolContext?: ToolContext;
+  },
 ) => Promise<boolean>;
 
 // --- Model Caller ---

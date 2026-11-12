@@ -36,6 +36,7 @@
     "docs/CHANGELOG.md",
     "docs/快速开始.md",
     "docs/深度使用指南.md",
+    "docs/independent-ecosystem.md",
     "docs/局限性说明.md",
     "docs/loop-management.md"
   ],
@@ -47,7 +48,7 @@
     "start": "node dist/cli.js",
     "dev": "tsx src/cli.ts",
     "test": "vitest run --config vitest.config.ts",
-    "test:core": "vitest run --config vitest.config.ts src/__tests__/agent-loop.test.ts src/__tests__/integration-permissions.test.ts src/__tests__/delegated-policy.test.ts src/__tests__/compaction.test.ts src/__tests__/streaming-tool-executor.test.ts src/__tests__/checkpoint-persist.test.ts src/__tests__/session-lifecycle.test.ts src/__tests__/cli-headless-e2e.test.ts src/__tests__/headless-control.test.ts src/__tests__/model-budget.test.ts",
+    "test:core": "vitest run --config vitest.config.ts src/__tests__/agent-loop.test.ts src/__tests__/integration-permissions.test.ts src/__tests__/delegated-policy.test.ts src/__tests__/compaction.test.ts src/__tests__/streaming-tool-executor.test.ts src/__tests__/checkpoint-persist.test.ts src/__tests__/session-lifecycle.test.ts src/__tests__/cli-headless-e2e.test.ts src/__tests__/headless-control.test.ts src/__tests__/model-budget.test.ts src/__tests__/runtime-process.test.ts src/__tests__/evaluation.test.ts src/__tests__/context-continuity.test.ts src/__tests__/subagent-outcomes.test.ts src/__tests__/sdk.test.ts src/__tests__/sdk-python.test.ts src/__tests__/sdk-delegated-approval.test.ts src/__tests__/headless-delegated-policy.test.ts src/__tests__/sdk-input-lifecycle.test.ts src/__tests__/sdk-session-continuity.test.ts src/__tests__/ecosystem-contract.test.ts src/__tests__/job-process-tree.test.ts src/__tests__/agent-guards.test.ts src/__tests__/job-cli-exit.test.ts src/__tests__/job-scope-ownership.test.ts src/__tests__/sdk-process-tree.test.ts src/__tests__/owned-process.test.ts src/__tests__/repository-evaluation.test.ts",
     "test:coverage": "vitest run --config vitest.config.ts --coverage",
     "test:watch": "vitest --config vitest.config.ts",
     "lint": "biome lint src",
@@ -58,7 +59,9 @@
     "smoke:provider": "node scripts/provider-smoke.mjs",
     "docs:sync": "node --import tsx scripts/doc-sync.mjs",
     "prepare": "husky",
-    "eval": "node scripts/evaluate.mjs"
+    "eval": "node scripts/evaluate.mjs",
+    "eval:context": "node --import tsx scripts/context-evaluate.mjs",
+    "eval:subagents": "node --import tsx scripts/subagent-evaluate.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.105.0",

@@ -227,3 +227,125 @@ it("rejects control methods called before iteration starts", async () => {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+it("aborts a pending approval callback before delivering its turn's result", async () => {
+  const { root, file } = writeFixture(
+    "ccr-sdk-approval-ended-",
+    `import readline from 'node:readline';
+for await (const line of readline.createInterface({input:process.stdin})) {
+  const msg=JSON.parse(line);
+  if (msg.type==='user') {
+    console.log(JSON.stringify({type:'control_request',request_id:'approval',request:{subtype:'can_use_tool',tool_name:'write',input:{}}}));
+    console.log(JSON.stringify({type:'result',result:'turn ended'}));
+  }
+}`,
+  );
+  let callbackSignal: AbortSignal | undefined;
+  try {
+    for await (const message of query({
+      prompt: "go",
+      options: {
+        cwd: root,
+        cliModule: file,
+        canUseTool: async (_name, _input, context) => {
+          callbackSignal = context.signal;
+          return await new Promise((resolve) =>
+            context.signal.addEventListener("abort", () => resolve({ behavior: "deny" }), {
+              once: true,
+            }),
+          );
+        },
+      },
+    })) {
+      if (message.type === "result") expect(callbackSignal?.aborted).toBe(true);
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("waits for its CLI process to exit when the consumer closes the query early", async () => {
+  const { root, file } = writeFixture(
+    "ccr-sdk-owned-exit-",
+    `
+process.on('SIGTERM',()=>{});
+setInterval(()=>{},1000);
+console.log(JSON.stringify({type:'assistant',pid:process.pid}));
+`,
+  );
+  const q = query({ prompt: "go", options: { cwd: root, cliModule: file } });
+  let pid: number | undefined;
+  const alive = () => {
+    if (!pid) return false;
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  try {
+    const first = await q.next();
+    if (!first.done && typeof first.value.pid === "number") pid = first.value.pid;
+    expect(pid).toBeDefined();
+    await q.return(undefined);
+    expect(alive()).toBe(false);
+  } finally {
+    await q.return(undefined).catch(() => {});
+    if (alive() && pid) process.kill(pid, "SIGKILL");
+    for (let attempt = 0; attempt < 50 && alive(); attempt++)
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  }
+});
+
+it("reports invalid JSON message envelopes and continues to a valid result", async () => {
+  const { root, file } = writeFixture(
+    "ccr-sdk-invalid-envelope-",
+    `import readline from 'node:readline';
+for await (const line of readline.createInterface({input:process.stdin})) {
+  if (JSON.parse(line).type==='user') {
+    for (const value of [null,[],"banner",{foo:"bar"}]) console.log(JSON.stringify(value));
+    console.log(JSON.stringify({type:'result',result:'survived'}));
+  }
+}`,
+  );
+  try {
+    const messages = [];
+    for await (const message of query({ prompt: "go", options: { cwd: root, cliModule: file } }))
+      messages.push(message);
+    expect(
+      messages.filter((message) => message.subtype === "invalid_protocol_message"),
+    ).toHaveLength(4);
+    expect(messages.find((message) => message.type === "result")?.result).toBe("survived");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it.each([
+  undefined,
+  "unexpected",
+])("rejects control replies with invalid subtype %s", async (subtype) => {
+  const { root, file } = writeFixture(
+    "ccr-sdk-control-envelope-",
+    `import readline from 'node:readline';
+console.log(JSON.stringify({type:'system',subtype:'init'}));
+for await (const line of readline.createInterface({input:process.stdin})) {
+  const msg=JSON.parse(line);
+  if(msg.type==='control_request') {
+    console.log(JSON.stringify({type:'control_response',response:{subtype:${JSON.stringify(subtype) ?? "undefined"},request_id:msg.request_id,response:{}}}));
+    console.log(JSON.stringify({type:'result',result:'done'}));
+  }
+}`,
+  );
+  const q = query({ prompt: "go", options: { cwd: root, cliModule: file } });
+  try {
+    for await (const message of q)
+      if (message.type === "system" && message.subtype === "init")
+        await expect(q.setModel("next")).rejects.toThrow(/Invalid control response subtype/);
+  } finally {
+    await q.return(undefined);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

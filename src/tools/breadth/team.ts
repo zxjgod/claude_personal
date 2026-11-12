@@ -142,8 +142,12 @@ export const SendMessageTool: Tool = buildTool({
     }
 
     const result = await runAgentTurn(ctx, agentId, message);
-    if (result.error && !result.output) {
-      return { content: "", error: `Agent "${agentId}" failed: ${result.error}` };
+    if (result.error) {
+      return {
+        content: result.output,
+        error: `Agent "${agentId}" failed: ${result.error}`,
+        metadata: { incomplete: true },
+      };
     }
     const header = `[${agentId}] replied (${result.toolCalls} tool call(s)):\n\n`;
     return { content: header + (result.output || "(no output)") };

@@ -21,7 +21,7 @@ import type { MCPManager } from "./mcp/index.js";
 import { normalizeFinishReason } from "./session-memory.js";
 import { formatSpeculationLine } from "./speculation.js";
 import { startScheduler } from "./tools/extended/scheduler.js";
-import { killRunningJobs } from "./tools/job-store.js";
+import { killOwnedSessionJobs } from "./tools/job-store.js";
 import { drainNotifications, formatNotificationLine } from "./tools/notifications.js";
 import { expandFileRefs } from "./tools/utils/file-refs.js";
 import {
@@ -46,6 +46,7 @@ import type {
 } from "./types.js";
 
 export interface ReplDeps {
+  onJobShutdown?: () => void | Promise<void>;
   messages: Message[];
   tools: Tool[];
   callModel: ModelCaller;
@@ -174,7 +175,12 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
     // The user is leaving — running background jobs (their process trees and
     // TTL timers) must not keep the process alive past the exit (review fix).
     try {
-      killRunningJobs(session.id, "session exited");
+      const pendingJobs = await killOwnedSessionJobs(
+        session.ownedIds ?? [session.id],
+        "session exited",
+      );
+      if (pendingJobs.length)
+        console.warn(`Background jobs did not stop: ${pendingJobs.join(", ")}`);
     } catch {
       /* best-effort teardown */
     }
@@ -185,6 +191,11 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
       });
     } catch (err) {
       console.error("Warning: failed to save session on exit:", formatCliError(err));
+    }
+    try {
+      await deps.onJobShutdown?.();
+    } catch (error) {
+      console.warn(`Background state save failed: ${formatCliError(error)}`);
     }
     try {
       await mcpManager.disconnectAll();

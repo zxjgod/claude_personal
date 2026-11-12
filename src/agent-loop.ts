@@ -260,6 +260,8 @@ export async function* agentLoop(
     workspaceRoot: toolContext?.workspaceRoot ?? process.cwd(),
     allowedDirectories: toolContext?.allowedDirectories,
     sessionId: toolContext?.sessionId ?? "default",
+    jobOwnerSessionId: toolContext?.jobOwnerSessionId,
+    jobScope: toolContext?.jobScope,
     permissionMode: toolContext?.getPermissionMode?.() ?? toolContext?.permissionMode ?? "default",
     getPermissionMode: toolContext?.getPermissionMode,
     setPermissionMode: toolContext?.setPermissionMode,
@@ -468,6 +470,13 @@ export async function* agentLoop(
         return terminal("blocking_limit", err);
       }
 
+      // Compaction and lifecycle hooks are async: cancellation can arrive
+      // after the turn-start check. Do not start another paid task request.
+      if (abortSignal?.aborted) {
+        streamExecutor.clear();
+        yield { type: "aborted", reason: abortSignal.reason };
+        return terminal(isInterrupt(abortSignal) ? "aborted_interrupt" : "aborted_streaming");
+      }
       // === STEP 2: Call the LLM ===
       yield { type: "thinking" };
 

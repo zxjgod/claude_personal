@@ -22,6 +22,136 @@ const success = {
   usage: { input_tokens: 3, output_tokens: 2 },
 };
 
+it("captures staged moves, new files and root documentation in a replayable patch", async () => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-eval-patch-"));
+  roots.push(fixture);
+  fs.mkdirSync(path.join(fixture, "workspace", "src"), { recursive: true });
+  fs.writeFileSync(
+    path.join(fixture, "workspace", "src", "legacy.mjs"),
+    "export const value = 1;\n",
+  );
+  fs.writeFileSync(path.join(fixture, "workspace", "README.md"), "Old API\n");
+  const report = await runEvaluation(
+    {
+      cases: [
+        {
+          name: "migrate",
+          prompt: "move API",
+          fixture: ".",
+          assertions: [{ type: "fileContains", path: "src/new.mjs", text: "value" }],
+        },
+      ],
+    },
+    {
+      suiteDirectory: fixture,
+      query: async function* ({ options }: { options: { cwd: string } }) {
+        execFileSync("git", ["mv", "src/legacy.mjs", "src/model.mjs"], {
+          cwd: options.cwd,
+          windowsHide: true,
+        });
+        fs.writeFileSync(
+          path.join(options.cwd, "src/new.mjs"),
+          "export { value } from './model.mjs';\n",
+        );
+        fs.writeFileSync(path.join(options.cwd, "README.md"), "New API: src/new.mjs\n");
+        // Runtime material must not ride along with an authored candidate patch.
+        fs.mkdirSync(path.join(options.cwd, ".claude"));
+        fs.writeFileSync(path.join(options.cwd, ".claude", "runtime.json"), "private runtime");
+        yield success;
+      },
+    },
+  );
+  expect(report.passed).toBe(1);
+  const replay = path.join(fixture, "replay");
+  fs.cpSync(path.join(fixture, "workspace"), replay, { recursive: true });
+  execFileSync("git", ["init", "--quiet", "--template=", replay], { windowsHide: true });
+  execFileSync("git", ["config", "core.autocrlf", "false"], { cwd: replay, windowsHide: true });
+  fs.writeFileSync(path.join(fixture, "candidate.patch"), report.cases[0].patch);
+  execFileSync("git", ["apply", path.join(fixture, "candidate.patch")], {
+    cwd: replay,
+    windowsHide: true,
+  });
+  expect(fs.existsSync(path.join(replay, "src/legacy.mjs"))).toBe(false);
+  expect(fs.readFileSync(path.join(replay, "src/model.mjs"), "utf8")).toBe(
+    "export const value = 1;\n",
+  );
+  expect(fs.readFileSync(path.join(replay, "src/new.mjs"), "utf8")).toContain("'./model.mjs'");
+  expect(fs.readFileSync(path.join(replay, "README.md"), "utf8")).toContain("New API");
+  expect(fs.existsSync(path.join(replay, ".claude"))).toBe(false);
+});
+
+it.each([
+  "complete",
+  "claim-only",
+  "pass-only",
+  "changed-tests",
+])("requires real failure, repair and passing evidence for coding-loop mode %s", async (mode) => {
+  const loopSuite = JSON.parse(
+    fs.readFileSync(path.join(suiteDirectory, "coding-loop-suite.json"), "utf8"),
+  );
+  const report = await runEvaluation(loopSuite, {
+    suiteDirectory,
+    query: async function* ({ options }: any) {
+      expect(await options.canUseTool("bash", { command: "node check.mjs" })).toEqual({
+        behavior: "allow",
+      });
+      expect(
+        (await options.canUseTool("bash", { command: "node check.mjs && echo bypass" })).behavior,
+      ).toBe("deny");
+      expect(
+        (await options.canUseTool("bash", { command: "node check.mjs", run_in_background: true }))
+          .behavior,
+      ).toBe("deny");
+      const use = (id: string, name: string, input: unknown) => ({
+        type: "assistant",
+        message: { content: [{ type: "tool_use", id, name, input }] },
+      });
+      const result = (id: string, content: string, is_error = false) => ({
+        type: "user",
+        message: { content: [{ type: "tool_result", tool_use_id: id, content, is_error }] },
+      });
+      const run = () =>
+        execFileSync(process.execPath, ["check.mjs"], {
+          cwd: options.cwd,
+          windowsHide: true,
+          encoding: "utf8",
+          stdio: "pipe",
+        });
+      if (mode !== "claim-only" && mode !== "pass-only") {
+        yield use("first-test", "bash", { command: "node check.mjs" });
+        try {
+          run();
+          throw new Error("broken fixture unexpectedly passed");
+        } catch (failure) {
+          const output = String((failure as { stderr?: string }).stderr);
+          expect(output).toContain("CODING_LOOP_TESTS_FAILED");
+          yield result("first-test", output, true);
+        }
+      }
+      fs.writeFileSync(
+        path.join(options.cwd, "src/unique.mjs"),
+        "export const stableUnique = xs => [...new Set(xs)];",
+      );
+      fs.writeFileSync(
+        path.join(options.cwd, "src/batches.mjs"),
+        "import { stableUnique } from './unique.mjs'; export const uniqueBatches = xs => xs.map(stableUnique);",
+      );
+      if (mode !== "claim-only") {
+        yield use("edit", "write", { filePath: "src/unique.mjs" });
+        yield result("edit", "written");
+        yield use("second-test", "bash", { command: "node check.mjs" });
+        yield result("second-test", run());
+      }
+      if (mode === "changed-tests")
+        fs.appendFileSync(path.join(options.cwd, "check.mjs"), "\n// changed\n");
+      yield { ...success, result: "Tests passed" };
+    },
+  });
+  expect(report.passed).toBe(mode === "complete" ? 1 : 0);
+  expect(report.cases[0].patch).toContain("src/unique.mjs");
+  expect(report.cases[0].tool_trace.length > 0).toBe(mode !== "claim-only");
+});
+
 it("rejects the unmodified repair fixtures with executable verifiers", async () => {
   const report = await runEvaluation(suite, {
     suiteDirectory,
@@ -68,6 +198,17 @@ it("copies clean fixtures for each repetition and keeps verifiers outside the mo
 it.each([
   { messages: [] },
   { messages: [{ ...success, is_error: true, errors: ["budget exhausted"] }] },
+  {
+    messages: [
+      success,
+      {
+        type: "system",
+        subtype: "abnormal_exit",
+        is_error: true,
+        message: "CLI abnormal exit after result",
+      },
+    ],
+  },
 ])("does not count missing or failed terminal frames as success", async ({ messages }) => {
   const report = await runEvaluation(
     {
@@ -81,7 +222,7 @@ it.each([
     },
   );
   expect(report.passed).toBe(0);
-  expect(report.cases[0].error).toMatch(/no result frame|budget exhausted/);
+  expect(report.cases[0].error).toMatch(/no result frame|budget exhausted|abnormal exit/);
   expect(report.cases[0].cost_usd).toBeNull();
 });
 
@@ -122,6 +263,24 @@ it("rejects vacuous suites and unsupported assertions before starting a model", 
       { suiteDirectory, query },
     ),
   ).rejects.toThrow("Unsupported assertion");
+  await expect(
+    runEvaluation({ ...suite, toolchain: "unknown" }, { suiteDirectory, query }),
+  ).rejects.toThrow("Unsupported evaluation toolchain");
+  await expect(
+    runEvaluation(
+      {
+        cases: [
+          {
+            name: "invalid replay",
+            prompt: "go",
+            patchReplay: true,
+            assertions: [{ type: "contains", text: "done" }],
+          },
+        ],
+      },
+      { suiteDirectory, query },
+    ),
+  ).rejects.toThrow("patchReplay requires");
 });
 
 it("bounds verifier execution and refuses assertion paths outside the workspace", async () => {

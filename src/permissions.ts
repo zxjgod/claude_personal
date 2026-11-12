@@ -10,6 +10,7 @@ import * as path from "node:path";
 import { buildClassifierPrompt } from "./classifier-rules.js";
 import { policyDecision } from "./permission-policy.js";
 import type {
+  AskUserFn,
   ClassifierResult,
   PermissionClassifier,
   PermissionDecisionReason,
@@ -665,12 +666,7 @@ function formatActionForClassifier(toolName: string, input: Record<string, unkno
 
 export interface PermissionCheckOptions {
   /** Callback to prompt the user for permission */
-  askUser: (
-    tool: Tool,
-    input: Record<string, unknown>,
-    riskHint?: string,
-    requestContext?: { source: "permission" | "tool" },
-  ) => Promise<boolean>;
+  askUser: AskUserFn;
   /**
    * Optional LLM-assisted risk classifier (M15.3). When present, invoked only
    * for tool calls the regex dangerous-pattern detector already flagged — it
@@ -877,7 +873,10 @@ export async function checkPermission(
     // ask on the executor's real input, so an updatedInput rewrite from the
     // approval channel is safe to honor — the headless recheck re-runs this
     // whole floor against the rewritten input before it ever executes.
-    const allowed = await options.askUser(tool, input, riskHint, { source: "permission" });
+    const allowed = await options.askUser(tool, input, riskHint, {
+      source: "permission",
+      toolContext: context,
+    });
     const result = allowed
       ? {
           allowed: true as const,
@@ -960,7 +959,7 @@ export async function checkPermission(
     tool,
     input,
     configured === "ask" ? "Approval required by the configured permission rule." : undefined,
-    { source: "permission" },
+    { source: "permission", toolContext: context },
   );
   const result = allowed
     ? { allowed: true, userConfirmed: true as const }

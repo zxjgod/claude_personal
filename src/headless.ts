@@ -182,6 +182,7 @@ async function* streamJsonPrompts(
   args: ReturnType<typeof parseCliArgs>,
   input: NodeJS.ReadableStream,
   control: HeadlessControlChannel,
+  shutdownSignal: AbortSignal,
 ): AsyncGenerator<string> {
   if ((input as { isTTY?: boolean }).isTTY)
     throw new Error(
@@ -197,9 +198,19 @@ async function* streamJsonPrompts(
     wake = undefined;
   };
   const lines = readline.createInterface({ input, crlfDelay: Infinity });
+  const onShutdown = () => {
+    queue.length = 0;
+    closed = true;
+    lines.close();
+    (input as NodeJS.ReadableStream & { destroy?: () => void }).destroy?.();
+    notify();
+  };
+  shutdownSignal.addEventListener("abort", onShutdown, { once: true });
+  if (shutdownSignal.aborted) onShutdown();
   const reader = (async () => {
     try {
       for await (const line of lines) {
+        if (shutdownSignal.aborted) break;
         if (!line.trim()) continue;
         const value = JSON.parse(line) as {
           type?: string;
@@ -245,7 +256,7 @@ async function* streamJsonPrompts(
   void reader;
   try {
     while (true) {
-      while (queue.length > 0) yield queue.shift()!;
+      while (queue.length > 0 && !shutdownSignal.aborted) yield queue.shift()!;
       if (failure) throw failure;
       if (closed) return;
       await new Promise<void>((resolve) => {
@@ -253,6 +264,7 @@ async function* streamJsonPrompts(
       });
     }
   } finally {
+    shutdownSignal.removeEventListener("abort", onShutdown);
     lines.close();
     control.denyAllPending("headless session ended");
   }
@@ -352,10 +364,15 @@ export async function runHeadless(deps: {
   // only flow when the peer opted in via --permission-prompt-tool stdio —
   // without it, asks stay auto-denied exactly as before.
   let turnAbort: AbortController | undefined;
+  const shutdown = new AbortController();
   const control =
     args.inputFormat === "stream-json" && streamJson
       ? new HeadlessControlChannel(json, {
           interrupt: () => turnAbort?.abort("interrupted via control request"),
+          shutdown: () => {
+            turnAbort?.abort("SDK session shutting down");
+            shutdown.abort();
+          },
           setModel: (model) => {
             // The channel guarantees a non-empty model name (resets and
             // blanks are answered with an error frame before we get here).
@@ -384,26 +401,30 @@ export async function runHeadless(deps: {
             // context.askUser internally and may pass a display-only copy.
             // A rewrite there cannot safely be applied to the executor input.
             if (requestContext?.source !== "permission") return false;
+            const executionContext = requestContext.toolContext ?? context;
             try {
               const validated = (
                 tool.validateInput
                   ? tool.validateInput(decision.updatedInput)
                   : decision.updatedInput
               ) as Record<string, unknown>;
-              const permissionRecheck = await checkPermission(tool, validated, context, {
+              const permissionRecheck = await checkPermission(tool, validated, executionContext, {
                 askUser: async () => true,
-                classifier: context.permissionClassifier,
+                classifier: executionContext.permissionClassifier,
               });
               if (!permissionRecheck.allowed) return false;
               // A few tool-level checks contain their own approval prompt.
               // The current can_use_tool response already approved this exact
               // rewritten input, so recheck their policy without opening a
               // second prompt. Preserve any approval state they record.
-              const recheckContext: ToolContext = { ...context, askUser: async () => true };
+              const recheckContext: ToolContext = {
+                ...executionContext,
+                askUser: async () => true,
+              };
               const toolRecheck = await tool.checkPermissions(validated, recheckContext);
               if (!toolRecheck.allowed) return false;
               if (recheckContext.approvedUserMemoryWrite !== undefined)
-                context.approvedUserMemoryWrite = recheckContext.approvedUserMemoryWrite;
+                executionContext.approvedUserMemoryWrite = recheckContext.approvedUserMemoryWrite;
               // checkPermission hands us the executor's input object by
               // reference and the executor runs that same object — rewrite
               // in place so the approved input is what actually executes.
@@ -424,7 +445,7 @@ export async function runHeadless(deps: {
   // result stays a bare object; multiple become an array).
   try {
     const prompts = control
-      ? streamJsonPrompts(args, deps.input, control)
+      ? streamJsonPrompts(args, deps.input, control, shutdown.signal)
       : headlessInputs(args, deps.input);
     for await (const prompt of prompts) {
       const started = Date.now();

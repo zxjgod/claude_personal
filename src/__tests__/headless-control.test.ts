@@ -389,6 +389,57 @@ it("interrupts a running turn and still emits the result frame", async () => {
   expect(process.exitCode).toBe(0);
 });
 
+it("shutdown closes an idle input stream without waiting for EOF", async () => {
+  const h = harness({ argv: STREAM_FLAGS, caller: okCaller, tools: [] });
+  h.send({
+    type: "control_request",
+    request_id: "shutdown-idle",
+    request: { subtype: "shutdown" },
+  });
+  await h.run;
+  expect(h.input.destroyed).toBe(true);
+  expect(
+    h.frames().find((frame) => frame.response?.request_id === "shutdown-idle")?.response.subtype,
+  ).toBe("success");
+  expect(h.frames().filter((frame) => frame.type === "result")).toEqual([]);
+});
+
+it("shutdown cancels a parked approval and discards queued and buffered user input", async () => {
+  const calls: Record<string, unknown>[] = [];
+  const h = harness({
+    argv: STDIO_FLAGS,
+    caller: toolCaller({ value: "must not run" }),
+    tools: [probeTool(calls)],
+  });
+  h.userLine("first");
+  await vi.waitFor(() => expect(permissionRequest(h.frames())).toBeDefined());
+  const approval = permissionRequest(h.frames());
+  h.userLine("queued");
+  h.input.write(
+    `${[
+      { type: "control_request", request_id: "shutdown-active", request: { subtype: "shutdown" } },
+      {
+        type: "control_response",
+        response: {
+          subtype: "success",
+          request_id: approval?.request_id,
+          response: { behavior: "allow" },
+        },
+      },
+      { type: "user", message: { role: "user", content: "buffered" } },
+    ]
+      .map((frame) => JSON.stringify(frame))
+      .join("\n")}\n`,
+  );
+  await h.run;
+  expect(calls).toEqual([]);
+  expect(h.messages.filter((message) => message.role === "user")).toHaveLength(1);
+  const results = h.frames().filter((frame) => frame.type === "result");
+  expect(results).toHaveLength(1);
+  expect(results[0].is_error).toBe(true);
+  expect(process.exitCode).toBe(0);
+});
+
 it("answers initialize/set_model/set_permission_mode and rejects unknown subtypes", async () => {
   const h = harness({ argv: STREAM_FLAGS, caller: okCaller, tools: [] });
   h.send({ type: "control_request", request_id: "i", request: { subtype: "initialize" } });

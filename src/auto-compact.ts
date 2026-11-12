@@ -13,19 +13,11 @@ import type { Message, ModelCaller, ModelConfig } from "./types.js";
  * Used by auto-compaction to preserve recent conversation context.
  */
 export function findSafeSplitIndex(messages: Message[], tailSize: number): number {
-  // Keep at least tailSize messages, but never split in the middle of a
-  // tool-result → tool-call pair. Walk backwards from the tail and stop at
-  // the first assistant turn that has no unpaired tool result.
+  // A complete tool batch is assistant(tool_calls) followed by all results.
+  // Move a boundary inside its results back to the assistant, keeping the
+  // whole batch in the tail. Adjacent batches can then be split safely.
   let split = Math.max(0, messages.length - tailSize);
-  while (split > 0) {
-    const prev = messages[split - 1];
-    if (prev?.role === "assistant") {
-      // Check if this assistant message has tool results that would be orphaned
-      const hasOrphanedToolResult = messages[split]?.role === "tool";
-      if (!hasOrphanedToolResult) break;
-    }
-    split--;
-  }
+  while (split > 0 && messages[split]?.role === "tool") split--;
   return split;
 }
 
@@ -69,6 +61,7 @@ async function summarizeForCompact(
   modelConfig: ModelConfig,
   abortSignal?: AbortSignal,
 ): Promise<string> {
+  abortSignal?.throwIfAborted();
   const chunks: string[] = [];
   let streamError: Error | undefined;
   for await (const event of callModel(
@@ -78,12 +71,14 @@ async function summarizeForCompact(
     modelConfig,
     abortSignal,
   )) {
+    abortSignal?.throwIfAborted();
     if (event.type === "text_delta") {
       chunks.push(event.delta);
     } else if (event.type === "error") {
       streamError = event.error;
     }
   }
+  abortSignal?.throwIfAborted();
   if (streamError) throw streamError;
   const summary = chunks.join("");
   if (summary.trim() === "") {
@@ -172,13 +167,24 @@ so the conversation can continue with a fresh context window.`;
         abortSignal,
       );
     } catch {
+      abortSignal?.throwIfAborted();
       summary = await summarizeForCompact(summaryMessages, callModel, modelConfig, abortSignal);
     }
   } else {
     summary = await summarizeForCompact(summaryMessages, callModel, modelConfig, abortSignal);
   }
 
-  // Rebuild: system summary + tail. The summary is tagged with
+  // Keep the active human request verbatim: an incomplete summary must not
+  // replace its constraints with a synthetic continuation. Pin only when the
+  // request would otherwise be summarized, so repeated compactions don't grow it.
+  let taskIndex = messages.length - 1;
+  while (taskIndex >= 0) {
+    const message = messages[taskIndex];
+    if (message.role === "user" && !message.synthetic) break;
+    taskIndex--;
+  }
+  const task = taskIndex >= 0 && taskIndex < splitIndex ? [messages[taskIndex]] : [];
+  // Rebuild: system summary + active request + tail. The summary is tagged with
   // COMPACT_BOUNDARY_MARKER so the pipeline's layer 1
   // (getMessagesAfterCompactBoundary) can physically drop everything before it
   // on subsequent turns.
@@ -187,6 +193,7 @@ so the conversation can continue with a fresh context window.`;
       role: "system",
       content: `${COMPACT_BOUNDARY_MARKER}\n${summary}`,
     },
+    ...task,
     ...tailMessages,
   ];
 }

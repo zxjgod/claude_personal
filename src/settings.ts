@@ -144,3 +144,13 @@ export function readSettings(root: string, sources = settingSources()): Settings
   }
   return mergeSettings(...layers, readManagedSettings());
 }
+
+/** Credential-adjacent env is read only from active user, explicit and managed
+ * settings. Project/local files cannot redirect endpoints or inject secrets. */
+export function readSettingsEnvironment(root: string): Record<string, string> {
+  const env = readSettings(root, settingSources().includes("user") ? ["user"] : []).env;
+  if (!isRecord(env)) return {};
+  return Object.fromEntries(
+    Object.entries(env).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+  );
+}

@@ -3,13 +3,13 @@
 // ============================================================
 // The kind-agnostic controller for background work (currently background Bash,
 // extensible to background sub-agents / terminals). All three tools read and
-// write the session-keyed store in ../job-store.js via context.sessionId, so
-// they only ever see the jobs THIS session started.
+// write ../job-store.js through conversation ownership and delegation scope.
+// Owners see all delegated jobs; workers see only their own subtree.
 // ============================================================
 
 import { z } from "zod";
 import type { Tool, ToolResult } from "../../types.js";
-import { getJob, listJobs } from "../job-store.js";
+import { contextJob, contextJobs, waitForJob } from "../job-store.js";
 import { buildTool } from "../registry.js";
 
 const DEFAULT_WAIT_MS = 30_000;
@@ -30,7 +30,7 @@ export const JobListTool: Tool = buildTool({
   isConcurrencySafe: true,
 
   async call(_input, context): Promise<ToolResult> {
-    const jobs = listJobs(context.sessionId);
+    const jobs = contextJobs(context);
     if (jobs.length === 0) {
       return { content: "No background jobs." };
     }
@@ -72,7 +72,7 @@ export const JobOutputTool: Tool = buildTool({
   isConcurrencySafe: true,
 
   async call(input, context): Promise<ToolResult> {
-    const job = getJob(context.sessionId, input.job_id);
+    const job = contextJob(context, input.job_id);
     if (!job) {
       return { content: "", error: `Unknown job: ${input.job_id}` };
     }
@@ -82,25 +82,24 @@ export const JobOutputTool: Tool = buildTool({
         input.timeout_ms && input.timeout_ms > 0
           ? Math.min(input.timeout_ms, MAX_WAIT_MS)
           : DEFAULT_WAIT_MS;
-      // Race the job's settlement against a timeout, clearing the timer on the
-      // path that loses so a job that finishes early doesn't leave a dangling
-      // timer keeping the event loop alive until `timeoutMs` elapses.
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, timeoutMs);
-        job.settled.then(() => {
-          clearTimeout(timer);
-          resolve();
-        });
-      });
+      await waitForJob(job, timeoutMs, context.abortSignal);
     }
 
     const output = [job.stdout, job.stderr].filter(Boolean).join("\n");
     const flags: string[] = [];
+    if (job.exitCode !== null) flags.push(`exit code: ${job.exitCode}`);
     if (job.status === "killed" && job.killReason) flags.push(`killed: ${job.killReason}`);
     if (job.truncated) flags.push("output truncated (over 10MB limit)");
     const flagNote = flags.length > 0 ? `\n${flags.map((f) => `[${f}]`).join(" ")}` : "";
     return {
       content: `${output || "(no output yet)"}\n[status: ${job.status}]${flagNote}`,
+      metadata: {
+        jobId: job.id,
+        jobStatus: job.status,
+        exitCode: job.exitCode,
+        killReason: job.killReason,
+        aborted: context.abortSignal?.aborted === true,
+      },
     };
   },
 
@@ -129,19 +128,19 @@ export const JobKillTool: Tool = buildTool({
   isConcurrencySafe: false,
 
   async call(input, context): Promise<ToolResult> {
-    const job = getJob(context.sessionId, input.job_id);
+    const job = contextJob(context, input.job_id);
     if (!job) {
       return { content: "", error: `Unknown job: ${input.job_id}` };
     }
 
     if (job.status === "running") {
-      job.killReason = input.reason;
+      job.killReason ||= input.reason?.trim() || "cancelled by user";
       job.kill?.();
       // Review fix ("kill 在进程真正退出前就 settle"): wait (bounded) for the
       // process tree to actually stop so waiters and notifications see the
       // FINAL status/output. settleJob fires from the close handler; if the
       // kill fails outright, report an error instead of "killed".
-      await Promise.race([job.settled, new Promise((resolve) => setTimeout(resolve, 5000))]);
+      await waitForJob(job, 5000);
       if (job.status === "running") {
         return {
           content: "",
@@ -156,6 +155,6 @@ export const JobKillTool: Tool = buildTool({
   },
 
   async checkPermissions() {
-    return { allowed: true }; // Only ever touches this session's own jobs
+    return { allowed: true }; // Lookup enforces conversation and worker scope
   },
 });

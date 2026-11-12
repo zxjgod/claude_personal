@@ -17,6 +17,7 @@ import { prepareAgentHooks, scopedHooks } from "./scoped-execution.js";
 
 import { agentLoop, WORKER_COMPACT_THRESHOLD } from "./agent-loop.js";
 import { createModelCaller } from "./llm-adapter.js";
+import { consumeSubagentLoop, subagentTerminalError } from "./subagent-outcome.js";
 import {
   buildSubagentSystemPrompt,
   extractLastAssistantText,
@@ -284,6 +285,7 @@ export async function runAgentTurn(
     return { output: "", toolCalls: 0, error: `Agent role "${agent.role}" no longer registered` };
   }
 
+  const inherited = new Set(agent.messages);
   agent.messages.push({ role: "user", content: [{ type: "text", text: message }] });
   agent.status = "running";
   agent.updatedAt = Date.now();
@@ -350,6 +352,7 @@ export async function runAgentTurn(
       autoCompactThreshold: WORKER_COMPACT_THRESHOLD,
       abortSignal: scope.signal,
       toolContext: deriveSubContext(ctx, {
+        jobScopeKey: `team:${agent.id}`,
         modelConfig: config,
         askUser: subApprover,
         abortSignal: scope.signal,
@@ -368,7 +371,7 @@ export async function runAgentTurn(
       askUser: subApprover,
     });
 
-    for await (const event of loop) {
+    const completion = await consumeSubagentLoop(loop, (event) => {
       switch (event.type) {
         case "tool_use":
           toolCalls++;
@@ -389,14 +392,9 @@ export async function runAgentTurn(
         case "done":
           ctx.onProgress?.({ subagentName: agent.id, phase: "done", reason: event.finishReason });
           break;
-        case "aborted":
-          error = event.reason;
-          break;
-        case "error":
-          error = String(event.error);
-          break;
       }
-    }
+    });
+    error = subagentTerminalError(completion);
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
   } finally {
@@ -411,15 +409,16 @@ export async function runAgentTurn(
   // Context protection (kernel §4): the agent's output is ONLY its final
   // assistant text, not its accumulated turn-by-turn narration. agentLoop
   // mutated agent.messages in place, so the last assistant text lives there.
-  const output = extractLastAssistantText(agent.messages);
+  const output = extractLastAssistantText(agent.messages.filter((entry) => !inherited.has(entry)));
+  if (!error && !output) error = "no final report";
   agent.toolCalls += toolCalls;
   agent.lastOutput = output;
   agent.updatedAt = Date.now();
   // A stop requested mid-run wins over done.
   if ((agent.status as AgentStatus) !== "stopped") {
-    agent.status = error && !output ? "error" : "done";
+    agent.status = error ? "error" : "done";
   }
-  if (error) agent.error = error;
+  agent.error = error;
 
   // M41: push, rather than requiring lead-side polling, when the turn was
   // requested as a background handoff. Existing synchronous callers still
@@ -428,8 +427,8 @@ export async function runAgentTurn(
     pushTaskNotification(ctx.sessionId, {
       id: `team-${agent.id}`,
       kind: "team",
-      status: error && !output ? "error" : "done",
-      summary: `team agent ${agent.id} completed`,
+      status: error ? "error" : "done",
+      summary: `team agent ${agent.id} ${error ? "incomplete" : "completed"}`,
       outputTail: (output || error || "").slice(-500) || undefined,
     });
   }

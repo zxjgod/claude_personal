@@ -13,6 +13,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { agentLoop, WORKER_COMPACT_THRESHOLD } from "./agent-loop.js";
 import { createModelCaller } from "./llm-adapter.js";
+import { consumeSubagentLoop, subagentTerminalError } from "./subagent-outcome.js";
 import { extractLastAssistantText, getCoreToolsForSubagents } from "./subagents.js";
 import { deriveSubContext, type Message, type ToolContext } from "./types.js";
 import { renameSyncWithRetry } from "./utils/atomic-rename.js";
@@ -75,21 +76,22 @@ export async function runWorkerAgent(
 
   await acquireWorkerSlot(abortSignal);
   try {
-    for await (const event of agentLoop(subMessages, tools, subCaller, context.modelConfig, {
-      systemPrompt: WORKER_PROMPT,
-      maxTurns: WORKER_MAX_TURNS,
-      autoCompactThreshold: WORKER_COMPACT_THRESHOLD,
-      toolContext: deriveSubContext(context, {
+    const completion = await consumeSubagentLoop(
+      agentLoop(subMessages, tools, subCaller, context.modelConfig, {
+        systemPrompt: WORKER_PROMPT,
+        maxTurns: WORKER_MAX_TURNS,
+        autoCompactThreshold: WORKER_COMPACT_THRESHOLD,
+        toolContext: deriveSubContext(context, {
+          askUser: approver,
+          abortSignal,
+          hooks: context.hooks,
+        }),
         askUser: approver,
         abortSignal,
-        hooks: context.hooks,
       }),
-      askUser: approver,
-      abortSignal,
-    })) {
-      if (event.type === "error") errorMessage = String(event.error);
-      else if (event.type === "aborted") errorMessage = String(event.reason);
-    }
+      () => {},
+    );
+    errorMessage = subagentTerminalError(completion);
   } catch (error) {
     errorMessage = error instanceof Error ? error.message : String(error);
   } finally {
@@ -97,9 +99,10 @@ export async function runWorkerAgent(
   }
 
   const text = extractLastAssistantText(subMessages);
+  if (errorMessage)
+    throw new Error(`worker failed: ${errorMessage}${text ? `\nPartial output: ${text}` : ""}`);
   if (text) return text;
-  if (errorMessage) throw new Error(`worker failed: ${errorMessage}`);
-  return "(no output)";
+  throw new Error("worker incomplete: no final report");
 }
 
 export interface WorkflowRecord {

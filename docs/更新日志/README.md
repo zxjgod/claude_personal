@@ -61,6 +61,19 @@ docs/更新日志/
 
 | 日期 | 类型 | 模块 | 主题 | commit | 关联 |
 |---|---|---|---|---|---|
+| 2026-11-12 | checkpoint / docs | 目标状态 / 子代理协作 | [阶段收尾与继续入口](20261112-collaboration-checkpoint.md) | 工作区改动，暂时暂停 | [核心计划](../20261111-core-engine-plan.md) |
+| 2026-11-12 | feature / fix / test / evaluation | 编码工程 / 评估器 / 补丁 | [TypeScript 工程修复、模块迁移与补丁复验](20261112-repository-task-evaluation.md) | 工作区改动 | [运行说明](../core-evaluation.md) |
+| 2026-11-12 | fix / test | SDK / Python / 进程树 | [SDK 强制收尾与自有进程树](20261112-sdk-process-tree.md) | 工作区改动 | [核心计划](../20261111-core-engine-plan.md) |
+| 2026-11-12 | fix / test | 后台归属 / 委派 / 会话切换 | [后台任务归属与退出清理](20261112-background-job-ownership.md) | 工作区改动 | [核心计划](../20261111-core-engine-plan.md) |
+| 2026-11-12 | fix / test | 后台作业 / Agent / CLI | [真实进程树与后台生命周期](20261112-background-process-lifecycle.md) | 工作区改动 | [核心计划](../20261111-core-engine-plan.md) |
+| 2026-11-12 | fix / test / docs | 独立生态 / Settings / MCP | [独立生态契约与来源规则修复](20261112-independent-ecosystem.md) | 工作区改动 | [格式与边界](../independent-ecosystem.md) |
+| 2026-11-11 | fix / test | TS SDK / 输入与恢复 | [TypeScript 输入生命周期与连续会话](20261111-ts-sdk-continuity.md) | 工作区改动 | [SDK 使用](../深度使用指南.md) |
+| 2026-11-11 | feature / test | Python SDK / 持续会话 | [Python 持续会话客户端](20261111-python-persistent-client.md) | 工作区改动 | [SDK 使用](../深度使用指南.md) |
+| 2026-11-11 | fix / test | SDK / 委派审批 / 输出 | [委派审批与 SDK 生命周期契约](20261111-sdk-approval-contract.md) | 工作区改动 | [SDK 使用](../深度使用指南.md) |
+| 2026-11-11 | fix / test / evaluation | 子代理 / Team / Workflow | [委派终止状态与成果交接](20261111-subagent-outcomes.md) | 工作区改动 | [推进计划](../20261111-core-engine-plan.md) |
+| 2026-11-11 | fix / test / evaluation | 上下文压缩 / 取消 | [连续批次压缩与真实任务保留](20261111-context-continuity.md) | 工作区改动 | [推进计划](../20261111-core-engine-plan.md) |
+| 2026-11-11 | feature / test | 编码闭环 / 测量证据 | [测试失败、修复与再次验证](20261111-coding-loop-evidence.md) | 工作区改动 | [测量说明](../core-evaluation.md) |
+| 2026-11-11 | fix / test | 会话恢复 / 调度 / workflow | [跨进程恢复验收与延时、诊断保留修复](20261111-runtime-process-recovery.md) | 工作区改动 | [推进计划](../20261111-core-engine-plan.md) |
 | 2026-11-11 | feature / fix / test | 核心测量 / SDK / 发布 | [固定编码任务测量与打包 SDK 入口修复](20261111-core-evaluation.md) | 工作区改动 | [测量说明](../core-evaluation.md) |
 | 2026-11-11 | fix / test | 核心引擎 / 控制协议 | [核心验收入口与审批信封校验](20261111-core-control-validation.md) | 工作区改动 | [推进计划](../20261111-core-engine-plan.md) |
 | 2026-10-25 | feature | 受控循环 | [/loop 进度锚定与交付物落盘](20261025-loop-progress-anchor.md) | 工作区改动 | [Loop management](../loop-management.md) |
@@ -116,6 +129,24 @@ docs/更新日志/
 > 新条目加在表格**最上方**。
 
 ## 索引 ②：按模块（出 bug 时从这里查某子功能的历次改动）
+
+- **后台归属 / 委派隔离 / 会话切换**：[20261112-background-job-ownership](20261112-background-job-ownership.md)（五入口、稳定恢复作用域、精确退出集合和旧快照保真）。
+- **SDK 强制收尾 / 进程树**：[20261112-sdk-process-tree](20261112-sdk-process-tree.md)（两端前后台命令、暂停消费者取消、输入失败、无关进程隔离及强停后恢复）。
+- **工程任务 / 构建修复 / 源码迁移**：[20261112-repository-task-evaluation](20261112-repository-task-evaluation.md)（TypeScript 工具链、完整候选补丁重放、所有 Shell 固定审批与真实 k3 两轮）。
+- **暂停状态 / 协作工作交接**：[20261112-collaboration-checkpoint](20261112-collaboration-checkpoint.md)（最近有效基线、尚未成立的回归草稿、恢复入口；不计作新修复）。
+- **后台 / 进程树 / CLI 退出**：[20261112-background-process-lifecycle](20261112-background-process-lifecycle.md)（三级 PID/心跳、真实结算、输出/退出码、代理取消清理、CLI 正常退出和恢复）。
+- **独立生态 / 来源 / 内联 MCP**：[20261112-independent-ecosystem](20261112-independent-ecosystem.md)（用户根独立；设置/env 来源；strict/disabled 一致性；实际字段清单；仅 settings 凭据启动）。
+- **TS SDK / 输入取消与恢复**：[20261111-ts-sdk-continuity](20261111-ts-sdk-continuity.md)（挂起输入不阻塞退出；等待读取可取消；抑制迟到输入；缺失结果报错；真实 CLI 中断/继续/读回）。
+- **Python SDK / 持续会话**：[20261111-python-persistent-client](20261111-python-persistent-client.md)（多轮、RPC、中断后继续、审批取消、真实 CLI 写入与跨进程恢复、发布包默认入口）。
+- **SDK / 委派审批 / 进程收尾 / 消息信封**：[20261111-sdk-approval-contract](20261111-sdk-approval-contract.md)（真实 CLI 输入重写；子执行者策略复核；回合结束取消回调；非法消息诊断；异常退出评估失败）。
+
+- **委派终止 / Team 状态 / Workflow 缓存**：[20261111-subagent-outcomes](20261111-subagent-outcomes.md)（五入口读取 Terminal；失败部分报告保留诊断；28 项矩阵与两轮 worktree 交接）。
+
+- **压缩 / 当前任务 / 取消**：[20261111-context-continuity](20261111-context-continuity.md)（完整工具批次边界；保留最近真实输入；取消时不提交部分摘要、不启动新请求；两轮真实模型验收）。
+
+- **完整编码闭环 / Shell 审批 / 执行证据**：[20261111-coding-loop-evidence](20261111-coding-loop-evidence.md)（固定测试命令；失败→修复→成功 trace；保留候选 patch）。
+
+- **跨进程恢复 / 相对延时 / 后台诊断**：[20261111-runtime-process-recovery](20261111-runtime-process-recovery.md)（七项独立进程验收；恢复剩余等待时间；保留中断前 stderr）。
 
 - **编码任务测量 / 打包 SDK**：[20261111-core-evaluation](20261111-core-evaluation.md)（隔离任务与可执行验收；SDK chunk 默认 CLI 定位；实际发布包执行检查）。
 

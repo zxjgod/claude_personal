@@ -7,7 +7,7 @@
 // auto-approved; everything else is forwarded to the parent's approval
 // channel (or denied when there is none).
 
-import type { AskUserFn, Tool } from "../types.js";
+import type { AskUserFn } from "../types.js";
 
 /**
  * Create a restricted approval function for sub-agents.
@@ -21,13 +21,13 @@ export function createSubAgentApprover(
   parentApprover?: AskUserFn,
   restrictive: boolean = true,
 ): AskUserFn {
-  return async (tool: Tool, input: Record<string, unknown>, riskHint?: string) => {
+  return async (tool, input, riskHint, requestContext) => {
     // Unknown/new capabilities must not silently inherit approval. A risk
     // hint can also force approval for an otherwise read-only operation.
     if (riskHint || !tool.isReadOnly(input) || tool.requiresApproval?.()) {
       if (parentApprover) {
         // Forward to parent approver with the correct riskHint parameter
-        return parentApprover(tool, input, riskHint);
+        return parentApprover(tool, input, riskHint, requestContext);
       }
 
       // No parent approver available

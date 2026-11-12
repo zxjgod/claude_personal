@@ -18,6 +18,11 @@ import { mergePermissionPolicies } from "../permission-policy.js";
 import { prepareAgentHooks, scopedHooks } from "../scoped-execution.js";
 import type { SkillDefinition } from "../skills.js";
 import {
+  consumeSubagentLoop,
+  subagentFinishReason,
+  subagentTerminalError,
+} from "../subagent-outcome.js";
+import {
   buildSubagentSystemPrompt,
   extractLastAssistantText,
   getCoreToolsForSubagents,
@@ -137,12 +142,11 @@ export async function runForkSkill(
       askUser: approver,
     });
 
-    for await (const event of loop) {
+    const completion = await consumeSubagentLoop(loop, (event) => {
       if (event.type === "tool_use") toolCallCount++;
-      else if (event.type === "aborted") errorMessage = event.reason;
-      else if (event.type === "error") errorMessage = String(event.error);
-      else if (event.type === "done") terminalReason = event.finishReason;
-    }
+    });
+    terminalReason = subagentFinishReason(completion);
+    errorMessage = subagentTerminalError(completion);
   } catch (error) {
     errorMessage = error instanceof Error ? error.message : String(error);
   }
@@ -150,10 +154,10 @@ export async function runForkSkill(
   const duration = Date.now() - startTime;
   const output = extractLastAssistantText(subMessages);
 
-  if (errorMessage || terminalReason !== "end_turn") {
+  if (errorMessage || terminalReason !== "end_turn" || !output) {
     return {
       content: output,
-      error: `Fork skill "${skill.name}" incomplete: ${errorMessage || terminalReason || "no terminal event"}`,
+      error: `Fork skill "${skill.name}" incomplete: ${errorMessage || terminalReason || "no terminal event"}${!output ? "; no final report" : ""}`,
       metadata: { durationMs: duration, incomplete: true },
     };
   }

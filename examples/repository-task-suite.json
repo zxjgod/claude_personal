@@ -1,0 +1,26 @@
+{
+  "version": "repository-tasks-v2",
+  "toolchain": "typescript",
+  "patchReplay": true,
+  "maxTurns": 20,
+  "maxOutputTokens": 4096,
+  "timeoutMs": 300000,
+  "allowedTools": ["Read", "Glob", "Grep", "Edit", "Write"],
+  "disallowedTools": ["Agent", "Task", "Workflow"],
+  "cases": [
+    {
+      "name": "typed-catalog-repair",
+      "fixture": "eval-fixtures/repository-tasks",
+      "shellCommands": ["node build.mjs", "node test.mjs"],
+      "prompt": "Repair this TypeScript task-catalog package. Before editing source run the exact command `node build.mjs` and inspect the real compiler failure. Inspect the source, fix the public exports and implementation, then run `node build.mjs` and `node test.mjs` until both pass. Keep build.mjs, test.mjs, tsconfig.json, package.json and .gitignore unchanged; do not add dependencies or bypass type checking. Public src/index.ts must export Task, parseTaskLines, TaskCatalog and readyTitles. Task has id/title strings, priority 0|1|2, and status 'todo'|'done'. parseTaskLines accepts newline-delimited JSON, ignores blank lines, trims id/title, discards extra fields, rejects non-objects, empty strings, invalid priority/status and duplicate normalized ids, and reports the original 1-based physical line in every parse/validation error. TaskCatalog.fromLines parses input. Its constructor must copy incoming tasks, list(status?) returns fresh copies sorted by descending priority while preserving insertion order for ties, and complete(id) returns true only for a todo->done transition (false for missing/already done), without mutating caller-owned objects. readyTitles(text) joins todo titles in catalog order with ', '. Only the two exact shell commands are approved. Report the compiler failure observed, changes, and actual final build/test results.",
+      "assertions": [{ "type": "verifier", "path": "verify-repair.mjs", "timeoutMs": 20000 }]
+    },
+    {
+      "name": "catalog-module-migration",
+      "fixture": "eval-fixtures/repository-tasks",
+      "shellCommands": ["node build.mjs", "node test.mjs", "git mv src/legacy.ts src/task-model.ts", "git mv -f src/legacy.ts src/task-model.ts"],
+      "prompt": "Migrate and repair this TypeScript package. First run the exact command `node build.mjs` before changing source. Move src/legacy.ts to src/task-model.ts using the approved `git mv src/legacy.ts src/task-model.ts` command (the -f variant is approved if the target already exists). Extract a pure exported compareTasks(left,right) comparator into a new src/priority.ts; task-model must import and use it. Update every consumer and public src/index.ts so the removed legacy path is not referenced; export Task, parseTaskLines, TaskCatalog, readyTitles and compareTasks. Update README.md to describe src/task-model.ts, src/priority.ts and parseTaskLines. Preserve build.mjs, test.mjs, tsconfig.json, package.json and .gitignore exactly, add no dependencies, and retain strict types. Functional contract: Task id/title strings, priority 0|1|2, status 'todo'|'done'. parseTaskLines reads JSONL, ignores blanks, trims id/title, drops extra fields, rejects malformed/non-object records, empty id/title, invalid priority/status, and duplicate normalized ids; all errors name the original 1-based physical line. Catalog constructor copies inputs; list(status?) returns fresh task copies in descending priority, stable for ties; complete(id) changes todo->done once and returns a boolean, never mutating caller objects. readyTitles joins todo titles with ', '. After migration run `node build.mjs` then `node test.mjs` and fix until both pass. Only the four exact listed commands are approved. Report observed failure, module changes, and real validation results.",
+      "assertions": [{ "type": "verifier", "path": "verify-migration.mjs", "timeoutMs": 20000 }]
+    }
+  ]
+}

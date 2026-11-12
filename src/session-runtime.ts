@@ -9,6 +9,41 @@ import { enqueueScheduledInput, pendingSessionInputs } from "./tools/extended/sc
 import { listWakeupJobs, restoreWakeups } from "./tools/extended/schedule-wakeup.js";
 import { listJobs, restoreJobs } from "./tools/job-store.js";
 import { renameSyncWithRetry } from "./utils/atomic-rename.js";
+
+function backgroundSnapshot(sessionId: string) {
+  return listJobs(sessionId).map(
+    ({ settled: _settled, resolveSettled: _resolve, kill: _kill, ...job }) => ({
+      ...job,
+      stdout: job.stdout.slice(-1000000),
+      stderr: job.stderr.slice(-1000000),
+    }),
+  );
+}
+/** Patch only jobs after shutdown: inactive sessions' goals/queues keep their
+ * saved state and timestamp. Missing/deleted snapshots must not be recreated. */
+export function saveBackgroundJobRuntime(root: string, sessionId: string): void {
+  if (!/^[a-zA-Z0-9_-]+$/.test(sessionId)) return;
+  const file = path.join(root, ".claude", "session-runtime", `${sessionId}.json`);
+  let raw: string;
+  try {
+    raw = fs.readFileSync(file, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  let value: Record<string, unknown>;
+  try {
+    value = JSON.parse(raw);
+    if (!value || typeof value !== "object" || Array.isArray(value) || value.version !== 1)
+      throw new Error();
+  } catch {
+    throw new Error("Invalid session runtime; refusing background-only update");
+  }
+  value.backgroundJobs = backgroundSnapshot(sessionId);
+  const temp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(temp, JSON.stringify(value));
+  renameSyncWithRetry(temp, file);
+}
 export function saveSessionRuntime(root: string, sessionId: string): void {
   if (!/^[a-zA-Z0-9_-]+$/.test(sessionId)) return;
   saveLoop({ workspaceRoot: root, sessionId });
@@ -27,13 +62,7 @@ export function saveSessionRuntime(root: string, sessionId: string): void {
         fireAtMs: Date.now() + Number(job.fireAt - process.hrtime.bigint()) / 1000000,
       })),
     team: listAgents(sessionId).map(({ scope: _scope, ...agent }) => agent),
-    backgroundJobs: listJobs(sessionId).map(
-      ({ settled: _settled, resolveSettled: _resolve, kill: _kill, ...job }) => ({
-        ...job,
-        stdout: job.stdout.slice(-1000000),
-        stderr: job.stderr.slice(-1000000),
-      }),
-    ),
+    backgroundJobs: backgroundSnapshot(sessionId),
   };
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const temp = `${file}.${process.pid}.tmp`;

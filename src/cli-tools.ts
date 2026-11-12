@@ -281,14 +281,17 @@ export async function setupTools(deps: {
           : undefined,
     });
   }
-  for (const dir of customizations ? pluginDirs(workspaceRoot) : []) {
+  for (const dir of customizations && !process.argv.includes("--strict-mcp-config")
+    ? pluginDirs(workspaceRoot)
+    : []) {
     const manifest = readManifest(dir);
     if (manifest?.mcpServers && typeof manifest.mcpServers === "object") {
-      for (const [name, config] of Object.entries(manifest.mcpServers))
-        await mcpManager.connectServer(
-          `${manifest.name}__${name}`,
-          config as import("./mcp/index.js").MCPServerConfig,
-        );
+      // Inline plugin entries obey the same validation and disabled-server
+      // policy as file-backed configs; strict mode only loads explicit configs.
+      await mcpManager.loadConfig(JSON.stringify({ mcpServers: manifest.mcpServers }), {
+        namespace: manifest.name,
+        disabledServers: disabledMcpServers,
+      });
     }
   }
   for (const mcpTool of mcpManager.getAllTools()) {

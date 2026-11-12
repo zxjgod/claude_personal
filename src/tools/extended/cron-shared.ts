@@ -63,6 +63,14 @@ export function releaseSessionCronJobs(sessionId: string): void {
     }
 }
 const loadedWorkspaces = new Map<string, string>();
+/** Re-anchor persisted elapsed time once; subsequent ticks use the monotonic clock. */
+function restoredCreatedAt(createdAtMs: unknown): bigint {
+  const elapsedMs =
+    typeof createdAtMs === "number" && Number.isFinite(createdAtMs)
+      ? Math.max(0, Math.trunc(Date.now() - createdAtMs))
+      : 0;
+  return process.hrtime.bigint() - BigInt(elapsedMs) * 1000000n;
+}
 export function restoreSessionJobs(root: string, sessionId: string, values: unknown[]): void {
   for (const value of values) {
     if (!value || typeof value !== "object") continue;
@@ -74,6 +82,7 @@ export function restoreSessionJobs(root: string, sessionId: string, values: unkn
       validateCron(entry.cron) ||
       typeof entry.prompt !== "string" ||
       typeof entry.createdAtMs !== "number" ||
+      !Number.isFinite(entry.createdAtMs) ||
       Date.now() - entry.createdAtMs > 7 * 86400000
     )
       continue;
@@ -82,7 +91,7 @@ export function restoreSessionJobs(root: string, sessionId: string, values: unkn
       cron: entry.cron,
       prompt: entry.prompt,
       createdAtMs: entry.createdAtMs,
-      createdAt: process.hrtime.bigint(),
+      createdAt: restoredCreatedAt(entry.createdAtMs),
       workspaceRoot:
         typeof entry.workspaceRoot === "string"
           ? path.resolve(entry.workspaceRoot)
@@ -508,7 +517,7 @@ function syncDurableFromDisk(root: string): void {
       recurring: record.recurring !== false,
       durable: true,
       workspaceRoot: path.resolve(root),
-      createdAt: process.hrtime.bigint(),
+      createdAt: restoredCreatedAt(record.createdAtMs),
       createdAtMs: typeof record.createdAtMs === "number" ? record.createdAtMs : Date.now(),
       lastFiredMinute:
         typeof record.lastFiredMinute === "number" ? record.lastFiredMinute : undefined,
@@ -575,7 +584,7 @@ export function loadDurableJobs(root: string): { loaded: number; skipped: number
       recurring: record.recurring !== false,
       durable: true,
       workspaceRoot: path.resolve(root),
-      createdAt: process.hrtime.bigint(),
+      createdAt: restoredCreatedAt(record.createdAtMs),
       createdAtMs: typeof record.createdAtMs === "number" ? record.createdAtMs : Date.now(),
       lastFiredMinute:
         typeof record.lastFiredMinute === "number" ? record.lastFiredMinute : undefined,

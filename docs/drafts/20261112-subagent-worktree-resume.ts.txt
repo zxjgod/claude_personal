@@ -1,0 +1,148 @@
+import { execFileSync } from "node:child_process";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { z } from "zod";
+import { loadRun } from "../subagent-store.js";
+import { registerSubagentType, setCoreToolsForSubagents } from "../subagents.js";
+import { AgentTool } from "../tools/extended/agent.js";
+import { TaskTool } from "../tools/extended/task.js";
+import { buildTool } from "../tools/registry.js";
+import type { Message, ToolContext } from "../types.js";
+
+vi.mock("../llm-adapter.js", () => ({
+  createModelCaller: () =>
+    async function* (messages: Message[]) {
+      let start = messages.length - 1;
+      while (start >= 0 && messages[start].role !== "user") start--;
+      const reviewing = JSON.stringify(messages[start].content).includes("REVIEW");
+      if (!messages.slice(start + 1).some((message) => message.role === "tool")) {
+        yield {
+          type: "tool_use",
+          id: reviewing ? "review" : "draft",
+          name: "fixture_edit",
+          input: { reviewing },
+        };
+        yield {
+          type: "done",
+          finish_reason: "tool_calls",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      } else {
+        yield {
+          type: "text_delta",
+          delta: reviewing ? "reviewed implementation" : "draft implementation",
+        };
+        yield { type: "done", finish_reason: "stop", usage: { input_tokens: 1, output_tokens: 1 } };
+      }
+    },
+}));
+
+let root: string;
+let contexts: ToolContext[];
+const git = (args: string[], cwd = root) =>
+  execFileSync("git", args, { cwd, windowsHide: true, encoding: "utf8", stdio: "pipe" }).trim();
+const context = (): ToolContext => ({
+  workspaceRoot: root,
+  sessionId: "review-owner",
+  permissionMode: "acceptEdits",
+  modelConfig: { provider: "custom", model: "fixture", apiKey: "fixture-unused" },
+});
+beforeEach(() => {
+  root = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-worker-review-"));
+  contexts = [];
+  vi.stubEnv("CCR_USER_CONFIG_DIR", path.join(root, "user"));
+  git(["init", "--quiet", "--template="]);
+  git(["config", "core.autocrlf", "false"]);
+  git(["config", "core.hooksPath", path.join(root, ".git/no-hooks")]);
+  fs.writeFileSync(path.join(root, "feature.txt"), "base");
+  fs.writeFileSync(path.join(root, ".gitignore"), ".claude/\nuser/\n");
+  git(["add", "."]);
+  git([
+    "-c",
+    "user.name=Fixture",
+    "-c",
+    "user.email=fixture@localhost",
+    "-c",
+    "commit.gpgsign=false",
+    "commit",
+    "--quiet",
+    "-m",
+    "baseline",
+  ]);
+  registerSubagentType({
+    name: "review-worker",
+    description: "accept review feedback",
+    systemPrompt: "Implement and revise in your own workspace",
+    toolNames: ["fixture_edit"],
+    maxTurns: 3,
+    omitClaudeMd: true,
+  });
+  setCoreToolsForSubagents([
+    buildTool({
+      name: "fixture_edit",
+      description: "write a fixture revision",
+      promptDescription: "write revision",
+      schema: z.strictObject({ reviewing: z.boolean() }),
+      isReadOnly: false,
+      requiresApproval: () => false,
+      call: async ({ reviewing }, ctx) => {
+        contexts.push(ctx);
+        const file = path.join(ctx.workspaceRoot, "feature.txt");
+        if (reviewing && fs.readFileSync(file, "utf8") !== "worker draft")
+          return { content: "", error: "retained draft missing" };
+        fs.writeFileSync(file, reviewing ? "worker draft\nreviewed" : "worker draft");
+        return { content: "revision written" };
+      },
+    }),
+  ]);
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+  // Every worktree belongs to this mkdtemp-owned fixture repository.
+  fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+});
+
+it.each([
+  "Agent",
+  "Agent explicit isolation",
+  "Task",
+])("%s resume revises the retained worktree without changing the primary checkout", async (entry) => {
+  const first = await AgentTool.call(
+    { prompt: "DRAFT", subagent_type: "review-worker", isolation: "worktree" },
+    context(),
+  );
+  expect(first.error).toBeUndefined();
+  expect(contexts.length, JSON.stringify(first)).toBeGreaterThan(0);
+  const id = String(first.metadata?.agentId);
+  const directory = String(first.metadata?.worktreePath);
+  expect(first.metadata?.worktreeRetained).toBe(true);
+  expect(fs.readFileSync(path.join(directory, "feature.txt"), "utf8")).toBe("worker draft");
+  const second =
+    entry === "Task"
+      ? await TaskTool.call(
+          { prompt: "REVIEW", description: "revise draft", resume: id },
+          context(),
+        )
+      : await AgentTool.call(
+          {
+            prompt: "REVIEW",
+            resume: id,
+            ...(entry === "Agent explicit isolation" && { isolation: "worktree" }),
+          },
+          context(),
+        );
+  expect(second.error).toBeUndefined();
+  expect(contexts[1].workspaceRoot).toBe(contexts[0].workspaceRoot);
+  expect(contexts[1].sessionId).toBe(contexts[0].sessionId);
+  expect(second.metadata?.worktreePath).toBe(directory);
+  expect(second.metadata?.worktreeBranch).toBe(first.metadata?.worktreeBranch);
+  expect(fs.readFileSync(path.join(directory, "feature.txt"), "utf8")).toBe(
+    "worker draft\nreviewed",
+  );
+  expect(fs.readFileSync(path.join(root, "feature.txt"), "utf8")).toBe("base");
+  expect(
+    loadRun(root, "review-owner", id)?.messages.filter((message) => message.role === "user"),
+  ).toHaveLength(2);
+});

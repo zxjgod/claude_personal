@@ -29,9 +29,28 @@ export interface SessionState {
   stats: SessionStats;
   telemetry: Telemetry;
   /** Mutable session id — /resume replaces it. */
-  session: { id: string };
+  session: { id: string; readonly ownedIds?: ReadonlySet<string> };
   /** Best-effort append to the M19.2 event log; a write failure warns but never blocks. */
   recordTranscript: (entry: Parameters<SessionTranscript["append"]>[1]) => void;
+}
+
+/** Track every conversation visited by this CLI, without guessing ID prefixes. */
+export function createSessionIdentity(initialId: string): {
+  id: string;
+  readonly ownedIds: ReadonlySet<string>;
+} {
+  let current = initialId;
+  const owned = new Set([initialId]);
+  return {
+    get id() {
+      return current;
+    },
+    set id(value: string) {
+      current = value;
+      owned.add(value);
+    },
+    ownedIds: owned,
+  };
 }
 
 export async function initSession(deps: {
@@ -140,7 +159,7 @@ export async function initSession(deps: {
     console.log("");
   }
 
-  const session = { id: sessionId };
+  const session = createSessionIdentity(sessionId);
   // Official `-n, --name <name>`: a human label for the session, kept in the
   // session file so /resume and /sessions can show something better than a
   // truncated id. Applies to a resumed session too — relabelling is the point.

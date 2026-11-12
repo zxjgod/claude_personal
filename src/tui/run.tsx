@@ -35,6 +35,7 @@ import { normalizeFinishReason } from "../session-memory.js";
 import { formatSpeculationLine } from "./../speculation.js";
 import { estimateContextUsed, estimateTokens, estimateTokensQuick } from "../token-estimator.js";
 import { startScheduler } from "../tools/extended/scheduler.js";
+import { killOwnedSessionJobs } from "../tools/job-store.js";
 import { drainNotifications, formatNotificationLine } from "../tools/notifications.js";
 import { expandFileRefs } from "../tools/utils/file-refs.js";
 import type {
@@ -112,6 +113,7 @@ export interface TuiAgentDeps {
    *  CLI's implementation resolves once the write flushed) — the TUI /exit
    *  path awaits it instead of racing process.exit (review fix). */
   onSave: (taskState?: TaskState, lastTerminalReason?: string) => void | Promise<void>;
+  onJobShutdown?: () => void | Promise<void>;
 }
 
 /** Resolve one complete turn prompt. The live builder owns dynamic sections. */
@@ -131,6 +133,7 @@ export function resolveTurnSystemPrompt(
  * (live) ctx.sessionId.
  */
 export interface TuiSessionDeps {
+  ownedSessionIds?: ReadonlySet<string>;
   workspaceRoot: string;
   /** Live workspace-root reader (for /cd). Falls back to `workspaceRoot` when absent. */
   getWorkspaceRoot?: () => string;
@@ -1272,6 +1275,12 @@ export function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
       if (!value.startsWith("[Managed loop "))
         appendHistory(deps.getWorkspaceRoot?.() ?? deps.workspaceRoot, value);
       if (value.toLowerCase() === "exit" || value.toLowerCase() === "/exit") {
+        const pendingJobs = await killOwnedSessionJobs(
+          deps.ownedSessionIds ?? [sessionId()],
+          "session exited",
+        );
+        if (pendingJobs.length)
+          console.warn(`Background jobs did not stop: ${pendingJobs.join(", ")}`);
         // Tear down resources before exiting. Previously this was a bare
         // process.exit(0) that skipped onSave (session lost), MCP disconnect,
         // and LSP dispose. onSave() returns the save PROMISE now (review fix
@@ -1286,6 +1295,11 @@ export function Root({ store, deps }: { store: TuiStore; deps: TuiDeps }) {
           ]);
         } catch {
           /* best-effort: don't block exit on a save failure */
+        }
+        try {
+          await deps.onJobShutdown?.();
+        } catch (error) {
+          console.warn(`Background state save failed: ${formatCliError(error)}`);
         }
         // Fire SessionEnd here too (self-review fix): the hook normally runs
         // after runTui returns, but process.exit below never returns — an

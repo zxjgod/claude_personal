@@ -50,6 +50,8 @@ describe("deriveSubContext", () => {
     expect(child.sessionId).toBe("parent-sess");
     expect(child.permissionMode).toBe("default");
     expect(child.modelConfig?.model).toBe("deepseek-chat");
+    expect(child.jobOwnerSessionId).toBe("parent-sess");
+    expect(child.jobScope).toHaveLength(1);
   });
 
   it("does NOT let a worker re-fork", () => {
@@ -126,6 +128,8 @@ describe("deriveSubContext", () => {
         "abortSignal",
         "askUser",
         "hooks",
+        "jobOwnerSessionId",
+        "jobScope",
         "modelConfig",
         "onSubAgentProgress",
         "permissionMode",

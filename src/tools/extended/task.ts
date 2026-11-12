@@ -25,6 +25,11 @@ import {
   recordSidechainToolResult,
   recordSidechainToolUse,
 } from "../../sidechain-transcript.js";
+import {
+  consumeSubagentLoop,
+  subagentFinishReason,
+  subagentTerminalError,
+} from "../../subagent-outcome.js";
 import { blockedOutputNotice, scanSubagentOutput } from "../../subagent-output-scan.js";
 import {
   claimRun,
@@ -427,6 +432,7 @@ export const TaskTool: Tool = buildTool({
           // deriveSubContext is an explicit allow-list — a spread here would
           // hand the worker the parent's fork hooks and full approver.
           toolContext: deriveSubContext(context, {
+            jobScopeKey: runRecord ? `subagent:${runRecord.agentId}` : undefined,
             modelConfig: config,
             // Restricted approver: a sub-agent must not bypass permissions.
             askUser: subApprover,
@@ -459,7 +465,7 @@ export const TaskTool: Tool = buildTool({
           askUser: subApprover,
         });
 
-        for await (const event of loop) {
+        const completion = await consumeSubagentLoop(loop, (event) => {
           switch (event.type) {
             case "tool_use":
               toolCallCount++;
@@ -495,20 +501,13 @@ export const TaskTool: Tool = buildTool({
                 results: event.results,
               });
               break;
-            case "done":
-              finishReason = event.finishReason;
-              break;
-            case "aborted":
-              errorMessage = event.reason;
-              break;
-            case "error":
-              errorMessage = String(event.error);
-              break;
             default:
               // thinking / usage / compacting — silent
               break;
           }
-        }
+        });
+        finishReason = subagentFinishReason(completion);
+        errorMessage = subagentTerminalError(completion);
         if (finishReason === "max_turns" && !scope.signal.aborted) {
           partialReport = await collectPartialReport(
             subMessages,
@@ -538,7 +537,11 @@ export const TaskTool: Tool = buildTool({
       const own = subMessages.filter((m) => !seedSet.has(m));
       const output = extractLastAssistantText(own);
       // 拍板 #19: terminal status for the run record (persisted in finally).
-      if (context.abortSignal?.aborted || errorMessage === "AbortError") {
+      if (
+        context.abortSignal?.aborted ||
+        finishReason?.startsWith("aborted") ||
+        errorMessage === "AbortError"
+      ) {
         runStatus = "interrupted";
         runReport = output || errorMessage;
       } else if (finishReason === "end_turn" && output) {

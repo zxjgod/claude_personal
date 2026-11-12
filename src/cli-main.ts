@@ -100,6 +100,7 @@ import { renderPrefetchAttachment, startPrefetch } from "./prefetch.js";
 import { memoryIndex } from "./project-memory.js";
 import { resolveFastModelConfig } from "./provider-profiles.js";
 import { normalizeFinishReason } from "./session-memory.js";
+import { saveBackgroundJobRuntime } from "./session-runtime.js";
 import { settingSources } from "./settings.js";
 import { listSkills } from "./skills.js";
 import {
@@ -113,7 +114,7 @@ import { buildSystemPrompt, renderSystemPrompt } from "./system-prompt.js";
 import { resolveTmuxStartup } from "./tmux.js";
 import { loadDurableJobs } from "./tools/extended/cron-shared.js";
 import { releaseSessionSchedules } from "./tools/extended/scheduler.js";
-import { killRunningJobs } from "./tools/job-store.js";
+import { killOwnedSessionJobs } from "./tools/job-store.js";
 import { registerNotificationHook, resetNotifications } from "./tools/notifications.js";
 import { createRawInputReader } from "./tui/cli-interactive.js";
 import { detectLanguage } from "./tui/i18n.js";
@@ -428,6 +429,17 @@ async function main() {
     pullRequest,
   });
   const { persistence, session, telemetry } = state;
+  const ownedSessionIds = session.ownedIds ?? new Set([session.id]);
+  const persistOwnedBackgroundJobs = () => {
+    if (cliArgs.noSessionPersistence) return;
+    for (const id of ownedSessionIds) {
+      try {
+        saveBackgroundJobRuntime(sessionStorageRoot, id);
+      } catch (error) {
+        console.warn(`Session runtime save failed: ${formatCliError(error)}`);
+      }
+    }
+  };
 
   // The worktree is pushed onto the session's stack only now that the id
   // exists. Everything below already runs with workspaceRoot = the worktree.
@@ -896,6 +908,10 @@ async function main() {
         save: (saved) => persistence.save(session.id, saved, { taskState: "paused" }),
       });
     } finally {
+      const pendingJobs = await killOwnedSessionJobs(ownedSessionIds, "session exited");
+      if (pendingJobs.length)
+        console.warn(`Background jobs did not stop: ${pendingJobs.join(", ")}`);
+      persistOwnedBackgroundJobs();
       await mcpManager.disconnectAll();
       await disposeAllLspClients();
     }
@@ -1133,6 +1149,8 @@ async function main() {
     const { permissionKey } = await import("./cli-prompts.js");
     tuiActive = true;
     await runTui({
+      ownedSessionIds,
+      onJobShutdown: persistOwnedBackgroundJobs,
       messages,
       tools,
       callModel,
@@ -1221,7 +1239,11 @@ async function main() {
     await disposeAllLspClients();
     // The TUI ended (exit/EOF): running background jobs must not keep the
     // process or their TTL timers alive past the user's exit (review fix).
-    killRunningJobs(session.id, "session exited");
+    const pendingJobs = await killOwnedSessionJobs(ownedSessionIds, "session exited");
+    if (pendingJobs.length) console.warn(`Background jobs did not stop: ${pendingJobs.join(", ")}`);
+
+    // The TUI may have saved before its normal Ink unmount cleanup ran.
+    persistOwnedBackgroundJobs();
 
     // F1: session-exit auto-extraction. Heuristic pass is offline/cheap and on
     // by default; the model-assisted pass costs one call and is opt-in via
@@ -1248,6 +1270,7 @@ async function main() {
   // (~200 files); headless runs return above without paying for it.
   const { runRepl } = await import("./cli-repl.js");
   await runRepl({
+    onJobShutdown: persistOwnedBackgroundJobs,
     messages,
     tools,
     callModel,

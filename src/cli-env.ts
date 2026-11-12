@@ -65,6 +65,13 @@ export function readPackageVersion(): string {
  */
 export async function checkOrCreateEnv(): Promise<boolean> {
   if (process.env.LLM_API_KEY) return true;
+  if (process.env.LLM_API_KEY === undefined) {
+    // The same trusted settings env is applied by loadConfig. Users who keep
+    // credentials there do not need to create an otherwise unused .env file.
+    const { readSettingsEnvironment } = await import("./settings.js");
+    if (readSettingsEnvironment(process.env.WORKSPACE_ROOT || process.cwd()).LLM_API_KEY)
+      return true;
+  }
   const envPath = ".env";
   const envExamplePath = ".env.example";
   const installEnvPath = path.join(getInstallDir(), ".env");

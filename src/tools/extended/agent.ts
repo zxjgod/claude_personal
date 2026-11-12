@@ -13,6 +13,11 @@ import { type AgentMcpHandle, prepareAgentMcpServers } from "../../agents/agent-
 import { createModelCaller } from "../../llm-adapter.js";
 import { policyDecision } from "../../permission-policy.js";
 import { recordSidechainReport } from "../../sidechain-transcript.js";
+import {
+  consumeSubagentLoop,
+  subagentFinishReason,
+  subagentTerminalError,
+} from "../../subagent-outcome.js";
 import { blockedOutputNotice, scanSubagentOutput } from "../../subagent-output-scan.js";
 import {
   claimRun,
@@ -50,7 +55,7 @@ import {
   randomWorktreeName,
   type WorktreeInfo,
 } from "../../worktrees.js";
-import { createJob, settleJob } from "../job-store.js";
+import { createContextJob, settleJob } from "../job-store.js";
 import { buildTool } from "../registry.js";
 import { collectPartialReport } from "./subagent-report.js";
 
@@ -292,20 +297,22 @@ export const AgentTool: Tool = buildTool({
         return { content: "", error: "Session aborted; background agent not started." };
       }
       const { run_in_background: _bg, ...foregroundInput } = input;
-      const job = createJob(context.sessionId, {
+      const job = createContextJob(context, {
         kind: "agent",
         command: input.description || input.prompt.slice(0, 80),
         description: input.description,
       });
       const controller = new AbortController();
-      const onParentAbort = () => controller.abort();
-      context.abortSignal?.addEventListener("abort", onParentAbort, { once: true });
-      // Self-settling kill: aborting cascades into the inner run, whose own
-      // settle would be a no-op (idempotent) — settling here means `killed`
-      // wins even if the inner run takes a moment to unwind.
-      job.kill = () => {
+      const onParentAbort = () => {
+        job.killReason ||= "parent turn aborted";
         controller.abort();
-        settleJob(job, "killed", null);
+      };
+      context.abortSignal?.addEventListener("abort", onParentAbort, { once: true });
+      // A kill requests cancellation; only the runner's final cleanup publishes
+      // settlement and notification, after nested tools/generators unwind.
+      job.kill = () => {
+        job.killReason ||= "cancelled by user";
+        controller.abort();
       };
       void (async () => {
         try {
@@ -315,10 +322,14 @@ export const AgentTool: Tool = buildTool({
           });
           job.stdout = result.content ?? "";
           if (result.error) job.stderr = result.error;
-          settleJob(job, result.error ? "error" : "done", result.error ? null : 0);
+          settleJob(
+            job,
+            controller.signal.aborted ? "killed" : result.error ? "error" : "done",
+            controller.signal.aborted || result.error ? null : 0,
+          );
         } catch (error) {
           job.stderr = error instanceof Error ? error.message : String(error);
-          settleJob(job, "error", null);
+          settleJob(job, controller.signal.aborted ? "killed" : "error", null);
         } finally {
           context.abortSignal?.removeEventListener("abort", onParentAbort);
         }
@@ -575,6 +586,7 @@ export const AgentTool: Tool = buildTool({
         // the parent's fork hooks (making a typed Agent able to re-fork) and
         // its unrestricted approver.
         toolContext: deriveSubContext(context, {
+          jobScopeKey: runRecord ? `subagent:${runRecord.agentId}` : undefined,
           modelConfig,
           // Worktree isolation moves the worker's cwd.
           workspaceRoot: effectiveWorkspaceRoot,
@@ -608,8 +620,7 @@ export const AgentTool: Tool = buildTool({
       });
 
       // Consume loop events
-      let terminal: { reason: string; turns: number; error?: unknown } | undefined;
-      for await (const event of loop) {
+      const completion = await consumeSubagentLoop(loop, (event) => {
         if (event.type === "tool_use") {
           context.onSubAgentProgress?.({
             subagentName: displayName,
@@ -624,14 +635,12 @@ export const AgentTool: Tool = buildTool({
             results: event.results,
           });
         }
-        if (event.type === "done") {
-          terminal = { reason: event.finishReason, turns: event.turns };
-        } else if (event.type === "error") {
-          terminal = { reason: "model_error", turns: 0, error: event.error };
-        } else if (event.type === "aborted") {
-          terminal = { reason: "aborted_streaming", turns: 0, error: event.reason };
-        }
-      }
+      });
+      const terminal = {
+        reason: subagentFinishReason(completion),
+        turns: completion.turns,
+        error: subagentTerminalError(completion),
+      };
 
       const partialReport =
         terminal?.reason === "max_turns"
@@ -665,7 +674,7 @@ export const AgentTool: Tool = buildTool({
       // 拍板 #19: terminal status for the run record (persisted in finally).
       if (runRecord) {
         runRecord.status =
-          context.abortSignal?.aborted || terminal?.reason === "aborted_streaming"
+          context.abortSignal?.aborted || terminal?.reason.startsWith("aborted")
             ? "interrupted"
             : terminal?.reason === "end_turn" && finalText
               ? "completed"

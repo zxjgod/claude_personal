@@ -17,7 +17,7 @@ import type { Tool, ToolContext, ToolResult } from "../../types.js";
 import { invalidateToolWritableScopes } from "../../utils/fs-cache.js";
 import { InputValidator } from "../../utils/input-validator.js";
 import { absoluteWindowsBinary } from "../../utils/windows-bin.js";
-import { createJob, settleJob } from "../job-store.js";
+import { createContextJob, settleJob } from "../job-store.js";
 import { buildTool } from "../registry.js";
 import { getCwd, rememberCd } from "../session-cwd.js";
 import { bashCommandIsReadOnly } from "../utils/command.js";
@@ -66,6 +66,15 @@ export const BashTool: Tool = buildTool({
   isConcurrencySafe: (input) => bashCommandIsReadOnly(input?.command),
 
   async call(input, context): Promise<ToolResult> {
+    if (context.abortSignal?.aborted) {
+      return input.run_in_background
+        ? {
+            content: "",
+            error: "Session aborted; background command not started.",
+            metadata: { aborted: true },
+          }
+        : { content: "Command aborted.", metadata: { exitCode: -1, aborted: true } };
+    }
     // P1: Validate command input
     const commandValidation = InputValidator.validateCommand(input.command);
     if (!commandValidation.valid) {
@@ -388,7 +397,7 @@ function spawnShell(command: string, cwd: string): { child: ChildProcess; killTr
  * stop one is an explicit job_kill. This mirrors task/sub-agent semantics.
  */
 function runInBackground(input: BashInput, context: ToolContext, cwd: string): ToolResult {
-  const job = createJob(context.sessionId, {
+  const job = createContextJob(context, {
     kind: "bash",
     command: input.command,
     description: input.description,
@@ -400,25 +409,35 @@ function runInBackground(input: BashInput, context: ToolContext, cwd: string): T
   // Decode incrementally (same multibyte-safety rationale as the foreground path).
   const stdoutDecoder = new StringDecoder("utf8");
   const stderrDecoder = new StringDecoder("utf8");
+  let outputBytes = 0;
+  const append = (text: string, target: "stdout" | "stderr") => {
+    if (job.truncated) return;
+    job[target] += text;
+    outputBytes += Buffer.byteLength(text, "utf8");
+    if (outputBytes > MAX_OUTPUT) {
+      job.truncated = true;
+      job.killReason = "output exceeded the 10MB limit";
+      killTree();
+    }
+  };
   child.stdout?.on("data", (d: Buffer) => {
-    job.stdout += stdoutDecoder.write(d);
+    append(stdoutDecoder.write(d), "stdout");
     // Same 10MB guard as the foreground path — kill the tree rather than let
     // a runaway process grow the in-memory buffer without bound. Mark the job
     // truncated so job_output can surface the data loss (the foreground path
     // flags it; the background path must too, since it has no `truncated` field
     // on ToolResult).
-    if (job.stdout.length > MAX_OUTPUT) {
-      job.truncated = true;
-      killTree();
-    }
   });
   child.stderr?.on("data", (d: Buffer) => {
-    job.stderr += stderrDecoder.write(d);
-    if (job.stderr.length > MAX_OUTPUT) {
-      job.truncated = true;
-      killTree();
-    }
+    append(stderrDecoder.write(d), "stderr");
   });
+  let flushed = false;
+  const flushOutput = () => {
+    if (flushed) return;
+    flushed = true;
+    append(stdoutDecoder.end(), "stdout");
+    append(stderrDecoder.end(), "stderr");
+  };
 
   // Background jobs get a bounded default TTL. An explicit timeout is still
   // honored, but values above the cap are clamped to prevent accidental
@@ -429,9 +448,8 @@ function runInBackground(input: BashInput, context: ToolContext, cwd: string): T
   let timer: ReturnType<typeof setTimeout> | null = null;
   if (timeoutMs > 0) {
     timer = setTimeout(() => {
-      job.killReason = `timed out after ${Math.round(timeoutMs / 1000)}s`;
+      job.killReason ||= `timed out after ${Math.round(timeoutMs / 1000)}s`;
       killTree();
-      settleJob(job, "killed", null);
     }, timeoutMs);
   }
   const clearTimer = () => {
@@ -445,17 +463,19 @@ function runInBackground(input: BashInput, context: ToolContext, cwd: string): T
     // Spawn failure (e.g. ENOENT — command not found): surface the reason in
     // the job output instead of leaving it empty with a bare exit code.
     clearTimer();
+    flushOutput();
     job.stderr += `spawn failed: ${err.message}\n`;
     settleJob(job, "error", -1);
   });
   child.on("close", (code) => {
     clearTimer();
+    flushOutput();
     // A spawn error may be followed by close; settleJob is idempotent and
     // preserves the first, more useful error status.
     // killReason set (job_kill / TTL) → the exit was OUR doing: report the
     // job as "killed", not "done", so waiters see what happened (review fix
     // "kill 提前 settle" 的另一半——settle 现在发生在真实退出处).
-    settleJob(job, job.killReason ? "killed" : "done", code);
+    settleJob(job, job.killReason ? "killed" : code === 0 ? "done" : "error", code);
   });
 
   const preview = input.description || input.command;

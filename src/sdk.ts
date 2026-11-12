@@ -4,6 +4,7 @@ import { basename, dirname, resolve } from "node:path";
 import * as readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import type { PermissionMode } from "./types.js";
+import { terminateOwnedProcess } from "./utils/owned-process.js";
 
 export interface CanUseToolContext {
   signal: AbortSignal;
@@ -79,6 +80,13 @@ export function query(input: {
   let promptsSent = 0;
   let resultsSeen = 0;
   let controlSeq = 0;
+  let closing = false;
+  let wake: (() => void) | undefined;
+  const inputAbort = new AbortController();
+  const notify = () => {
+    wake?.();
+    wake = undefined;
+  };
   const pendingControl = new Map<
     string,
     {
@@ -93,7 +101,7 @@ export function query(input: {
     activePermissionCallbacks.clear();
   };
   const writeLine = (value: unknown) => {
-    if (!child || child.stdin.destroyed || child.stdin.writableEnded)
+    if (closing || !child || child.stdin.destroyed || child.stdin.writableEnded)
       throw new Error("CLI stdin is not writable (query not started or already finished)");
     child.stdin.write(`${JSON.stringify(value)}\n`);
   };
@@ -119,6 +127,22 @@ export function query(input: {
       pending.reject(new Error(reason));
     }
     pendingControl.clear();
+  };
+  let shutdownSent = false;
+  const requestShutdown = () => {
+    if (shutdownSent || !child || child.stdin.destroyed || child.stdin.writableEnded) return;
+    shutdownSent = true;
+    child.stdin.write(
+      `${JSON.stringify({ type: "control_request", request_id: "sdk-shutdown", request: { subtype: "shutdown" } })}\n`,
+    );
+  };
+  const requestClose = () => {
+    if (resultsSeen < promptsSent) requestShutdown();
+    closing = true;
+    inputAbort.abort("query closed");
+    abortPermissionCallbacks("query closed");
+    rejectAllPending("query closed before the control response arrived");
+    notify();
   };
   // Stdin must outlive the prompts: control methods (interrupt) and permission
   // responses write mid-turn. The CLI guarantees one result frame per turn, so
@@ -160,7 +184,6 @@ export function query(input: {
       },
       windowsHide: true,
       stdio: "pipe",
-      signal: options.signal,
     });
     child = proc;
     let stderr = "";
@@ -172,28 +195,120 @@ export function query(input: {
       proc.once("close", resolve);
       proc.once("error", reject);
     });
-    void finished.catch(() => {});
-    const feeder = (async () => {
+    const closed = new Promise<void>((resolve) => proc.once("close", () => resolve()));
+    proc.once("close", () => inputAbort.abort("CLI closed"));
+    const waitForClose = async (timeoutMs: number): Promise<boolean> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        const prompts = typeof input.prompt === "string" ? [input.prompt] : input.prompt;
-        for await (const prompt of prompts) {
-          if (options.signal?.aborted) break;
-          promptsSent++;
+        return await Promise.race([
+          closed.then(() => true),
+          new Promise<boolean>((resolve) => {
+            timer = setTimeout(() => resolve(false), timeoutMs);
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+    let termination: Promise<void> | undefined;
+    const terminate = () =>
+      (termination ??= (async () => {
+        requestShutdown();
+        if (!(await waitForClose(250))) await terminateOwnedProcess(proc);
+      })());
+    const abortInput = () => {
+      requestShutdown();
+      inputAbort.abort(options.signal?.reason);
+      abortPermissionCallbacks("query aborted");
+      // Cleanup proceeds even when the consumer is paused. The local shutdown
+      // frame cancels execution before native tree termination can finish.
+      void terminate().catch(() => {});
+    };
+    options.signal?.addEventListener("abort", abortInput, { once: true });
+    if (options.signal?.aborted) abortInput();
+    const stopOwnedProcess = async (cause?: unknown): Promise<void> => {
+      // EOF drains queued turns. Only idle/completed queries may use it;
+      // closing an unfinished query must stop execution instead.
+      const pendingResults = resultsSeen < promptsSent;
+      if (pendingResults || options.signal?.aborted || inputFailed) await terminate();
+      else if (!proc.stdin.destroyed && !proc.stdin.writableEnded) proc.stdin.end();
+      if (await waitForClose(1000)) return;
+      if (!pendingResults) {
+        await terminate();
+        if (await waitForClose(1000)) return;
+      }
+      await terminate();
+      if (!(await waitForClose(1000)))
+        throw new Error("CLI process did not close after termination", { cause });
+    };
+    void finished.catch(() => {});
+    let inputFailed = false;
+    let inputFailure: unknown;
+    const feeder = (async () => {
+      let iterator: AsyncIterator<string> | Iterator<string> | undefined;
+      let exhausted = false;
+      const stopped = Symbol("input stopped");
+      let releaseInput!: () => void;
+      const stop = new Promise<typeof stopped>((resolve) => {
+        releaseInput = () => resolve(stopped);
+      });
+      inputAbort.signal.addEventListener("abort", releaseInput, { once: true });
+      try {
+        iterator =
+          typeof input.prompt === "string"
+            ? [input.prompt][Symbol.iterator]()
+            : input.prompt[Symbol.asyncIterator]();
+        while (!inputAbort.signal.aborted) {
+          const next = await Promise.race([Promise.resolve(iterator.next()), stop]);
+          if (next === stopped || inputAbort.signal.aborted) break;
+          if (next.done) {
+            exhausted = true;
+            break;
+          }
           const writable = proc.stdin.write(
-            `${JSON.stringify({ type: "user", message: { role: "user", content: prompt } })}\n`,
+            `${JSON.stringify({ type: "user", message: { role: "user", content: next.value } })}\n`,
           );
+          promptsSent++;
           if (!writable)
             await new Promise<void>((resolve) => {
-              proc.stdin.once("drain", resolve);
-              proc.stdin.once("close", resolve);
+              const done = () => {
+                proc.stdin.off("drain", done);
+                proc.stdin.off("close", done);
+                proc.stdin.off("error", done);
+                inputAbort.signal.removeEventListener("abort", done);
+                resolve();
+              };
+              proc.stdin.once("drain", done);
+              proc.stdin.once("close", done);
+              proc.stdin.once("error", done);
+              inputAbort.signal.addEventListener("abort", done, { once: true });
+              if (
+                inputAbort.signal.aborted ||
+                proc.stdin.destroyed ||
+                !proc.stdin.writableNeedDrain
+              )
+                done();
             });
         }
+      } catch (error) {
+        inputFailed = true;
+        inputFailure = error;
+        void terminate().catch(() => {});
       } finally {
+        inputAbort.signal.removeEventListener("abort", releaseInput);
+        if (!exhausted && iterator?.return) {
+          // Async generators cannot preempt an arbitrary await inside next().
+          // Request cleanup without letting uncooperative producers block exit.
+          try {
+            void Promise.resolve(iterator.return()).catch(() => {});
+          } catch {
+            // A producer cleanup failure must not replace the query's failure.
+          }
+        }
         inputExhausted = true;
         maybeEndInput();
       }
     })();
-    void feeder.catch(() => proc.kill());
     const answerControl = (requestId: string, response: Record<string, unknown>) => {
       try {
         writeLine({ type: "control_response", response: { request_id: requestId, ...response } });
@@ -209,12 +324,8 @@ export function query(input: {
     // messages queue for the yield loop below.
     const queue: SDKMessage[] = [];
     let readerDone = false;
+    let readerFailed = false;
     let readerError: unknown;
-    let wake: (() => void) | undefined;
-    const notify = () => {
-      wake?.();
-      wake = undefined;
-    };
     const push = (message: SDKMessage) => {
       queue.push(message);
       notify();
@@ -235,6 +346,21 @@ export function query(input: {
             push({
               type: "system",
               subtype: "non_json_stdout",
+              is_error: true,
+              message: line.slice(0, 2000),
+            });
+            continue;
+          }
+          if (
+            !message ||
+            typeof message !== "object" ||
+            Array.isArray(message) ||
+            typeof message.type !== "string" ||
+            !message.type
+          ) {
+            push({
+              type: "system",
+              subtype: "invalid_protocol_message",
               is_error: true,
               message: line.slice(0, 2000),
             });
@@ -266,12 +392,14 @@ export function query(input: {
                     signal: callbackSignal,
                     suggestions: request.permission_suggestions ?? [],
                   });
-                  answerControl(requestId, { subtype: "success", response: decision });
+                  if (!callbackSignal.aborted)
+                    answerControl(requestId, { subtype: "success", response: decision });
                 } catch (error) {
-                  answerControl(requestId, {
-                    subtype: "error",
-                    error: error instanceof Error ? error.message : String(error),
-                  });
+                  if (!callbackSignal.aborted)
+                    answerControl(requestId, {
+                      subtype: "error",
+                      error: error instanceof Error ? error.message : String(error),
+                    });
                 } finally {
                   activePermissionCallbacks.delete(callbackController);
                 }
@@ -301,20 +429,31 @@ export function query(input: {
               clearTimeout(pending.timer);
               if (response.subtype === "error")
                 pending.reject(new Error(response.error ?? "control request failed"));
-              else pending.resolve(response.response ?? {});
+              else if (response.subtype === "success") pending.resolve(response.response ?? {});
+              else pending.reject(new Error("Invalid control response subtype"));
             }
             continue;
           }
           if (message.type === "result") {
+            abortPermissionCallbacks("turn ended before approval completed");
             resultSeen = true;
             resultsSeen++;
             maybeEndInput();
           }
           push(message);
         }
-        const code = await finished;
+        inputAbort.abort("CLI output ended");
         await feeder;
-        rejectAllPending("CLI exited before the control response arrived");
+        const code = await finished;
+        if (inputFailed) throw inputFailure;
+        if (options.signal?.aborted)
+          throw Object.assign(
+            new Error("The operation was aborted", { cause: options.signal.reason }),
+            {
+              name: "AbortError",
+              code: "ABORT_ERR",
+            },
+          );
         // Review fix ("异常终止被当作正常结束"): signal kills surface as
         // code === null and were silently treated as success; and once ANY result
         // frame had been seen, later non-zero exits were ignored too. Both paths
@@ -331,38 +470,57 @@ export function query(input: {
             message: `CLI exited ${code ?? "on a signal"} after the result frame: ${stderr.slice(-500)}`,
           });
         }
+        if (resultsSeen < promptsSent && !options.signal?.aborted && !closing)
+          throw new Error(`CLI closed before all query results (${resultsSeen}/${promptsSent})`);
       } catch (error) {
+        readerFailed = true;
         readerError = error;
       } finally {
+        rejectAllPending("CLI exited before the control response arrived");
         readerDone = true;
         notify();
       }
     })();
     // The reader never rejects: failures surface through the yield loop below.
     void reader;
+    let queryFailure: unknown;
     try {
-      while (true) {
-        while (queue.length > 0) yield queue.shift()!;
-        if (readerError) throw readerError;
+      while (!closing) {
+        while (queue.length > 0 && !closing) yield queue.shift()!;
+        if (closing) return;
+        if (readerFailed) throw readerError;
         if (readerDone) return;
         await new Promise<void>((resolve) => {
           wake = resolve;
         });
       }
+    } catch (error) {
+      queryFailure = error;
+      throw error;
     } finally {
       // Release the stdout pipe even when the consumer abandons the generator
       // early (otherwise the readline handle and the child both stay alive).
-      abortPermissionCallbacks("query closed");
-      rejectAllPending("query closed before the control response arrived");
+      requestClose();
+      options.signal?.removeEventListener("abort", abortInput);
       lines.close();
-      proc.kill();
+      await stopOwnedProcess(queryFailure);
     }
   })();
 
   const requireStarted = () => {
     if (!child) throw new Error("query control methods require the generator to be iterating");
   };
+  const returnQuery = generator.return.bind(generator);
+  const throwQuery = generator.throw.bind(generator);
   return Object.assign(generator, {
+    return: (value: unknown) => {
+      requestClose();
+      return returnQuery(value);
+    },
+    throw: (error: unknown) => {
+      requestClose();
+      return throwQuery(error);
+    },
     interrupt: async () => {
       requireStarted();
       abortPermissionCallbacks("interrupted via SDK");

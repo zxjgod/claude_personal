@@ -1,0 +1,17 @@
+{
+  "version": "coding-loop-v1",
+  "maxTurns": 14,
+  "maxOutputTokens": 2048,
+  "timeoutMs": 180000,
+  "allowedTools": ["Read", "Glob", "Grep", "Edit", "Write"],
+  "disallowedTools": ["Agent", "Task", "Workflow"],
+  "cases": [
+    {
+      "name": "test-driven-repair",
+      "fixture": "eval-fixtures/coding-loop",
+      "shellCommands": ["node check.mjs"],
+      "prompt": "Fix the failing tests in this small project. First run the exact command `node check.mjs` using Bash or PowerShell, before modifying source. Read its failure output, inspect src, and fix the implementation without changing check.mjs or adding dependencies. The API must deduplicate with SameValueZero semantics, preserving first occurrence order without mutating input, and the batch API must preserve each batch's order. Run `node check.mjs` again after the fix; continue until it passes. Only that exact shell command is approved. Report which failure you observed, what you changed, and the final test result. You must execute tests rather than infer their outcome.",
+      "assertions": [{ "type": "verifier", "path": "verify.mjs" }]
+    }
+  ]
+}

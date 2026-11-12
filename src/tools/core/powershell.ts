@@ -61,6 +61,8 @@ export const PowerShellTool: Tool = buildTool({
   isConcurrencySafe: (input) => powershellCommandIsReadOnly(input?.command),
 
   async call(input, context): Promise<ToolResult> {
+    if (context.abortSignal?.aborted)
+      return { content: "Command aborted.", metadata: { exitCode: -1, aborted: true } };
     const commandValidation = InputValidator.validateCommand(input.command);
     if (!commandValidation.valid) {
       return { content: "", error: commandValidation.error };

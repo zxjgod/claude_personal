@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -163,6 +163,7 @@ try {
       "python/ccr_sdk.py",
       "examples/providers.json",
       "docs/CHANGELOG.md",
+      "docs/independent-ecosystem.md",
       ".env.example",
       "README.md",
     ])
@@ -210,6 +211,33 @@ try {
     const notes = run(["dist/cli.js", "--no-tui", "--bare"], "/release-notes\nexit\n");
     assert(notes.includes(`v${pkg.version}`), "Unpacked CLI did not render its release notes.");
     assert(!notes.includes("No changelog is bundled"), "Unpacked CLI cannot find the changelog.");
+    phase = "settings-only-onboarding";
+    const settingsOnlyEnv = { ...env };
+    delete settingsOnlyEnv.LLM_API_KEY;
+    mkdirSync(env.CCR_USER_CONFIG_DIR, { recursive: true });
+    writeFileSync(
+      join(env.CCR_USER_CONFIG_DIR, "settings.json"),
+      JSON.stringify({ env: { LLM_API_KEY: "offline-settings-fixture" } }),
+    );
+    const settingsOnlyOutput = execFileSync(
+      process.execPath,
+      ["dist/cli.js", "--no-tui", "--bare"],
+      {
+        ...options,
+        cwd: unpacked,
+        env: settingsOnlyEnv,
+        input: "/release-notes\nexit\n",
+        timeout: 20000,
+      },
+    );
+    assert(
+      settingsOnlyOutput.includes(`v${pkg.version}`),
+      "Settings-only credentials did not reach the interactive CLI.",
+    );
+    assert(
+      !settingsOnlyOutput.includes("未检测到 .env"),
+      "Onboarding ignored configured settings credentials.",
+    );
     phase = "sdk-import";
     run([
       "--input-type=module",
@@ -228,6 +256,31 @@ for await (const message of query({prompt:'offline entry check',options:{maxBudg
 }
 if (!rejectedBudget) throw new Error('SDK default CLI did not reach local budget validation');`,
     ]);
+    phase = "python-sdk-client";
+    const python = process.platform === "win32" ? "python" : "python3";
+    if (spawnSync(python, ["--version"], { windowsHide: true }).status === 0) {
+      execFileSync(
+        python,
+        [
+          "-c",
+          `import asyncio,sys
+sys.path.insert(0,"python")
+from ccr_sdk import CCRClient
+async def main():
+    async with CCRClient() as client:
+        await client.set_model("offline-python-fixture")
+        await client.set_permission_mode("plan")
+        await client.finish()
+        messages=[message async for message in client.receive_messages()]
+        assert not any(message.get("is_error") for message in messages),messages
+asyncio.run(asyncio.wait_for(main(),15))
+`,
+        ],
+        { ...options, cwd: unpacked, env, timeout: 20000 },
+      );
+    } else {
+      console.log("package-smoke: Python client skipped (Python not installed)");
+    }
     phase = "adapter-import";
     run([
       "--input-type=module",
