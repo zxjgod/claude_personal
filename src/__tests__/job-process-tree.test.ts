@@ -75,8 +75,11 @@ async function startTree(timeout = 30000): Promise<Job> {
 }
 async function assertTreeStopped() {
   expect(pids()).toHaveLength(3);
-  expect(pids().filter(alive)).toEqual([]);
   const sizes = roles.map((role) => fs.statSync(path.join(root, `${role}.beat`)).size);
+  // Linux can close all inherited pipes before the last signalled process
+  // disappears from /proc. Bound that observation lag, while still rejecting
+  // any work performed after the job reported settlement.
+  await expect.poll(() => pids().filter(alive), { timeout: 1000 }).toEqual([]);
   await delay(160);
   expect(roles.map((role) => fs.statSync(path.join(root, `${role}.beat`)).size)).toEqual(sizes);
 }

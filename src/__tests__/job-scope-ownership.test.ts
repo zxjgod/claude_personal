@@ -120,6 +120,15 @@ async function ready() {
     await delay(20);
   }
 }
+async function assertTreeStopped() {
+  expect(pids()).toHaveLength(3);
+  const sizes = roles.map((role) => fs.statSync(path.join(root, `${role}.beat`)).size);
+  // Pipe closure and /proc disappearance are separate OS observations. Allow
+  // bounded exit bookkeeping, but no heartbeat writes after job settlement.
+  await expect.poll(() => pids().filter(alive), { timeout: 1000 }).toEqual([]);
+  await delay(160);
+  expect(roles.map((role) => fs.statSync(path.join(root, `${role}.beat`)).size)).toEqual(sizes);
+}
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-job-scope-"));
   context = {
@@ -245,7 +254,7 @@ it.each(
     "Unknown job",
   );
   await killRunningJobs(context.sessionId, "owner exited");
-  expect(pids().filter(alive)).toEqual([]);
+  await assertTreeStopped();
   expect(getJob(context.sessionId, id)?.status).toBe("killed");
   saveSessionRuntime(root, context.sessionId);
   const saved = JSON.parse(
@@ -276,7 +285,7 @@ it("nested workers preserve ownership without gaining access to their parent's j
     "Unknown job",
   );
   await killRunningJobs(context.sessionId, "owner exited");
-  expect(pids().filter(alive)).toEqual([]);
+  await assertTreeStopped();
 });
 
 it.each([
@@ -318,7 +327,7 @@ it.each([
   expect(result.content).toContain("grandchild:diagnostic");
   expect(result.content).not.toContain("Unknown job");
   await killRunningJobs(context.sessionId, "owner exited");
-  expect(pids().filter(alive)).toEqual([]);
+  await assertTreeStopped();
 });
 
 it("CLI identity cleanup covers visited roots and leaves an unrelated lookalike root alone", async () => {
