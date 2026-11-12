@@ -24,7 +24,8 @@ for await(const line of readline.createInterface({input:process.stdin})) {
     else if(text==='exit') process.exit(7);
     else if(text==='empty-exit') process.exit(0);
     else if(text==='stderr') {
-      process.stderr.write('x'.repeat(100000)+'tail-marker');process.exit(9);
+      await new Promise(resolve=>process.stderr.write('x'.repeat(100000)+'tail-marker',resolve));
+      process.exit(9);
     }
     else if(text==='abnormal') {result('partial');process.exit(8);}
     else if(text==='malformed') {
@@ -266,11 +267,20 @@ fs.writeFileSync('queued-effect','executed after cancellation');
                 await self.response(client)
 
     async def test_stderr_is_drained_but_only_tail_is_retained(self):
+        # Force an asynchronous pipe write on every platform. An immediate
+        # process.exit() must not let this fixture pretend the tail was sent.
+        self.fixture.write_text("""const writeStderr=process.stderr.write.bind(process.stderr);
+process.stderr.write=(chunk,callback)=>{
+  setTimeout(()=>writeStderr(chunk,callback),20);
+  return false;
+};
+""" + FIXTURE, encoding="utf-8")
         async with self.client() as client:
             await client.query("stderr")
             with self.assertRaisesRegex(RuntimeError, "tail-marker") as caught:
                 await self.response(client)
-            self.assertLess(len(str(caught.exception)), 8100)
+            self.assertTrue(str(caught.exception).endswith("tail-marker"))
+            self.assertEqual(len(str(caught.exception)), len("CCR exited 9: ") + 8000)
 
     async def test_competing_consumer_is_rejected_without_stealing_the_response(self):
         async with self.client() as client:
