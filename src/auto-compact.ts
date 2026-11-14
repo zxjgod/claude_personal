@@ -8,6 +8,9 @@
 import { COMPACT_BOUNDARY_MARKER } from "./context-pipeline.js";
 import type { Message, ModelCaller, ModelConfig } from "./types.js";
 
+const MAX_RECENT_USER_REQUESTS = 3;
+const MAX_PRIOR_REQUEST_CHARS = 12_000;
+
 /**
  * Find a safe split index in messages that avoids splitting mid-conversation.
  * Used by auto-compaction to preserve recent conversation context.
@@ -174,16 +177,26 @@ so the conversation can continue with a fresh context window.`;
     summary = await summarizeForCompact(summaryMessages, callModel, modelConfig, abortSignal);
   }
 
-  // Keep the active human request verbatim: an incomplete summary must not
-  // replace its constraints with a synthetic continuation. Pin only when the
-  // request would otherwise be summarized, so repeated compactions don't grow it.
-  let taskIndex = messages.length - 1;
-  while (taskIndex >= 0) {
-    const message = messages[taskIndex];
-    if (message.role === "user" && !message.synthetic) break;
-    taskIndex--;
+  // A correction is often only a delta to the preceding request. Keep recent
+  // human requests in order so their inherited constraints survive summaries.
+  // Earlier attachments and oversized text still go through summarization.
+  const requests: Message[] = [];
+  let userCount = 0;
+  let budget = MAX_PRIOR_REQUEST_CHARS;
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+    if (message.role !== "user" || message.synthetic) continue;
+    if (++userCount > MAX_RECENT_USER_REQUESTS) break;
+    if (index >= splitIndex) continue;
+    if (userCount > 1) {
+      let chars = 0;
+      for (const block of message.content)
+        chars += block.type === "text" ? block.text.length : Infinity;
+      if (chars > budget) continue;
+      budget -= chars;
+    }
+    requests.unshift(message);
   }
-  const task = taskIndex >= 0 && taskIndex < splitIndex ? [messages[taskIndex]] : [];
   // Rebuild: system summary + active request + tail. The summary is tagged with
   // COMPACT_BOUNDARY_MARKER so the pipeline's layer 1
   // (getMessagesAfterCompactBoundary) can physically drop everything before it
@@ -193,7 +206,7 @@ so the conversation can continue with a fresh context window.`;
       role: "system",
       content: `${COMPACT_BOUNDARY_MARKER}\n${summary}`,
     },
-    ...task,
+    ...requests,
     ...tailMessages,
   ];
 }

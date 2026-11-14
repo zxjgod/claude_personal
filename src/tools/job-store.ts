@@ -94,7 +94,7 @@ export function restoreJobs(sessionId: string, values: unknown[]): void {
         entry.status === "running"
           ? [
               String(entry.stderr ?? ""),
-              "Process ended; this background job was interrupted and was not restarted.",
+              "The previous CLI no longer owns this job. It was marked interrupted and was not restarted. The saved record does not confirm the command's exit.",
             ]
               .filter(Boolean)
               .join("\n")

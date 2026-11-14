@@ -136,6 +136,58 @@ export async function inspectWorktree(
   return { dirty, uniqueCommits: Number(unique) > 0 };
 }
 
+/** Reopen the original agent checkout without substituting a different branch or base. */
+export async function reopenAgentWorktree(
+  repository: string,
+  saved: WorktreeInfo,
+): Promise<WorktreeInfo> {
+  const name =
+    typeof saved?.branch === "string" && saved.branch.match(/^codex\/(agent-wt-[a-f0-9]{8})$/)?.[1];
+  if (
+    !name ||
+    typeof saved.path !== "string" ||
+    typeof saved.repository !== "string" ||
+    typeof saved.baseCommit !== "string" ||
+    !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(saved.baseCommit) ||
+    rootKey(saved.repository) !== rootKey(repository) ||
+    rootKey(saved.path) !== rootKey(path.join(repository, ".claude", "worktrees", name))
+  ) {
+    throw new Error("Stored agent worktree identity is invalid for this repository");
+  }
+  const entry = await openExistingWorktree(repository, saved.path);
+  const [commonDir, checkout, headRef] = (
+    await worktreeGit(
+      [
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-common-dir",
+        "--show-toplevel",
+        "--symbolic-full-name",
+        "HEAD",
+      ],
+      entry.path,
+    )
+  ).split(/\r?\n/);
+  const repositoryCommonDir = await worktreeGit(
+    ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    repository,
+  );
+  if (
+    !checkout ||
+    rootKey(checkout) !== rootKey(entry.path) ||
+    rootKey(commonDir) !== rootKey(repositoryCommonDir)
+  )
+    throw new Error("Agent worktree checkout no longer belongs to this repository");
+  if (entry.branch !== saved.branch || headRef !== `refs/heads/${saved.branch}`)
+    throw new Error("Agent worktree branch has changed");
+  await worktreeGit(["merge-base", "--is-ancestor", saved.baseCommit, "HEAD"], entry.path).catch(
+    () => {
+      throw new Error("Agent worktree no longer descends from its original base");
+    },
+  );
+  return { ...entry, baseCommit: saved.baseCommit };
+}
+
 /** Never remove data when status cannot be determined. Branch deletion follows successful removal. */
 export async function removeIsolatedWorktree(
   entry: WorktreeInfo,

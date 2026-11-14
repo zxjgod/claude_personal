@@ -118,7 +118,7 @@ it("keeps queued input in its original session and workspace without replay dupl
 it("reuses completed workflow reports after a process crash without repeating their side effects", async () => {
   const { runId } = await crashAfterSave("workflow-seed");
   expect(runId).toBeTruthy();
-  const result = restore("workflow-resume", "owner", runId);
+  const result = restore("workflow-retry", "owner", runId);
   expect(result.status).toBe("completed");
   expect(result.logs.some((line: string) => line.startsWith("resumed:"))).toBe(true);
   expect(fs.readFileSync(path.join(root, "calls.txt"), "utf8")).toBe("first\nsecond\n");
@@ -126,6 +126,31 @@ it("reuses completed workflow reports after a process crash without repeating th
 
 it("executes workflow steps again when their arguments change after restart", async () => {
   const { runId } = await crashAfterSave("workflow-seed");
-  expect(restore("workflow-resume", "owner", runId, "changed").status).toBe("completed");
+  expect(restore("workflow-retry", "owner", runId, "changed").status).toBe("completed");
   expect(fs.readFileSync(path.join(root, "calls.txt"), "utf8")).toBe("first\nfirst\nsecond\n");
+});
+
+it("does not replay a worker whose side effect survived but whose report did not", async () => {
+  const { runId } = await crashAfterSave("workflow-crash");
+  expect(runId).toBeTruthy();
+  const readEffects = () => fs.readFileSync(path.join(root, "calls.txt"), "utf8");
+  expect(readEffects()).toBe("first\nsecond\n");
+  expect(restore("workflow-list")).toMatchObject([
+    {
+      id: runId,
+      status: "failed",
+      logs: expect.arrayContaining([expect.stringContaining("steps[1]")]),
+    },
+  ]);
+  expect(restore("workflow-list", "another-session")).toEqual([]);
+  for (const args of ["original", "changed"]) {
+    const result = restore("workflow-resume", "owner", runId, args);
+    expect(result.status).toBe("failed");
+    expect(result.logs.join("\n")).toContain("unconfirmed worker");
+    expect(result.logs.join("\n")).toContain("steps[1]");
+    expect(readEffects()).toBe("first\nsecond\n");
+  }
+  // The caller has reconciled the prior side effect and opts into a retry.
+  expect(restore("workflow-retry", "owner", runId).status).toBe("completed");
+  expect(readEffects()).toBe("first\nsecond\nsecond\n");
 });

@@ -25,7 +25,7 @@ it.skipIf(!hasPython)(
         windowsHide: true,
       },
     );
-    expect(stderr).toMatch(/Ran 22 tests/);
+    expect(stderr).toMatch(/Ran 24 tests/);
     expect(stderr).toContain("OK");
   },
   60000,
@@ -106,6 +106,8 @@ async def main():
         third=[m async for m in resumed.receive_response()][-1]
         assert not third["is_error"],third
         assert third["session_id"]==second["session_id"]
+        assert all(frame.get("input_id") for frame in (first,second,third))
+        assert len({frame["input_id"] for frame in (first,second,third)})==3
     print(json.dumps({"callbacks":calls,"resumed":third["result"]}))
 asyncio.run(asyncio.wait_for(main(),35))
 `;

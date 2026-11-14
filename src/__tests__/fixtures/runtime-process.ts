@@ -12,7 +12,7 @@ import {
 } from "../../tools/extended/cron-shared.js";
 import { enqueueScheduledInput, takeScheduledInput } from "../../tools/extended/schedule-scope.js";
 import { createJob, listJobs } from "../../tools/job-store.js";
-import { runWorkflow } from "../../workflow.js";
+import { listWorkflows, runWorkflow } from "../../workflow.js";
 
 const [mode, root, sessionId = "owner", runId, args = "original"] = process.argv.slice(2);
 const emit = (value: unknown) => console.log(JSON.stringify(value));
@@ -100,17 +100,24 @@ if (mode === "seed") {
     due: collectDueCronJobs(new Date(), scope).map(({ job }) => job.prompt),
     duplicate: collectDueCronJobs(new Date(), scope).map(({ job }) => job.prompt),
   });
-} else if (mode === "workflow-seed" || mode === "workflow-resume") {
+} else if (mode === "workflow-list") {
+  emit(listWorkflows({ workspaceRoot: root, sessionId }));
+} else if (
+  ["workflow-seed", "workflow-crash", "workflow-resume", "workflow-retry"].includes(mode)
+) {
   const plan = JSON.stringify({ steps: [{ agent: "first" }, { agent: "second" }] });
-  if (mode === "workflow-seed") setInterval(() => {}, 1000);
+  if (mode === "workflow-seed" || mode === "workflow-crash") setInterval(() => {}, 1000);
   const result = await runWorkflow(
     plan,
     { workspaceRoot: root, sessionId, permissionMode: "default" },
     {
       args,
       resumeFromRunId: runId || undefined,
+      ...(mode === "workflow-retry" && { retryUnconfirmed: true }),
       agentRunner: async (prompt) => {
-        if (mode === "workflow-seed" && prompt === "second") {
+        if ((mode === "workflow-seed" || mode === "workflow-crash") && prompt === "second") {
+          if (mode === "workflow-crash")
+            fs.appendFileSync(path.join(root, "calls.txt"), `${prompt}\n`);
           const file = fs.readdirSync(path.join(root, ".claude", "workflow-runs"))[0];
           emit({ ready: true, runId: file?.slice(sessionId.length + 1, -5) });
           await new Promise(() => {});

@@ -1,4 +1,5 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import * as readline from "node:readline";
@@ -38,6 +39,7 @@ export interface QueryOptions {
 export interface SDKMessage {
   type: string;
   session_id?: string;
+  input_id?: string;
   subtype?: string;
   is_error?: boolean;
   result?: string;
@@ -79,6 +81,7 @@ export function query(input: {
   let inputExhausted = false;
   let promptsSent = 0;
   let resultsSeen = 0;
+  const pendingInputIds = new Map<number, string>();
   let controlSeq = 0;
   let closing = false;
   let wake: (() => void) | undefined;
@@ -265,9 +268,15 @@ export function query(input: {
             exhausted = true;
             break;
           }
+          const inputId = randomUUID();
           const writable = proc.stdin.write(
-            `${JSON.stringify({ type: "user", message: { role: "user", content: next.value } })}\n`,
+            `${JSON.stringify({
+              type: "user",
+              input_id: inputId,
+              message: { role: "user", content: next.value },
+            })}\n`,
           );
+          pendingInputIds.set(promptsSent, inputId);
           promptsSent++;
           if (!writable)
             await new Promise<void>((resolve) => {
@@ -317,6 +326,9 @@ export function query(input: {
       }
     };
     let resultSeen = false;
+    let expectsInputIds = false;
+    let sessionFailed = false;
+    const legacyResultUuids = new Set<string>();
     const lines = readline.createInterface({ input: proc.stdout, crlfDelay: Infinity });
     // The reader runs independently of the consumer: control responses and
     // permission callbacks are serviced even while the consumer is blocked
@@ -434,7 +446,47 @@ export function query(input: {
             }
             continue;
           }
+          if (
+            message.type === "system" &&
+            message.subtype === "init" &&
+            (message.capabilities as { result_input_id?: unknown } | undefined)?.result_input_id ===
+              true
+          ) {
+            expectsInputIds = true;
+          }
           if (message.type === "result") {
+            if (
+              !sessionFailed &&
+              message.error_scope === "session" &&
+              message.is_error === true &&
+              message.input_id === undefined
+            ) {
+              sessionFailed = true;
+              resultSeen = true;
+              abortPermissionCallbacks("CLI session failed");
+              push(message);
+              continue;
+            }
+            const tagged = message.input_id !== undefined;
+            const legacyUuid = !tagged && typeof message.uuid === "string" && message.uuid;
+            if (
+              sessionFailed ||
+              resultsSeen >= promptsSent ||
+              ((tagged || expectsInputIds) &&
+                message.input_id !== pendingInputIds.get(resultsSeen)) ||
+              (legacyUuid && legacyResultUuids.has(legacyUuid))
+            ) {
+              push({
+                type: "system",
+                subtype: "invalid_protocol_message",
+                is_error: true,
+                message: `Unexpected result: ${line.slice(0, 1900)}`,
+              });
+              continue;
+            }
+            if (tagged) expectsInputIds = true;
+            if (legacyUuid) legacyResultUuids.add(legacyUuid);
+            pendingInputIds.delete(resultsSeen);
             abortPermissionCallbacks("turn ended before approval completed");
             resultSeen = true;
             resultsSeen++;
@@ -470,7 +522,7 @@ export function query(input: {
             message: `CLI exited ${code ?? "on a signal"} after the result frame: ${stderr.slice(-500)}`,
           });
         }
-        if (resultsSeen < promptsSent && !options.signal?.aborted && !closing)
+        if (!sessionFailed && resultsSeen < promptsSent && !options.signal?.aborted && !closing)
           throw new Error(`CLI closed before all query results (${resultsSeen}/${promptsSent})`);
       } catch (error) {
         readerFailed = true;

@@ -17,6 +17,7 @@ import { configBudget, withModelBudget } from "./model-budget.js";
 import { type ModelPricing, modelPricing } from "./model-metadata.js";
 import { checkPermission } from "./permissions.js";
 import { generatePromptSuggestion } from "./prompt-suggestions.js";
+import type { TaskState } from "./session-memory.js";
 import type {
   AskUserFn,
   HookRunner,
@@ -183,13 +184,14 @@ async function* streamJsonPrompts(
   input: NodeJS.ReadableStream,
   control: HeadlessControlChannel,
   shutdownSignal: AbortSignal,
-): AsyncGenerator<string> {
+): AsyncGenerator<{ prompt: string; inputId?: string }> {
   if ((input as { isTTY?: boolean }).isTTY)
     throw new Error(
       "stream-json input requires a pipe or file; interactive terminal input is unsupported",
     );
-  const queue: string[] = [];
-  if (args.prompt) queue.push(args.prompt);
+  const queue: Array<{ prompt: string; inputId?: string }> = [];
+  const inputIds = new Set<string>();
+  if (args.prompt) queue.push({ prompt: args.prompt });
   let closed = false;
   let failure: unknown;
   let wake: (() => void) | undefined;
@@ -214,6 +216,7 @@ async function* streamJsonPrompts(
         if (!line.trim()) continue;
         const value = JSON.parse(line) as {
           type?: string;
+          input_id?: unknown;
           request_id?: unknown;
           request?: unknown;
           response?: unknown;
@@ -231,16 +234,25 @@ async function* streamJsonPrompts(
         }
         if (value?.type && value.type !== "user")
           throw new Error(`Unsupported input message: ${value.type}`);
+        const inputId = value?.input_id;
+        if (inputId !== undefined) {
+          if (typeof inputId !== "string" || !inputId.trim() || inputId.length > 128)
+            throw new Error("Invalid stream-json input_id");
+          if (inputIds.has(inputId)) throw new Error("Duplicate stream-json input_id");
+          inputIds.add(inputId);
+        }
         const content = value?.message?.content ?? value?.prompt ?? value?.content;
-        if (typeof content === "string") queue.push(content);
-        else if (Array.isArray(content))
-          queue.push(
-            content
-              .filter((block) => block?.type === "text")
-              .map((block) => block.text)
-              .join("\n"),
-          );
-        else throw new Error("Expected a user message with text content");
+        const prompt =
+          typeof content === "string"
+            ? content
+            : Array.isArray(content)
+              ? content
+                  .filter((block) => block?.type === "text")
+                  .map((block) => block.text)
+                  .join("\n")
+              : undefined;
+        if (prompt === undefined) throw new Error("Expected a user message with text content");
+        queue.push({ prompt, inputId });
         notify();
       }
     } catch (error) {
@@ -281,12 +293,21 @@ export async function runHeadless(deps: {
   context: ToolContext;
   hooks?: HookRunner;
   systemPrompt: string;
-  save(messages: Message[]): Promise<void>;
+  save(messages: Message[], taskState: TaskState): Promise<void>;
 }): Promise<void> {
   const { args, context } = deps;
   const streamJson = args.outputFormat === "stream-json";
   const json = (value: unknown) => deps.emit(`${JSON.stringify(value)}\n`);
   const jsonResults: unknown[] = [];
+  const saveSession = async (taskState: TaskState, messages = deps.messages) => {
+    if (args.noSessionPersistence) return;
+    try {
+      await deps.save(messages, taskState);
+    } catch (error) {
+      // A storage failure should still leave a machine-readable turn result.
+      console.error(`headless: session save failed (continuing): ${String(error)}`);
+    }
+  };
   // Pre-flight failures (bad --max-budget-usd, unknown pricing, a malformed
   // --json-schema) used to be thrown BEFORE the guarded section below, so the
   // process died with a stack trace and stream-json consumers never received a
@@ -296,6 +317,7 @@ export async function runHeadless(deps: {
     const frame = {
       type: "result",
       subtype: "error_during_execution",
+      error_scope: "session",
       is_error: true,
       result: "",
       errors: [message],
@@ -356,6 +378,7 @@ export async function runHeadless(deps: {
       cwd: context.workspaceRoot,
       model: deps.config.model,
       tools: deps.tools.map((tool) => tool.name),
+      ...(args.inputFormat === "stream-json" && { capabilities: { result_input_id: true } }),
       uuid: randomUUID(),
     });
   const budgetCaller = withModelBudget(deps.callModel);
@@ -447,13 +470,15 @@ export async function runHeadless(deps: {
     const prompts = control
       ? streamJsonPrompts(args, deps.input, control, shutdown.signal)
       : headlessInputs(args, deps.input);
-    for await (const prompt of prompts) {
+    for await (const input of prompts) {
+      const { prompt, inputId } = typeof input === "string" ? { prompt: input } : input;
       const started = Date.now();
       turnAbort = new AbortController();
       context.abortSignal = turnAbort.signal;
       const message: Message = { role: "user", content: [{ type: "text", text: prompt }] };
       beginUserTurn(context.sessionId, message);
       deps.messages.push(message);
+      await saveSession("waiting_for_model");
       const inheritedMessages = new Set(deps.messages);
       if (args.outputFormat === "stream-json" && args.replayUserMessages)
         json({
@@ -481,6 +506,9 @@ export async function runHeadless(deps: {
           askUser,
           hooks: deps.hooks,
           toolContext: context,
+          saveToolBatchProgress: args.noSessionPersistence
+            ? undefined
+            : (messages) => saveSession("waiting_for_tool", messages),
         });
         while (true) {
           const step = await loop.next();
@@ -508,6 +536,10 @@ export async function runHeadless(deps: {
               });
           }
           if (event.type === "error") error = String(event.error);
+          // The assistant/tool-result batch is complete at this boundary.
+          // Persist it before a new model request can leave the turn in flight.
+          if (event.type === "tool_results")
+            await saveSession(turnAbort.signal.aborted ? "paused" : "waiting_for_model");
           if (event.type === "aborted") error = event.reason;
           if (event.type === "done") {
             turns = event.turns;
@@ -568,23 +600,10 @@ export async function runHeadless(deps: {
           error = `Structured output invalid: ${String(failure)}`;
         }
       }
-      // Review fix: a persistence failure must not abort the run BEFORE the
-      // result frame — the caller then loses the machine-readable terminal
-      // frame entirely (the conversation is still in memory; the next
-      // auto-save retries). Warn and continue.
-      if (!args.noSessionPersistence) {
-        try {
-          await deps.save(deps.messages);
-        } catch (saveError) {
-          console.error(
-            `headless: session save failed (continuing; result frame unaffected): ${
-              saveError instanceof Error ? saveError.message : String(saveError)
-            }`,
-          );
-        }
-      }
+      await saveSession("paused");
       const result = {
         type: "result",
+        ...(inputId !== undefined && { input_id: inputId }),
         subtype: error ? "error_during_execution" : "success",
         is_error: !!error,
         result: text,
@@ -638,6 +657,7 @@ export async function runHeadless(deps: {
     const errorResult = {
       type: "result",
       subtype: "error_during_execution",
+      error_scope: "session",
       is_error: true,
       result: "",
       errors: [message],

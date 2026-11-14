@@ -243,6 +243,61 @@ fs.writeFileSync('queued-effect','executed after cancellation');
             results = [json.loads(message["result"])["text"] for message in messages if message["type"] == "result"]
             self.assertEqual(results, ["one", "two"])
 
+    async def test_duplicate_and_late_results_do_not_complete_the_next_query(self):
+        fixture = """import readline from 'node:readline';
+const emit=frame=>console.log(JSON.stringify(frame));
+const tagged=MODE;
+if(tagged) emit({type:'system',subtype:'init',capabilities:{result_input_id:true}});
+const inputs=[];
+for await(const line of readline.createInterface({input:process.stdin})) {
+  inputs.push(JSON.parse(line));
+  if(inputs.length!==2) continue;
+  const first={type:'result',uuid:'first-frame',result:'first',...(tagged&&{input_id:inputs[0].input_id})};
+  if(tagged) emit({type:'result',input_id:inputs[1].input_id,result:'out of order'});
+  emit(first);
+  emit({...first,uuid:tagged?'duplicate-with-new-uuid':first.uuid});
+  if(tagged) emit({type:'result',result:'untagged'});
+  process.stdin.destroy();
+  break;
+}
+"""
+        for mode in ("true", "false"):
+            with self.subTest(correlated=mode):
+                self.fixture.write_text(fixture.replace("MODE", mode), encoding="utf-8")
+                async with self.client() as client:
+                    await client.query("first")
+                    await client.query("second")
+                    await client.finish()
+                    messages = []
+                    async def collect():
+                        async for message in client.receive_messages():
+                            messages.append(message)
+                    with self.assertRaisesRegex(RuntimeError, "before all query results \\(1/2\\)"):
+                        await asyncio.wait_for(collect(), timeout=5)
+                    self.assertEqual([m["result"] for m in messages if m["type"] == "result"], ["first"])
+                    self.assertEqual(sum(m.get("subtype") == "invalid_protocol_message" for m in messages),
+                                     3 if mode == "true" else 1)
+
+    async def test_cancelling_send_after_write_keeps_result_ownership(self):
+        async with self.client() as client:
+            written = asyncio.Event()
+            original_drain = client._drain
+            async def park_drain(_stream):
+                written.set()
+                await asyncio.Event().wait()
+            client._drain = park_drain
+            sending = asyncio.create_task(client.query("sent"))
+            await asyncio.wait_for(written.wait(), timeout=5)
+            sending.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await sending
+            client._drain = original_drain
+            first = (await self.response(client))[-1]
+            self.assertEqual(json.loads(first["result"])["text"], "sent")
+            await client.query("next")
+            second = (await self.response(client))[-1]
+            self.assertEqual(json.loads(second["result"])["history"], ["sent", "next"])
+
     async def test_process_failure_reaches_consumer_and_pending_controls(self):
         async with self.client() as client:
             pending = asyncio.create_task(client.set_model("never-reply"))

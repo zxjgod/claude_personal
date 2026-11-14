@@ -766,6 +766,8 @@ export interface LoopOptions {
   toolContext?: Partial<ToolContext>;
   /** Callback to prompt the user when a tool requires confirmation. */
   askUser?: AskUserFn;
+  /** Save the history paired with known results and placeholders for pending calls. */
+  saveToolBatchProgress?: (messages: Message[]) => Promise<void>;
   /** Optional hook registry to intercept tool calls (PreToolUse/PostToolUse). */
   hooks?: HookRunner;
   /**

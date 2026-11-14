@@ -19,6 +19,10 @@ it("continues after interruption and resumes the same session in a new SDK-owned
   const queuedRelease = new Promise<void>((resolve) => {
     releaseQueued = resolve;
   });
+  let timeoutStarted!: () => void;
+  const timeoutRequest = new Promise<void>((resolve) => {
+    timeoutStarted = resolve;
+  });
   const requests: Array<{ model: string; messages: Array<{ role: string; content: unknown }> }> =
     [];
   const server = http.createServer(async (request, response) => {
@@ -30,6 +34,10 @@ it("continues after interruption and resumes the same session in a new SDK-owned
     while (lastUser >= 0 && payload.messages[lastUser].role !== "user") lastUser--;
     const user = JSON.stringify(payload.messages[lastUser].content);
     const resumed = user.includes("RESUMED_CHECK");
+    if (user.includes("TIMEOUT_CHECK")) {
+      timeoutStarted();
+      return;
+    }
     if (user.includes("CLOSE_SECOND")) {
       queuedStarted();
       await queuedRelease;
@@ -157,6 +165,9 @@ it("continues after interruption and resumes the same session in a new SDK-owned
     const result = restored.find((message) => message.type === "result");
     expect(result?.is_error).toBe(false);
     expect(result?.session_id).toBe(results[0].session_id);
+    const ids = [...results, result].map((frame) => frame?.input_id);
+    expect(ids.every((id) => typeof id === "string" && id.length > 0)).toBe(true);
+    expect(new Set(ids).size).toBe(3);
     expect(result?.result).toBe("restored file verified");
     expect(requests.some((request) => request.model === "fixture-next")).toBe(true);
     const history = JSON.stringify(requests.at(-1)?.messages);
@@ -198,6 +209,49 @@ it("continues after interruption and resumes the same session in a new SDK-owned
       releaseQueued();
       await queued.return(undefined);
     }
+
+    const deadline = new AbortController();
+    let timedOutAtProvider = false;
+    void timeoutRequest.then(() => {
+      timedOutAtProvider = true;
+      const timer = AbortSignal.timeout(25);
+      timer.addEventListener("abort", () => deadline.abort(timer.reason), { once: true });
+    });
+    const timedResults: SDKMessage[] = [];
+    await expect(async () => {
+      for await (const message of query({
+        prompt: "TIMEOUT_CHECK",
+        options: {
+          ...options,
+          resume: results[1].session_id,
+          signal: AbortSignal.any([deadline.signal, AbortSignal.timeout(12000)]),
+        },
+      })) {
+        if (message.type === "result") timedResults.push(message);
+      }
+    }).rejects.toMatchObject({ name: "AbortError", cause: { name: "TimeoutError" } });
+    expect(timedOutAtProvider).toBe(true);
+    expect(
+      timedResults.every(
+        (frame) => frame.is_error && frame.input_id && !ids.includes(frame.input_id),
+      ),
+    ).toBe(true);
+
+    const retried: SDKMessage[] = [];
+    for await (const message of query({
+      prompt: "RESUMED_CHECK after timeout",
+      options: { ...options, resume: results[1].session_id },
+    })) {
+      if (message.type === "result") retried.push(message);
+    }
+    expect(retried).toHaveLength(1);
+    expect(retried[0]).toMatchObject({
+      is_error: false,
+      session_id: results[1].session_id,
+      input_id: expect.any(String),
+    });
+    expect(ids).not.toContain(retried[0].input_id);
+    expect(timedResults.map((frame) => frame.input_id)).not.toContain(retried[0].input_id);
   } finally {
     releaseQueued();
     releaseSecond();

@@ -1,0 +1,45 @@
+{
+  "version": "worktree-conflict-v1",
+  "patchReplay": true,
+  "maxTurns": 24,
+  "maxOutputTokens": 4096,
+  "timeoutMs": 420000,
+  "allowedTools": [
+    "Agent",
+    "Read",
+    "Edit",
+    "Write",
+    "Glob",
+    "Grep"
+  ],
+  "disallowedTools": [
+    "Task",
+    "Workflow"
+  ],
+  "cases": [
+    {
+      "name": "merge-overlapping-agent-patches",
+      "fixture": "eval-fixtures/collaboration-conflict",
+      "initialEdits": [
+        {
+          "path": "src/orders.mjs",
+          "content": "export const receiptLabel = \"User's draft receipt\";\n\nexport function describeOrder(order) {\n  return `${receiptLabel}: ${order.id}`;\n}\n\n// Eligibility rules for the payment processor.\nexport function eligible(order) {\n  return order.status === \"paid\";\n}\n"
+        }
+      ],
+      "shellCommands": [
+        "node conflict.mjs baseline",
+        "node conflict.mjs apply-quantity",
+        "node conflict.mjs apply-currency",
+        "node conflict.mjs test"
+      ],
+      "prompt": "Integrate two changes from independent Agent worktrees while preserving the user's existing receiptLabel edit in src/orders.mjs. First run `node conflict.mjs baseline` verbatim and observe the failing tests. Launch two rule-worker Agents with isolation worktree from the same starting checkout before integrating either result. If possible dispatch both calls in the same tool batch. Assign one worker to require order.quantity > 0 in eligible(order) in addition to the existing paid check, and the other to require order.currency === 'CNY' in addition to the existing paid check. Tell each worker to change only its assigned rule in src/orders.mjs. After both report, run `node conflict.mjs apply-quantity` verbatim to apply the first patch, then `node conflict.mjs apply-currency` verbatim to attempt the second. Expect a real Git conflict. Use its output to understand both changes. Read src/orders.mjs in the primary checkout after the conflict and edit only eligible(order) to combine all three conditions. Preserve receiptLabel and describeOrder. Do not change the worktrees, staged index, tests, or fixture scripts during integration. Run `node conflict.mjs test` verbatim in the primary checkout and report the observed conflict and final tests. Use each of the four exact shell commands by itself with the current working directory already set.",
+      "assertions": [
+        {
+          "type": "verifier",
+          "path": "verify.mjs",
+          "timeoutMs": 15000
+        }
+      ]
+    }
+  ]
+}

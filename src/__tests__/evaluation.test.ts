@@ -244,6 +244,115 @@ it("keeps usage metadata and removes the workspace after a query failure", async
   expect(fs.existsSync(workspace)).toBe(false);
 });
 
+it("continues after the first query closes and replays its patch over the same unstaged edits", async () => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-eval-dirty-baseline-"));
+  roots.push(fixture);
+  const workspace = path.join(fixture, "workspace");
+  fs.mkdirSync(workspace);
+  fs.writeFileSync(path.join(workspace, "notes.md"), "committed note\n");
+  fs.writeFileSync(path.join(workspace, "main.mjs"), "export const answer = 0;\n");
+  fs.writeFileSync(
+    path.join(fixture, "verify.mjs"),
+    `
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+const [root, answerPath, phase] = process.argv.slice(2);
+const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
+assert.equal(git('show', 'HEAD:notes.md'), 'committed note');
+assert.equal(git('diff', '--cached', '--name-only'), '');
+assert.equal(readFileSync(join(root, 'notes.md'), 'utf8'), 'user draft\\n');
+assert.equal(readFileSync(join(root, 'main.mjs'), 'utf8'), 'export const answer = 42;\\n');
+assert.equal(phase, root.endsWith('replay') ? 'patch-replay' : 'workspace');
+const answer = JSON.parse(readFileSync(answerPath, 'utf8'));
+assert.deepEqual(answer.evaluation_queries.map(query => [query.session_id, query.trace_start, query.trace_end]), [
+  ['fixture-session', 0, 1], ['fixture-session', 1, 2],
+]);
+`,
+  );
+  let firstClosed = false;
+  let firstSignal: AbortSignal | undefined;
+  const report = await runEvaluation(
+    {
+      patchReplay: true,
+      maxBudgetUsd: 1,
+      cases: [
+        {
+          name: "dirty baseline",
+          prompt: "Review the original",
+          resumePrompt: "Change main only",
+          fixture: ".",
+          initialEdits: [{ path: "notes.md", content: "user draft\n" }],
+          assertions: [{ type: "verifier", path: "verify.mjs" }],
+        },
+      ],
+    },
+    {
+      suiteDirectory: fixture,
+      query: async function* ({
+        prompt,
+        options,
+      }: {
+        prompt: string;
+        options: { cwd: string; resume?: string; signal: AbortSignal; maxBudgetUsd?: number };
+      }) {
+        if (prompt === "Review the original") {
+          expect(options.resume).toBeUndefined();
+          expect(options.maxBudgetUsd).toBe(1);
+          firstSignal = options.signal;
+        } else {
+          expect(firstClosed).toBe(true);
+          expect(options.resume).toBe("fixture-session");
+          expect(options.signal).toBe(firstSignal);
+          expect(options.maxBudgetUsd).toBe(0.75);
+          fs.writeFileSync(path.join(options.cwd, "main.mjs"), "export const answer = 42;\n");
+        }
+        yield { type: "assistant", message: { content: [{ type: "tool_use", id: prompt }] } };
+        yield { ...success, session_id: "fixture-session", total_cost_usd: 0.25 };
+        firstClosed = true;
+      },
+    },
+  );
+  expect(report.cases[0].assertions).toEqual([
+    { type: "verifier", passed: true, patch_replay_passed: true },
+  ]);
+  expect(report.cases[0].patch).toContain("diff --git a/main.mjs b/main.mjs");
+  expect(report.cases[0].patch).not.toContain("notes.md");
+  expect(report.cases[0].cost_usd).toBe(0.5);
+});
+
+it("does not continue after a result followed by an abnormal process exit", async () => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-eval-abnormal-resume-"));
+  roots.push(fixture);
+  fs.mkdirSync(path.join(fixture, "workspace"));
+  let queryCount = 0;
+  const report = await runEvaluation(
+    {
+      cases: [
+        {
+          name: "abnormal first query",
+          prompt: "Review",
+          resumePrompt: "Continue",
+          fixture: ".",
+          assertions: [{ type: "contains", text: "done" }],
+        },
+      ],
+    },
+    {
+      suiteDirectory: fixture,
+      query: async function* () {
+        queryCount++;
+        yield { ...success, session_id: "fixture-session" };
+        yield { type: "system", subtype: "abnormal_exit", message: "first CLI exited with code 1" };
+      },
+    },
+  );
+  expect(queryCount).toBe(1);
+  expect(report.cases[0].passed).toBe(false);
+  expect(report.cases[0].error).toContain("first CLI exited with code 1");
+});
+
 it("rejects vacuous suites and unsupported assertions before starting a model", async () => {
   const query = () => {
     throw new Error("must not run");

@@ -160,6 +160,7 @@ try {
       "dist/sdk.js",
       "dist/llm-adapter.js",
       "dist/pdf-worker.mjs",
+      "dist/background-shell.mjs",
       "python/ccr_sdk.py",
       "examples/providers.json",
       "docs/CHANGELOG.md",
@@ -251,7 +252,7 @@ try {
       `const { query } = await import('./dist/sdk.js');
 let rejectedBudget = false;
 for await (const message of query({prompt:'offline entry check',options:{maxBudgetUsd:0}})) {
-  if (message.type === 'result' && message.is_error &&
+  if (message.type === 'result' && message.is_error && message.error_scope === 'session' &&
       JSON.stringify(message.errors).includes('--max-budget-usd must be positive')) rejectedBudget = true;
 }
 if (!rejectedBudget) throw new Error('SDK default CLI did not reach local budget validation');`,
@@ -273,6 +274,7 @@ async def main():
         await client.finish()
         messages=[message async for message in client.receive_messages()]
         assert not any(message.get("is_error") for message in messages),messages
+        assert any(message.get("capabilities",{}).get("result_input_id") is True for message in messages),messages
 asyncio.run(asyncio.wait_for(main(),15))
 `,
         ],

@@ -85,6 +85,7 @@ await build({
 });
 
 copyFileSync(resolve(root, "src/pdf-worker.mjs"), resolve(outdir, "pdf-worker.mjs"));
+copyFileSync(resolve(root, "src/background-shell.mjs"), resolve(outdir, "background-shell.mjs"));
 
 // TypeScript declarations for the published entries (review fix "发布包无
 // .d.ts"): esbuild bundles the runtime; tsc emits ONLY the declaration files

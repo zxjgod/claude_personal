@@ -54,6 +54,12 @@ const WorkflowSchema = z.strictObject({
     .string()
     .optional()
     .describe("Reuse completed unchanged worker calls from a previous run of this session"),
+  retryUnconfirmed: z
+    .boolean()
+    .optional()
+    .describe(
+      "Retry work with unknown outcomes from resumeFromRunId. Set only after inspecting and reconciling prior effects.",
+    ),
   // Official: "Ignored — set the workflow title in the script's `meta` block."
   // Accepted and discarded so an official-shaped call passes the strict parse.
   title: z.string().optional().describe("Ignored, matching official; kept for compatibility"),
@@ -89,7 +95,7 @@ function readPlanFromDisk(
 export const WorkflowTool: Tool = buildTool({
   name: "workflow",
   description: "Run a fan-out orchestration of worker sub-agents",
-  promptDescription: `Run a multi-agent orchestration by submitting a JSON PLAN that fans out worker sub-agents, then synthesizes their reports. The plan is data, not code — no script is evaluated.\n\nParameters: plan (required unless scriptPath is given, JSON plan text), scriptPath (optional, read the plan from a workspace file instead), args (optional input recorded with the run), resumeFromRunId (optional, reuse a previous run's completed workers).\n\n${WORKFLOW_DSL_DOC}`,
+  promptDescription: `Run a multi-agent orchestration by submitting a JSON PLAN that fans out worker sub-agents, then synthesizes their reports. The plan is data, not code — no script is evaluated.\n\nParameters: plan (required unless scriptPath is given, JSON plan text), scriptPath (optional, read the plan from a workspace file instead), args (optional input recorded with the run), resumeFromRunId (optional, reuse a previous run's completed workers). If resume reports an unconfirmed worker, inspect its effects before retrying with retryUnconfirmed: true.\n\n${WORKFLOW_DSL_DOC}`,
   schema: WorkflowSchema,
   isReadOnly: false, // spawns sub-agent loops (model calls)
   isConcurrencySafe: false, // each workflow is a heavyweight unit; serialize
@@ -132,6 +138,7 @@ export const WorkflowTool: Tool = buildTool({
     const record = await runWorkflow(plan, context, {
       args: input.args,
       resumeFromRunId: input.resumeFromRunId,
+      retryUnconfirmed: input.retryUnconfirmed,
     });
 
     const header =

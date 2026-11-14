@@ -7,6 +7,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { createRequire } from "node:module";
@@ -39,6 +40,45 @@ function fingerprint(directory, hash) {
 function initializeGit(cwd) {
   execFileSync("git", ["init", "--quiet", "--template=", cwd], { windowsHide: true });
   execFileSync("git", ["config", "core.autocrlf", "false"], { cwd, windowsHide: true });
+}
+
+function prepareFixture(fixture, cwd, initialEdits) {
+  cpSync(join(fixture, "workspace"), cwd, { recursive: true });
+  initializeGit(cwd);
+  const git = (args) =>
+    execFileSync("git", args, {
+      cwd,
+      windowsHide: true,
+      encoding: "utf8",
+      timeout: 15000,
+    }).trim();
+  git(["add", "--", "."]);
+  if (initialEdits.length) {
+    git([
+      "-c",
+      "user.name=Evaluation Fixture",
+      "-c",
+      "user.email=fixture@localhost",
+      "-c",
+      "commit.gpgsign=false",
+      "-c",
+      `core.hooksPath=${join(cwd, ".git", "no-hooks")}`,
+      "commit",
+      "--quiet",
+      "-m",
+      "Fixture baseline",
+    ]);
+    for (const { path, content } of initialEdits) {
+      const file = inside(cwd, path);
+      if (!statSync(file).isFile() || !git(["ls-files", "--", path]))
+        throw new Error(`Initial edit must target a tracked fixture file: ${path}`);
+      writeFileSync(file, content);
+    }
+    git(["add", "--", "."]);
+  }
+  const initialTree = git(["write-tree"]);
+  if (initialEdits.length) git(["restore", "--staged", "--", "."]);
+  return initialTree;
 }
 
 function capturePatch(cwd, initialTree) {
@@ -90,6 +130,11 @@ export async function runEvaluation(suite, options) {
   const prepared = suite.cases.map((entry) => {
     if (typeof entry.name !== "string" || typeof entry.prompt !== "string")
       throw new Error("Case requires name and prompt");
+    if (
+      entry.resumePrompt !== undefined &&
+      (typeof entry.resumePrompt !== "string" || !entry.resumePrompt.trim() || !entry.fixture)
+    )
+      throw new Error("resumePrompt requires a non-empty continuation and an isolated fixture");
     if (!Array.isArray(entry.assertions) || entry.assertions.length === 0)
       throw new Error(`Case ${entry.name} requires non-empty assertions`);
     const fixture = entry.fixture ? resolve(options.suiteDirectory, entry.fixture) : undefined;
@@ -123,6 +168,22 @@ export async function runEvaluation(suite, options) {
       throw new Error("shellCommands must contain non-empty command strings");
     if (shellCommands.length && !fixture)
       throw new Error("shellCommands requires an isolated fixture");
+    const initialEdits = entry.initialEdits ?? [];
+    if (
+      !Array.isArray(initialEdits) ||
+      initialEdits.some(
+        (edit) =>
+          typeof edit?.path !== "string" ||
+          !/^[\w.-]+(?:\/[\w.-]+)*$/.test(edit.path) ||
+          edit.path
+            .split("/")
+            .some((part) => [".", "..", ".git", ".claude"].includes(part.toLowerCase())) ||
+          typeof edit.content !== "string",
+      )
+    )
+      throw new Error("initialEdits must list fixture-relative file paths and text content");
+    if (initialEdits.length && !fixture)
+      throw new Error("initialEdits requires an isolated fixture");
     const patchReplay = entry.patchReplay ?? suite.patchReplay ?? false;
     if (typeof patchReplay !== "boolean") throw new Error("patchReplay must be a boolean");
     if (
@@ -167,6 +228,7 @@ export async function runEvaluation(suite, options) {
       limits,
       tools,
       shellCommands,
+      initialEdits,
       toolchain,
       toolchainEnv,
       patchReplay,
@@ -181,6 +243,7 @@ export async function runEvaluation(suite, options) {
       limits,
       tools,
       shellCommands,
+      initialEdits,
       toolchain,
       toolchainEnv,
       patchReplay,
@@ -190,22 +253,15 @@ export async function runEvaluation(suite, options) {
       const temporary = fixture ? mkdtempSync(join(tmpdir(), "ccr-eval-")) : undefined;
       const cwd = temporary ? join(temporary, "workspace") : resolve(entry.cwd ?? ".");
       let final;
-      let processFailure;
       let error;
       let patch;
       let initialTree;
       const trace = [];
+      const queries = [];
       const assertions = [];
       try {
         if (fixture) {
-          cpSync(join(fixture, "workspace"), cwd, { recursive: true });
-          initializeGit(cwd);
-          execFileSync("git", ["add", "--", "."], { cwd, windowsHide: true });
-          initialTree = execFileSync("git", ["write-tree"], {
-            cwd,
-            windowsHide: true,
-            encoding: "utf8",
-          }).trim();
+          initialTree = prepareFixture(fixture, cwd, initialEdits);
           if (shellCommands.length) {
             const user = join(temporary, "user");
             mkdirSync(user, { recursive: true });
@@ -215,59 +271,96 @@ export async function runEvaluation(suite, options) {
             );
           }
         }
-        for await (const message of options.query({
-          prompt: entry.prompt,
-          options: {
-            cwd,
-            env: {
-              ...options.env,
-              ...toolchainEnv,
-              WORKSPACE_ROOT: cwd,
-              LLM_MAX_TOKENS: String(limits.maxOutputTokens),
-              PERMISSION_MODE: "default",
-              ...(temporary && {
-                CCR_USER_CONFIG_DIR: join(temporary, "user"),
-                CCR_CONFIG_TRUST_STORE: join(temporary, "trust.json"),
+        const signal = AbortSignal.timeout(limits.timeoutMs);
+        const prompts = entry.resumePrompt ? [entry.prompt, entry.resumePrompt] : [entry.prompt];
+        let remainingBudget = limits.maxBudgetUsd;
+        for (const prompt of prompts) {
+          const resume = queries.at(-1)?.session_id;
+          const traceStart = trace.length;
+          let processFailure;
+          final = undefined;
+          for await (const message of options.query({
+            prompt,
+            options: {
+              ...(resume && { resume }),
+              cwd,
+              env: {
+                ...options.env,
+                ...toolchainEnv,
+                WORKSPACE_ROOT: cwd,
+                LLM_MAX_TOKENS: String(limits.maxOutputTokens),
+                PERMISSION_MODE: "default",
+                ...(temporary && {
+                  CCR_USER_CONFIG_DIR: join(temporary, "user"),
+                  CCR_CONFIG_TRUST_STORE: join(temporary, "trust.json"),
+                }),
+              },
+              model: options.model,
+              maxTurns: limits.maxTurns,
+              maxBudgetUsd: remainingBudget,
+              ...tools,
+              ...(shellCommands.length && {
+                canUseTool: async (name, input) =>
+                  ["bash", "powershell"].includes(name.toLowerCase()) &&
+                  shellCommands.includes(input.command) &&
+                  !input.run_in_background
+                    ? { behavior: "allow" }
+                    : {
+                        behavior: "deny",
+                        message: "Command is outside this evaluation's fixed command list",
+                      },
               }),
+              signal,
+              cliExecutable: options.cliExecutable,
             },
-            model: options.model,
-            maxTurns: limits.maxTurns,
-            maxBudgetUsd: limits.maxBudgetUsd,
-            ...tools,
-            ...(shellCommands.length && {
-              canUseTool: async (name, input) =>
-                ["bash", "powershell"].includes(name.toLowerCase()) &&
-                shellCommands.includes(input.command) &&
-                !input.run_in_background
-                  ? { behavior: "allow" }
-                  : {
-                      behavior: "deny",
-                      message: "Command is outside this evaluation's fixed command list",
-                    },
-            }),
-            signal: AbortSignal.timeout(limits.timeoutMs),
-            cliExecutable: options.cliExecutable,
-          },
-        })) {
-          if (["assistant", "user"].includes(message.type)) {
-            const content = message.message?.content;
-            for (const block of Array.isArray(content) ? content : []) {
-              if (block.type === "tool_use" || block.type === "tool_result") trace.push(block);
+          })) {
+            if (["assistant", "user"].includes(message.type)) {
+              const content = message.message?.content;
+              for (const block of Array.isArray(content) ? content : []) {
+                if (block.type === "tool_use" || block.type === "tool_result") trace.push(block);
+              }
+            }
+            if (message.type === "result") final = message;
+            if (message.type === "system" && message.subtype === "abnormal_exit")
+              processFailure = String(message.message ?? "CLI abnormal exit after result");
+          }
+          if (processFailure) throw new Error(processFailure);
+          if (!final) throw new Error("no result frame — the CLI exited without reporting");
+          if (final.is_error) throw new Error(final.errors?.join("; ") || "CLI reported failure");
+          if (entry.resumePrompt) {
+            if (
+              typeof final.session_id !== "string" ||
+              !final.session_id ||
+              (resume && final.session_id !== resume)
+            )
+              throw new Error("The CLI did not report the expected session id for continuation");
+            queries.push({
+              session_id: final.session_id,
+              trace_start: traceStart,
+              trace_end: trace.length,
+              usage: final.usage ?? null,
+              cost_usd: final.total_cost_usd ?? null,
+            });
+            if (!resume && remainingBudget !== undefined) {
+              if (!Number.isFinite(final.total_cost_usd) || final.total_cost_usd < 0)
+                throw new Error(
+                  "Cannot continue a budgeted evaluation without the first query cost",
+                );
+              remainingBudget -= final.total_cost_usd;
+              if (remainingBudget <= 0)
+                throw new Error("Evaluation budget exhausted before continuation");
             }
           }
-          if (message.type === "result") final = message;
-          if (message.type === "system" && message.subtype === "abnormal_exit")
-            processFailure = String(message.message ?? "CLI abnormal exit after result");
         }
-        if (processFailure) throw new Error(processFailure);
-        if (!final) throw new Error("no result frame — the CLI exited without reporting");
-        if (final.is_error) throw new Error(final.errors?.join("; ") || "CLI reported failure");
         if (fixture) patch = capturePatch(cwd, initialTree);
         let replay;
         if (patchReplay) {
           replay = join(temporary, "replay");
-          cpSync(join(fixture, "workspace"), replay, { recursive: true });
-          initializeGit(replay);
+          if (initialEdits.length) prepareFixture(fixture, replay, initialEdits);
+          else {
+            cpSync(join(fixture, "workspace"), replay, { recursive: true });
+            initializeGit(replay);
+          }
           const candidate = join(temporary, "candidate.patch");
           writeFileSync(candidate, patch);
           if (patch.trim())
@@ -288,24 +381,39 @@ export async function runEvaluation(suite, options) {
               passed = readFileSync(inside(cwd, assertion.path), "utf8").includes(assertion.text);
             else {
               const answer = join(temporary, "answer.json");
-              writeFileSync(answer, JSON.stringify({ ...final, evaluation_trace: trace }));
-              execFileSync(process.execPath, [inside(fixture, assertion.path), cwd, answer], {
-                cwd: fixture,
-                timeout: assertion.timeoutMs ?? 5000,
-                windowsHide: true,
-                stdio: "pipe",
-                env: { ...process.env, ...toolchainEnv },
-              });
-              workspacePassed = true;
-              if (replay) {
-                replayStarted = true;
-                execFileSync(process.execPath, [inside(fixture, assertion.path), replay, answer], {
+              writeFileSync(
+                answer,
+                JSON.stringify({
+                  ...final,
+                  evaluation_trace: trace,
+                  ...(entry.resumePrompt && { evaluation_queries: queries }),
+                }),
+              );
+              execFileSync(
+                process.execPath,
+                [inside(fixture, assertion.path), cwd, answer, "workspace"],
+                {
                   cwd: fixture,
                   timeout: assertion.timeoutMs ?? 5000,
                   windowsHide: true,
                   stdio: "pipe",
                   env: { ...process.env, ...toolchainEnv },
-                });
+                },
+              );
+              workspacePassed = true;
+              if (replay) {
+                replayStarted = true;
+                execFileSync(
+                  process.execPath,
+                  [inside(fixture, assertion.path), replay, answer, "patch-replay"],
+                  {
+                    cwd: fixture,
+                    timeout: assertion.timeoutMs ?? 5000,
+                    windowsHide: true,
+                    stdio: "pipe",
+                    env: { ...process.env, ...toolchainEnv },
+                  },
+                );
               }
               passed = true;
             }
@@ -347,6 +455,7 @@ export async function runEvaluation(suite, options) {
         ...(shellCommands.length && { shell_approval: "all-shell-ask-v1" }),
         ...(toolchain && { toolchain }),
         tool_trace: trace,
+        ...(entry.resumePrompt && { queries }),
         ...(initialTree && { patch_base_tree: initialTree }),
         ...(patchReplay && {
           patch_replay_verified:
@@ -363,15 +472,19 @@ export async function runEvaluation(suite, options) {
         ...(error && { error }),
         assertions,
         duration_ms: Date.now() - started,
-        usage: final?.usage ?? null,
-        cost_usd: final?.total_cost_usd ?? null,
+        usage: entry.resumePrompt ? null : (final?.usage ?? null),
+        cost_usd: entry.resumePrompt
+          ? queries.length === 2 && queries.every((query) => Number.isFinite(query.cost_usd))
+            ? queries[0].cost_usd + queries[1].cost_usd
+            : null
+          : (final?.total_cost_usd ?? null),
       });
       options.onCase?.(results.at(-1));
     }
   }
   return {
     date: new Date().toISOString(),
-    evaluator_version: 3,
+    evaluator_version: 5,
     patch_scope: "workspace tracked and unignored new files, excluding .claude runtime",
     suite_version: suite.version ?? "unversioned",
     model: options.model ?? "configured model",

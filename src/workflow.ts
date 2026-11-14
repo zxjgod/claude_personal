@@ -8,7 +8,7 @@
 // Fan-out concurrency is still bounded, and workers still run real agent
 // loops with a narrowed tool set.
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { agentLoop, WORKER_COMPACT_THRESHOLD } from "./agent-loop.js";
@@ -114,11 +114,66 @@ export interface WorkflowRecord {
   result?: string;
 }
 
-const WORKFLOWS = new Map<string, WorkflowRecord>();
+interface WorkflowSnapshot {
+  version: 2;
+  sessionId: string;
+  id: string;
+  startedAt: number;
+  cache: Record<string, string>;
+  unconfirmed: Record<string, string>;
+}
+
+const workflowRoot = (context: Pick<ToolContext, "workspaceRoot">) =>
+  path.join(context.workspaceRoot, ".claude", "workflow-runs");
+const workflowPrefix = (sessionId: string) => `${sessionId.replace(/[^a-zA-Z0-9_-]/g, "_")}-`;
+
+const WORKFLOWS = new Map<string, { sessionId: string; record: WorkflowRecord }>();
 let wfCounter = 0;
 
-export function listWorkflows(): WorkflowRecord[] {
-  return [...WORKFLOWS.values()].sort((a, b) => b.startedAt - a.startedAt);
+export function listWorkflows(
+  context: Pick<ToolContext, "workspaceRoot" | "sessionId">,
+): WorkflowRecord[] {
+  const root = workflowRoot(context);
+  const records = new Map<string, WorkflowRecord>();
+  const prefix = workflowPrefix(context.sessionId);
+  for (const [file, active] of WORKFLOWS) {
+    if (path.dirname(file) === root && active.sessionId === context.sessionId)
+      records.set(active.record.id, active.record);
+  }
+  let files: string[] = [];
+  try {
+    files = fs.readdirSync(root);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  for (const file of files) {
+    if (!file.startsWith(prefix) || !/^wf-[a-z0-9-]+\.json$/.test(file.slice(prefix.length)))
+      continue;
+    try {
+      const snapshot = JSON.parse(
+        fs.readFileSync(path.join(root, file), "utf8"),
+      ) as WorkflowSnapshot;
+      if (
+        snapshot.version !== 2 ||
+        snapshot.sessionId !== context.sessionId ||
+        file !== `${prefix}${snapshot.id}.json`
+      )
+        continue;
+      if (!records.has(snapshot.id) && Object.keys(snapshot.unconfirmed).length > 0)
+        records.set(snapshot.id, {
+          id: snapshot.id,
+          startedAt: snapshot.startedAt,
+          status: "failed",
+          logs: [
+            `Unconfirmed workers: ${Object.values(snapshot.unconfirmed).slice(0, 12).join(", ")}`,
+            "Inspect their effects before retrying.",
+          ],
+        });
+    } catch {
+      // A missing or unreadable snapshot does not prevent listing other runs.
+    }
+  }
+  return [...records.values()].sort((a, b) => b.startedAt - a.startedAt);
 }
 
 export function resetWorkflows(): void {
@@ -128,6 +183,7 @@ export function resetWorkflows(): void {
 
 export interface WorkflowOptions {
   resumeFromRunId?: string;
+  retryUnconfirmed?: boolean;
   args?: unknown;
   agentRunner?: (
     prompt: string,
@@ -143,38 +199,35 @@ export async function runWorkflow(
   options: WorkflowOptions = {},
 ): Promise<WorkflowRecord> {
   const agentRunner = options.agentRunner ?? runWorkerAgent;
-  const id = `wf-${Date.now().toString(36)}-${++wfCounter}`;
+  const id = `wf-${Date.now().toString(36)}-${++wfCounter}-${randomUUID().slice(0, 8)}`;
   const cache = new Map<string, string>();
+  const unconfirmed = new Map<string, string>();
   const occurrences = new Map<string, number>();
-  const runRoot = path.join(context.workspaceRoot, ".claude", "workflow-runs");
-  const snapshotPath = path.join(
-    runRoot,
-    `${context.sessionId.replace(/[^a-zA-Z0-9_-]/g, "_")}-${id}.json`,
-  );
-  if (options.resumeFromRunId) {
-    if (!/^[a-zA-Z0-9_-]+$/.test(options.resumeFromRunId))
-      throw new Error("Invalid workflow run id");
-    const source = path.join(
-      runRoot,
-      `${context.sessionId.replace(/[^a-zA-Z0-9_-]/g, "_")}-${options.resumeFromRunId}.json`,
-    );
-    const saved = JSON.parse(fs.readFileSync(source, "utf8"));
-    for (const [key, value] of Object.entries(saved.cache ?? {}))
-      if (typeof value === "string") cache.set(key, value);
-  }
-  const saveCache = () => {
-    fs.mkdirSync(runRoot, { recursive: true });
-    const temp = `${snapshotPath}.tmp`;
-    fs.writeFileSync(temp, JSON.stringify({ version: 1, cache: Object.fromEntries(cache) }));
-    renameSyncWithRetry(temp, snapshotPath);
-  };
+  const runRoot = workflowRoot(context);
+  const prefix = workflowPrefix(context.sessionId);
+  const snapshotPath = path.join(runRoot, `${prefix}${id}.json`);
   const record: WorkflowRecord = {
     id,
     status: "running",
     startedAt: Date.now(),
     logs: [],
   };
-  WORKFLOWS.set(id, record);
+  WORKFLOWS.set(snapshotPath, { sessionId: context.sessionId, record });
+
+  const saveProgress = () => {
+    const data: WorkflowSnapshot = {
+      version: 2,
+      sessionId: context.sessionId,
+      id,
+      startedAt: record.startedAt,
+      cache: Object.fromEntries(cache),
+      unconfirmed: Object.fromEntries(unconfirmed),
+    };
+    fs.mkdirSync(runRoot, { recursive: true });
+    const temp = `${snapshotPath}.tmp`;
+    fs.writeFileSync(temp, JSON.stringify(data));
+    renameSyncWithRetry(temp, snapshotPath);
+  };
 
   const timeoutMs = Math.max(1, options.timeoutMs ?? 120_000);
   const workflowScope = new CancellationScope(context.abortSignal);
@@ -190,6 +243,32 @@ export async function runWorkflow(
   });
 
   try {
+    if (options.resumeFromRunId) {
+      const resumeId = options.resumeFromRunId;
+      if (!/^[a-zA-Z0-9_-]+$/.test(resumeId)) throw new Error("Invalid workflow run id");
+      const source = path.join(runRoot, `${prefix}${resumeId}.json`);
+      if (WORKFLOWS.get(source)?.record.status === "running")
+        throw new Error(`Workflow ${resumeId} is still running`);
+      const saved = JSON.parse(fs.readFileSync(source, "utf8"));
+      if (
+        saved.version !== 1 &&
+        (saved.version !== 2 ||
+          saved.sessionId !== context.sessionId ||
+          saved.id !== resumeId ||
+          !saved.unconfirmed ||
+          typeof saved.unconfirmed !== "object" ||
+          Array.isArray(saved.unconfirmed) ||
+          Object.values(saved.unconfirmed).some((value) => typeof value !== "string"))
+      )
+        throw new Error("Invalid workflow snapshot for this session");
+      const unresolved = Object.values(saved.unconfirmed ?? {});
+      if (unresolved.length && !options.retryUnconfirmed)
+        throw new Error(
+          `Workflow ${resumeId} has ${unresolved.length} unconfirmed worker outcome(s): ${unresolved.slice(0, 12).join(", ")}. Inspect their effects before resuming with retryUnconfirmed: true.`,
+        );
+      for (const [key, value] of Object.entries(saved.cache ?? {}))
+        if (typeof value === "string") cache.set(key, value);
+    }
     // Parse BEFORE racing the timeout: a malformed plan is the caller's
     // mistake and should fail fast with a precise message, not surface as a
     // generic timeout.
@@ -199,7 +278,7 @@ export async function runWorkflow(
     }
     const { result } = await Promise.race([
       runWorkflowPlan(plan, {
-        agent: async (prompt, label) => {
+        agent: async (prompt, label, stepPath) => {
           if (revoked || workflowScope.aborted) throw new Error("workflow timed out (revoked)");
           // The interpreter already logs "agent: <label>" per step; this adds
           // the "now running" breadcrumb so a long fan-out is traceable.
@@ -214,14 +293,25 @@ export async function runWorkflow(
               ),
             )
             .digest("hex");
-          if (cache.has(key)) {
+          const cached = cache.get(key);
+          if (cached !== undefined) {
             record.logs.push(`resumed: ${label ?? key.slice(0, 8)}`);
-            return cache.get(key)!;
+            return cached;
           }
+          const workerLocation = stepPath ?? label ?? key.slice(0, 8);
+          unconfirmed.set(key, workerLocation);
+          saveProgress();
           const result = await agentRunner(prompt, context, workflowScope.signal);
           if (!workflowScope.aborted) {
             cache.set(key, result);
-            saveCache();
+            unconfirmed.delete(key);
+            try {
+              saveProgress();
+            } catch (error) {
+              cache.delete(key);
+              unconfirmed.set(key, workerLocation);
+              throw error;
+            }
           }
           return result;
         },

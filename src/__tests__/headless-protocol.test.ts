@@ -2,6 +2,7 @@ import { PassThrough, Readable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseCliArgs } from "../cli-args.js";
 import { headlessInputs, runHeadless } from "../headless.js";
+import type { TaskState } from "../session-memory.js";
 import type { Message, ModelCaller } from "../types.js";
 
 afterEach(() => {
@@ -21,7 +22,10 @@ it("delivers stream input before EOF and reports malformed input", async () => {
 it("emits stable session results, validates structured output, and saves the conversation", async () => {
   const messages: Message[] = [];
   const emitted: string[] = [];
-  const save = vi.fn(async () => {});
+  const snapshots: Array<{ state: TaskState; roles: string[] }> = [];
+  const save = async (saved: Message[], state: TaskState) => {
+    snapshots.push({ state, roles: saved.map((message) => message.role) });
+  };
   const caller: ModelCaller = async function* () {
     yield { type: "text_delta", delta: '{"count":2}' };
     yield { type: "done", usage: { input_tokens: 10, output_tokens: 5 }, finish_reason: "stop" };
@@ -53,7 +57,10 @@ it("emits stable session results, validates structured output, and saves the con
     is_error: false,
     structured_output: { count: 2 },
   });
-  expect(save).toHaveBeenCalledOnce();
+  expect(snapshots).toEqual([
+    { state: "waiting_for_model", roles: ["user"] },
+    { state: "paused", roles: ["user", "assistant"] },
+  ]);
   expect(messages.some((message) => message.role === "assistant")).toBe(true);
 });
 
@@ -109,6 +116,21 @@ it("still emits the result frame when the session save fails", async () => {
   expect(process.exitCode ?? 0).toBe(0);
 });
 
+it("skips both intermediate and final saves when session persistence is disabled", async () => {
+  const emitted: string[] = [];
+  const save = vi.fn(async () => {});
+  await runHeadless(
+    headlessDeps({
+      argv: ["-p", "hi", "--output-format", "stream-json", "--no-session-persistence"],
+      input: Readable.from([]),
+      emitted,
+      save,
+    }),
+  );
+  expect(save).not.toHaveBeenCalled();
+  expect(JSON.parse(emitted.at(-1) ?? "{}")).toMatchObject({ type: "result", is_error: false });
+});
+
 it("emits a terminal error result frame for a malformed stream-json input line", async () => {
   const emitted: string[] = [];
   const input = new PassThrough();
@@ -125,8 +147,33 @@ it("emits a terminal error result frame for a malformed stream-json input line",
   // is the ERROR one.
   const frames = emitted.map((l) => JSON.parse(l)).filter((e) => e.type === "result");
   const errorFrame = frames.find((e) => e.is_error);
-  expect(errorFrame).toMatchObject({ subtype: "error_during_execution" });
+  expect(errorFrame).toMatchObject({ subtype: "error_during_execution", error_scope: "session" });
   expect(process.exitCode).toBe(1);
+});
+
+it("reports a duplicate input id as a session error without executing that input twice", async () => {
+  const emitted: string[] = [];
+  const input = new PassThrough();
+  const run = runHeadless(
+    headlessDeps({
+      argv: ["--input-format", "stream-json", "--output-format", "stream-json"],
+      input,
+      emitted,
+    }),
+  );
+  const line = `${JSON.stringify({ type: "user", input_id: "same-input", message: { role: "user", content: "hi" } })}\n`;
+  input.end(line + line);
+  await run;
+  const frames = emitted.map((value) => JSON.parse(value));
+  expect(frames[0]).toMatchObject({ capabilities: { result_input_id: true } });
+  expect(frames.filter((frame) => frame.type === "result")).toEqual([
+    expect.objectContaining({ input_id: "same-input", is_error: false }),
+    expect.objectContaining({
+      error_scope: "session",
+      is_error: true,
+      errors: ["Duplicate stream-json input_id"],
+    }),
+  ]);
 });
 
 it("json output mode emits ONE document even with multiple prompts", async () => {

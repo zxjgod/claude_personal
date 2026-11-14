@@ -158,6 +158,43 @@ it("uses the original task to choose an actual file operation after forced compr
   }
 });
 
+it("keeps recent human corrections and earlier constraints in order across lossy compactions", async () => {
+  const history = toolHistory();
+  const original = history[0];
+  const correction: Message = {
+    role: "user",
+    content: [{ type: "text", text: "Use truncation for the amount calculation instead." }],
+  };
+  history.splice(40, 0, correction); // Between complete tool batches.
+  const first = await autoCompact(history, lossySummary, config);
+  const second = await autoCompact([...first, ...toolHistory().slice(1)], lossySummary, config);
+  expect(second.filter((message) => message.role === "user" && !message.synthetic)).toEqual([
+    original,
+    correction,
+  ]);
+  assertToolPairs(second);
+});
+
+it("does not copy older attachments, oversized requests or user messages already in the tail", async () => {
+  const history = toolHistory();
+  const user = (text: string): Message => ({ role: "user", content: [{ type: "text", text }] });
+  const older = user("Earlier request already summarized");
+  const oversized = user("x".repeat(12_001));
+  const image: Message = {
+    role: "user",
+    content: [
+      { type: "image", source: { type: "base64", media_type: "image/png", data: "fixture" } },
+    ],
+  };
+  const latest = user("One last detail");
+  history.splice(0, 0, older, oversized, image);
+  history.splice(3, 1);
+  history.push(latest);
+  const result = await autoCompact(history, lossySummary, config);
+  expect(result.filter((message) => message.role === "user")).toEqual([latest]);
+  assertToolPairs(result);
+});
+
 it("does not commit a partial summary or start fallback after cancellation", async () => {
   const controller = new AbortController();
   const history = toolHistory();

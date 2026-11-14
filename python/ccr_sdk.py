@@ -4,8 +4,10 @@ import json
 import os
 import re
 import signal
+from collections import deque
 from pathlib import Path
 from typing import AsyncIterator, Awaitable, Callable, Optional, Dict, Any
+from uuid import uuid4
 
 STREAM_LINE_LIMIT = 16 * 1024 * 1024
 CanUseTool = Callable[[str, Dict[str, Any], Dict[str, Any]], Awaitable[Dict[str, Any]]]
@@ -72,6 +74,7 @@ class CCRClient:
         self._epoch = 0
         self._sent = 0
         self._results = 0
+        self._pending_inputs = deque()
         self._finished_input = False
         self._closing = False
         self._closed = False
@@ -112,16 +115,25 @@ class CCRClient:
         if self._process is None or self._closing or self._closed or self._reader_done:
             raise RuntimeError("CCR client is not connected or is closed")
 
-    async def _write(self, frame) -> None:
+    def _send_frame(self, frame):
         self._require_open()
         stream = self._process.stdin
         if stream.is_closing():
             raise RuntimeError("CLI stdin is closed")
         try:
             stream.write((json.dumps(frame) + "\n").encode("utf-8"))
+        except (ConnectionError, OSError) as error:
+            raise RuntimeError("CLI stdin is closed") from error
+        return stream
+
+    async def _drain(self, stream) -> None:
+        try:
             await stream.drain()
         except (ConnectionError, OSError) as error:
             raise RuntimeError("CLI stdin is closed") from error
+
+    async def _write(self, frame) -> None:
+        await self._drain(self._send_frame(frame))
 
     async def query(self, prompt: str) -> None:
         self._require_open()
@@ -129,12 +141,13 @@ class CCRClient:
             raise RuntimeError("CCR input is already finished")
         if not isinstance(prompt, str):
             raise TypeError("prompt must be a string")
+        input_id = str(uuid4())
+        stream = self._send_frame({"type": "user", "input_id": input_id,
+                                   "message": {"role": "user", "content": prompt}})
+        # Once write() accepts the frame, cancelling drain() cannot unsend it.
+        self._pending_inputs.append(input_id)
         self._sent += 1
-        try:
-            await self._write({"type": "user", "message": {"role": "user", "content": prompt}})
-        except BaseException:
-            self._sent -= 1
-            raise
+        await self._drain(stream)
 
     async def finish(self) -> None:
         """Declare input exhausted; keep control/approval writes alive until results."""
@@ -275,6 +288,9 @@ class CCRClient:
                 future.set_exception(RuntimeError("CLI closed before control response"))
 
     async def _read(self) -> None:
+        expects_input_ids = False
+        session_failed = False
+        legacy_result_uuids = set()
         try:
             async for line in self._process.stdout:
                 text = line.decode("utf-8", "replace")
@@ -292,10 +308,29 @@ class CCRClient:
                 if kind in ("control_request", "control_response"):
                     await self._handle_control(message, text)
                     continue
+                capabilities = message.get("capabilities")
+                if (kind == "system" and message.get("subtype") == "init" and
+                        isinstance(capabilities, dict) and capabilities.get("result_input_id") is True):
+                    expects_input_ids = True
                 if kind == "result":
-                    if self._results >= self._sent:
+                    tagged = "input_id" in message
+                    if (not session_failed and not tagged and message.get("error_scope") == "session"
+                            and message.get("is_error") is True):
+                        session_failed = True
+                        self._cancel_permissions()
+                        self._messages.put_nowait(message)
+                        continue
+                    legacy_uuid = message.get("uuid") if not tagged else None
+                    if (session_failed or not self._pending_inputs or
+                            ((tagged or expects_input_ids) and message.get("input_id") != self._pending_inputs[0]) or
+                            (isinstance(legacy_uuid, str) and legacy_uuid in legacy_result_uuids)):
                         self._diagnostic("invalid_protocol_message", "Unexpected result: " + text)
                         continue
+                    if tagged:
+                        expects_input_ids = True
+                    if isinstance(legacy_uuid, str) and legacy_uuid:
+                        legacy_result_uuids.add(legacy_uuid)
+                    self._pending_inputs.popleft()
                     self._results += 1
                     self._cancel_permissions()
                     self._maybe_close_input()
@@ -304,10 +339,10 @@ class CCRClient:
             await self._stderr_task
             errors = self._stderr.decode("utf-8", "replace")
             if code != 0:
-                if self._results == 0:
+                if self._results == 0 and not session_failed:
                     raise RuntimeError("CCR exited {}: {}".format(code, errors))
                 self._diagnostic("abnormal_exit", "CCR exited {} after the result frame: {}".format(code, errors[-500:]))
-            if self._results < self._sent:
+            if not session_failed and self._results < self._sent:
                 raise RuntimeError("CLI closed before all query results ({}/{})".format(self._results, self._sent))
         except asyncio.CancelledError:
             if not self._closing:

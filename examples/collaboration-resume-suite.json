@@ -1,0 +1,47 @@
+{
+  "version": "isolated-collaboration-resume-v1",
+  "patchReplay": true,
+  "maxTurns": 14,
+  "maxOutputTokens": 4096,
+  "timeoutMs": 420000,
+  "allowedTools": [
+    "Agent",
+    "Read",
+    "Glob",
+    "Grep",
+    "Write",
+    "Edit"
+  ],
+  "disallowedTools": [
+    "Task",
+    "Workflow"
+  ],
+  "cases": [
+    {
+      "name": "review-resume-in-new-cli",
+      "fixture": "eval-fixtures/collaboration",
+      "initialEdits": [
+        {
+          "path": "notes.md",
+          "content": "User draft: keep this uncommitted note verbatim.\n"
+        }
+      ],
+      "shellCommands": [
+        "node collaborate.mjs baseline",
+        "node collaborate.mjs draft",
+        "node collaborate.mjs revised",
+        "node collaborate.mjs integrate",
+        "node collaborate.mjs test"
+      ],
+      "prompt": "Start the paid order summary task and stop after reviewing the first draft. Run `node collaborate.mjs baseline` verbatim and observe the failing test. Call Agent with subagent_type `order-worker` and isolation `worktree` for the first implementation. Tell the worker to read and edit only src/sku.mjs and src/summary.mjs. The draft trims SKU strings but keeps case distinctions. summarizePaidOrders(rows) returns [{sku, quantity}] for rows whose status is exactly paid (each row has sku string, quantity number, status string), sums quantities by SKU, preserves first-seen order and does not mutate input. When the worker returns, run `node collaborate.mjs draft` verbatim to test its draft and obtain review feedback. Then stop and report the review and the existing agent id. Wait for the next user turn before resuming the agent or integrating anything. The shell working directory is already set to the primary checkout. Never prefix or chain a shell command. Keep notes.md and fixture scripts unchanged. Do not author source edits in the primary checkout.",
+      "resumePrompt": "Continue from the review already in this session. Use Agent with the original agent id via resume, without supplying isolation or creating a new agent. Pass back the recorded review feedback. Then run `node collaborate.mjs revised`, `node collaborate.mjs integrate`, and `node collaborate.mjs test` in that order, each by itself verbatim in the primary checkout. Keep notes.md and the fixture scripts unchanged. Report the observed results.",
+      "assertions": [
+        {
+          "type": "verifier",
+          "path": "verify-resume.mjs",
+          "timeoutMs": 20000
+        }
+      ]
+    }
+  ]
+}

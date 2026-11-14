@@ -298,7 +298,7 @@ function parseStep(
 /** Callbacks the interpreter needs from its host. */
 export interface WorkflowHost {
   /** Run one worker sub-agent; resolves to its final report. */
-  agent(prompt: string, label?: string): Promise<string>;
+  agent(prompt: string, label?: string, stepPath?: string): Promise<string>;
   /** Progress line surfaced in the workflow log. */
   log(line: string): void;
   /** Aborts long-running fan-outs. */
@@ -379,7 +379,7 @@ async function runStep(
 
   if ("agent" in step) {
     host.log(`agent: ${step.label ?? truncate(step.agent)}`);
-    return await host.agent(step.agent, step.label);
+    return await host.agent(step.agent, step.label, where);
   }
 
   if ("log" in step) {
@@ -412,7 +412,11 @@ async function runStep(
           }
           const prompt = template.replace(INPUT_PLACEHOLDER, () => current);
           try {
-            current = await host.agent(prompt, `pipeline[${i}] stage ${si + 1}`);
+            current = await host.agent(
+              prompt,
+              `pipeline[${i}] stage ${si + 1}`,
+              `${where}.pipeline[${i}].stages[${si}]`,
+            );
           } catch (error) {
             if (host.signal?.aborted) {
               throw new WorkflowDslError(`${where}.pipeline[${i}]: workflow aborted`);
@@ -440,6 +444,7 @@ async function runStep(
   return await host.agent(
     `${step.synthesize.prompt}\n\n--- worker reports to synthesize ---\n${combined}`,
     "synthesize",
+    where,
   );
 }
 

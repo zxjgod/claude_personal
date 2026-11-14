@@ -26,6 +26,7 @@ import * as path from "node:path";
 import type { Message } from "./types.js";
 import { renameSyncWithRetry } from "./utils/atomic-rename.js";
 import { ccrPath } from "./workspace-config.js";
+import type { WorktreeInfo } from "./worktrees.js";
 
 export type SubagentRunStatus = "running" | "completed" | "error" | "interrupted";
 
@@ -44,6 +45,8 @@ export interface SubagentRunRecord {
   report?: string;
   /** Full conversation — the resume seed. */
   messages: Message[];
+  /** Original isolation identity, kept even after an empty worktree is removed. */
+  worktree?: WorktreeInfo;
 }
 
 let counter = 0;

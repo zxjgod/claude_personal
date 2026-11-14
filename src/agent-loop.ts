@@ -1067,7 +1067,28 @@ export async function* agentLoop(
 
       // === STEP 5: Execute tool calls ===
       const toolResults: ToolExecutionResult[] = new Array(toolCalls.length);
+      const resultMessage = (call: ToolCall, content: string, failed?: boolean): Message => ({
+        role: "tool",
+        tool_call_id: call.id,
+        name: call.function.name,
+        content: failed ? `<tool_use_error>${content}</tool_use_error>` : content,
+      });
+      const saveBatchProgress = () =>
+        options.saveToolBatchProgress?.([
+          ...messages,
+          ...toolCalls.map((call, index) => {
+            const result = toolResults[index];
+            return result
+              ? resultMessage(call, result.formatted, result.isError)
+              : resultMessage(
+                  call,
+                  "No result was saved before this session stopped. The outcome is unknown. Inspect current state before retrying this operation.",
+                  true,
+                );
+          }),
+        ]);
       try {
+        if (options.saveToolBatchProgress) await saveBatchProgress();
         for await (const done of executeToolCalls(
           toolCalls,
           tools,
@@ -1081,6 +1102,7 @@ export async function* agentLoop(
           effort.toolConcurrency,
         )) {
           toolResults[done.index] = done.result;
+          if (options.saveToolBatchProgress) await saveBatchProgress();
           yield { type: "tool_result", id: toolCalls[done.index]!.id, result: done.result };
         }
       } catch (error) {
@@ -1110,12 +1132,7 @@ export async function* agentLoop(
             };
           }
           const r = toolResults[i]!;
-          messages.push({
-            role: "tool",
-            tool_call_id: toolCalls[i]!.id,
-            name: toolCalls[i]!.function.name,
-            content: r.isError ? `<tool_use_error>${r.formatted}</tool_use_error>` : r.formatted,
-          });
+          messages.push(resultMessage(toolCalls[i]!, r.formatted, r.isError));
         }
         backfillMissingToolResults(messages, toolCalls);
       }

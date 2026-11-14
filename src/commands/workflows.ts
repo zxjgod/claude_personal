@@ -10,8 +10,8 @@ import type { SlashCommand } from "./types.js";
 export const workflowsCommand: SlashCommand = {
   name: "workflows",
   description: "List workflow runs (fan-out orchestration)",
-  run: (): undefined => {
-    const workflows = listWorkflows();
+  run: (_args, context): undefined => {
+    const workflows = listWorkflows(context);
     console.log("");
     console.log(chalk.bold(`  Workflows (${workflows.length}):`));
     if (workflows.length === 0) {
@@ -30,7 +30,9 @@ export const workflowsCommand: SlashCommand = {
             : chalk.yellow(wf.status);
       const dur = wf.finishedAt
         ? `${((wf.finishedAt - wf.startedAt) / 1000).toFixed(1)}s`
-        : "running…";
+        : wf.status === "running"
+          ? "running…"
+          : "saved";
       console.log(`    ${chalk.cyan(sanitizeTerminalText(wf.id))}  ${status}  ${chalk.gray(dur)}`);
       const last = wf.logs.slice(-3);
       for (const l of last) console.log(chalk.gray(`        ${sanitizeTerminalText(l)}`));

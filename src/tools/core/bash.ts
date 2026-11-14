@@ -3,7 +3,9 @@
 // ============================================================
 
 import { type ChildProcess, spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { StringDecoder } from "node:string_decoder";
+import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import { z } from "zod";
 import { runWindowsSandbox } from "../../native-sandbox.js";
@@ -397,13 +399,30 @@ function spawnShell(command: string, cwd: string): { child: ChildProcess; killTr
  * stop one is an explicit job_kill. This mirrors task/sub-agent semantics.
  */
 function runInBackground(input: BashInput, context: ToolContext, cwd: string): ToolResult {
+  const supervisor = [
+    "../../background-shell.mjs",
+    "../background-shell.mjs",
+    "./background-shell.mjs",
+  ]
+    .map((relative) => fileURLToPath(new URL(relative, import.meta.url)))
+    .find(existsSync);
+  if (!supervisor)
+    return { content: "", error: "Background shell supervisor missing; rebuild or reinstall CCR." };
   const job = createContextJob(context, {
     kind: "bash",
     command: input.command,
     description: input.description,
   });
 
-  const { child, killTree } = spawnShell(input.command, cwd);
+  const child = spawn(process.execPath, [supervisor], {
+    detached: true,
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe", "ipc"],
+  });
+  const send = (message: object) => {
+    if (child.connected) child.send(message, () => {});
+  };
+  const killTree = () => send({ type: "stop" });
   job.kill = killTree;
 
   // Decode incrementally (same multibyte-safety rationale as the foreground path).
@@ -477,6 +496,7 @@ function runInBackground(input: BashInput, context: ToolContext, cwd: string): T
     // "kill 提前 settle" 的另一半——settle 现在发生在真实退出处).
     settleJob(job, job.killReason ? "killed" : code === 0 ? "done" : "error", code);
   });
+  send({ type: "start", command: input.command, shell: shellName(), cwd });
 
   const preview = input.description || input.command;
   return {

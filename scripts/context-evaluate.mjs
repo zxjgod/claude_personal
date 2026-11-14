@@ -14,6 +14,10 @@ import { writeEvaluation } from "./evaluation.mjs";
 dotenv.config();
 const repeat = Number(process.argv[2] ?? 2);
 if (!Number.isInteger(repeat) || repeat < 1) throw new Error("repeat must be a positive integer");
+const scenario = process.argv[3] ?? "original";
+if (!["original", "correction"].includes(scenario))
+  throw new Error("scenario must be original or correction");
+const corrected = scenario === "correction";
 const config = resolveProviderConfig({
   provider: process.env.LLM_PROVIDER ?? "openai",
   apiKey: process.env.LLM_API_KEY ?? "",
@@ -25,6 +29,15 @@ const task =
   "Finish the pending fix in src/formatter.mjs. formatCents must accept only nonnegative safe integer cents and return a decimal string with exactly two fractional digits and no currency symbol, e.g. 1234 -> '12.34', 5 -> '0.05'. Preserve the existing USER_CHANGE comment. Leave package.json unchanged. Then write result.json containing exactly {\"status\":\"completed\"}. Read the current source before overwriting it. Use only the provided file tools, complete the edits before reporting success.";
 const source =
   "// USER_CHANGE: keep this annotation\nexport function formatCents(cents) { return cents.toFixed(2); }\n";
+const correction = {
+  role: "user",
+  content: [
+    {
+      type: "text",
+      text: "Change only the output presentation requirement: use a leading dollar sign in formatCents, e.g. 5 -> '$0.05'. Continue the outstanding fix and keep the prior constraints.",
+    },
+  ],
+};
 const cases = [];
 for (let attempt = 1; attempt <= repeat; attempt++) {
   const root = mkdtempSync(join(tmpdir(), "ccr-context-eval-"));
@@ -35,6 +48,7 @@ for (let attempt = 1; attempt <= repeat; attempt++) {
   const request = { role: "user", content: [{ type: "text", text: task }] };
   const messages = [request];
   for (let batch = 0; batch < 35; batch++) {
+    if (corrected && batch === 14) messages.push(correction);
     const ids = [`${batch}-a`, `${batch}-b`];
     messages.push({
       role: "assistant",
@@ -105,9 +119,19 @@ for (let attempt = 1; attempt <= repeat; attempt++) {
       if (["tool_use", "tool_result"].includes(step.value.type)) trace.push(step.value);
     }
     assert.equal(terminal.reason, "completed");
-    assert(compactions > 0, "must actually invoke summarization");
+    assert(
+      compactions >= (corrected ? 2 : 1),
+      "must actually invoke the required summarization passes",
+    );
     assert(messages.length < initialMessages, "must shrink the history");
     assert.equal(messages.filter((message) => message === request).length, 1);
+    if (corrected) {
+      assert.equal(messages.filter((message) => message === correction).length, 1);
+      assert(
+        messages.indexOf(request) < messages.indexOf(correction),
+        "latest correction must follow original request",
+      );
+    }
     assert.equal(readFileSync(join(root, "package.json"), "utf8"), packageText);
     assert(
       readFileSync(join(root, "src/formatter.mjs"), "utf8").includes(
@@ -125,7 +149,8 @@ for (let attempt = 1; attempt <= repeat; attempt++) {
         `
 import assert from 'node:assert/strict';
 import {formatCents} from './src/formatter.mjs';
-assert.equal(formatCents(1234),'12.34'); assert.equal(formatCents(5),'0.05'); assert.equal(formatCents(0),'0.00');
+const prefix=${JSON.stringify(corrected ? "$" : "")};
+assert.equal(formatCents(1234),prefix+'12.34'); assert.equal(formatCents(5),prefix+'0.05'); assert.equal(formatCents(0),prefix+'0.00');
 for (const value of [-1,1.5,NaN,Infinity,'100',Number.MAX_SAFE_INTEGER+1]) assert.throws(()=>formatCents(value));
 `,
       ],
@@ -141,7 +166,7 @@ for (const value of [-1,1.5,NaN,Infinity,'100',Number.MAX_SAFE_INTEGER+1]) asser
     error ??= `Cannot preserve candidate: ${String(failure)}`;
   }
   cases.push({
-    name: "forced-compaction-repair",
+    name: corrected ? "forced-compaction-with-correction" : "forced-compaction-repair",
     attempt,
     input_hash: inputHash,
     passed: !error,
@@ -163,7 +188,7 @@ for (const value of [-1,1.5,NaN,Infinity,'100',Number.MAX_SAFE_INTEGER+1]) asser
 }
 const report = {
   date: new Date().toISOString(),
-  suite_version: "context-continuity-v1",
+  suite_version: corrected ? "context-correction-v1" : "context-continuity-v1",
   model: config.model,
   provider: config.provider,
   repeat,

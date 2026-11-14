@@ -111,6 +111,49 @@ it("rejects clean CLI exit when a submitted prompt never received a result", asy
   }
 });
 
+it.each([
+  "correlated",
+  "legacy",
+])("%s duplicate results cannot complete a queued prompt", async (mode) => {
+  const { root, file } = fixture(`import readline from 'node:readline';
+const emit=frame=>console.log(JSON.stringify(frame));
+const tagged=${mode === "correlated"};
+if(tagged) emit({type:'system',subtype:'init',capabilities:{result_input_id:true}});
+const prompts=[];
+for await(const line of readline.createInterface({input:process.stdin})) {
+  prompts.push(JSON.parse(line));
+  if(prompts.length!==2) continue;
+  const first={type:'result',uuid:'first-frame',result:'first',...(tagged&&{input_id:prompts[0].input_id})};
+  if(tagged) emit({type:'result',input_id:prompts[1].input_id,result:'out of order'});
+  emit(first);
+  emit({...first,uuid:tagged?'duplicate-with-new-uuid':first.uuid});
+  if(tagged) emit({type:'result',result:'untagged'});
+  process.stdin.destroy();
+  break;
+}`);
+  async function* prompts() {
+    yield "first";
+    yield "second";
+  }
+  const results: unknown[] = [];
+  const diagnostics: unknown[] = [];
+  try {
+    await expect(async () => {
+      for await (const frame of query({
+        prompt: prompts(),
+        options: { cwd: root, cliModule: file, signal: AbortSignal.timeout(10000) },
+      })) {
+        if (frame.type === "result") results.push(frame.result);
+        if (frame.subtype === "invalid_protocol_message") diagnostics.push(frame);
+      }
+    }).rejects.toThrow("before all query results (1/2)");
+    expect(results).toEqual(["first"]);
+    expect(diagnostics).toHaveLength(mode === "correlated" ? 3 : 1);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 it("preserves an input producer failure as the query error", async () => {
   const { root, file } = fixture(`process.stdin.resume();`);
   async function* prompts() {

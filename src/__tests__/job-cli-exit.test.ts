@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as http from "node:http";
 import { createRequire } from "node:module";
@@ -6,10 +6,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as readline from "node:readline";
 import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import { expect, it } from "vitest";
 import { PersistenceManager } from "../persistence.js";
 
 const roles = ["parent", "child", "grandchild"];
+const execute = promisify(execFile);
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const quote = (value: string) =>
   process.platform === "win32"
@@ -30,11 +32,13 @@ it.each([
   "headless",
   "repl",
   "headless-agent",
+  "headless-crash",
   "repl-resume",
-])("normal %s CLI exit stops owned jobs and persists final background state", async (surface) => {
+])("%s CLI exit stops owned jobs and retains their saved state", async (surface) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "ccr-job-cli-exit-"));
   const headless = surface.startsWith("headless");
   const delegated = surface === "headless-agent";
+  const crash = surface === "headless-crash";
   if (surface === "repl-resume")
     await new PersistenceManager(root).save(
       "resume-target",
@@ -58,6 +62,37 @@ it.each([
     let body = "";
     for await (const chunk of request) body += chunk;
     const payload = JSON.parse(body);
+    const lastUser = payload.messages.findLastIndex(
+      (message: { role: string }) => message.role === "user",
+    );
+    const restoring = JSON.stringify(payload.messages[lastUser]?.content ?? "").includes(
+      "inspect interrupted job",
+    );
+    if (restoring) {
+      const jobResult = payload.messages
+        .slice(lastUser + 1)
+        .find((message: { role: string }) => message.role === "tool");
+      const delta = jobResult
+        ? { content: String(jobResult.content) }
+        : {
+            tool_calls: [
+              {
+                index: 0,
+                id: "restore-job",
+                type: "function",
+                function: {
+                  name: "job_output",
+                  arguments: JSON.stringify({ job_id: "job-1" }),
+                },
+              },
+            ],
+          };
+      response.setHeader("Content-Type", "text/event-stream");
+      response.end(
+        `data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: jobResult ? "stop" : "tool_calls" }], usage: { prompt_tokens: 2, completion_tokens: 1 } })}\n\ndata: [DONE]\n\n`,
+      );
+      return;
+    }
     const hasResult = payload.messages.some((message: { role: string }) => message.role === "tool");
     const worker = payload.messages.some(
       (message: { role: string; content: unknown }) =>
@@ -65,7 +100,11 @@ it.each([
     );
     if (hasResult) {
       const deadline = Date.now() + 5000;
-      while (pids().length !== 3 && Date.now() < deadline) await delay(20);
+      while (
+        !roles.every((role) => fs.existsSync(path.join(root, `${role}.beat`))) &&
+        Date.now() < deadline
+      )
+        await delay(20);
     }
     const delta = hasResult
       ? { content: "background ready" }
@@ -100,22 +139,31 @@ it.each([
     path.resolve("src/cli.ts"),
     ...(headless ? ["-p", "launch background", "--output-format", "stream-json"] : ["--no-tui"]),
   ];
+  const env = {
+    ...process.env,
+    NODE_OPTIONS: `--import=${pathToFileURL(createRequire(import.meta.url).resolve("tsx")).href}`,
+    WORKSPACE_ROOT: root,
+    CCR_USER_CONFIG_DIR: path.join(root, "user"),
+    CCR_CONFIG_TRUST_STORE: path.join(root, "trust.json"),
+    LLM_API_KEY: "fixture-unused",
+    LLM_PROVIDER: "custom",
+    LLM_MODEL: "fixture",
+    LLM_BASE_URL: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`,
+    PERMISSION_MODE: "bypassPermissions",
+    CCR_AUTO_MEMORY_EXTRACT: "0",
+  };
+  const unrelated = crash
+    ? spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+        windowsHide: true,
+        stdio: "ignore",
+      })
+    : undefined;
+  const unrelatedClosed =
+    unrelated && new Promise<void>((resolve) => unrelated.once("close", () => resolve()));
   const child = spawn(process.execPath, argv, {
     windowsHide: true,
     stdio: "pipe",
-    env: {
-      ...process.env,
-      NODE_OPTIONS: `--import=${pathToFileURL(createRequire(import.meta.url).resolve("tsx")).href}`,
-      WORKSPACE_ROOT: root,
-      CCR_USER_CONFIG_DIR: path.join(root, "user"),
-      CCR_CONFIG_TRUST_STORE: path.join(root, "trust.json"),
-      LLM_API_KEY: "fixture-unused",
-      LLM_PROVIDER: "custom",
-      LLM_MODEL: "fixture",
-      LLM_BASE_URL: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`,
-      PERMISSION_MODE: "bypassPermissions",
-      CCR_AUTO_MEMORY_EXTRACT: "0",
-    },
+    env,
   });
   const closed = new Promise<number | null>((resolve, reject) => {
     child.once("close", resolve);
@@ -135,7 +183,8 @@ it.each([
         const message = JSON.parse(line);
         if (message.type === "result") {
           ended = true;
-          child.stdin.end();
+          if (crash) child.kill("SIGKILL");
+          else child.stdin.end();
         }
       } else if (!headless && line.includes("background ready") && !ended) {
         ended = true;
@@ -154,22 +203,50 @@ it.each([
       }),
     ]);
     expect(outcome, `CLI did not close: ${stderr.slice(-800)} ${stdout.slice(-400)}`).toBeDefined();
-    expect(outcome?.code).toBe(0);
+    expect(outcome?.code).toBe(crash ? null : 0);
     await read;
     expect(ended).toBe(true);
     if (surface === "repl-resume") expect(stdout).toContain("Resumed session resume-t");
     expect(pids()).toHaveLength(3);
-    expect(pids().filter(alive)).toEqual([]);
+    await expect.poll(() => pids().filter(alive), { timeout: crash ? 8000 : 2000 }).toEqual([]);
     const runtime = path.join(root, ".claude", "session-runtime");
     const files = fs.readdirSync(runtime).filter((file) => file.endsWith(".json"));
     expect(files).toHaveLength(surface === "repl-resume" ? 2 : 1);
     const ownerFile = files.find((file) => file !== "resume-target.json");
     if (!ownerFile) throw new Error("missing owner runtime snapshot");
     const saved = JSON.parse(fs.readFileSync(path.join(runtime, ownerFile), "utf8"));
-    expect(saved.backgroundJobs).toMatchObject([
-      { status: "killed", killReason: "session exited" },
-    ]);
+    expect(saved.backgroundJobs).toMatchObject(
+      crash
+        ? [{ status: "running", id: "job-1" }]
+        : [{ status: "killed", killReason: "session exited" }],
+    );
+    if (crash) {
+      const beats = roles.map((role) => fs.readFileSync(path.join(root, `${role}.beat`), "utf8"));
+      const resumed = await execute(
+        process.execPath,
+        [
+          argv[0],
+          "-p",
+          "inspect interrupted job",
+          "--resume",
+          ownerFile.slice(0, -5),
+          "--output-format",
+          "json",
+        ],
+        { env, windowsHide: true, timeout: 12000 },
+      );
+      const result = JSON.parse(resumed.stdout);
+      expect(result).toMatchObject({ is_error: false, session_id: ownerFile.slice(0, -5) });
+      expect(result.result).toContain("interrupted and was not restarted");
+      expect(result.result).toContain("does not confirm the command's exit");
+      expect(roles.map((role) => fs.readFileSync(path.join(root, `${role}.beat`), "utf8"))).toEqual(
+        beats,
+      );
+      expect(unrelated?.pid && alive(unrelated.pid)).toBe(true);
+    }
   } finally {
+    unrelated?.kill("SIGKILL");
+    await unrelatedClosed;
     clearTimeout(timer);
     for (const pid of pids())
       if (Number.isInteger(pid) && pid > 0 && pid !== process.pid && alive(pid)) {

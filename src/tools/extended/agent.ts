@@ -53,6 +53,7 @@ import {
   createIsolatedWorktree,
   finishIsolatedWorktree,
   randomWorktreeName,
+  reopenAgentWorktree,
   type WorktreeInfo,
 } from "../../worktrees.js";
 import { createContextJob, settleJob } from "../job-store.js";
@@ -148,7 +149,8 @@ const AgentSchema = z.strictObject({
     .optional()
     .describe(
       "Resume a previous agent run by its agent id (returned in metadata). The stored " +
-        'conversation is loaded and this prompt continues it. Not valid with "fork".',
+        "conversation is loaded and this prompt continues it in its original worktree if isolated. " +
+        'Not valid with "fork".',
     ),
 });
 
@@ -437,7 +439,26 @@ export const AgentTool: Tool = buildTool({
     let runRecord: SubagentRunRecord | undefined;
     // Only the CLAIMANT persists the terminal record and releases the marker.
     let runClaimed = false;
+    let runStarted = false;
     try {
+      if (!isFork) {
+        runRecord =
+          resumeRecord ??
+          createRun(
+            context.workspaceRoot,
+            context.sessionId,
+            subagentType!.name,
+            input.description || "Sub-agent task",
+            input.prompt,
+          );
+        if (!claimRun(context.sessionId, runRecord.agentId)) {
+          return {
+            content: "",
+            error: `Agent run "${runRecord.agentId}" is already running in this session.`,
+          };
+        }
+        runClaimed = true;
+      }
       // Trust-gate + connect the agent's declared MCP servers BEFORE any
       // resource acquisition — a denial/errors out without leaking slots.
       if (subagentType && !isFork) {
@@ -463,13 +484,26 @@ export const AgentTool: Tool = buildTool({
         };
       }
 
-      if (input.isolation === "worktree" || subagentType?.isolation === "worktree") {
+      if (resumeRecord?.worktree !== undefined) {
+        try {
+          worktree = await reopenAgentWorktree(context.workspaceRoot, resumeRecord.worktree);
+        } catch (error) {
+          return { content: "", error: `Cannot resume agent worktree: ${String(error)}` };
+        }
+        effectiveWorkspaceRoot = worktree.path;
+      } else if (input.isolation === "worktree" || subagentType?.isolation === "worktree") {
         const result = await createWorktree(context.workspaceRoot, context.sessionId);
         if ("error" in result) {
           return { content: "", error: result.error };
         }
         worktree = result;
         effectiveWorkspaceRoot = worktree.path;
+        if (runRecord) {
+          runRecord.worktree = worktree;
+          runRecord.status = "running";
+          runStarted = true;
+          saveRun(context.workspaceRoot, runRecord);
+        }
       }
 
       // Build model config with overrides. Precedence (2.1.202 binary B7):
@@ -543,33 +577,15 @@ export const AgentTool: Tool = buildTool({
 
       // 拍板 #19: one run record per typed agent (forks excluded). Persisted
       // "running" now; the finally writes the terminal status + full messages.
-      runRecord = !isFork
-        ? (resumeRecord ??
-          createRun(
-            context.workspaceRoot,
-            context.sessionId,
-            subagentType!.name,
-            input.description || "Sub-agent task",
-            input.prompt,
-          ))
-        : undefined;
       if (runRecord) {
-        // 拍板 #19: authoritative claim (the earlier isRunActive check is only
-        // the fast, friendly path — both tools are concurrency-safe, so two
-        // calls can resume the same id in one assistant turn).
-        if (!claimRun(context.sessionId, runRecord.agentId)) {
-          return {
-            content: "",
-            error: `Agent run "${runRecord.agentId}" is already running in this session — only one resume may write its record.`,
-          };
-        }
-        runClaimed = true;
         // Seed the record with the live conversation BEFORE the first save:
         // a crash before the terminal finally used to leave an orphan whose
         // messages were empty, so a resume knew nothing about the original
         // task (review fix). The array is mutated in place by the loop, and
         // the terminal finally below persists the same reference again.
         runRecord.messages = messages;
+        runRecord.status = "running";
+        runStarted = true;
         saveRun(context.workspaceRoot, runRecord);
       }
 
@@ -592,7 +608,7 @@ export const AgentTool: Tool = buildTool({
           workspaceRoot: effectiveWorkspaceRoot,
           // A fork runs under its own session id so its checkpoint bucket is
           // distinct from the parent's.
-          sessionId: `${context.sessionId}-agent-${Date.now()}`,
+          sessionId: `${context.sessionId}-agent-${worktree && runRecord ? runRecord.agentId : Date.now()}`,
           // Own skill-activation scope: a skill activated in this worker must
           // not reach siblings or the parent (fork inherits the parent's).
           skillScopeId: isFork ? context.skillScopeId : `agent-${Date.now().toString(36)}`,
@@ -798,14 +814,12 @@ export const AgentTool: Tool = buildTool({
     } finally {
       // 拍板 #19: persist the terminal record (crash leaves "running", which
       // listRuns reports as "interrupted") and release the active marker.
-      if (runRecord) {
-        // An exception path never set a terminal status — that IS an
-        // interruption (abort/crash), not a successful or failed run.
-        if (runRecord.status === "running") runRecord.status = "interrupted";
-        if (runClaimed) {
+      if (runRecord && runClaimed) {
+        if (runStarted) {
+          if (runRecord.status === "running") runRecord.status = "interrupted";
           saveRun(context.workspaceRoot, runRecord);
-          unmarkRunActive(context.sessionId, runRecord.agentId);
         }
+        unmarkRunActive(context.sessionId, runRecord.agentId);
       }
       // 拍板 #14-B: agent-scoped MCP connections live exactly one run.
       await agentMcpHandle?.close();

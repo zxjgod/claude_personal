@@ -214,5 +214,8 @@ it("Workflow does not cache a partial report from a failed worker as a completed
   );
   expect(record.status).toBe("failed");
   const dir = path.join(root, ".claude", "workflow-runs");
-  expect(fs.existsSync(dir) ? fs.readdirSync(dir).length : 0).toBe(0);
+  const [file] = fs.readdirSync(dir);
+  const snapshot = JSON.parse(fs.readFileSync(path.join(dir, file), "utf8"));
+  expect(snapshot.cache).toEqual({});
+  expect(Object.keys(snapshot.unconfirmed)).toHaveLength(1);
 });

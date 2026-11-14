@@ -17,7 +17,7 @@ import {
 import { z } from "zod";
 import { agentLoop } from "../../agent-loop.js";
 import { loadAgentMemoryPrompt } from "../../agent-memory.js";
-import { prepareAgentMcpServers } from "../../agents/agent-mcp.js";
+import { type AgentMcpHandle, prepareAgentMcpServers } from "../../agents/agent-mcp.js";
 import { createModelCaller } from "../../llm-adapter.js";
 import { policyDecision } from "../../permission-policy.js";
 import {
@@ -58,6 +58,7 @@ import { deriveSubContext, type Message, type Tool, type ToolResult } from "../.
 import { CancellationScope } from "../../utils/cancellation.js";
 import { Semaphore } from "../../utils/semaphore.js";
 import { createSubAgentApprover } from "../../utils/subagent-security.js";
+import { finishIsolatedWorktree, reopenAgentWorktree, type WorktreeInfo } from "../../worktrees.js";
 import { buildTool } from "../registry.js";
 import { collectPartialReport } from "./subagent-report.js";
 
@@ -109,7 +110,7 @@ const TaskSchema = z.strictObject({
     .optional()
     .describe(
       "Resume a previous sub-agent run by its agent id (shown in the report header and " +
-        "metadata). The stored conversation is loaded and this prompt continues it. " +
+        "metadata). This prompt continues its stored conversation and reuses its original worktree if isolated. " +
         'Not valid with subagent_name "fork".',
     ),
 });
@@ -272,18 +273,7 @@ export const TaskTool: Tool = buildTool({
     }
     const subagentType = resolution?.kind === "found" ? resolution.type : undefined;
 
-    // 拍板 #14-B: agent-scoped MCP servers — trust-gated, connected for the
-    // duration of THIS run, closed in the finally at the end of the call.
-    const agentMcp =
-      subagentType && !isFork ? await prepareAgentMcpServers(subagentType, context) : undefined;
-    if (agentMcp?.kind === "error") return { content: "", error: agentMcp.error };
-    const agentMcpHandle = agentMcp?.kind === "ready" ? agentMcp.handle : undefined;
-    // Trust-gate the agent's declared hooks (review fix: project agent hooks
-    // used to register with no gate at all) before the prompt is assembled.
-    const agentHooks =
-      subagentType && !isFork
-        ? await prepareAgentHooks(subagentType, context.askUser, context.workspaceRoot)
-        : {};
+    let agentMcpHandle: AgentMcpHandle | undefined;
     // 拍板 #19: hoisted so the outer finally (after the try) can persist the
     // terminal record even when an exception unwinds the run.
     let runRecord: SubagentRunRecord | undefined;
@@ -291,6 +281,7 @@ export const TaskTool: Tool = buildTool({
     // a parallel call that lost the claim must not write over the winner's
     // record nor free its active marker.
     let runClaimed = false;
+    let runStarted = false;
     let runStatus: SubagentRunStatus = "running";
     let runReport: string | undefined;
     let finalMessages: Message[] = [];
@@ -313,6 +304,46 @@ export const TaskTool: Tool = buildTool({
           error: "Task tool requires modelConfig in context. The CLI must provide this.",
         };
       }
+
+      if (!isFork) {
+        runRecord =
+          resumeRecord ??
+          createRun(
+            context.workspaceRoot,
+            context.sessionId,
+            subagentType!.name,
+            input.description,
+            input.prompt,
+          );
+        if (!claimRun(context.sessionId, runRecord.agentId)) {
+          return {
+            content: "",
+            error: `Sub-agent run "${runRecord.agentId}" is already running in this session.`,
+          };
+        }
+        runClaimed = true;
+      }
+      let worktree: WorktreeInfo | undefined;
+      if (resumeRecord?.worktree !== undefined) {
+        try {
+          worktree = await reopenAgentWorktree(context.workspaceRoot, resumeRecord.worktree);
+        } catch (error) {
+          return { content: "", error: `Cannot resume agent worktree: ${String(error)}` };
+        }
+      }
+      const workspaceRoot = worktree?.path ?? context.workspaceRoot;
+      const workerSessionId =
+        worktree && runRecord
+          ? `${context.sessionId}-agent-${runRecord.agentId}`
+          : context.sessionId;
+      const agentMcp =
+        subagentType && !isFork ? await prepareAgentMcpServers(subagentType, context) : undefined;
+      if (agentMcp?.kind === "error") return { content: "", error: agentMcp.error };
+      if (agentMcp?.kind === "ready") agentMcpHandle = agentMcp.handle;
+      const agentHooks =
+        subagentType && !isFork
+          ? await prepareAgentHooks(subagentType, context.askUser, workspaceRoot)
+          : {};
 
       // Fork seeds the sub-loop with a copy of the parent's history (inherit
       // context) then appends the fork task; a typed sub-agent starts clean —
@@ -337,33 +368,15 @@ export const TaskTool: Tool = buildTool({
       // history is the parent's). Persisted "running" now; the finally below
       // writes the terminal status + full messages (the resume seed). A crash
       // leaves "running", which listRuns reports as "interrupted" (orphan).
-      runRecord = !isFork
-        ? (resumeRecord ??
-          createRun(
-            context.workspaceRoot,
-            context.sessionId,
-            subagentType!.name,
-            input.description,
-            input.prompt,
-          ))
-        : undefined;
       if (runRecord) {
-        // 拍板 #19: authoritative claim (the earlier isRunActive check is only
-        // the fast, friendly path — both tools are concurrency-safe, so two
-        // calls can resume the same id in one assistant turn).
-        if (!claimRun(context.sessionId, runRecord.agentId)) {
-          return {
-            content: "",
-            error: `Sub-agent run "${runRecord.agentId}" is already running in this session — only one resume may write its record.`,
-          };
-        }
-        runClaimed = true;
         // Seed the record with the live conversation BEFORE the first save:
         // a crash before the terminal finally used to leave an orphan whose
         // messages were empty, so a resume knew nothing about the original
         // task (review fix). The loop mutates this array in place; the
         // terminal finally persists the same reference again.
         runRecord.messages = subMessages;
+        runRecord.status = "running";
+        runStarted = true;
         saveRun(context.workspaceRoot, runRecord);
       }
       // Fork reuses the parent prompt verbatim (shared cache); a typed sub-agent
@@ -376,10 +389,10 @@ export const TaskTool: Tool = buildTool({
               subagentType!.systemPrompt,
               "",
               `Your task: ${input.description}`,
-              await preloadAgentSkills(subagentType!, context.workspaceRoot, context.askUser),
+              await preloadAgentSkills(subagentType!, workspaceRoot, context.askUser),
               ...(agentHooks.note ? ["", agentHooks.note] : []),
             ].join("\n"),
-            { workspaceRoot: context.workspaceRoot },
+            { workspaceRoot },
           );
 
       // M35: fork a child cancellation scope from the parent's signal so a parent
@@ -428,10 +441,9 @@ export const TaskTool: Tool = buildTool({
           maxTurns: isFork ? FORK_MAX_TURNS : (subagentType?.maxTurns ?? SUBAGENT_MAX_TURNS),
           autoCompactThreshold: SUBAGENT_COMPACT_THRESHOLD,
           abortSignal: scope.signal,
-          // Run sub-agent tools in the same workspace/session as the parent.
-          // deriveSubContext is an explicit allow-list — a spread here would
-          // hand the worker the parent's fork hooks and full approver.
           toolContext: deriveSubContext(context, {
+            workspaceRoot,
+            sessionId: workerSessionId,
             jobScopeKey: runRecord ? `subagent:${runRecord.agentId}` : undefined,
             modelConfig: config,
             // Restricted approver: a sub-agent must not bypass permissions.
@@ -451,7 +463,7 @@ export const TaskTool: Tool = buildTool({
               context.hooks,
               isFork ? undefined : agentHooks.hooksConfig,
               context.sessionId,
-              context.workspaceRoot,
+              workspaceRoot,
             ),
             permissionMode:
               context.permissionMode === "plan"
@@ -532,6 +544,18 @@ export const TaskTool: Tool = buildTool({
       }
 
       const duration = Date.now() - startTime;
+      const worktreeMetadata = worktree
+        ? {
+            worktreePath: worktree.path,
+            worktreeBranch: worktree.branch,
+            worktreeRetained:
+              finishReason !== "end_turn" || !(await finishIsolatedWorktree(worktree)),
+          }
+        : {};
+      const worktreeNotice =
+        worktree && worktreeMetadata.worktreeRetained
+          ? `\n\nWorktree retained: ${worktree.path}\nBranch: ${worktree.branch}`
+          : "";
       // 拍板 #22: the final report line is recorded in BOTH sidechain modes
       // ("audit" detail + "report" 仅最终报告回流).
       const own = subMessages.filter((m) => !seedSet.has(m));
@@ -569,11 +593,12 @@ export const TaskTool: Tool = buildTool({
         const report = partialReport || output;
         if (report) {
           return {
-            content: `[Sub-agent "${subagentName}" partial report — turn budget reached; task incomplete]\n${report}`,
+            content: `[Sub-agent "${subagentName}" partial report — turn budget reached; task incomplete]\n${report}${worktreeNotice}`,
             metadata: {
               durationMs: duration,
               linesRead: toolCallCount,
               incomplete: true,
+              ...worktreeMetadata,
               ...(runRecord ? { agentId: runRecord.agentId } : {}),
             },
           };
@@ -582,9 +607,14 @@ export const TaskTool: Tool = buildTool({
 
       if (finishReason !== "end_turn" || !output) {
         return {
-          content: output ? `Partial output (not a completed report):\n${output}` : "",
+          content:
+            (output ? `Partial output (not a completed report):\n${output}` : "") + worktreeNotice,
           error: `${isFork ? "Fork" : "Sub-agent"} incomplete: ${errorMessage || finishReason || "no terminal event"}${!output ? "; no final report" : ""}`,
-          metadata: { durationMs: duration, ...(runRecord ? { agentId: runRecord.agentId } : {}) },
+          metadata: {
+            durationMs: duration,
+            ...worktreeMetadata,
+            ...(runRecord ? { agentId: runRecord.agentId } : {}),
+          },
         };
       }
 
@@ -609,35 +639,41 @@ export const TaskTool: Tool = buildTool({
       const scan = await scanSubagentOutput(output, config, scope.signal);
       if (scan.blocked) {
         return {
-          content: header + blockedOutputNotice(subagentName),
+          content: header + blockedOutputNotice(subagentName) + worktreeNotice,
           truncated: false,
-          metadata: { durationMs: duration, linesRead: toolCallCount, outputScan: "blocked" },
+          metadata: {
+            durationMs: duration,
+            linesRead: toolCallCount,
+            outputScan: "blocked",
+            ...worktreeMetadata,
+          },
         };
       }
 
       return {
-        content: header + output,
+        content: header + output + worktreeNotice,
         truncated: false,
         metadata: {
           durationMs: duration,
           linesRead: toolCallCount,
           outputScan: scan.status,
+          ...worktreeMetadata,
           ...(runRecord ? { agentId: runRecord.agentId } : {}),
         },
       };
     } finally {
       // 拍板 #19: persist the terminal record (terminal status set above; an
       // exception path leaves "interrupted") and release the active marker.
-      if (runRecord) {
+      if (runRecord && runClaimed) {
         // An exception path never set a terminal status — that IS an
         // interruption (abort/crash), not a successful or failed run.
-        runRecord.status = runStatus === "running" ? "interrupted" : runStatus;
-        runRecord.report = runReport;
-        runRecord.messages = finalMessages;
-        if (runClaimed) {
+        if (runStarted) {
+          runRecord.status = runStatus === "running" ? "interrupted" : runStatus;
+          runRecord.report = runReport;
+          runRecord.messages = finalMessages;
           saveRun(context.workspaceRoot, runRecord);
-          unmarkRunActive(context.sessionId, runRecord.agentId);
         }
+        unmarkRunActive(context.sessionId, runRecord.agentId);
       }
       // 拍板 #14-B: agent-scoped MCP connections live exactly one run.
       await agentMcpHandle?.close();

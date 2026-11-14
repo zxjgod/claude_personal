@@ -61,7 +61,17 @@ docs/更新日志/
 
 | 日期 | 类型 | 模块 | 主题 | commit | 关联 |
 |---|---|---|---|---|---|
-| 2026-11-12 | checkpoint / docs | 目标状态 / 子代理协作 | [阶段收尾与继续入口](20261112-collaboration-checkpoint.md) | 工作区改动，暂时暂停 | [核心计划](../20261111-core-engine-plan.md) |
+| 2026-11-14 | fix / test | 上下文压缩 | [保留近期需求和更正](20261114-context-correction.md) | 工作区改动 | [测量说明](../core-evaluation.md) |
+| 2026-11-14 | fix / test | Bash / 后台进程 | [宿主强停后的后台进程监护](20261114-background-shell-supervisor.md) | 工作区改动 | [核心计划](../20261111-core-engine-plan.md) |
+| 2026-11-14 | fix / test | Workflow / 跨进程恢复 | [恢复未确认的 workflow 步骤](20261114-workflow-unconfirmed-recovery.md) | 工作区改动 | [核心计划](../20261111-core-engine-plan.md) |
+| 2026-11-14 | fix / test | Headless / 会话恢复 | [恢复被强停打断的工具批次](20261114-headless-partial-batch-recovery.md) | 工作区改动 | [核心计划](../20261111-core-engine-plan.md) |
+| 2026-11-12 | fix / test | Headless / 会话恢复 | [强停后恢复完整工具批次](20261112-headless-crash-recovery.md) | 暂停时的历史记录 | [核心计划](../20261111-core-engine-plan.md) |
+| 2026-11-12 | fix / test | CLI / SDK 自动化 | [结果帧对应输入标识](20261112-sdk-result-ownership.md) | 工作区改动 | [SDK 指南](../深度使用指南.md#五sdk-编程式使用) |
+| 2026-11-12 | test / evaluation | 并发子代理 / Git 冲突 | [整合重叠工作树补丁](20261112-collaboration-conflict-evaluation.md) | 工作区改动 | [运行说明](../core-evaluation.md) |
+| 2026-11-12 | test / evaluation | 主会话恢复 / 子代理协作 | [新 CLI 恢复审查并整合原工作树](20261112-collaboration-resume-evaluation.md) | 工作区改动 | [运行说明](../core-evaluation.md) |
+| 2026-11-12 | test / evaluation | 主模型 / 子代理协作 | [真实委派、审查和补丁整合](20261112-collaboration-evaluation.md) | 工作区改动 | [运行说明](../core-evaluation.md) |
+| 2026-11-12 | fix / test | Agent / Task / 工作树 | [恢复隔离子代理的原工作树](20261112-subagent-worktree-resume-fix.md) | 工作区改动 | [核心计划](../20261111-core-engine-plan.md) |
+| 2026-11-12 | checkpoint / docs | 目标状态 / 子代理协作 | [阶段收尾与继续入口](20261112-collaboration-checkpoint.md) | 暂停时的历史记录 | [核心计划](../20261111-core-engine-plan.md) |
 | 2026-11-12 | feature / fix / test / evaluation | 编码工程 / 评估器 / 补丁 | [TypeScript 工程修复、模块迁移与补丁复验](20261112-repository-task-evaluation.md) | 工作区改动 | [运行说明](../core-evaluation.md) |
 | 2026-11-12 | fix / test | SDK / Python / 进程树 | [SDK 强制收尾与自有进程树](20261112-sdk-process-tree.md) | 工作区改动 | [核心计划](../20261111-core-engine-plan.md) |
 | 2026-11-12 | fix / test | 后台归属 / 委派 / 会话切换 | [后台任务归属与退出清理](20261112-background-job-ownership.md) | 工作区改动 | [核心计划](../20261111-core-engine-plan.md) |
@@ -134,6 +144,16 @@ docs/更新日志/
 - **SDK 强制收尾 / 进程树**：[20261112-sdk-process-tree](20261112-sdk-process-tree.md)（两端前后台命令、暂停消费者取消、输入失败、无关进程隔离及强停后恢复）。
 - **工程任务 / 构建修复 / 源码迁移**：[20261112-repository-task-evaluation](20261112-repository-task-evaluation.md)（TypeScript 工具链、完整候选补丁重放、所有 Shell 固定审批与真实 k3 两轮）。
 - **暂停状态 / 协作工作交接**：[20261112-collaboration-checkpoint](20261112-collaboration-checkpoint.md)（最近有效基线、尚未成立的回归草稿、恢复入口；不计作新修复）。
+- **隔离子代理恢复**：[20261112-subagent-worktree-resume-fix](20261112-subagent-worktree-resume-fix.md)（Agent / Task 继续原隔离工作树，验证 Git 身份与工作会话）。
+- **主模型委派、审查与整合**：[20261112-collaboration-evaluation](20261112-collaboration-evaluation.md)（真实 SDK、CLI 和第三方模型两轮验收）。
+- **跨进程恢复子代理协作**：[20261112-collaboration-resume-evaluation](20261112-collaboration-resume-evaluation.md)（两个 CLI 进程、恢复主会话和原工作树、保留用户改动）。
+- **多工作树冲突整合**：[20261112-collaboration-conflict-evaluation](20261112-collaboration-conflict-evaluation.md)（并发子代理、真实 Git 拒绝、同文件用户改动保留）。
+- **自动化结果归属**：[20261112-sdk-result-ownership](20261112-sdk-result-ownership.md)（CLI 回传输入标识、两端 SDK 核验结果、中断和超时后恢复）。
+- **Headless 强停恢复**：[20261112-headless-crash-recovery](20261112-headless-crash-recovery.md)（完整工具批次保存、真实 CLI 强停、恢复后按变更要求继续）。
+- **Headless 工具执行与保存窗口**：[20261114-headless-partial-batch-recovery](20261114-headless-partial-batch-recovery.md)（部分结果保存、未确认调用的恢复提示、快照原子替换前强停）。
+- **Workflow 未确认步骤**：[20261114-workflow-unconfirmed-recovery](20261114-workflow-unconfirmed-recovery.md)（worker 启动前保存、强停后定位步骤、默认阻止重复执行）。
+- **后台 Bash 宿主强停**：[20261114-background-shell-supervisor](20261114-background-shell-supervisor.md)（通信断开触发监护清理，恢复时报告中断）。
+- **上下文中的需求更正**：[20261114-context-correction](20261114-context-correction.md)（多次压缩后保留近期用户约束及变更）。
 - **后台 / 进程树 / CLI 退出**：[20261112-background-process-lifecycle](20261112-background-process-lifecycle.md)（三级 PID/心跳、真实结算、输出/退出码、代理取消清理、CLI 正常退出和恢复）。
 - **独立生态 / 来源 / 内联 MCP**：[20261112-independent-ecosystem](20261112-independent-ecosystem.md)（用户根独立；设置/env 来源；strict/disabled 一致性；实际字段清单；仅 settings 凭据启动）。
 - **TS SDK / 输入取消与恢复**：[20261111-ts-sdk-continuity](20261111-ts-sdk-continuity.md)（挂起输入不阻塞退出；等待读取可取消；抑制迟到输入；缺失结果报错；真实 CLI 中断/继续/读回）。

@@ -1,0 +1,46 @@
+{
+  "version": "isolated-collaboration-v1",
+  "patchReplay": true,
+  "maxTurns": 24,
+  "maxOutputTokens": 4096,
+  "timeoutMs": 420000,
+  "allowedTools": [
+    "Agent",
+    "Read",
+    "Glob",
+    "Grep",
+    "Write",
+    "Edit"
+  ],
+  "disallowedTools": [
+    "Task",
+    "Workflow"
+  ],
+  "cases": [
+    {
+      "name": "review-and-integrate-order-summary",
+      "fixture": "eval-fixtures/collaboration",
+      "initialEdits": [
+        {
+          "path": "notes.md",
+          "content": "User draft: keep this uncommitted note verbatim.\n"
+        }
+      ],
+      "shellCommands": [
+        "node collaborate.mjs baseline",
+        "node collaborate.mjs draft",
+        "node collaborate.mjs revised",
+        "node collaborate.mjs integrate",
+        "node collaborate.mjs test"
+      ],
+      "prompt": "Implement the paid order summary by directing a sub-agent through review and integration. Start by running `node collaborate.mjs baseline` and observe the failing test. Call Agent with subagent_type `order-worker` and isolation `worktree` for the first implementation. Tell the worker to read and edit only src/sku.mjs and src/summary.mjs. The draft trims SKU strings but keeps case distinctions. summarizePaidOrders(rows) returns [{sku, quantity}] for rows whose status is exactly paid (each row has sku string, quantity number, status string), sums quantities by SKU, preserves first-seen order and does not mutate input. After the worker returns, run `node collaborate.mjs draft` to independently test the draft and obtain the review feedback. Pass that feedback back using Agent with the same agent id via `resume`, without supplying isolation on this second call. After the revision, run `node collaborate.mjs revised` to verify the retained worktree, then `node collaborate.mjs integrate` to apply its source patch, then `node collaborate.mjs test` in the primary checkout. Keep notes.md, collaborate.mjs, checks.mjs, and the agent definition untouched. Your role is to delegate, review, and integrate rather than author source edits yourself. Copy each shell command above verbatim and run it by itself from the current primary checkout. The working directory is already set. Never add cd, ls, or another command to the same call. Report the observed draft review and final tests.",
+      "assertions": [
+        {
+          "type": "verifier",
+          "path": "verify.mjs",
+          "timeoutMs": 20000
+        }
+      ]
+    }
+  ]
+}

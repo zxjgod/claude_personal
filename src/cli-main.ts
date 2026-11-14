@@ -905,7 +905,7 @@ async function main() {
         },
         hooks,
         systemPrompt: buildTurnSystemPrompt(),
-        save: (saved) => persistence.save(session.id, saved, { taskState: "paused" }),
+        save: (saved, taskState) => persistence.save(session.id, saved, { taskState }),
       });
     } finally {
       const pendingJobs = await killOwnedSessionJobs(ownedSessionIds, "session exited");
